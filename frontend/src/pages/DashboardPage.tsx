@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type ApiError, type Dashboard } from "../api";
+import { api, type ApiError, type Dashboard, type EvSummary, type ProtSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Icon, type IconName } from "../components/Icons";
 import { Empty, PageHead, Spectrum } from "../components/ui";
@@ -18,6 +18,14 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
     try { setD(await api.dashboard(refresh)); setErr(""); } catch (e) { setErr((e as ApiError).message); } finally { setBusy(false); }
   }, [ctx.current]);
   useEffect(() => { void load(); }, [load]);
+  // защита и события — отдельными запросами: главная не ждёт тяжёлых сводок, а при их ошибке остаётся рабочей
+  const [prot, setProt] = useState<ProtSummary | null | "err">(null);
+  const [ev, setEv] = useState<EvSummary | null | "err">(null);
+  useEffect(() => {
+    if (!ctx.current) return;
+    api.protection({ limit: 0 }).then((r) => setProt(r.summary ?? "err")).catch(() => setProt("err"));
+    api.events.summary(7).then((r) => setEv(r.unsupported ? "err" : r)).catch(() => setEv("err"));
+  }, [ctx.current]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const s = d?.summary;
   const t = s?.fetched_at ? `на ${fmtTime(s.fetched_at)}` : "данные ещё не получены";
@@ -32,10 +40,10 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
   const src = d?.source;
   const conn = src ? (src.last_check_ok === true ? ["ok", "работает"] : src.last_check_ok === false ? ["bad", "ошибка проверки"] : ["off", "не проверялся"]) : null;
   const actions: { to: string; icon: IconName; title: string; sub: string }[] = [
-    { to: "/software?mode=grouped&rule=php", icon: "branch", title: "Аудит PHP по веткам", sub: "Ветки 5.6–8.x, компьютеры с выбранными версиями" },
-    { to: "/software", icon: "search", title: "Найти программу и её версии", sub: "Реестр приложений KSC с числом установок" },
+    { to: "/reports", icon: "target", title: "Найти устаревшие версии", sub: "Программа из каталога и версия, ниже которой — устаревшая" },
+    { to: "/software/p/php", icon: "branch", title: "PHP по веткам", sub: "Ветки и версии PHP, компьютеры с каждой из них" },
+    { to: "/vulnerabilities", icon: "bug", title: "Уязвимости, найденные KSC", sub: "Компьютеры с критическими уязвимостями — первыми" },
     { to: "/hosts?activity=inactive", icon: "clock", title: "Компьютеры без связи с KSC", sub: `Агент не подключался дольше ${s?.activity_days ?? "…"} сут` },
-    { to: "/vulnerabilities", icon: "bug", title: "Уязвимости, найденные KSC", sub: "Действующие обнаружения с CVE" },
   ];
   return (
     <section>
@@ -68,6 +76,21 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
             ]} />
           </div>
         )}
+      </div>
+
+      <div className="section-head"><h2>Защита и угрозы</h2><span className="muted small">активные компьютеры; события — за 7 суток</span></div>
+      <div className="meters" aria-label="Защита и угрозы">
+        {([
+          ["/protection", "Защищены", prot && prot !== "err" ? `${Math.round((prot.protected / Math.max(1, prot.hosts)) * 100)}%` : null, prot && prot !== "err" ? `${num(prot.protected)} из ${num(prot.hosts)} компьютеров` : "", ""],
+          ["/protection?problem=no_av", "Без антивируса", prot && prot !== "err" ? prot.problems.find((p) => p.key === "no_av")?.hosts ?? 0 : null, "нет продукта Kaspersky", "bad-text"],
+          ["/protection?problem=rtp_off", "Защита не работает", prot && prot !== "err" ? prot.problems.find((p) => p.key === "rtp_off")?.hosts ?? 0 : null, "остановлена или в сбое", "bad-text"],
+          ["/events?type=notcured", "Не вылечено за 7 сут", ev && ev !== "err" ? ev.totals.notcured : null, ev && ev !== "err" ? `обнаружено угроз: ${num(ev.totals.detections)}` : "", "bad-text"],
+        ] as [string, string, number | string | null, string, string][]).map(([to, l, v, t, tone]) => (
+          <Link key={to} to={to} className="meter meter-link">
+            <span className="l">{l}</span>
+            <span className={`v ${typeof v === "number" && v > 0 ? tone : ""}`}>{v === null ? ((to.startsWith("/events") ? ev : prot) === "err" ? <span className="empty-v">нет данных</span> : <span className="skel" style={{ width: 60, height: 26 }} />) : typeof v === "number" ? num(v) : v}</span>
+            <span className="t">{t}</span>
+          </Link>))}
       </div>
 
       <div className="split even" style={{ marginTop: 16 }}>

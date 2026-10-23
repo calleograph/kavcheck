@@ -120,6 +120,44 @@ ORDER BY d.nKlSeverity DESC, o.tmDetectTime DESC"""
 VULN_NAMES = "SELECT n.nVulnerabilityDescrId AS descr_id, n.nSense AS sense, n.wstrName AS name FROM dbo.vapm_vulnerability_names n WHERE n.nSense IN (3, 5, 6) AND n.nVulnerabilityDescrId IN ({ids})"
 VULN_CVE_EXISTS = "EXISTS (SELECT 1 FROM dbo.vapm_vulnerability_names n WHERE n.nVulnerabilityDescrId = d.nId AND n.nSense = 3 AND n.wstrName LIKE %(cve)s)"
 
+# Состояние защиты: компьютеры со статусом KSC (1:1) и защитные продукты на них — два чтения небольших таблиц, проверки — в приложении (ksc/protection.py)
+PROTECTION_HOSTS = (f"SELECT {HOST_COLS}, s.nStatus AS ksc_status, s.nStatusMask AS status_mask, h.nUncured AS uncured, h.nVirusCount AS virus_count "
+                    "FROM dbo.v_akpub_host h LEFT JOIN dbo.v_akpub_host_status s ON s.nId = h.nId WHERE {where}")
+PROTECTION_PRODUCTS = ("SELECT p.nHost AS host_id, p.wstrProductNameId AS code, p.wstrProductDisplayName AS name, p.wstrProductBuildNumber AS build, p.nState AS state, "
+                       "p.tmAvbasesDate AS bases, p.bAvProduct AS is_av, p.bHasRtp AS has_rtp FROM dbo.v_akpub_hst_prdstate p WHERE p.bAvProduct = 1 OR p.wstrProductNameId = '1103'")
+
+# События безопасности: всегда ограничены периодом по tmRiseTime (индекс) и типами обнаружений; время задаёт устройство — значения из будущего отсекаются
+EV_SECURITY = ("'GNRL_EV_VIRUS_FOUND', 'GNRL_EV_SUSPICIOUS_OBJECT_FOUND', 'GNRL_EV_OBJECT_NOTCURED', 'GNRL_EV_OBJECT_DELETED', 'GNRL_EV_OBJECT_CURED', "
+               "'GNRL_EV_OBJECT_QUARANTINED', 'GNRL_EV_ATTACK_DETECTED'")
+EV_PERIOD = "e.tmRiseTime >= DATEADD(hour, -%(hours)s, GETUTCDATE()) AND e.tmRiseTime < DATEADD(hour, 1, GETUTCDATE())"
+EV_WHERE = f"{EV_PERIOD} AND e.strEventType IN ({EV_SECURITY})"
+EVENTS_BY_TYPE = f"SELECT e.strEventType AS type, COUNT(*) AS n, COUNT(DISTINCT e.nHostId) AS hosts FROM dbo.v_akpub_ev_event e WHERE {EV_WHERE} GROUP BY e.strEventType"
+EVENTS_HOSTS = f"""SELECT COUNT(DISTINCT e.nHostId) AS any_hosts,
+  COUNT(DISTINCT CASE WHEN e.strEventType IN ('GNRL_EV_VIRUS_FOUND', 'GNRL_EV_SUSPICIOUS_OBJECT_FOUND') THEN e.nHostId END) AS detections,
+  COUNT(DISTINCT CASE WHEN e.strEventType = 'GNRL_EV_OBJECT_NOTCURED' THEN e.nHostId END) AS notcured,
+  COUNT(DISTINCT CASE WHEN e.strEventType IN ('GNRL_EV_OBJECT_DELETED', 'GNRL_EV_OBJECT_CURED', 'GNRL_EV_OBJECT_QUARANTINED') THEN e.nHostId END) AS resolved,
+  COUNT(DISTINCT CASE WHEN e.strEventType = 'GNRL_EV_ATTACK_DETECTED' THEN e.nHostId END) AS attacks
+FROM dbo.v_akpub_ev_event e WHERE {EV_WHERE}"""
+EVENTS_TREND = ("SELECT DATEADD({unit}, DATEDIFF({unit}, 0, e.tmRiseTime), 0) AS bucket, e.strEventType AS type, COUNT(*) AS n FROM dbo.v_akpub_ev_event e "
+                f"WHERE {EV_WHERE} GROUP BY DATEADD({{unit}}, DATEDIFF({{unit}}, 0, e.tmRiseTime), 0), e.strEventType")
+EVENTS_TOP_HOSTS = f"""SELECT TOP (15) e.nHostId AS host_id, MAX(h.wstrDisplayName) AS name, MAX(h.nIp) AS ip_int, COUNT(*) AS n,
+  SUM(CASE WHEN e.strEventType IN ('GNRL_EV_VIRUS_FOUND', 'GNRL_EV_SUSPICIOUS_OBJECT_FOUND') THEN 1 ELSE 0 END) AS detections,
+  SUM(CASE WHEN e.strEventType = 'GNRL_EV_OBJECT_NOTCURED' THEN 1 ELSE 0 END) AS notcured,
+  SUM(CASE WHEN e.strEventType = 'GNRL_EV_ATTACK_DETECTED' THEN 1 ELSE 0 END) AS attacks, MAX(e.tmRiseTime) AS last
+FROM dbo.v_akpub_ev_event e LEFT JOIN dbo.v_akpub_host h ON h.nId = e.nHostId
+WHERE {EV_WHERE} GROUP BY e.nHostId ORDER BY COUNT(*) DESC"""
+EV_THREAT_KIND = "CASE WHEN e.strEventType = 'GNRL_EV_ATTACK_DETECTED' THEN 'attack' ELSE 'threat' END"
+EV_THREAT_NAME = "CASE WHEN e.strEventType = 'GNRL_EV_ATTACK_DETECTED' THEN e.wstrPar1 ELSE e.wstrPar5 END"
+EVENTS_TOP_THREATS = f"""SELECT TOP (15) {EV_THREAT_KIND} AS kind, {EV_THREAT_NAME} AS name, COUNT(*) AS n, COUNT(DISTINCT e.nHostId) AS hosts, MAX(e.tmRiseTime) AS last
+FROM dbo.v_akpub_ev_event e WHERE {EV_PERIOD} AND e.strEventType IN ('GNRL_EV_VIRUS_FOUND', 'GNRL_EV_SUSPICIOUS_OBJECT_FOUND', 'GNRL_EV_ATTACK_DETECTED')
+GROUP BY {EV_THREAT_KIND}, {EV_THREAT_NAME} ORDER BY COUNT(DISTINCT e.nHostId) DESC, COUNT(*) DESC"""
+EVENTS_PAGE = """SELECT e.nId AS event_id, e.tmRiseTime AS at, e.strEventType AS type, e.wstrEventTypeDisplayName AS type_name, e.nSeverity AS severity, e.nHostId AS host_id,
+  h.wstrDisplayName AS host, h.nIp AS ip_int, e.wstrProductNameId AS product, e.wstrPar1 AS par1, e.wstrPar2 AS par2, e.wstrPar3 AS par3, e.wstrPar4 AS par4,
+  e.wstrPar5 AS par5, e.wstrPar7 AS par7, e.wstrPar8 AS par8
+FROM dbo.v_akpub_ev_event e LEFT JOIN dbo.v_akpub_host h ON h.nId = e.nHostId
+WHERE {where} ORDER BY e.tmRiseTime DESC, e.nId DESC OFFSET %(offset)s ROWS FETCH NEXT %(limit)s ROWS ONLY"""
+EVENTS_COUNT = "SELECT COUNT(*) AS n FROM dbo.v_akpub_ev_event e LEFT JOIN dbo.v_akpub_host h ON h.nId = e.nHostId WHERE {where}"
+
 # Объекты, необходимые функциям: по ним проверяется совместимость источника при добавлении
 FEATURE_OBJECTS = {
     "hosts": ("v_akpub_host", "v_akpub_adm_group"),

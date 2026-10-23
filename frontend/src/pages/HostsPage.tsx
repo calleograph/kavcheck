@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type Host } from "../api";
+import { api, type ApiError, type Host, type HostVuln } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { ActivityBadge, Fetched, Pager } from "../components/Common";
 import { Icon } from "../components/Icons";
-import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh } from "../components/ui";
+import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
+import { EventList, type EvFilter } from "./EventsPage";
+import { ProblemBadges } from "./ProtectionPage";
+import { HostVulns } from "./VulnsPage";
 import { fmt, fmtDate, num } from "../util";
 
 const DAYS = [1, 3, 7, 14, 30];
@@ -70,8 +73,17 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
   );
 }
 
+type HostTab = "software" | "vulns" | "events";
+
 export function HostPage({ ctx }: { ctx: Ctx }) {
   const { hostId } = useParams();
+  const [sp, setSp] = useSearchParams();
+  const tab = (["software", "vulns", "events"].includes(sp.get("tab") ?? "") ? sp.get("tab") : "software") as HostTab;
+  const [vulns, setVulns] = useState<{ items: HostVuln[]; unsupported?: string[] } | null>(null);
+  const [vErr, setVErr] = useState("");
+  const [evGroup, setEvGroup] = useState<EvFilter>(""); const [evThreat, setEvThreat] = useState("");
+  useEffect(() => { setVulns(null); setVErr(""); }, [ctx.current, hostId]);
+  useEffect(() => { if (tab === "vulns" && !vulns && !vErr && ctx.current && hostId) api.vulns.host(Number(hostId)).then(setVulns).catch((e) => setVErr((e as ApiError).message)); }, [tab, vulns, vErr, ctx.current, hostId]);
   const [d, setD] = useState<Awaited<ReturnType<typeof api.hosts.one>> | null>(null);
   const [err, setErr] = useState("");
   const [filter, setFilter] = useState("");
@@ -88,7 +100,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   const st = h.ksc_status;
   return (
     <section>
-      <PageHead title={h.name} back={back} lede={<span className="row tight" style={{ flexWrap: "wrap" }}><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}<span className="muted small">Время — UTC</span></span>}>
+      <PageHead title={h.name} back={back} lede={<span className="row tight" style={{ flexWrap: "wrap" }}><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}<span className="muted small">Время — UTC</span></span>}>
         <Fetched at={d.fetched_at} />
       </PageHead>
       <div className="split even">
@@ -108,17 +120,28 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
           </div>
         </div>
       </div>
-      <div className="section-head"><h2>Установленное ПО</h2><span className="count">{num(d.software.length)}</span><div className="spacer" />
-        <div className="input-icon" style={{ width: 340, maxWidth: "100%" }}><Icon name="search" size={16} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, версия или производитель" aria-label="Фильтр программ" /></div></div>
-      <div className="table-scroll">
-        <table className="table compact">
-          <thead><tr><th>Программа</th><th>Версия</th><th>Производитель</th><th>Установлена</th></tr></thead>
-          <tbody>{sw.slice(0, 1000).map((s) => <tr key={s.install_id}><td><Link to={`/software?q=${encodeURIComponent(s.name)}`}>{s.name}</Link></td><td className="mono">{s.version}</td><td className="small">{s.publisher || "—"}</td><td className="nowrap">{fmtDate(s.install_date)}</td></tr>)}
-            {!sw.length && <tr><td colSpan={4}><Empty icon="search" title={filter ? "Ничего не найдено" : "Программ нет"}>{filter ? "Измените текст фильтра." : "KSC не передавал сведений о программах этого компьютера."}</Empty></td></tr>}
-          </tbody>
-        </table>
+      <div className="mt">
+        <Tabs<HostTab> label="Сведения о компьютере" value={tab} onChange={(t) => setSp((p) => { if (t === "software") p.delete("tab"); else p.set("tab", t); return p; }, { replace: true })}
+          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: "Уязвимости", count: vulns?.items.length }, { id: "events", label: "События безопасности" }]} />
       </div>
-      {sw.length > 1000 && <p className="muted small" style={{ marginTop: 8 }}>Показаны первые 1000 записей — уточните фильтр.</p>}
+      {tab === "software" && <>
+        <div className="section-head"><span className="muted small">Программ: {num(d.software.length)}</span><div className="spacer" />
+          <div className="input-icon" style={{ width: 340, maxWidth: "100%" }}><Icon name="search" size={16} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, версия или производитель" aria-label="Фильтр программ" /></div></div>
+        <div className="table-scroll">
+          <table className="table compact">
+            <thead><tr><th>Программа</th><th>Версия</th><th>Производитель</th><th>Установлена</th></tr></thead>
+            <tbody>{sw.slice(0, 1000).map((s) => <tr key={s.install_id}><td><Link to={`/software?q=${encodeURIComponent(s.name)}`}>{s.name}</Link></td><td className="mono">{s.version}</td><td className="small">{s.publisher || "—"}</td><td className="nowrap">{fmtDate(s.install_date)}</td></tr>)}
+              {!sw.length && <tr><td colSpan={4}><Empty icon="search" title={filter ? "Ничего не найдено" : "Программ нет"}>{filter ? "Измените текст фильтра." : "KSC не передавал сведений о программах этого компьютера."}</Empty></td></tr>}
+            </tbody>
+          </table>
+        </div>
+        {sw.length > 1000 && <p className="muted small" style={{ marginTop: 8 }}>Показаны первые 1000 записей — уточните фильтр.</p>}
+      </>}
+      {tab === "vulns" && (vErr ? <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{vErr}</div></div>
+        : !vulns ? <div className="card"><SkelRows rows={4} cols={5} /></div>
+          : vulns.unsupported ? <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет объектов уязвимостей KSC.</div></div>
+            : <><HostVulns items={vulns.items} /><p className="muted small mt-sm"><Link to={`/vulnerabilities/hosts/${h.host_id}`}>Сводка уязвимостей компьютера</Link> — счётчики по уровням опасности.</p></>)}
+      {tab === "events" && <><p className="muted small">События обнаружения за 30 суток: новые сверху.</p><EventList days={30} hostId={h.host_id} group={evGroup} threat={evThreat} onGroup={setEvGroup} onThreat={setEvThreat} /></>}
     </section>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type HostVuln, type SavedCheck, type VulnHost, type VulnProduct, type VulnSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
@@ -44,10 +44,12 @@ function HostsView({ ctx }: { ctx: Ctx }) {
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState<{ items: VulnHost[]; total: number; summary: VulnSummary | null; unsupported?: string[] } | null>(null);
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false); const [refresh, setRefresh] = useState(0);
+  const force = useRef(false);   // «Обновить» перечитывает данные KSC один раз, а не при каждой следующей странице
   useEffect(() => { const t = window.setTimeout(() => { setApplied({ q, group, product, cve }); setOffset(0); }, 350); return () => window.clearTimeout(t); }, [q, group, product, cve]);
   useEffect(() => {
+    const forced = force.current || undefined; force.current = false;
     setBusy(true);
-    api.vulns.hosts({ ...applied, product_id: productId, product_name: productName, severity, patchable, all_hosts: all, sort, desc, offset, limit: 50, refresh: refresh > 0 ? true : undefined })
+    api.vulns.hosts({ ...applied, product_id: productId, product_name: productName, severity, patchable, all_hosts: all, sort, desc, offset, limit: 50, refresh: forced })
       .then((r) => { setData(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)).finally(() => setBusy(false));
   }, [applied, productId, productName, severity, patchable, all, sort, desc, offset, refresh]);
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } setOffset(0); };
@@ -70,7 +72,7 @@ function HostsView({ ctx }: { ctx: Ctx }) {
         <label className="check inline-check"><input type="checkbox" className="switch" checked={patchable} onChange={(e) => { setPatchable(e.target.checked); setOffset(0); }} />Есть исправление</label>
         <div className="toolbar-foot">
           {(productId || productName) && <span className="chip">Программа: <b>{productTitle ?? productName ?? productId}</b><button type="button" className="link-btn" onClick={() => setSp((p) => { p.delete("product_id"); p.delete("product_name"); p.delete("product_title"); return p; })}>сбросить</button></span>}
-          {s && <Fetched at={s.fetched_at} />}<button type="button" className="link-btn" onClick={() => setRefresh((x) => x + 1)} disabled={busy}>Обновить</button>
+          {s && <Fetched at={s.fetched_at} />}<button type="button" className="link-btn" onClick={() => { force.current = true; setRefresh((x) => x + 1); }} disabled={busy}>Обновить</button>
         </div>
       </div>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
@@ -178,9 +180,7 @@ export function VulnHostPage({ ctx }: { ctx: Ctx }) {
   const { hostId } = useParams();
   const [d, setD] = useState<Awaited<ReturnType<typeof api.vulns.host>> | null>(null);
   const [err, setErr] = useState("");
-  const [q, setQ] = useState(""); const [severity, setSeverity] = useState<Sev>("");
   useEffect(() => { if (ctx.current && hostId) api.vulns.host(Number(hostId)).then(setD).catch((e) => setErr((e as ApiError).message)); }, [ctx.current, hostId]);
-  const items = useMemo(() => (d?.items ?? []).filter((v: HostVuln) => (!severity || v.severity === severity) && (!q || `${v.kla_id} ${v.cve.join(" ")} ${v.product} ${v.app_name} ${v.kb.join(" ")}`.toLowerCase().includes(q.toLowerCase()))), [d, q, severity]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const back = <Link className="back-link" to="/vulnerabilities"><Icon name="arrowL" size={15} />Уязвимости</Link>;
   if (err) return <section><PageHead title="Компьютер" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div></section>;
@@ -199,6 +199,17 @@ export function VulnHostPage({ ctx }: { ctx: Ctx }) {
         <div className="meter"><span className="l">Предупреждения</span><span className="v">{num(d.counts.warning)}</span></div>
         <div className="meter"><span className="l">Уязвимых программ</span><span className="v">{num(programs)}</span><span className="t">{num(d.items.filter((v) => v.patches_available).length)} с доступным исправлением</span></div>
       </div>
+      <HostVulns items={d.items} />
+    </section>
+  );
+}
+
+/** Уязвимости компьютера с поиском и фильтром по опасности (страница уязвимостей компьютера и вкладка карточки). */
+export function HostVulns({ items: all }: { items: HostVuln[] }) {
+  const [q, setQ] = useState(""); const [severity, setSeverity] = useState<Sev>("");
+  const items = useMemo(() => all.filter((v) => (!severity || v.severity === severity) && (!q || `${v.kla_id} ${v.cve.join(" ")} ${v.product} ${v.app_name} ${v.kb.join(" ")}`.toLowerCase().includes(q.toLowerCase()))), [all, q, severity]);
+  return (
+    <>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="KLA, CVE, KB или программа" aria-label="Поиск уязвимости" /></div>
         <Segmented<Sev> label="Уровень опасности" value={severity} onChange={setSeverity} options={SEV_OPTS} />
@@ -216,10 +227,10 @@ export function VulnHostPage({ ctx }: { ctx: Ctx }) {
                 <td className="nowrap small hide-sm">{fmtDate(v.detected)}</td>
                 <td>{v.patches_available ? <span className="badge ok">доступно</span> : <span className="muted small">нет</span>}{[...v.kb, ...v.mssb].length > 0 && <span className="sub mono">{[...v.kb, ...v.mssb].join(", ")}</span>}</td>
               </tr>))}
-            {!items.length && <tr><td colSpan={6}><Empty icon="checkCircle" title={d.items.length ? "Ничего не найдено" : "Уязвимостей нет"}>{d.items.length ? "Измените поиск или уровень опасности." : "KSC не нашёл на этом компьютере неисправленных уязвимостей."}</Empty></td></tr>}
+            {!items.length && <tr><td colSpan={6}><Empty icon="checkCircle" title={all.length ? "Ничего не найдено" : "Уязвимостей нет"}>{all.length ? "Измените поиск или уровень опасности." : "KSC не нашёл на этом компьютере неисправленных уязвимостей."}</Empty></td></tr>}
           </tbody>
         </table>
       </div>
-    </section>
+    </>
   );
 }

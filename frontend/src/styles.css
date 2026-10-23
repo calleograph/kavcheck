@@ -105,7 +105,6 @@ code { background: var(--surface-2); border: 1px solid var(--line); padding: 0 5
 .nav-list a.active svg { color: var(--chrome-accent); }
 .nav-list a:focus-visible { outline-color: var(--chrome-accent); }
 .nav-list a.sub { min-height: 32px; padding: 5px 10px 5px 41px; font-size: var(--fs-sm); }
-.nav-list a .soon { margin-left: auto; font-size: 11px; color: var(--chrome-muted); border: 1px solid var(--chrome-line); padding: 0 6px; border-radius: var(--radius-xs); font-weight: 500; }
 .side-foot { flex: none; padding: 12px 18px 16px; border-top: 1px solid var(--chrome-line); font-size: var(--fs-xs); color: var(--chrome-muted); }
 
 .workspace { min-width: 0; display: flex; flex-direction: column; }
@@ -206,6 +205,9 @@ button.sp-seg { cursor: pointer; }
 .sp-tip { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%) translateY(4px); background: var(--ink); color: var(--surface); padding: 5px 8px; border-radius: var(--radius-sm);
   font-size: var(--fs-xs); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity var(--t-fast), transform var(--t-fast) var(--ease-out); z-index: 3; }
 .sp-seg.hot .sp-tip { opacity: 1; transform: translateX(-50%); }
+/* крайние сегменты: подсказка прижата к краю дорожки, чтобы не выходить за экран */
+.sp-seg:first-child:not(:last-child) .sp-tip { left: 0; transform: translateY(4px); } .sp-seg.hot:first-child:not(:last-child) .sp-tip { transform: none; }
+.sp-seg:last-child:not(:first-child) .sp-tip { left: auto; right: 0; transform: translateY(4px); } .sp-seg.hot:last-child:not(:first-child) .sp-tip { transform: none; }
 
 /* ================================================================ кнопки */
 .btn { --b-bg: var(--surface); --b-fg: var(--ink); --b-line: var(--line-strong);
@@ -723,3 +725,47 @@ input.otp { font-family: var(--mono); font-size: 20px; letter-spacing: .3em; tex
 .mono-list { font-family: var(--mono); font-size: 12px; padding-left: 18px; margin: 6px 0 0; }
 .pad-help { padding: 0 18px 14px; }
 .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ================================================================ защита и события */
+.mt { margin-top: 16px; }
+.badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.meter-btn { appearance: none; background: none; border-right: 0; border-bottom: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; transition: background var(--t-fast) var(--ease-out); }
+.meter-btn:hover { background: var(--surface-2); }
+.meter-btn.on { background: var(--accent-soft); box-shadow: inset 0 -2px 0 var(--accent); }
+.meter-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 18px; border-top: 1px solid var(--line); background: var(--surface-2); }
+.card.flush > details.disclosure { display: block; padding-top: 6px; border-top: 1px solid var(--line); }
+.ledger { list-style: none; margin: 0; padding: 4px 8px 8px; }
+.ledger-row { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(60px, 22%) 74px; align-items: center; gap: 12px; padding: 9px 10px; border: 0; border-radius: var(--radius-sm);
+  background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; transition: background var(--t-fast) var(--ease-out); }
+.ledger li + li .ledger-row { box-shadow: 0 -1px 0 var(--line); }
+.ledger-row:hover { background: var(--surface-2); }
+.ledger-row.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.ledger-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.ledger-row .dot.ok { color: var(--ok); } .ledger-row .dot.warn { color: var(--warn); } .ledger-row .dot.bad { color: var(--danger); }
+.lg-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.lg-sub { font-size: var(--fs-xs); color: var(--muted); }
+.lg-bar { height: 6px; border-radius: 3px; background: var(--sunken); overflow: hidden; }
+.lg-bar > i { display: block; height: 100%; border-radius: 3px; transition: width var(--t-slow) var(--ease-out); }
+.lg-bar > i.bad { background: var(--danger); } .lg-bar > i.warn { background: var(--warn); } .lg-bar > i.ok { background: var(--ok); }
+.lg-n { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; display: flex; flex-direction: column; line-height: 1.2; }
+.lg-pct { font-size: var(--fs-xs); color: var(--muted); font-weight: 400; }
+.ver-block + .ver-block { padding-top: 14px; border-top: 1px solid var(--line); }
+.ver-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; margin-bottom: 8px; }
+.trend { display: flex; align-items: flex-end; gap: 3px; height: 128px; padding-top: 6px; border-bottom: 1px solid var(--line); }
+.tr-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column-reverse; gap: 1px; border-radius: 2px 2px 0 0; }
+.tr-col:hover { background: var(--surface-2); }
+.tr-col > i { display: block; min-height: 2px; border-radius: 2px; }
+.tr-col > i.tr-zero { height: 2px; background: var(--line); }
+.tr-detections { background: var(--warn); } .tr-notcured { background: var(--danger); } .tr-attacks { background: var(--accent); }
+.tr-axis { display: flex; justify-content: space-between; font-size: var(--fs-xs); color: var(--muted); padding-top: 6px; }
+.tr-legend { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--fs-xs); color: var(--muted); }
+.tr-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.tr-legend .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.threat-name { font-family: var(--mono); font-size: var(--fs-sm); text-align: left; overflow-wrap: anywhere; }
+.threat-name.on { font-weight: 600; text-decoration: underline; }
+td.obj .mono { display: inline-block; max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+@media (max-width: 700px) { .ledger-row { grid-template-columns: auto minmax(0, 1fr) 60px; } .lg-bar { display: none; } td.obj .mono { max-width: 22ch; } }
+.meter-link { color: inherit; text-decoration: none; transition: background var(--t-fast) var(--ease-out); }
+.meter-link:hover { background: var(--surface-2); }
+.meter-link:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }

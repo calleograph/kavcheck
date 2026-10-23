@@ -178,3 +178,27 @@ def test_version_audit_builder():
                       {"kind": "pattern", "name_like": "%Edge%", "product_name": "Edge", "op": "lt", "value": "125"}])
     assert {(r["program"], r["name"]) for r in rows} == {("Python", "ws-001"), ("Edge", "ws-001"), ("Edge", "ksc-server")}
     assert summ["items"][0]["hosts"] == 1 and summ["items"][1]["hosts"] == 2
+
+
+def test_protection_and_events():
+    from datetime import datetime, timezone
+
+    from app.ksc import events, protection
+    client = SourceClient(params(), name="test")
+    recs = {r["host_id"]: r for r in asyncio.run(protection.load(client, exclude_slaves=True, groups=None))}
+    now = datetime.now(timezone.utc)
+
+    def pr(h):
+        return protection.problems(recs[h], now, bases_days=3, scan_days=30)
+    assert recs[6]["av"]["build"] == "12.6.0.438" and recs[6]["agent_build"] == "15.1.0.22239"
+    assert "no_av" in pr(1) and "no_av" in pr(8)                 # сервер без антивируса; статус KSC «антивирус не установлен»
+    assert {"rtp_off", "bases_old"} <= set(pr(7)) and "bases_old" not in pr(2)
+    vers = {v["code"]: v for v in protection.versions(list(recs.values()))}
+    assert vers["1103"]["latest"] == "15.1.0.22239" and vers["KES"]["versions"][0]["build"] == "12.6.0.438"
+    s = asyncio.run(events.summary(client, days=7))
+    t = {x["key"]: x["n"] for x in s["types"]}
+    assert (t["detected"], t["notcured"], t["attack"], t["deleted"]) == (2, 1, 1, 1)   # события старше периода и служебные не учитываются
+    assert s["hosts"]["notcured"] == 1 and any(x["name"] == "EICAR-Test-File" for x in s["top_threats"]) and sum(b["detections"] for b in s["trend"]) == 2
+    page = asyncio.run(events.page(client, days=7, types=["attack"], offset=0, limit=10))
+    assert page["total"] == 1 and page["items"][0]["attacker"] == "198.51.100.120" and page["items"][0]["port"] == "22"
+    assert asyncio.run(events.page(client, days=30, types=[], qtext="sample.bin", offset=0, limit=10))["total"] == 2

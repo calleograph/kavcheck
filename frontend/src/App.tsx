@@ -11,7 +11,8 @@ import SoftwarePage from "./pages/SoftwarePage";
 import HostsPage, { HostPage } from "./pages/HostsPage";
 import VulnsPage, { VulnHostPage } from "./pages/VulnsPage";
 import ProductPage from "./pages/ProductPage";
-import { EventsPage, ProtectionPage } from "./pages/PlannedPages";
+import EventsPage from "./pages/EventsPage";
+import ProtectionPage from "./pages/ProtectionPage";
 import ReportsPage from "./pages/ReportsPage";
 import { fmt, versionLabel } from "./util";
 
@@ -19,13 +20,13 @@ const AdminPage = lazy(() => import("./pages/AdminPage"));
 
 export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; reloadSources: () => Promise<void> }
 
-const NAV: { to: string; label: string; icon: IconName; soon?: boolean; end?: boolean }[] = [
+const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/", label: "Главная", icon: "home", end: true },
   { to: "/software", label: "Программы", icon: "layers" },
   { to: "/hosts", label: "Компьютеры", icon: "monitor" },
   { to: "/vulnerabilities", label: "Уязвимости", icon: "bug" },
-  { to: "/protection", label: "Состояние защиты", icon: "shieldPulse", soon: true },
-  { to: "/events", label: "События безопасности", icon: "bell", soon: true },
+  { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" },
+  { to: "/events", label: "События безопасности", icon: "bell" },
   { to: "/reports", label: "Отчёты", icon: "file" },
 ];
 export const ADMIN_TABS: { id: string; label: string }[] = [
@@ -150,7 +151,7 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
           <div className="nav-list">
             <NavIndicator deps={[pathname, search]} />
             <div className="nav-label">Аудит</div>
-            {NAV.map((n) => <NavLink key={n.to} to={n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.soon && <span className="soon">скоро</span>}</NavLink>)}
+            {NAV.map((n) => <NavLink key={n.to} to={n.to} end={n.end}><Icon name={n.icon} />{n.label}</NavLink>)}
             {me.user.is_admin && <>
               <div className="nav-label">Администрирование</div>
               {ADMIN_TABS.map((t) => {
@@ -222,8 +223,8 @@ export default function App() {
           <Route path="/hosts/:hostId" element={<HostPage key={currentId} ctx={ctx} />} />
           <Route path="/vulnerabilities" element={<VulnsPage key={currentId} ctx={ctx} />} />
           <Route path="/vulnerabilities/hosts/:hostId" element={<VulnHostPage key={currentId} ctx={ctx} />} />
-          <Route path="/protection" element={<ProtectionPage />} />
-          <Route path="/events" element={<EventsPage />} />
+          <Route path="/protection" element={<ProtectionPage key={currentId} ctx={ctx} />} />
+          <Route path="/events" element={<EventsPage key={currentId} ctx={ctx} />} />
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />
           <Route path="/reports/:jobId" element={<ReportsPage ctx={ctx} />} />
           <Route path="/security" element={<SecurityPage me={me} onLogout={logout} />} />

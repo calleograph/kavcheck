@@ -69,16 +69,3 @@ export function ActivityBadge({ days, activityDays }: { days: number | null; act
   const d = days < 1 ? "менее суток" : `${String(days).replace(".", ",")} сут`;
   return <span className={`badge ${on ? "ok" : "warn"}`} title={on ? `Связь с KSC в пределах ${activityDays} сут` : `Нет связи с KSC дольше ${activityDays} сут`}><span className="dot" />{d}</span>;
 }
-
-export function Planned({ title, items, note }: { title: string; items: string[]; note?: string }) {
-  return (
-    <div className="card">
-      <div className="empty" style={{ alignItems: "flex-start", textAlign: "left", padding: "8px 4px" }}>
-        <div className="empty-ic"><Icon name="clock" size={20} /></div>
-        <h3>{title}</h3>
-        <p>{note ?? "Раздел подготовлен в архитектуре и навигации; реализация запланирована на следующие выпуски. Данные не формируются, пока модуль не реализован."}</p>
-      </div>
-      <ul className="rows" style={{ marginTop: 8 }}>{items.map((x) => <li key={x}><Icon name="target" size={16} className="muted" /><span>{x}</span></li>)}</ul>
-    </div>
-  );
-}

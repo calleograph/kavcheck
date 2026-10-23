@@ -24,9 +24,9 @@ def _ksc(exc: KscError) -> HTTPException:
     return HTTPException(status_code=502 if exc.code in ("connect", "auth", "query") else 422, detail={"code": exc.code, "message": exc.message})
 
 
-def unsupported(src: KscSource) -> list[str] | None:
+def unsupported(src: KscSource, feature: str = "vulnerabilities") -> list[str] | None:
     feats = (src.last_check or {}).get("features") or {}
-    f = feats.get("vulnerabilities")
+    f = feats.get(feature)
     return f.get("missing") if f and not f.get("ok", True) else None
 
 

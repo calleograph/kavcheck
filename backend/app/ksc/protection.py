@@ -1,0 +1,125 @@
+"""Состояние защиты: защитный продукт Kaspersky, постоянная защита, базы, полная проверка, лицензия и статус KSC по каждому компьютеру.
+
+Читаются две небольшие таблицы (компьютеры со статусом и продукты Kaspersky); проверки с порогами пользователя считаются в приложении по
+кэшированному набору, поэтому смена порога или фильтра не нагружает SQL Server. Перечисления — docs/ksc/PROTECTION.md."""
+from __future__ import annotations
+
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from functools import cmp_to_key
+
+from . import hosts as H
+from . import queries as q
+from .driver import SourceClient
+from .versions import compare_numeric
+
+STATUS_MASK = {1: "Агент в сети, но неактивен", 2: "постоянная защита не запущена", 4: "антивирус не запущен", 8: "слишком много вирусов", 16: "состояние постоянной защиты не соответствует заданному",
+               32: "антивирус не установлен", 64: "полная проверка давно не выполнялась", 128: "базы давно не обновлялись", 256: "Агент неактивен слишком долго", 512: "лицензия истекла",
+               1024: "много невылеченных объектов", 2048: "требуется перезагрузка", 4096: "несовместимые программы", 8192: "есть неустранённая уязвимость",
+               16384: "поиск обновлений Windows давно не запускался", 32768: "шифрование не соответствует требованиям", 131072: "есть необработанный инцидент", 524288: "мало места на диске"}
+KSC_STATUS = {0: "OK", 1: "критический", 2: "предупреждение"}
+RTP = {0: "неизвестно", 1: "остановлена", 2: "приостановлена", 3: "запускается", 4: "выполняется", 5: "максимальная защита", 6: "максимальная скорость", 7: "рекомендуемые параметры", 8: "пользовательские параметры", 9: "сбой"}
+PRODUCT_STATE = {0: "не запущен", 1: "только что запущен", 2: "инициализация", 3: "запущен", 4: "приостановлен", 5: "деинициализация", 6: "критическая ошибка", 7: "завершает работу", 8: "удаляется"}
+RTP_BAD = {1, 2, 9}
+STATE_BAD = {0, 4, 6, 7, 8}
+AGENT = "1103"
+
+# порядок — по важности для специалиста ИБ: сначала то, что означает отсутствие защиты
+PROBLEMS = {
+    "no_av": ("Нет антивируса", "нет продукта Kaspersky или KSC не получал о нём сведений"),
+    "rtp_off": ("Защита не работает", "постоянная защита остановлена, в сбое или антивирус не запущен"),
+    "infected": ("Невылеченные объекты", "объекты не удалось вылечить или удалить"),
+    "bases_old": ("Устаревшие базы", "антивирусные базы старше выбранного порога"),
+    "license": ("Лицензия истекла", "по статусу KSC"),
+    "scan_old": ("Нет свежей полной проверки", "полная проверка не выполнялась дольше выбранного порога"),
+    "reboot": ("Требуется перезагрузка", "по статусу KSC"),
+}
+
+
+_utc = H._utc
+
+
+def _primary_av(products: list[dict]) -> dict | None:
+    """Основной защитный продукт: обеспечивающий постоянную защиту, затем с самыми свежими базами."""
+    av = [p for p in products if p.get("is_av")]
+    if not av:
+        return None
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    return max(av, key=lambda p: (bool(p.get("has_rtp")), _utc(p.get("bases")) or floor))
+
+
+def record(h: dict, products: list[dict], groups: dict | None, now: datetime) -> dict:
+    """Компьютер с полями защиты (без порогов: их применяет problems)."""
+    row = H.host_row(h, groups, now)
+    av = _primary_av(products)
+    agent = next((p for p in products if p.get("code") == AGENT), None)
+    return {**{k: row[k] for k in ("host_id", "name", "fqdn", "ip", "os", "platform", "group", "last_connected", "days_since_connection", "activity", "last_full_scan", "is_slave")},
+            "av": {"code": av.get("code") or "", "product": av.get("name") or av.get("code") or "", "build": av.get("build") or "", "state": av.get("state"),
+                   "state_label": PRODUCT_STATE.get(av.get("state"), "") if av.get("state") is not None else "", "bases": _utc(av.get("bases")), "has_rtp": bool(av.get("has_rtp"))} if av else None,
+            "agent_build": (agent or {}).get("build") or "", "rtp_state": h.get("rtp_state"), "rtp_label": RTP.get(h.get("rtp_state"), "") if h.get("rtp_state") is not None else "",
+            "ksc_status": KSC_STATUS.get(h.get("ksc_status")) if h.get("ksc_status") is not None else None, "mask": int(h.get("status_mask") or 0),
+            "uncured": int(h.get("uncured") or 0)}
+
+
+def problems(r: dict, now: datetime, *, bases_days: int, scan_days: int) -> list[str]:
+    out, av, mask = [], r["av"], r["mask"]
+    if not av or mask & 32:
+        out.append("no_av")
+    if av:
+        if r["rtp_state"] in RTP_BAD or av["state"] in STATE_BAD or mask & (2 | 4):
+            out.append("rtp_off")
+        if not av["bases"] or now - av["bases"] > timedelta(days=bases_days):
+            out.append("bases_old")
+    if r["uncured"] or mask & (8 | 1024):
+        out.append("infected")
+    if mask & 512:
+        out.append("license")
+    if av and (not r["last_full_scan"] or now - r["last_full_scan"] > timedelta(days=scan_days)):
+        out.append("scan_old")
+    if mask & 2048:
+        out.append("reboot")
+    return sorted(out, key=list(PROBLEMS).index)
+
+
+def _by_version(counter: Counter) -> list[dict]:
+    items = [{"build": b, "hosts": n} for b, n in counter.items()]
+    items.sort(key=cmp_to_key(lambda a, b: compare_numeric(b["build"] or "0", a["build"] or "0")))
+    return items
+
+
+def versions(records: list[dict]) -> list[dict]:
+    """Спектр версий защитных продуктов и Агента: сколько компьютеров на каждой сборке, первой — самая новая."""
+    av: dict[str, tuple[str, Counter]] = {}
+    agent: Counter = Counter()
+    for r in records:
+        if r["av"]:
+            name, c = av.setdefault(r["av"]["code"], (r["av"]["product"], Counter()))
+            c[r["av"]["build"]] += 1
+        if r["agent_build"]:
+            agent[r["agent_build"]] += 1
+    out = [{"code": code, "product": name, "hosts": sum(c.values()), "versions": _by_version(c)} for code, (name, c) in av.items()]
+    out.sort(key=lambda x: -x["hosts"])
+    if agent:
+        out.append({"code": AGENT, "product": "Агент администрирования", "hosts": sum(agent.values()), "versions": _by_version(agent)})
+    for p in out:
+        p["latest"] = p["versions"][0]["build"] if p["versions"] else ""
+        p["on_latest"] = p["versions"][0]["hosts"] if p["versions"] else 0
+    return out
+
+
+async def load(client: SourceClient, *, exclude_slaves: bool, groups: dict | None) -> list[dict]:
+    hosts = await client.run(q.PROTECTION_HOSTS.format(where="h.bIsSlaveServer = 0" if exclude_slaves else "1 = 1"), max_rows=500_000)
+    by_host: dict[int, list[dict]] = {}
+    for p in await client.run(q.PROTECTION_PRODUCTS, max_rows=2_000_000):
+        by_host.setdefault(int(p["host_id"]), []).append(p)
+    now = datetime.now(timezone.utc)
+    return [record(h, by_host.get(int(h["host_id"]), []), groups, now) for h in hosts]
+
+
+def host_protection(h: dict, products: list[dict], status: dict | None, now: datetime, *, bases_days: int = 3, scan_days: int = 30) -> dict:
+    """Проблемы защиты одного компьютера (карточка): те же правила, что и в разделе «Состояние защиты»."""
+    raw = {**h, "ksc_status": (status or {}).get("status"), "status_mask": (status or {}).get("mask")}
+    prods = [{"code": p.get("product_code"), "name": p.get("product"), "build": p.get("build"), "state": p.get("state"), "bases": p.get("av_bases_date"),
+              "is_av": p.get("is_av"), "has_rtp": p.get("has_rtp")} for p in products]
+    r = record(raw, prods, None, now)
+    return {"problems": problems(r, now, bases_days=bases_days, scan_days=scan_days), "bases_days": bases_days, "scan_days": scan_days}
