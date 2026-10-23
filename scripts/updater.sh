@@ -4,8 +4,9 @@
 #   scripts/updater.sh check [--env FILE]         # разовая проверка релизов GitHub → remote.json
 #   scripts/updater.sh install [--env FILE] [--yes] | uninstall | status | print-unit
 # Контейнер backend не имеет доступа к Docker и git хоста. Веб-интерфейс кладёт запрос в $DATA_ROOT/updater/request.txt (простые строки key=value),
-# помощник выполняет ТОЛЬКО фиксированный набор: check | update [target=vX.Y.Z] | rollback | backup. Произвольные команды выполнить нельзя.
-# Файлы обмена: request.txt (из веб-интерфейса), status.json, remote.json, backups.json, update.log, history.ndjson.
+# помощник выполняет ТОЛЬКО фиксированный набор: check | preflight | update [target=vX.Y.Z] | rollback | backup | restore [target=имя копии]. Произвольные команды выполнить нельзя.
+# Файлы обмена: request.txt (из веб-интерфейса), status.json, remote.json, backups.json, update.log, history.ndjson, preflight.json, report.json,
+# system.json (образы проекта, место на дисках, размер резервных копий — раз в 5 минут).
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 CMD="${1:-run}"; [ $# -gt 0 ] && shift
@@ -37,6 +38,17 @@ do_check() { # релизы GitHub: последний тег vX.Y.Z и опис
     "$(date +%s)" "$ok" "$(jesc "$err")" "$cur" "${latest#v}" "$latest" "$behind" "$(jesc "$notes" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g')" "$published" | atomic "$CH/remote.json"
   STATE="$prev"; [ "$STATE" = checking ] && STATE=idle; write_status; [ "$ok" = true ]
 }
+do_system() { # сведения о сервере для раздела «Состояние системы»: образы этого проекта, место на дисках, резервные копии
+  local imgs="" total=0 line name size bytes bdir="${BACKUP_DIR:-$DATA_ROOT/backups}"
+  while read -r name size; do
+    [ -n "$name" ] || continue
+    bytes="$(docker image inspect -f '{{.Size}}' "$name" 2>/dev/null || echo 0)"; total=$((total + bytes))
+    imgs="${imgs:+$imgs,}{\"name\":\"$(jesc "$name")\",\"bytes\":$bytes}"
+  done < <(docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' 2>/dev/null | grep -E "^${IMAGE_REPO:-kavcheck}-(backend|web):")
+  printf '{"checked_at":%s,"images":[%s],"images_bytes":%s,"backups_bytes":%s,"docker_free_bytes":%s,"data_free_bytes":%s}\n' "$(date +%s)" "$imgs" "$total" \
+    "$(du -sb "$bdir" 2>/dev/null | cut -f1 || echo null)" "$(df -PB1 "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /)" 2>/dev/null | awk 'NR==2{print $4}')" \
+    "$(df -PB1 "$DATA_ROOT" 2>/dev/null | awk 'NR==2{print $4}')" | atomic "$CH/system.json"
+}
 pump() { local line; while IFS= read -r line; do printf '%s\n' "$line" | sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' >> "$LOG"; if [[ "$line" =~ ^\[([0-9]+)/([0-9]+)\][[:space:]]+(.*)$ ]]; then STEP_NO="${BASH_REMATCH[1]}"; STEP_TOTAL="${BASH_REMATCH[2]}"; STEP_NAME="${BASH_REMATCH[3]}"; write_status; fi; done; }
 run_action() { # run_action СОСТОЯНИЕ СКРИПТ АРГУМЕНТЫ…
   local st="$1" script="$2"; shift 2; local rc
@@ -58,7 +70,9 @@ handle_request() {
   rm -f "$f"
   [[ "$rid" =~ ^[a-f0-9]{8,32}$ ]] && [[ "$at" =~ ^[0-9]+$ ]] || { warn "Запрос отклонён: некорректный формат"; return 0; }
   [ $(( $(date +%s) - at )) -le 600 ] || { warn "Запрос $rid устарел"; return 0; }
-  [[ "$by" =~ ^[A-Za-z0-9._-]{0,60}$ ]] || by="?"; [[ "$target" =~ ^(v?[0-9]+\.[0-9]+\.[0-9]+)?$ ]] || { warn "Запрос отклонён: некорректная версия"; return 0; }
+  [[ "$by" =~ ^[A-Za-z0-9._-]{0,60}$ ]] || by="?"
+  if [ "$action" = restore ]; then [[ "$target" =~ ^[A-Za-z0-9._-]{1,120}\.dump$ ]] || { warn "Запрос отклонён: некорректное имя резервной копии"; return 0; }
+  else [[ "$target" =~ ^(v?[0-9]+\.[0-9]+\.[0-9]+)?$ ]] || { warn "Запрос отклонён: некорректная версия"; return 0; }; fi
   REQ="$rid"; BY="$by"; ACTION="$action"; TARGET="$target"
   case "$action" in
     ping) write_status ;;
@@ -66,6 +80,9 @@ handle_request() {
     update) run_action updating update.sh --yes --env "$ENV_FILE" ${target:+--to "$target"} || true; do_check || true ;;
     rollback) run_action rolling_back rollback.sh --yes --env "$ENV_FILE" || true ;;
     backup) run_action backing_up backup.sh --env "$ENV_FILE" || true ;;
+    preflight) STATE=checking; write_status; ( preflight "" ) >/dev/null 2>&1; STATE=idle; write_status ;;
+    restore) [ -f "${BACKUP_DIR:-$DATA_ROOT/backups}/$target" ] || { warn "Резервная копия $target не найдена"; return 0; }
+             run_action restoring restore.sh "${BACKUP_DIR:-$DATA_ROOT/backups}/$target" --yes --env "$ENV_FILE" || true ;;
     *) warn "Неизвестное действие: $action" ;;
   esac
 }
@@ -74,10 +91,11 @@ cmd_run() {
   info "Помощник обновлений запущен: проект $COMPOSE_PROJECT_NAME, каталог $CH, uid $(id -u)"
   trap 'STATE=stopped; write_status; exit 0' INT TERM
   STATE=idle; write_status; backups_json 2>/dev/null || true
-  local last_check=0 now
+  local last_check=0 last_system=0 now
   while :; do
     now="$(date +%s)"
-    if [ -f "$CH/request.txt" ]; then handle_request; elif [ $((now - last_check)) -ge "$CHECK_EVERY" ]; then do_check || true; last_check="$now"; else write_status; fi
+    if [ -f "$CH/request.txt" ]; then handle_request; elif [ $((now - last_check)) -ge "$CHECK_EVERY" ]; then do_check || true; last_check="$now"
+    elif [ $((now - last_system)) -ge 300 ]; then do_system || true; last_system="$now"; write_status; else write_status; fi
     sleep "$INTERVAL"
   done
 }
@@ -102,6 +120,8 @@ U
 case "$CMD" in
   run) cmd_run ;;
   check) do_check && ok "Проверка выполнена: $CH/remote.json" || { warn "Проверка не удалась (нет доступа к GitHub?)"; exit 1; } ;;
+  system) do_system && cat "$CH/system.json" ;;
+  preflight) preflight "" ;;
   status) cat "$CH/status.json" 2>/dev/null || die "Помощник не запускался" ;;
   print-unit) unit_text ;;
   install)

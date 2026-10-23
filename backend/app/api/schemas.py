@@ -12,6 +12,11 @@ class LoginIn(BaseModel):
     password: str = Field(min_length=1, max_length=512)
 
 
+class TotpLoginIn(BaseModel):
+    challenge: str = Field(min_length=10, max_length=200)
+    code: str = Field(min_length=6, max_length=32)
+
+
 class UserOut(BaseModel):
     id: uuid.UUID
     username: str
@@ -28,6 +33,10 @@ class MeOut(BaseModel):
     current_source_id: str | None
     site_name: str
     activity_days: int = 30
+    must_enroll_totp: bool = False
+    totp_enabled: bool = False
+    second_factor: str | None = None
+    secure_cookie: bool = False
 
 
 class SourceIn(BaseModel):

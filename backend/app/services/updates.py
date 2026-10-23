@@ -17,8 +17,9 @@ from pathlib import Path
 
 HEARTBEAT_MAX_AGE = 40
 LOG_CHUNK = 64 * 1024
-ACTIONS = ("check", "update", "rollback", "backup", "ping")
-BUSY_STATES = ("updating", "rolling_back", "backing_up")
+ACTIONS = ("check", "update", "rollback", "backup", "ping", "preflight", "restore")
+BUSY_STATES = ("updating", "rolling_back", "backing_up", "restoring")
+BACKUP_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}\.dump$")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
 VERSION_RE = re.compile(r"^v?\d+\.\d+\.\d+$")
 
@@ -45,6 +46,15 @@ class Channel:
         if r and r.get("checked_at"):
             r["age_s"] = int(time.time() - float(r["checked_at"]))
         return r
+
+    def preflight(self) -> dict | None:
+        r = self._json("preflight.json")
+        if r and r.get("checked_at"):
+            r["age_s"] = int(time.time() - float(r["checked_at"]))
+        return r
+
+    def report(self) -> dict | None:
+        return self._json("report.json")
 
     def backups(self) -> list[dict]:
         r = self._json("backups.json") or {}
@@ -87,7 +97,7 @@ class Channel:
     def request(self, action: str, *, by: str, target: str = "") -> str:
         if action not in ACTIONS:
             raise ValueError("action")
-        if target and not VERSION_RE.match(target):
+        if target and not (BACKUP_RE.match(target) if action == "restore" else VERSION_RE.match(target)):
             raise ValueError("target")
         rid = uuid.uuid4().hex[:16]
         body = "\n".join([f"id={rid}", f"action={action}", f"target={target}", f"by={_SAFE.sub('_', by)[:60]}", f"at={int(time.time())}"]) + "\n"

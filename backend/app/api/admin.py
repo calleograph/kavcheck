@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
+import os
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -12,7 +12,6 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import ldap as ldapmod
 from ..auth.deps import SessionUser, get_db, require_admin
 from ..ksc import schema as ksc_schema
 from ..ksc.grouping import BUILTIN_RULES, validate_rule
@@ -28,7 +27,8 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 def user_out(u: User) -> dict:
     return {"id": str(u.id), "username": u.username, "display_name": u.display_name, "email": u.email, "auth_source": u.auth_source, "role": u.role, "is_active": u.is_active,
-            "all_sources": u.all_sources, "source_ids": [str(x) for x in (u.source_ids or [])], "must_change_password": u.must_change_password, "last_login_at": u.last_login_at, "created_at": u.created_at}
+            "all_sources": u.all_sources, "source_ids": [str(x) for x in (u.source_ids or [])], "must_change_password": u.must_change_password, "last_login_at": u.last_login_at,
+            "created_at": u.created_at, "totp_enabled": u.totp_enabled, "totp_enabled_at": u.totp_enabled_at}
 
 
 # ----------------------------------------------------------------------------------------------- пользователи
@@ -190,28 +190,6 @@ async def put_settings(group: str, request: Request, body: dict[str, Any] = Body
     return await svc.public(db, group)
 
 
-@router.post("/ldap/test")
-async def ldap_test(request: Request, body: dict[str, Any] = Body(default_factory=dict), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    """Проверка СОХРАНЁННЫХ настроек LDAP: соединение → вход сервисной записи → Base DN → (необязательно) тестовый вход пользователя. Пароли не сохраняются."""
-    cfg = await request.app.state.settings_svc.ldap_config(db)
-    if not cfg.host:
-        return {"ok": False, "stages": [{"stage": "config", "ok": False, "message": "Сервер LDAP не задан", "ms": 0}]}
-    cfg.enabled = True
-    login, password = str(body.get("test_login") or "")[:256], str(body.get("test_password") or "")[:512]
-    result = await asyncio.to_thread(ldapmod.diagnose, cfg, login, password)
-    if login:
-        try:
-            ident = await asyncio.to_thread(ldapmod.authenticate, cfg, login, password)
-            from ..auth.service import role_from_groups  # noqa: PLC0415
-
-            result["test_user"] = {"display_name": ident.display_name, "username": ident.username, "email": ident.email, "groups": sorted(ident.groups)[:50], "role": role_from_groups(cfg, ident.groups)}
-        except ldapmod.LdapError:
-            pass
-    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="ldap.test", target_type="settings", target_id="ldap", result="success" if result["ok"] else "failure", details={"test_login": login or None})
-    await db.commit()
-    return result
-
-
 # ----------------------------------------------------------------------------------------------- правила группировки
 def rule_out(r: GroupingRule) -> dict:
     return {"id": str(r.id), "key": r.key, "name": r.name, "name_like": r.name_like, "name_regex": r.name_regex, "branch_regex": r.branch_regex, "branch_parts": r.branch_parts,
@@ -330,7 +308,9 @@ async def audit(q: str = Query("", max_length=200), action: str = Query("", max_
 
 @router.get("/journal")
 async def journal(q: str = Query("", max_length=200), level: str = Query("", pattern=r"^(|debug|info|warn|error)$"), category: str = Query("", max_length=24), range_: str = Query("24h", alias="range"),
+                  since: datetime | None = None, until: datetime | None = None,
                   offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Журнал событий с фильтрами: период (готовый или произвольный since/until), уровень, компонент (category), текст."""
     stmt = select(EventLog).order_by(EventLog.id.desc()).offset(offset).limit(limit)
     if q.strip():
         like = f"%{q.strip().lower()}%"
@@ -342,7 +322,12 @@ async def journal(q: str = Query("", max_length=200), level: str = Query("", pat
     if category:
         stmt = stmt.where(EventLog.category == category)
     span = {"1h": 1, "24h": 24, "7d": 24 * 7, "30d": 24 * 30}.get(range_)
-    if span:
+    if since or until:
+        if since:
+            stmt = stmt.where(EventLog.at >= since)
+        if until:
+            stmt = stmt.where(EventLog.at <= until)
+    elif span:
         stmt = stmt.where(EventLog.at >= utcnow() - timedelta(hours=span))
     rows = (await db.execute(stmt)).scalars().all()
     errors24 = (await db.execute(select(func.count()).select_from(EventLog).where(EventLog.level == "error", EventLog.at >= utcnow() - timedelta(hours=24)))).scalar_one()
@@ -377,31 +362,76 @@ async def journal_purge(request: Request, su: SessionUser = Depends(require_admi
 # ----------------------------------------------------------------------------------------------- состояние системы
 @router.get("/system")
 async def system(request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Состояние компонентов (backend, worker, web, PostgreSQL, помощник обновлений), источников KSC, ресурсов сервера и данных; история обновлений, ошибки фоновых задач."""
+    import httpx  # noqa: PLC0415
+
+    from ..models import CatalogState, ServiceHeartbeat  # noqa: PLC0415
+    from ..services import system as sysmod  # noqa: PLC0415
+    from ..services.updates import Channel  # noqa: PLC0415
+
     s = request.app.state.settings
-    out: dict[str, Any] = {"version": s.app_version, "commit": s.app_git_commit, "built_at": s.app_built_at, "public_url": s.app_public_url, "checks": {}, "master_key_ok": request.app.state.settings_svc.box is not None}
-    try:
-        await db.execute(text("SELECT 1"))
-        out["checks"]["postgres"] = {"ok": True}
-    except Exception as exc:  # noqa: BLE001
-        out["checks"]["postgres"] = {"ok": False, "error": type(exc).__name__}
+    ch = Channel(f"{s.data_dir}/updater")
+    out: dict[str, Any] = {"version": s.app_version, "commit": s.app_git_commit, "built_at": s.app_built_at, "public_url": s.app_public_url, "checks": {},
+                           "master_key_ok": request.app.state.settings_svc.box is not None, "uptime_s": sysmod.uptime_s()}
+    comps: list[dict] = [{"key": "backend", "title": "Backend (API)", "ok": True, "detail": f"работает {sysmod.uptime_s() // 60} мин, версия {s.app_version}"}]
+    hb = await db.get(ServiceHeartbeat, "worker")
+    age = (utcnow() - hb.at).total_seconds() if hb else None
     running = (await db.execute(select(func.count()).select_from(ReportJob).where(ReportJob.status == "running"))).scalar_one()
     queued = (await db.execute(select(func.count()).select_from(ReportJob).where(ReportJob.status == "queued"))).scalar_one()
-    last_done = (await db.execute(select(func.max(ReportJob.finished_at)).where(ReportJob.status == "done"))).scalar_one()
-    stuck = queued > 0 and (await db.execute(select(func.min(ReportJob.created_at)).where(ReportJob.status == "queued"))).scalar_one() < utcnow() - timedelta(minutes=5)
-    out["checks"]["worker"] = {"ok": not stuck, "running": running, "queued": queued, "last_done": last_done, "error": "задания не берутся в работу дольше 5 минут: проверьте контейнер worker" if stuck else None}
+    oldest = (await db.execute(select(func.min(ReportJob.created_at)).where(ReportJob.status == "queued"))).scalar_one()
+    stuck = bool(queued and oldest and oldest < utcnow() - timedelta(minutes=5))
+    w_ok = age is not None and age < 120 and not stuck
+    comps.append({"key": "worker", "title": "Worker (отчёты и каталог)", "ok": w_ok,
+                  "detail": ("нет сигнала от службы — проверьте контейнер worker" if age is None or age >= 120 else
+                             "задания не берутся в работу дольше 5 минут" if stuck else f"сигнал {int(age)} с назад; отчётов в работе {running}, в очереди {queued}")})
+    out["checks"]["worker"] = {"ok": w_ok, "running": running, "queued": queued, "last_done": (await db.execute(select(func.max(ReportJob.finished_at)).where(ReportJob.status == "done"))).scalar_one()}
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as cl:
+            r = await cl.get(os.environ.get("WEB_HEALTH_URL", "http://web:8080/healthz"))
+        comps.append({"key": "web", "title": "Web (интерфейс и прокси)", "ok": r.status_code == 200, "detail": "отвечает" if r.status_code == 200 else f"ответ {r.status_code}"})
+    except Exception as exc:  # noqa: BLE001
+        comps.append({"key": "web", "title": "Web (интерфейс и прокси)", "ok": None, "detail": f"не проверен изнутри ({type(exc).__name__})"})
+    pg: dict[str, Any] = {"ok": False}
+    try:
+        await db.execute(text("SELECT 1"))
+        pg["ok"] = True
+        if db.bind.dialect.name == "postgresql":
+            pg["version"] = (await db.execute(text("SHOW server_version"))).scalar_one()
+            pg["size"] = int((await db.execute(text("SELECT pg_database_size(current_database())"))).scalar_one())
+            pg["connections"] = int((await db.execute(text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"))).scalar_one())
+    except Exception as exc:  # noqa: BLE001
+        pg["error"] = type(exc).__name__
+    out["checks"]["postgres"] = pg
+    comps.append({"key": "postgres", "title": "PostgreSQL", "ok": pg["ok"], "detail": f"версия {pg.get('version', '?')}, подключений {pg.get('connections', '?')}" if pg["ok"] else pg.get("error")})
+    upd = ch.status()
+    out["checks"]["updater"] = {"ok": upd["available"], "optional": True}
+    comps.append({"key": "updater", "title": "Помощник обновлений (на сервере)", "ok": True if upd["available"] else None,
+                  "detail": f"сигнал {upd.get('heartbeat_age_s')} с назад" if upd["available"] else "не запущен: обновление из браузера недоступно (необязательно)"})
+    out["components"] = comps
     srcs = (await db.execute(select(KscSource).order_by(KscSource.position))).scalars().all()
-    out["sources"] = [{"id": str(x.id), "name": x.name, "is_active": x.is_active, "last_check_at": x.last_check_at, "last_check_ok": x.last_check_ok, "ksc_version": (x.last_check or {}).get("ksc_version")} for x in srcs]
+    out["sources"] = []
+    for x in srcs:
+        cs = await db.get(CatalogState, x.id)
+        out["sources"].append({"id": str(x.id), "name": x.name, "is_active": x.is_active, "last_check_at": x.last_check_at, "last_check_ok": x.last_check_ok,
+                               "ksc_version": (x.last_check or {}).get("ksc_version"), "catalog_status": cs.status if cs else "empty", "catalog_built_at": cs.built_at if cs else None})
     out["counts"] = {"users": (await db.execute(select(func.count()).select_from(User))).scalar_one(), "sources": len(srcs),
                      "reports": (await db.execute(select(func.count()).select_from(ReportJob))).scalar_one(),
                      "events_24h": (await db.execute(select(func.count()).select_from(EventLog).where(EventLog.at >= utcnow() - timedelta(hours=24)))).scalar_one(),
                      "errors_24h": (await db.execute(select(func.count()).select_from(EventLog).where(EventLog.level == "error", EventLog.at >= utcnow() - timedelta(hours=24)))).scalar_one()}
-    try:
-        out["disk_free_bytes"] = shutil.disk_usage(s.data_dir).free
-    except OSError:
-        out["disk_free_bytes"] = None
-    from ..services.updates import Channel  # noqa: PLC0415
-
-    out["checks"]["updater"] = {"ok": Channel(f"{s.data_dir}/updater").status()["available"], "optional": True}
+    out["resources"] = sysmod.resources(s.data_dir)
+    host = ch._json("system.json") or {}  # noqa: SLF001
+    out["storage"] = {"database": pg.get("size"), "reports": await asyncio.to_thread(sysmod.dir_size, s.reports_dir), "backups": host.get("backups_bytes"),
+                      "images": host.get("images_bytes"), "images_list": host.get("images", [])[:20], "docker_free": host.get("docker_free_bytes"),
+                      "data_free": host.get("data_free_bytes"), "host_checked_at": host.get("checked_at")}
+    out["disk_free_bytes"] = (out["resources"].get("disk_data") or {}).get("free")
+    errs = (await db.execute(select(EventLog).where(EventLog.level == "error").order_by(EventLog.id.desc()).limit(10))).scalars().all()
+    out["recent_errors"] = [{"at": e.at, "category": e.category, "event": e.event, "source": e.source, "message": e.message} for e in errs]
+    checks = (await db.execute(select(EventLog).where(EventLog.event.in_(("source_test", "catalog_failed", "catalog_built"))).order_by(EventLog.id.desc()).limit(10))).scalars().all()
+    out["recent_checks"] = [{"at": e.at, "level": e.level, "event": e.event, "source": e.source, "message": e.message} for e in checks]
+    out["update_history"] = ch.history(10)
+    sec = await request.app.state.settings_svc.get(db, "auth_security")
+    out["security"] = {"https": s.app_public_url.lower().startswith("https://"), "secure_cookie": s.secure_cookie(request.headers.get("x-forwarded-proto")),
+                       "cookie_mode": str(s.cookie_secure), "totp_policy": sec.totp_policy}
     return out
 
 

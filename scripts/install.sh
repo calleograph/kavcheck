@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # install.sh — первая установка KAV Checker на сервере с Docker Engine и Docker Compose.
-#   scripts/install.sh [--env FILE] [--build] [--yes]
+#   scripts/install.sh [--env FILE] [--build] [--yes] [--npm-registry URL] [--pip-index URL]
 # Что делает: проверяет docker; создаёт .env из .env.example (генерирует секреты) если его нет; создаёт каталоги данных; получает образы релиза
 # (или собирает локально при --build / без доступа к реестру); применяет миграции внутренней базы; запускает сервисы; создаёт локального администратора.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
-BUILD=0; YES=0
-while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; shift 2 ;; --build) BUILD=1; shift ;; --yes|-y) YES=1; shift ;; -h|--help) sed -n '2,6p' "$0"; exit 0 ;; *) die "Неизвестный аргумент: $1" ;; esac; done
+BUILD=0; YES=0; NPM_OPT=""; PIP_OPT=""
+while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; shift 2 ;; --build) BUILD=1; shift ;; --yes|-y) YES=1; shift ;; --npm-registry) NPM_OPT="$2"; shift 2 ;;
+  --pip-index) PIP_OPT="$2"; shift 2 ;; -h|--help) sed -n '2,6p' "$0"; exit 0 ;; *) die "Неизвестный аргумент: $1" ;; esac; done
+env_set() { grep -q "^$1=" "$ENV_FILE" && sed -i "s#^$1=.*#$1=$2#" "$ENV_FILE" || echo "$1=$2" >> "$ENV_FILE"; export "$1=$2"; }
 command -v docker >/dev/null || die "Docker не найден. Установите Docker Engine и Docker Compose (docs/INSTALL.md)."
 docker compose version >/dev/null 2>&1 || die "Docker Compose (plugin) не найден."
 if [ ! -f "$ENV_FILE" ]; then
@@ -19,7 +21,18 @@ load_env; validate_project_name; require_vars DATA_ROOT APP_PUBLIC_URL APP_MASTE
 mkdir -p "$DATA_ROOT"/{postgres,reports,backups,updater,state} || die "Не удалось создать каталоги в $DATA_ROOT"
 chmod 1777 "$DATA_ROOT/updater"; chown 10001 "$DATA_ROOT/reports" 2>/dev/null || chmod 777 "$DATA_ROOT/reports"
 host_version_info
+[ -n "$NPM_OPT" ] && env_set NPM_REGISTRY "${NPM_OPT%/}" && ok "Зеркало npm: $NPM_REGISTRY (сохранено в .env)"
+[ -n "$PIP_OPT" ] && env_set PIP_INDEX_URL "$PIP_OPT" && ok "Зеркало pip: $PIP_INDEX_URL (сохранено в .env)"
 if [ "$BUILD" -eq 1 ] || [ "${IMAGE_REPO:-kavcheck}" = kavcheck ]; then
+  # локальная сборка: реестр npm должен отвечать, иначе сборка интерфейса зависнет (ETIMEDOUT); предлагаем зеркало
+  REG="${NPM_REGISTRY:-https://registry.npmjs.org}"
+  if ! curl -fsS -m 20 -o /dev/null "${REG%/}/typescript"; then
+    warn "Реестр npm $REG не ответил за 20 с: сборка интерфейса может не пройти."
+    if [ -t 0 ] && [ "$YES" -ne 1 ]; then
+      read -r -p "Адрес зеркала npm (например https://npm-mirror.gitverse.ru), Enter — продолжить без зеркала: " M
+      [ -n "$M" ] && env_set NPM_REGISTRY "${M%/}" && ok "Зеркало npm сохранено в .env: $NPM_REGISTRY"
+    else warn "Укажите зеркало: scripts/install.sh --npm-registry URL (или NPM_REGISTRY в .env)"; fi
+  fi
   export IMAGE_TAG="${APP_GIT_COMMIT}"; export IMAGE_REPO=kavcheck
   sed -i "s#^IMAGE_TAG=.*#IMAGE_TAG=$IMAGE_TAG#; s#^IMAGE_REPO=.*#IMAGE_REPO=kavcheck#" "$ENV_FILE"
   info "Сборка образов локально (тег $IMAGE_TAG)…"; dc build || die "Сборка образов не удалась"

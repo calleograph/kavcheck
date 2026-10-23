@@ -57,6 +57,12 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
     current_source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)   # последний выбранный источник KSC (свой у каждого пользователя)
+    ldap_connection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)  # подключение каталога, через которое вошёл доменный пользователь
+    ldap_groups: Mapped[list | None] = mapped_column(JSONType)          # группы каталога при последнем входе (для правил доступа и политики 2FA)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    totp_secret_enc: Mapped[str | None] = mapped_column(Text)            # секрет TOTP, зашифрован APP_MASTER_KEY (AAD — пользователь)
+    totp_last_step: Mapped[int | None] = mapped_column(BigInteger)       # последний принятый шаг: повтор перехваченного кода отклоняется
+    totp_enabled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class Session(Base):
@@ -70,6 +76,8 @@ class Session(Base):
     ip: Mapped[str | None] = mapped_column(String(64))
     user_agent: Mapped[str | None] = mapped_column(String(300))
     current_source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)   # выбранный источник KSC
+    must_totp: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)   # политика требует 2FA, а она не настроена
+    second_factor: Mapped[str | None] = mapped_column(String(16))       # totp | backup_code — чем подтверждён вход
 
 
 class LoginFailure(Base):
@@ -295,6 +303,95 @@ class CatalogOverride(Base):
     note: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str | None] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class UserBackupCode(Base):
+    """Резервные коды второго фактора: только HMAC-хэш, каждый действует один раз."""
+    __tablename__ = "user_backup_codes"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class AuthChallenge(Base):
+    """Короткоживущие подтверждения: «пароль принят, нужен код 2FA» (kind=totp) и ожидающий подтверждения секрет при включении 2FA (kind=totp_setup)."""
+    __tablename__ = "auth_challenges"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)        # sha256 токена или «setup:<user_id>»
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    data: Mapped[dict | None] = mapped_column(JSONType)                   # секреты внутри зашифрованы
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class LdapConnection(Base):
+    """Подключение к каталогу (LDAPS/STARTTLS). Несколько подключений — несколько доменов; основное проверяется первым. Пароль сервисной записи зашифрован."""
+    __tablename__ = "ldap_connections"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(10), default="ldaps", nullable=False)        # ldaps | starttls
+    host: Mapped[str] = mapped_column(String(253), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, default=636, nullable=False)
+    ldap_version: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    timeout_s: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    base_dn: Mapped[str] = mapped_column(String(500), nullable=False)
+    domain_dns: Mapped[str] = mapped_column(String(253), default="", nullable=False)        # суффикс UPN: user@example.local
+    netbios: Mapped[str] = mapped_column(String(64), default="", nullable=False)             # EXAMPLE\user
+    bind_dn: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    bind_password_enc: Mapped[str | None] = mapped_column(Text)
+    login_attribute: Mapped[str] = mapped_column(String(64), default="sAMAccountName", nullable=False)
+    display_name_attribute: Mapped[str] = mapped_column(String(64), default="displayName", nullable=False)
+    email_attribute: Mapped[str] = mapped_column(String(64), default="mail", nullable=False)
+    user_filter: Mapped[str] = mapped_column(String(1000), default="(&(objectCategory=person)(objectClass=user))", nullable=False)
+    nested_groups: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_check_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_check_ok: Mapped[bool | None] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class CaCertificate(Base):
+    """Доверенный сертификат удостоверяющего центра (корневой или промежуточный) для проверки LDAPS. Закрытые ключи не принимаются."""
+    __tablename__ = "ca_certificates"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    subject: Mapped[str] = mapped_column(String(1000), nullable=False)
+    issuer: Mapped[str] = mapped_column(String(1000), nullable=False)
+    serial: Mapped[str] = mapped_column(String(100), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    not_before: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    not_after: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    is_ca: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    self_signed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    pem: Mapped[str] = mapped_column(Text, nullable=False)
+    added_by: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class AccessRule(Base):
+    """Правило доступа по группе каталога: участникам группы (с учётом вложенности) — роль и источники KSC. Берётся старшая роль и объединение источников."""
+    __tablename__ = "access_rules"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("ldap_connections.id", ondelete="CASCADE"))   # None — любое подключение
+    group_dn: Mapped[str] = mapped_column(String(1000), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    all_sources: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    source_ids: Mapped[list | None] = mapped_column(JSONType)
+    note: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class ServiceHeartbeat(Base):
+    """Пульс фоновых служб (worker): для раздела «Состояние системы»."""
+    __tablename__ = "service_heartbeats"
+    name: Mapped[str] = mapped_column(String(40), primary_key=True)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    data: Mapped[dict | None] = mapped_column(JSONType)
 
 
 Index("ix_event_log_user", EventLog.user)

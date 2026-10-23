@@ -1,0 +1,38 @@
+# Вымышленные учётные записи и группы для проверки входа через каталог (только тестовый стенд)
+dn: ou=People,dc=example,dc=local
+objectClass: organizationalUnit
+ou: People
+
+dn: ou=Groups,dc=example,dc=local
+objectClass: organizationalUnit
+ou: Groups
+
+dn: uid=svc-kavcheck,ou=People,dc=example,dc=local
+objectClass: inetOrgPerson
+uid: svc-kavcheck
+cn: Сервисная учётная запись KAV Checker
+sn: svc
+userPassword: Svc-Test-Pass-1
+
+dn: uid=ivanov,ou=People,dc=example,dc=local
+objectClass: inetOrgPerson
+uid: ivanov
+cn: Иван Иванов
+displayName: Иван Иванов
+sn: Иванов
+mail: ivanov@example.local
+userPassword: User-Test-Pass-1
+
+dn: uid=petrova,ou=People,dc=example,dc=local
+objectClass: inetOrgPerson
+uid: petrova
+cn: Мария Петрова
+displayName: Мария Петрова
+sn: Петрова
+mail: petrova@example.local
+userPassword: User-Test-Pass-2
+
+dn: cn=KAV-Analysts,ou=Groups,dc=example,dc=local
+objectClass: groupOfUniqueNames
+cn: KAV-Analysts
+uniqueMember: uid=ivanov,ou=People,dc=example,dc=local

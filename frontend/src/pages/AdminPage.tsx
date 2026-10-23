@@ -14,7 +14,7 @@ const LEDE: Record<string, string> = {
   system: "Работают ли сервисы KAV Checker и доступны ли источники KSC.",
   sources: "Подключения к базам Серверов администрирования KSC. Только чтение: используйте учётную запись с ролью db_datareader.",
   users: "Учётные записи, роли и доступ к источникам KSC.",
-  ldap: "Вход по учётным записям каталога и роли по группам.",
+  ldap: "Вход доменных пользователей: подключения LDAPS, доверенные сертификаты, правила доступа по группам Active Directory.",
   general: "Какие компьютеры показывать в рабочих разделах, сроки хранения и ограничения отчётов.",
   catalog: "Как записи реестра KSC объединяются в продукты и ветки: состояние каталога, ручные исправления, правила для опытных.",
   updates: "Версия KAV Checker, релизы GitHub, обновление, откат и резервные копии.",
@@ -34,7 +34,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "system" && <SystemAdmin onOpen={go} />}
       {tab === "sources" && <SourcesAdmin ctx={ctx} />}
       {tab === "users" && <UsersAdmin ctx={ctx} />}
-      {tab === "ldap" && <LdapAdmin />}
+      {tab === "ldap" && <LdapAdmin sources={ctx.sources} />}
       {tab === "general" && <GeneralAdmin />}
       {tab === "catalog" && <CatalogAdmin />}
       {tab === "updates" && <UpdatesAdmin />}

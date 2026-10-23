@@ -31,6 +31,7 @@ async def overview(request: Request, su: SessionUser = Depends(require_admin)):
     return {"installed": {"version": s.app_version, "commit": s.app_git_commit, "built_at": s.app_built_at},
             "updater": {k: st.get(k) for k in ("available", "heartbeat_age_s", "state", "action", "request_id", "step_no", "step_total", "step_name", "started_at", "finished_at", "exit_code", "result", "request_pending", "by", "target")},
             "remote": remote, "history": ch.history(), "backups": ch.backups(), "can_act": not reasons, "reasons": reasons,
+            "preflight": ch.preflight(), "report": ch.report(),
             "commands": {"install": "sudo ./scripts/updater.sh install --yes", "manual": "sudo ./scripts/update.sh", "rollback": "sudo ./scripts/rollback.sh"}}
 
 
@@ -69,6 +70,24 @@ async def rollback(request: Request, body: dict = Body(default_factory=dict), su
     if body.get("confirm") is not True:
         raise HTTPException(status_code=422, detail="Нужно подтверждение (confirm=true)")
     return await _request(request, su, db, "rollback")
+
+
+@router.post("/preflight")
+async def preflight(request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Проверки перед обновлением: свободное место, доступность GitHub и реестра образов (или npm/pip при локальной сборке), состояние базы, возможность отката."""
+    return await _request(request, su, db, "preflight")
+
+
+@router.post("/restore")
+async def restore(request: Request, body: dict = Body(default_factory=dict), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Восстановление внутренней базы из резервной копии — изменяет пользовательские данные, поэтому требует ввода слова ВОССТАНОВИТЬ.
+    Перед восстановлением помощник снимает копию текущей базы."""
+    if str(body.get("confirm") or "").strip().upper() != "ВОССТАНОВИТЬ":
+        raise HTTPException(status_code=422, detail="Для подтверждения введите слово ВОССТАНОВИТЬ")
+    name = str(body.get("name") or "")
+    if name not in {b.get("name") for b in channel(request).backups()}:
+        raise HTTPException(status_code=404, detail="Резервная копия не найдена")
+    return await _request(request, su, db, "restore", name, {"backup": name})
 
 
 @router.post("/backup")

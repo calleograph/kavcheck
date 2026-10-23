@@ -4,6 +4,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, client_ip, current_session, get_db, require_user
@@ -14,7 +15,7 @@ from ..security.passwords import verify_password
 from ..services import local_admin as la
 from ..services.audit import audit_now, write_audit
 from ..services.sources import source_out, visible_sources
-from .schemas import LoginIn, MeOut, UserOut
+from .schemas import LoginIn, MeOut, TotpLoginIn, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 log = logging.getLogger("app.auth")
@@ -22,27 +23,61 @@ log = logging.getLogger("app.auth")
 
 async def _me(request: Request, db: AsyncSession, su: SessionUser) -> MeOut:
     general = await request.app.state.settings_svc.get(db, "general")
+    u = await db.get(User, su.user_id)
     return MeOut(user=UserOut(id=su.user_id, username=su.username, display_name=su.display_name, role=su.role, is_admin=su.is_admin, local=su.local),
                  csrf_token=su.csrf, must_change_password=su.must_change, current_source_id=str(su.current_source_id) if su.current_source_id else None, site_name=general.site_name,
-                 activity_days=general.activity_days)
+                 activity_days=general.activity_days, must_enroll_totp=su.must_totp, totp_enabled=bool(u and u.totp_enabled), second_factor=su.second_factor,
+                 secure_cookie=request.app.state.settings.secure_cookie(request.headers.get("x-forwarded-proto")))
 
 
-@router.post("/login", response_model=MeOut)
-async def login(body: LoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
-    settings = request.app.state.settings
+def _check_origin(request: Request) -> None:
     origin = request.headers.get("origin")
-    if origin is not None and not origin_allowed(origin, settings):
+    if origin is not None and not origin_allowed(origin, request.app.state.settings):
         raise HTTPException(status_code=403, detail="Недопустимый Origin")
+
+
+def _fail(exc: AuthError) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message}, headers={"Retry-After": str(exc.retry_after)} if exc.retry_after else None)
+
+
+@router.post("/login")
+async def login(body: LoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
+    """Первый шаг входа. Ответ — сведения о пользователе и cookie сессии либо {totp_required, challenge}, если нужен код второго фактора."""
+    _check_origin(request)
     ip = client_ip(request)
     journal = request.app.state.journal
     try:
-        user = await request.app.state.auth.login(db, body.login, body.password)
+        result = await request.app.state.auth.login(db, body.login, body.password)
     except AuthError as exc:
         await audit_now(request.app.state.session_maker, actor_user_id=None, actor=body.login[:80], action="auth.login_failed", target_type="user", target_id=body.login[:80],
-                        result="denied" if exc.code in ("throttled", "no_role", "account_disabled") else "failure", details={"code": exc.code})
+                        result="denied" if exc.code in ("throttled", "no_role", "account_disabled", "account_locked") else "failure", details={"code": exc.code})
         await journal.emit("auth", "login_failed", level="warn", user=body.login[:80], ip=ip, message=exc.message, data={"code": exc.code})
-        raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message}, headers={"Retry-After": str(exc.retry_after)} if exc.retry_after else None) from None
-    sid = await request.app.state.sessions.create(db, user, ip=ip, ua=request.headers.get("user-agent") or "")
+        raise _fail(exc) from None
+    if result.challenge:
+        await journal.emit("auth", "login_password_ok", user=result.user.username, ip=ip, message="Пароль принят, ожидается код второго фактора")
+        return JSONResponse({"totp_required": True, "challenge": result.challenge}, headers={"Cache-Control": "no-store"})
+    return await _open_session(request, response, db, result, ip=ip)
+
+
+@router.post("/login/totp", response_model=MeOut)
+async def login_totp(body: TotpLoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
+    """Второй шаг входа: код из приложения-аутентификатора или резервный код."""
+    _check_origin(request)
+    ip = client_ip(request)
+    try:
+        result = await request.app.state.auth.complete_totp(db, body.challenge, body.code)
+    except AuthError as exc:
+        await audit_now(request.app.state.session_maker, actor_user_id=None, actor="(2FA)", action="auth.totp_failed", target_type="user", target_id="-",
+                        result="denied" if exc.code in ("throttled", "totp_expired") else "failure", details={"code": exc.code})
+        await request.app.state.journal.emit("auth", "totp_failed", level="warn", ip=ip, message=exc.message, data={"code": exc.code})
+        raise _fail(exc) from None
+    return await _open_session(request, response, db, result, ip=ip)
+
+
+async def _open_session(request: Request, response: Response, db: AsyncSession, result, *, ip: str) -> MeOut:
+    settings = request.app.state.settings
+    user = result.user
+    sid = await request.app.state.sessions.create(db, user, ip=ip, ua=request.headers.get("user-agent") or "", must_totp=result.must_totp, second_factor=result.second_factor)
     # источник: последний выбранный этим пользователем (если ещё доступен), иначе первый доступный
     got = await request.app.state.sessions.get(db, sid)
     su = SessionUser.build(sid, got[0], got[1])
@@ -51,10 +86,11 @@ async def login(body: LoginIn, request: Request, response: Response, db: AsyncSe
         pick = next((s for s in srcs if s.id == user.current_source_id), srcs[0])
         await request.app.state.sessions.set_source(db, sid, pick.id)
         su = SessionUser.build(sid, *(await request.app.state.sessions.get(db, sid)))
-    write_audit(db, actor_user_id=user.id, actor=user.display_name, action="auth.login", target_type="user", target_id=str(user.id), details={"login": user.username, "role": user.role, "local": user.auth_source == "local"})
+    write_audit(db, actor_user_id=user.id, actor=user.display_name, action="auth.login", target_type="user", target_id=str(user.id),
+                details={"login": user.username, "role": user.role, "local": user.auth_source == "local", "second_factor": result.second_factor, "must_totp": result.must_totp})
     await db.commit()
-    await journal.emit("auth", "login_ok", user=user.username, ip=ip, data={"role": user.role})
-    response.set_cookie(settings.cookie_name, sid, httponly=True, secure=settings.cookie_secure, samesite="lax", path="/")
+    await request.app.state.journal.emit("auth", "login_ok", user=user.username, ip=ip, data={"role": user.role, "second_factor": result.second_factor})
+    response.set_cookie(settings.cookie_name, sid, httponly=True, secure=settings.secure_cookie(request.headers.get("x-forwarded-proto")), samesite="lax", path="/")
     response.headers["Cache-Control"] = "no-store"
     return await _me(request, db, su)
 

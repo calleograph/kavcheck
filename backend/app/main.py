@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from starlette.datastructures import MutableHeaders
 
-from .api import admin, admin_updates, auth, catalog, dashboard, health, hosts, reports, software, vulns
+from .api import admin, admin_ldap, admin_updates, auth, auth_totp, catalog, dashboard, health, hosts, reports, software, vulns
 from .auth.deps import client_ip
 from .auth.service import AuthService
 from .auth.sessions import SessionStore
@@ -27,6 +27,8 @@ from .reports.runner import Runner
 from .security.secretbox import SecretBox, SecretBoxError
 from .services.audit import Journal, audit_ctx
 from .services.cache import TtlCache
+from .services.ldap_store import LdapStore
+from .security import totp
 from .services.settings import SettingsService
 from .services.sources import SourceRegistry
 
@@ -102,16 +104,23 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         app.state.settings, app.state.engine, app.state.session_maker = settings, engine, session_maker
         app.state.settings_svc = settings_svc
         app.state.sessions = SessionStore(settings)
-        app.state.auth = AuthService(settings, settings_svc)
+        totp.set_pepper(settings.app_master_key)
+        app.state.ldap = LdapStore(settings_svc)
+        app.state.auth = AuthService(settings, settings_svc, app.state.ldap)
         app.state.journal = Journal(session_maker)
         app.state.sources = SourceRegistry(settings, settings_svc)
         app.state.runner = Runner(session_maker, settings, settings_svc, app.state.journal)
         app.state.cache = TtlCache()
         tasks: list[asyncio.Task] = []
+        from .services.system import install_journal_handler  # noqa: PLC0415
+
+        jh = install_journal_handler("backend")
         try:
             await seed_builtin_rules(session_maker)
+            async with session_maker() as db:
+                await app.state.ldap.migrate_legacy(db)
         except Exception as exc:  # noqa: BLE001 — до миграций таблиц нет
-            log.warning("Встроенные правила не загружены (%s): при первом запуске до миграций это нормально", type(exc).__name__)
+            log.warning("Начальные данные не загружены (%s): при первом запуске до миграций это нормально", type(exc).__name__)
 
         async def housekeeping():
             while True:
@@ -124,6 +133,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
 
         if start_workers:
             tasks.append(asyncio.create_task(housekeeping(), name="housekeeping"))
+            tasks.append(asyncio.create_task(jh.flush_loop(session_maker), name="journal-flush"))
         if run_reports:
             tasks.append(asyncio.create_task(app.state.runner.loop(), name="reports"))
         log.info("Приложение запущено", extra={"version": settings.app_version, "commit": settings.app_git_commit})
@@ -136,6 +146,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
             for t in tasks:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
+            logging.getLogger().removeHandler(jh)
             await engine.dispose()
 
     app = FastAPI(title="KAV Checker API", version=settings.app_version, lifespan=lifespan, docs_url="/api/v1/docs" if settings.docs_enabled else None, redoc_url=None,
@@ -152,7 +163,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         return JSONResponse({"detail": "Внутренняя база данных временно недоступна. Повторите через несколько секунд."}, status_code=503, headers={"Retry-After": "5"})
 
     prefix = "/api/v1"
-    for r in (auth.router, software.router, catalog.router, hosts.router, vulns.router, reports.router, reports.templates, reports.checks, dashboard.router, admin.router,
+    for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, reports.router, reports.templates, reports.checks, dashboard.router, admin.router,
               admin_updates.router, health.router):
         app.include_router(r, prefix=prefix)
     return app

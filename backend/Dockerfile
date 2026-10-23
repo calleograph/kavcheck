@@ -1,9 +1,12 @@
 FROM python:3.12-slim
+LABEL kavcheck.component="backend"
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_RETRIES=5 PIP_DEFAULT_TIMEOUT=60
 WORKDIR /srv/app
 COPY requirements.txt ./
-RUN pip install -r requirements.txt
+# Зеркало индекса pip (PIP_INDEX_URL в .env), если pypi.org недоступен; пусто — pypi.org
+ARG PIP_INDEX_URL=""
+RUN if [ -n "$PIP_INDEX_URL" ]; then export PIP_INDEX_URL; echo "pip: зеркало $PIP_INDEX_URL"; else unset PIP_INDEX_URL; fi; pip install -r requirements.txt
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app

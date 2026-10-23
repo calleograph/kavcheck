@@ -2,9 +2,23 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type ApiError, type SystemStatus } from "../../api";
 import { Icon } from "../../components/Icons";
 import { Empty, SkelRows } from "../../components/ui";
-import { bytes, fmt, num, versionLabel } from "../../util";
+import { bytes, fmt, fmtTs, num, versionLabel } from "../../util";
 
-/** Состояние системы: backend, внутренняя база, воркер отчётов, помощник обновлений, доступность источников KSC (лёгкая проверка по кнопке). */
+const CATALOG: Record<string, [string, string]> = { ready: ["построен", "ok"], building: ["строится", "accent"], failed: ["ошибка", "err"], empty: ["не построен", "warn"] };
+const ACTION: Record<string, string> = { update: "обновление", rollback: "откат", backup: "резервная копия", restore: "восстановление" };
+
+function Usage({ used, total, label }: { used: number | null | undefined; total: number | null | undefined; label: string }) {
+  if (!used || !total) return <span className="muted">—</span>;
+  const pct = Math.round((used / total) * 100);
+  return (
+    <span className="usage" role="img" aria-label={`${label}: занято ${pct}%`}>
+      <span className="usage-bar"><span className={`usage-fill ${pct >= 90 ? "bad" : pct >= 75 ? "warn" : ""}`} style={{ width: `${pct}%` }} /></span>
+      <span className="small">{bytes(total - used)} свободно из {bytes(total)}</span>
+    </span>
+  );
+}
+
+/** Состояние системы: компоненты, ресурсы сервера, данные, источники KSC и каталог, безопасность, ошибки фоновых задач, история обновлений. */
 export default function SystemAdmin({ onOpen }: { onOpen: (tab: string) => void }) {
   const [s, setS] = useState<SystemStatus | null>(null);
   const [err, setErr] = useState("");
@@ -14,41 +28,78 @@ export default function SystemAdmin({ onOpen }: { onOpen: (tab: string) => void 
   const ping = async (id: string) => { setPings((p) => ({ ...p, [id]: "run" })); try { const r = await api.admin.pingSource(id); setPings((p) => ({ ...p, [id]: r })); } catch (e) { setPings((p) => ({ ...p, [id]: { ok: false, ms: 0, error: (e as ApiError).message } })); } };
   if (err && !s) return <div className="alert error"><Icon name="alert" /><div className="alert-body">{err}</div></div>;
   if (!s) return <div className="card"><SkelRows rows={4} cols={4} /></div>;
-  const w = s.checks.worker;
-  const services: { name: string; ok: boolean; warn?: boolean; text: string; action?: [string, string] }[] = [
-    { name: "Backend API", ok: true, text: `отвечает; публичный адрес ${s.public_url}` },
-    { name: "Веб-интерфейс", ok: true, text: "страница загружена из контейнера web" },
-    { name: "Внутренняя база", ok: !!s.checks.postgres?.ok, text: s.checks.postgres?.ok ? "PostgreSQL доступен" : `недоступна${s.checks.postgres?.error ? `: ${s.checks.postgres.error}` : ""}` },
-    { name: "Фоновые отчёты", ok: !!w?.ok, text: w?.ok ? `в очереди ${num(w.queued)}, выполняется ${num(w.running)}; последний готов ${fmt(w.last_done)}` : (w?.error ?? "не отвечает") },
-    { name: "Помощник обновлений", ok: !!s.checks.updater?.ok, warn: !s.checks.updater?.ok, text: s.checks.updater?.ok ? "работает на сервере" : "не запущен — нужен только для обновлений из браузера", action: s.checks.updater?.ok ? undefined : ["updates", "Подробнее"] },
-  ];
+  const r = s.resources, st = s.storage;
   return (
     <div className="stack">
-      {!s.master_key_ok && <div className="alert error"><Icon name="alert" /><div className="alert-body">APP_MASTER_KEY не задан или некорректен: пароли источников KSC и LDAP сохранить и использовать нельзя. Задайте ключ в .env и перезапустите контейнеры.</div></div>}
+      {!s.master_key_ok && <div className="alert error"><Icon name="alert" /><div className="alert-body">APP_MASTER_KEY не задан или некорректен: пароли источников KSC и LDAP, второй фактор недоступны. Задайте ключ в .env и перезапустите сервисы.</div></div>}
+      {!s.security.https && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Приложение открывается по HTTP ({s.public_url}): cookie сессии передаётся без флага Secure. После перехода на HTTPS укажите адрес https:// в APP_PUBLIC_URL — защищённый режим включится сам (COOKIE_SECURE=auto).</div></div>}
       <div className="meters">
         <div className="meter"><span className="l">Версия</span><span className="v text">{versionLabel(s.version, s.commit)}</span><span className="t">сборка {s.built_at}</span></div>
-        <div className="meter"><span className="l">Свободно на диске данных</span><span className="v">{bytes(s.disk_free_bytes)}</span></div>
-        <div className="meter"><span className="l">События за сутки</span><span className="v">{num(s.counts.events_24h)}</span><span className="t">{s.counts.errors_24h ? <button className="link-btn" onClick={() => onOpen("journal")}>ошибок: {num(s.counts.errors_24h)}</button> : "ошибок нет"}</span></div>
-        <div className="meter"><span className="l">Пользователей и отчётов</span><span className="v">{num(s.counts.users)}<span className="unit">/ {num(s.counts.reports)}</span></span></div>
+        <div className="meter"><span className="l">Процессор</span><span className="v">{s.resources.load ? String(s.resources.load[0]).replace(".", ",") : "—"}</span><span className="t">нагрузка за минуту · ядер {r.cpu_count ?? "?"}</span></div>
+        <div className="meter"><span className="l">Оперативная память</span><span className="v">{r.memory_total && r.memory_available ? `${Math.round(((r.memory_total - r.memory_available) / r.memory_total) * 100)}%` : "—"}</span><span className="t">{bytes(r.memory_available)} свободно из {bytes(r.memory_total)}</span></div>
+        <div className="meter"><span className="l">Ошибки за сутки</span><span className={`v ${s.counts.errors_24h ? "bad-text" : ""}`}>{num(s.counts.errors_24h)}</span><span className="t">{s.counts.errors_24h ? <button className="link-btn" onClick={() => onOpen("journal")}>открыть журнал</button> : `событий ${num(s.counts.events_24h)}`}</span></div>
+      </div>
+      <div className="split even">
+        <div className="card flush">
+          <div className="card-head"><h2>Компоненты</h2></div>
+          <ul className="rows pad-x">{s.components.map((c) => (
+            <li key={c.key}><span className={`dot ${c.ok ? "ok" : c.ok === null ? "warn" : "bad"}`} aria-hidden /><div className="r-main"><b>{c.title}</b><span className="r-sub">{c.detail}</span></div>
+              {c.key === "updater" && !c.ok && <button className="btn mini" onClick={() => onOpen("updates")}>Как запустить</button>}</li>))}</ul>
+        </div>
+        <div className="card flush">
+          <div className="card-head"><h2>Диски и данные</h2>{st.host_checked_at && <span className="muted small">сведения с сервера {fmtTs(st.host_checked_at)}</span>}</div>
+          <dl className="kv compact pad-x">
+            <div><dt>Диск данных</dt><dd><Usage used={r.disk_data?.used} total={r.disk_data?.total} label="Диск данных" /></dd></div>
+            <div><dt>Внутренняя база</dt><dd>{bytes(st.database)}{s.checks.postgres?.version && <span className="muted small"> · PostgreSQL {s.checks.postgres.version}</span>}</dd></div>
+            <div><dt>Отчёты</dt><dd>{bytes(st.reports)} <span className="muted small">· отчётов {num(s.counts.reports)}</span></dd></div>
+            <div><dt>Резервные копии</dt><dd>{st.backups == null ? <span className="muted">нет сведений (нужен помощник обновлений)</span> : bytes(st.backups)}</dd></div>
+            <div><dt>Образы Docker</dt><dd>{st.images == null ? <span className="muted">нет сведений</span> : <>{bytes(st.images)} <span className="muted small">· {st.images_list.length} образ(ов) проекта; свободно на диске Docker {bytes(st.docker_free)}</span></>}</dd></div>
+          </dl>
+        </div>
       </div>
       <div className="card flush">
-        <div className="card-head"><h2>Службы</h2></div>
-        <ul className="rows" style={{ padding: "4px 18px 8px" }}>{services.map((x) => (
-          <li key={x.name}><span className={`dot ${x.ok ? "ok" : x.warn ? "warn" : "bad"}`} aria-hidden /><div className="r-main"><b>{x.name}</b><span className="r-sub">{x.text}</span></div>
-            {x.action && <button className="btn mini" onClick={() => onOpen(x.action![0])}>{x.action[1]}</button>}</li>))}</ul>
-      </div>
-      <div className="card flush">
-        <div className="card-head"><h2>Источники KSC</h2><span className="muted small">Проверка доступности (SELECT 1) — только по кнопке, без нагрузки на SQL Server</span></div>
+        <div className="card-head"><h2>Источники KSC</h2><span className="muted small">Проверка доступности (SELECT 1) — по кнопке, без нагрузки на SQL Server</span></div>
         {!s.sources.length ? <Empty icon="database" title="Источники не добавлены" action={<button className="btn primary" onClick={() => onOpen("sources")}><Icon name="plus" />Добавить источник</button>} /> : (
-          <div className="table-scroll"><table className="table">
-            <thead><tr><th>Источник</th><th>Последняя диагностика</th><th>Версия KSC</th><th>Доступность сейчас</th><th><span className="sr-only">Действия</span></th></tr></thead>
-            <tbody>{s.sources.map((x) => { const p = pings[x.id]; return (
-              <tr key={x.id}><td><b>{x.name}</b>{!x.is_active && <span className="badge warn" style={{ marginLeft: 8 }}>выключен</span>}</td>
+          <div className="table-scroll flat"><table className="table">
+            <thead><tr><th>Источник</th><th>Последняя диагностика</th><th>Версия KSC</th><th>Каталог программ</th><th>Доступность сейчас</th><th><span className="sr-only">Действия</span></th></tr></thead>
+            <tbody>{s.sources.map((x) => { const p = pings[x.id]; const [cl, cc] = CATALOG[x.catalog_status] ?? [x.catalog_status, ""]; return (
+              <tr key={x.id}><td><b>{x.name}</b>{!x.is_active && <span className="badge warn ml">выключен</span>}</td>
                 <td>{x.last_check_ok == null ? <span className="muted">не проверялся</span> : x.last_check_ok ? <span className="badge ok">успешно, {fmt(x.last_check_at)}</span> : <span className="badge err">ошибка, {fmt(x.last_check_at)}</span>}</td>
-                <td className="mono">{x.ksc_version ?? "—"}</td>
+                <td className="mono">{x.ksc_version ?? "—"}</td><td><span className={`badge ${cc}`}>{cl}</span>{x.catalog_built_at && <span className="sub">{fmt(x.catalog_built_at)}</span>}</td>
                 <td>{p === "run" ? <span className="spin" aria-label="Проверка" /> : p ? (p.ok ? <span className="ok-text">отвечает за {p.ms} мс</span> : <span className="bad-text">{p.error}</span>) : <span className="muted">—</span>}</td>
                 <td className="actions"><button className="btn mini" onClick={() => void ping(x.id)} aria-busy={p === "run"}><Icon name="plug" size={15} /><span>Проверить</span></button></td></tr>); })}</tbody>
           </table></div>)}
+      </div>
+      <div className="split even">
+        <div className="card flush">
+          <div className="card-head"><h2>Ошибки фоновых задач и приложения</h2><div className="spacer" /><button className="btn mini ghost" onClick={() => onOpen("journal")}>Журнал событий</button></div>
+          {!s.recent_errors.length ? <p className="muted small pad">Ошибок нет.</p> : (
+            <ul className="rows pad-x">{s.recent_errors.map((e, i) => <li key={i}><span className="dot bad" aria-hidden /><div className="r-main"><b>{e.message ?? e.event}</b><span className="r-sub">{fmt(e.at)} · {e.category}{e.source ? ` · ${e.source}` : ""}</span></div></li>)}</ul>)}
+        </div>
+        <div className="card flush">
+          <div className="card-head"><h2>Проверки источников и каталога</h2></div>
+          {!s.recent_checks.length ? <p className="muted small pad">Проверок ещё не было.</p> : (
+            <ul className="rows pad-x">{s.recent_checks.slice(0, 6).map((e, i) => <li key={i}><span className={`dot ${e.level === "error" ? "bad" : e.level === "warn" ? "warn" : "ok"}`} aria-hidden /><div className="r-main"><b>{e.source ?? "—"}</b><span className="r-sub clamp2" title={e.message ?? ""}>{fmt(e.at)} · {e.message}</span></div></li>)}</ul>)}
+        </div>
+      </div>
+      <div className="split even">
+        <div className="card flush">
+          <div className="card-head"><h2>История обновлений</h2><div className="spacer" /><button className="btn mini ghost" onClick={() => onOpen("updates")}>Обновления</button></div>
+          {!s.update_history.length ? <p className="muted small pad">Обновлений через помощника ещё не было.</p> : (
+            <ul className="rows pad-x">{s.update_history.map((h, i) => <li key={i}><span className={`dot ${h.result === "ok" ? "ok" : "bad"}`} aria-hidden /><div className="r-main"><b>{ACTION[h.action] ?? h.action}: {h.from_version} → {h.to_version}</b>
+              <span className="r-sub">{fmtTs(h.at)} · {h.by}{h.result !== "ok" ? ` · ошибка на этапе ${h.stage ?? "?"}` : ""}</span></div></li>)}</ul>)}
+        </div>
+        <div className="card">
+          <h2>Безопасность</h2>
+          <dl className="kv compact">
+            <div><dt>Публичный адрес</dt><dd className="mono small">{s.public_url}</dd></div>
+            <div><dt>HTTPS</dt><dd>{s.security.https ? <span className="ok-text">да</span> : <span className="warn-text">нет</span>}</dd></div>
+            <div><dt>Cookie сессии</dt><dd>{s.security.secure_cookie ? "с флагом Secure" : "без флага Secure"} <span className="muted small">(режим {s.security.cookie_mode})</span></dd></div>
+            <div><dt>Ключ шифрования</dt><dd>{s.master_key_ok ? <span className="ok-text">задан</span> : <span className="bad-text">не задан</span>}</dd></div>
+            <div><dt>Второй фактор</dt><dd>{({ off: "отключён", optional: "по желанию", admins: "обязателен администраторам", all: "обязателен всем", groups: "обязателен группам" } as Record<string, string>)[s.security.totp_policy] ?? s.security.totp_policy}
+              <button className="link-btn small-gap" onClick={() => onOpen("users")}>изменить</button></dd></div>
+          </dl>
+        </div>
       </div>
     </div>
   );

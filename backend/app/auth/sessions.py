@@ -21,9 +21,9 @@ class SessionStore:
     def __init__(self, settings: Settings):
         self._s = settings
 
-    async def create(self, db: AsyncSession, user: User, *, ip: str, ua: str) -> str:
+    async def create(self, db: AsyncSession, user: User, *, ip: str, ua: str, must_totp: bool = False, second_factor: str | None = None) -> str:
         sid = secrets.token_urlsafe(32)
-        db.add(Session(key=_key(sid), user_id=user.id, csrf=secrets.token_urlsafe(24), ip=ip[:64], user_agent=ua[:300]))
+        db.add(Session(key=_key(sid), user_id=user.id, csrf=secrets.token_urlsafe(24), ip=ip[:64], user_agent=ua[:300], must_totp=must_totp, second_factor=second_factor))
         await db.commit()
         return sid
 
@@ -43,6 +43,10 @@ class SessionStore:
             await db.execute(update(Session).where(Session.key == sess.key).values(last_seen=now))
             await db.commit()
         return sess, user
+
+    async def set_must_totp(self, db: AsyncSession, session_id: str, value: bool) -> None:
+        await db.execute(update(Session).where(Session.key == _key(session_id)).values(must_totp=value))
+        await db.commit()
 
     async def set_source(self, db: AsyncSession, session_id: str, source_id: uuid.UUID | None) -> None:
         await db.execute(update(Session).where(Session.key == _key(session_id)).values(current_source_id=source_id))

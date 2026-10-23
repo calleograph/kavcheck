@@ -8,7 +8,6 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth.ldap import LdapConfig
 from ..models import AppSetting, utcnow
 from ..security.secretbox import SecretBox, SecretBoxError
 
@@ -42,6 +41,7 @@ class GeneralSettings(_Group):
 
 
 class LdapSettings(_Group):
+    """Настройка LDAP версии 0.1.0 (одно подключение). С 0.2.0 подключения хранятся в таблице ldap_connections; группа читается только для переноса."""
     SECRETS: ClassVar[tuple[str, ...]] = ("bind_password",)
     enabled: bool = False
     host: str = Field(default="", max_length=253)
@@ -63,6 +63,7 @@ class LdapSettings(_Group):
     ca_pem: str = Field(default="", max_length=200_000)
     timeout_s: int = Field(default=5, ge=1, le=60)
     nested_groups: bool = True
+    migrated: bool = False
 
     @field_validator("host")
     @classmethod
@@ -79,13 +80,6 @@ class LdapSettings(_Group):
             raise ValueError("user_filter должен содержать {login}")
         return v
 
-    def to_config(self, password: str) -> LdapConfig:
-        return LdapConfig(enabled=self.enabled, host=self.host, port=self.port, protocol=self.protocol, base_dn=self.base_dn, bind_dn=self.bind_dn,
-                          bind_password=password, user_filter=self.user_filter, group_filter=self.group_filter, login_attribute=self.login_attribute,
-                          display_name_attribute=self.display_name_attribute, email_attribute=self.email_attribute, guid_attribute=self.guid_attribute,
-                          admin_group_dn=self.admin_group_dn, analyst_group_dn=self.analyst_group_dn, viewer_group_dn=self.viewer_group_dn,
-                          verify_cert=self.verify_cert, ca_pem=self.ca_pem, timeout_s=self.timeout_s, nested_groups=self.nested_groups)
-
 
 class ReportsSettings(_Group):
     """Ограничения отчётов и запросов к SQL Server."""
@@ -94,7 +88,18 @@ class ReportsSettings(_Group):
     exclude_slave_servers: bool = True          # bIsSlaveServer = 1 — кластеры и подчинённые серверы, не компьютеры
 
 
-GROUPS: dict[str, type[_Group]] = {"general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings}
+class AuthSecuritySettings(_Group):
+    """Второй фактор (TOTP). Политика: off — не предлагается; optional — каждый включает сам; admins — обязателен администраторам;
+    all — всем; groups — участникам указанных групп каталога. Локальные администраторы подчиняются той же политике."""
+    totp_policy: Literal["off", "optional", "admins", "all", "groups"] = "optional"
+    totp_groups: str = Field(default="", max_length=8000)          # DN групп через «;» или с новой строки
+    totp_issuer: str = Field(default="KAV Checker", max_length=60)
+
+    def group_set(self) -> set[str]:
+        return {g.strip().lower() for g in re.split(r"[;\n]", self.totp_groups) if g.strip()}
+
+
+GROUPS: dict[str, type[_Group]] = {"general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings}
 
 
 class SettingsService:
@@ -179,7 +184,3 @@ class SettingsService:
             return self.box.decrypt(token, aad=aad.encode())
         except SecretBoxError:
             return ""
-
-    async def ldap_config(self, db: AsyncSession) -> LdapConfig:
-        cfg: LdapSettings = await self.get(db, "ldap")  # type: ignore[assignment]
-        return cfg.to_config(cfg.bind_password)

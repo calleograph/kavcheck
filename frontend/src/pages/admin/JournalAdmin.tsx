@@ -7,7 +7,7 @@ import { Empty, SkelRows } from "../../components/ui";
 import { fmt } from "../../util";
 
 const LEVEL: Record<string, [string, string]> = { debug: ["отладка", "outline"], info: ["сведения", ""], warn: ["предупреждение", "warn"], error: ["ошибка", "err"] };
-const CATEGORY: Record<string, string> = { auth: "Вход", ksc: "Источники KSC", report: "Отчёты", admin: "Администрирование", system: "Система" };
+const CATEGORY: Record<string, string> = { auth: "Вход", ksc: "Источники KSC", report: "Отчёты", catalog: "Каталог программ", worker: "Фоновые задачи", admin: "Администрирование", system: "Система" };
 const RANGES: [string, string][] = [["1h", "За час"], ["24h", "За сутки"], ["7d", "За 7 дней"], ["30d", "За 30 дней"], ["", "За всё время"]];
 
 function MiniPager({ offset, count, onPage }: { offset: number; count: number; onPage: (o: number) => void }) {
@@ -20,22 +20,26 @@ function MiniPager({ offset, count, onPage }: { offset: number; count: number; o
 /** Журнал событий: входы, подключения к SQL Server, формирование отчётов, ошибки. Секреты и полные SQL-строки в журнал не попадают. */
 export function JournalAdmin() {
   const [q, setQ] = useState(""); const [level, setLevel] = useState(""); const [category, setCategory] = useState(""); const [range, setRange] = useState("24h");
+  const [since, setSince] = useState(""); const [until, setUntil] = useState("");
   const [applied, setApplied] = useState(""); const [offset, setOffset] = useState(0);
   const [data, setData] = useState<{ items: JournalRow[]; errors_24h: number } | null>(null);
   const [open, setOpen] = useState<number | null>(null);
   const [err, setErr] = useState(""); const [purge, setPurge] = useState(false);
   const [toast, show] = useToast();
   useEffect(() => { const t = window.setTimeout(() => { setApplied(q); setOffset(0); }, 300); return () => window.clearTimeout(t); }, [q]);
-  const load = () => api.admin.journal({ q: applied, level, category, range, offset, limit: 100 }).then((d) => { setData(d); setErr(""); }).catch((e) => setErr((e as ApiError).message));
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [applied, level, category, range, offset]);
+  const load = () => api.admin.journal({ q: applied, level, category, range: range === "custom" ? "" : range, since: range === "custom" && since ? new Date(since).toISOString() : undefined,
+    until: range === "custom" && until ? new Date(until).toISOString() : undefined, offset, limit: 100 }).then((d) => { setData(d); setErr(""); }).catch((e) => setErr((e as ApiError).message));
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [applied, level, category, range, since, until, offset]);
   return (
     <>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Сообщение, событие, пользователь, источник" aria-label="Поиск по журналу" /></div>
-        <select value={range} onChange={(e) => { setRange(e.target.value); setOffset(0); }} aria-label="Период" style={{ width: "auto" }}>{RANGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+        <select value={range} onChange={(e) => { setRange(e.target.value); setOffset(0); }} aria-label="Период" style={{ width: "auto" }}>{RANGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}<option value="custom">свой период…</option></select>
+        {range === "custom" && <><input type="datetime-local" className="w-auto" value={since} onChange={(e) => { setSince(e.target.value); setOffset(0); }} aria-label="С" />
+          <input type="datetime-local" className="w-auto" value={until} onChange={(e) => { setUntil(e.target.value); setOffset(0); }} aria-label="По" /></>}
         <select value={level} onChange={(e) => { setLevel(e.target.value); setOffset(0); }} aria-label="Уровень" style={{ width: "auto" }}><option value="">Все уровни</option><option value="warn">Предупреждения и ошибки</option><option value="error">Только ошибки</option><option value="info">Сведения</option></select>
-        <select value={category} onChange={(e) => { setCategory(e.target.value); setOffset(0); }} aria-label="Категория" style={{ width: "auto" }}><option value="">Все категории</option>{Object.entries(CATEGORY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
-        <a className="btn" href={api.admin.journalExportUrl(range || "30d")} download><Icon name="download" />CSV</a>
+        <select value={category} onChange={(e) => { setCategory(e.target.value); setOffset(0); }} aria-label="Компонент" style={{ width: "auto" }}><option value="">Все компоненты</option>{Object.entries(CATEGORY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+        <a className="btn" href={api.admin.journalExportUrl(range === "custom" ? "30d" : range || "30d")} download><Icon name="download" />CSV</a>
         <button className="btn ghost" onClick={() => setPurge(true)}>Применить срок хранения</button>
       </div>
       {data && (data.errors_24h ? <div className="alert error"><Icon name="alert" /><div className="alert-body">За последние сутки ошибок: <b>{data.errors_24h}</b>. <button className="link-btn" onClick={() => { setLevel("error"); setRange("24h"); }}>Показать только их</button></div></div>

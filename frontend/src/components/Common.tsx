@@ -3,7 +3,7 @@ import type { DiagResult } from "../api";
 import { fmt, num } from "../util";
 import { Icon } from "./Icons";
 
-const STAGE_TITLE: Record<string, string> = { connect: "Подключение", server: "SQL Server", objects: "Объекты KSC", rights: "Права учётной записи", ksc: "Версия KSC", read: "Пробное чтение", base_dn: "Чтение Base DN", auth: "Тестовый вход", error: "Ошибка", config: "Настройка" };
+const STAGE_TITLE: Record<string, string> = { dns: "DNS", tcp: "TCP", tls: "TLS и сертификат", bind: "Вход сервисной записи", user: "Поиск пользователя", groups: "Группы", access: "Доступ в KAV Checker", connect: "Подключение", server: "SQL Server", objects: "Объекты KSC", rights: "Права учётной записи", ksc: "Версия KSC", read: "Пробное чтение", base_dn: "Чтение Base DN", auth: "Тестовый вход", error: "Ошибка", config: "Настройка" };
 
 /** Результат пошаговой проверки подключения (SQL Server, LDAP): каждый этап отдельной строкой. */
 export function StageList({ result }: { result: DiagResult }) {

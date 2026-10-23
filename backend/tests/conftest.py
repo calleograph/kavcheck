@@ -20,7 +20,7 @@ MASTER_KEY = base64.b64encode(b"0" * 32).decode()
 @pytest_asyncio.fixture
 async def app():
     tmp = tempfile.mkdtemp()
-    settings = Settings(database_url=f"sqlite+aiosqlite:///{tmp}/test.db", app_master_key=MASTER_KEY, cookie_secure=False, app_public_url="http://testserver", data_dir=tmp)
+    settings = Settings(database_url=f"sqlite+aiosqlite:///{tmp}/test.db", app_master_key=MASTER_KEY, cookie_secure="false", app_public_url="http://testserver", data_dir=tmp)
     application = create_app(settings, start_workers=False)
     from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
 

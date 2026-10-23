@@ -34,6 +34,8 @@ class SessionUser:
     all_sources: bool
     source_ids: frozenset[str]
     current_source_id: uuid.UUID | None
+    must_totp: bool = False
+    second_factor: str | None = None
 
     @property
     def is_admin(self) -> bool:
@@ -45,7 +47,7 @@ class SessionUser:
     @classmethod
     def build(cls, sid: str, s: Session, u: User) -> "SessionUser":
         return cls(sid, u.id, u.username, u.display_name, u.role, s.csrf, u.auth_source == "local", u.must_change_password, u.all_sources,
-                   frozenset(str(x) for x in (u.source_ids or [])), s.current_source_id)
+                   frozenset(str(x) for x in (u.source_ids or [])), s.current_source_id, bool(s.must_totp), s.second_factor)
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -100,6 +102,8 @@ async def require_user(request: Request, su: SessionUser | None = Depends(curren
         raise HTTPException(status_code=401, detail="Требуется вход")
     if su.must_change and request.url.path not in _ALLOWED_WHILE_CHANGING:
         raise HTTPException(status_code=403, detail={"code": "password_change_required", "message": "Сначала смените пароль."})
+    if su.must_totp and request.url.path not in _ALLOWED_WHILE_CHANGING and not request.url.path.startswith("/api/v1/auth/totp/"):
+        raise HTTPException(status_code=403, detail={"code": "totp_enrollment_required", "message": "Сначала настройте двухфакторную аутентификацию."})
     if request.method not in _SAFE_METHODS:
         if not _origin_ok(request):
             raise HTTPException(status_code=403, detail="Недопустимый Origin")

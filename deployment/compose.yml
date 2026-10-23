@@ -18,7 +18,7 @@ x-app-env: &app-env
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
   APP_PUBLIC_URL: ${APP_PUBLIC_URL:?}
   APP_MASTER_KEY: ${APP_MASTER_KEY:?}
-  COOKIE_SECURE: ${COOKIE_SECURE:-true}
+  COOKIE_SECURE: ${COOKIE_SECURE:-auto}
   TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
   ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
   SESSION_IDLE_TIMEOUT_SECONDS: ${SESSION_IDLE_TIMEOUT_SECONDS:-28800}
@@ -54,7 +54,7 @@ services:
     image: ${IMAGE_REPO:-kavcheck}-backend:${IMAGE_TAG:?}
     build:
       context: ../backend
-      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}" }
+      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}", PIP_INDEX_URL: "${PIP_INDEX_URL:-}" }
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     depends_on:
@@ -91,7 +91,7 @@ services:
     image: ${IMAGE_REPO:-kavcheck}-web:${IMAGE_TAG:?}
     build:
       context: ../frontend
-      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}" }
+      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}", NPM_REGISTRY: "${NPM_REGISTRY:-}" }
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     depends_on:

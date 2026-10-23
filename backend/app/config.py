@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     postgres_password: str = ""
 
     # --- сессии и защита входа
-    cookie_secure: bool = True
+    cookie_secure: str = "auto"         # auto — Secure, если APP_PUBLIC_URL https:// или прокси сообщает X-Forwarded-Proto: https; true | false — принудительно
     cookie_name: str = "kavcheck_session"
     session_idle_timeout_seconds: int = Field(default=28800, ge=60)
     session_absolute_timeout_seconds: int = Field(default=86400, ge=60)
@@ -55,6 +55,14 @@ class Settings(BaseSettings):
             return self.database_url
         return URL.create("postgresql+asyncpg", username=self.postgres_user, password=self.postgres_password, host=self.postgres_host,
                           port=self.postgres_port, database=self.postgres_db)
+
+    def secure_cookie(self, forwarded_proto: str | None = None) -> bool:
+        mode = str(self.cookie_secure).strip().lower()
+        if mode in ("true", "1", "yes", "on"):
+            return True
+        if mode in ("false", "0", "no", "off"):
+            return False
+        return self.app_public_url.lower().startswith("https://") or (forwarded_proto or "").split(",")[0].strip().lower() == "https"
 
     @property
     def reports_dir(self) -> str:

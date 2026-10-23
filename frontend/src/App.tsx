@@ -5,6 +5,7 @@ import { Icon, Mark, type IconName } from "./components/Icons";
 import { Empty, Segmented } from "./components/ui";
 import LoginPage from "./pages/LoginPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
+import SecurityPage from "./pages/SecurityPage";
 import DashboardPage from "./pages/DashboardPage";
 import SoftwarePage from "./pages/SoftwarePage";
 import HostsPage, { HostPage } from "./pages/HostsPage";
@@ -68,7 +69,7 @@ function UserMenu({ me, version, onLogout }: { me: Me; version: string; onLogout
           <Segmented label="Тема оформления" value={theme} onChange={(t) => { setTheme(t); applyTheme(t); }}
             options={[["system", <Icon key="s" name="system" size={15} />, "Как в системе"], ["light", <Icon key="l" name="sun" size={15} />, "Светлая"], ["dark", <Icon key="d" name="moon" size={15} />, "Тёмная"]]} />
         </div>
-        {me.user.local && <button className="dd-item" role="menuitem" tabIndex={open ? 0 : -1} onClick={() => { setOpen(false); navigate("/password"); }}><Icon name="key" />Сменить пароль</button>}
+        <button className="dd-item" role="menuitem" tabIndex={open ? 0 : -1} onClick={() => { setOpen(false); navigate("/security"); }}><Icon name="key" />Безопасность входа</button>
         <div className="dd-sep" />
         <button className="dd-item danger" role="menuitem" tabIndex={open ? 0 : -1} onClick={onLogout}><Icon name="logout" />Выйти</button>
         {version && <div className="dd-text">KAV Checker {version}</div>}
@@ -195,7 +196,7 @@ export default function App() {
   useEffect(() => { if (me) void reloadSources(); }, [me, reloadSources]);
   useEffect(() => { setUnauthorizedHandler(() => { setCsrf(""); setMe(null); }); return () => setUnauthorizedHandler(null); }, []);
   useEffect(() => {
-    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/password", "Смена пароля"]];
+    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
     const t = me ? (titles.find(([p]) => pathname.startsWith(p))?.[1] ?? "Главная") : "Вход";
     document.title = `${t} — ${me?.site_name || "KAV Checker"}`;
   }, [pathname, me]);
@@ -207,6 +208,7 @@ export default function App() {
   if (me === undefined) return <div className="center"><span className="spin" aria-label="Загрузка" /></div>;
   if (me === null) return <LoginPage onLogin={onLogin} />;
   if (me.must_change_password) return <ChangePasswordPage onDone={() => api.me().then((m) => { setCsrf(m.csrf_token); setMe(m); })} onLogout={logout} />;
+  if (me.must_enroll_totp) return <main className="forced-shell"><SecurityPage me={me} forced onLogout={logout} onEnrolled={() => api.me().then((m) => { setCsrf(m.csrf_token); setMe(m); })} /></main>;
   const current = sources.find((s) => s.id === currentId) ?? null;
   const ctx: Ctx = { me, sources, current, reloadSources };
   return (
@@ -224,7 +226,8 @@ export default function App() {
           <Route path="/events" element={<EventsPage />} />
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />
           <Route path="/reports/:jobId" element={<ReportsPage ctx={ctx} />} />
-          <Route path="/password" element={<ChangePasswordPage inline onDone={() => navigate("/")} onLogout={logout} />} />
+          <Route path="/security" element={<SecurityPage me={me} onLogout={logout} />} />
+          <Route path="/password" element={<Navigate to="/security" replace />} />
           <Route path="/admin" element={me.user.is_admin ? <AdminPage ctx={ctx} version={version} /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Empty icon="target" title="Страница не найдена" action={<Link className="btn" to="/">На главную</Link>}>Проверьте адрес или вернитесь на главную.</Empty>} />
         </Routes>

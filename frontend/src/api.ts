@@ -1,6 +1,6 @@
 // Клиент REST API. Сессия — HttpOnly cookie; CSRF-токен хранится только в памяти; выбранный источник — в сессии (и дублируется заголовком).
 export interface User { id: string; username: string; display_name: string; role: "admin" | "analyst" | "viewer"; is_admin: boolean; local: boolean }
-export interface Me { user: User; csrf_token: string; must_change_password: boolean; current_source_id: string | null; site_name: string; activity_days: number }
+export interface Me { user: User; csrf_token: string; must_change_password: boolean; current_source_id: string | null; site_name: string; activity_days: number; must_enroll_totp: boolean; totp_enabled: boolean; second_factor: string | null; secure_cookie: boolean }
 export interface SourceRef { id: string; name: string; host: string; port: number; database: string; is_active: boolean; last_check_at: string | null; last_check_ok: boolean | null; ksc_version: string | null; features: Record<string, boolean | null> }
 export interface Stage { stage: string; ok: boolean | null; message: string; ms: number }
 export interface DiagResult { ok: boolean; stages: Stage[]; server?: { version: string; edition: string; database: string }; features?: Record<string, { ok: boolean; title: string; missing: string[] }>; warnings?: string[]; ksc_version?: string | null; hosts?: number; test_user?: { display_name: string; username: string; role: string | null; groups: string[] } }
@@ -33,14 +33,28 @@ export interface VulnProduct { product_id: number | null; name: string; hosts: n
 export interface HostVuln { occurrence_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label: string; url: string; product: string; product_version: string; app_name: string; app_version: string; publisher: string; detected: string | null; patches_available: boolean; cve: string[]; mssb: string[]; kb: string[] }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit"; title: string; params: ReportParams & Partial<AuditParams>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary>) | null; error: string | null }
 export interface Template { id: string; name: string; kind: Job["kind"]; params: ReportParams & Partial<AuditParams>; shared: boolean; owner_id: string | null; created_at: string }
-export interface AdminUser { id: string; username: string; display_name: string; email: string | null; auth_source: string; role: User["role"]; is_active: boolean; all_sources: boolean; source_ids: string[]; must_change_password: boolean; last_login_at: string | null; created_at: string }
+export interface AdminUser { id: string; username: string; display_name: string; email: string | null; auth_source: string; role: User["role"]; is_active: boolean; all_sources: boolean; source_ids: string[]; must_change_password: boolean; last_login_at: string | null; created_at: string; totp_enabled?: boolean; totp_enabled_at?: string | null }
 export interface Rule { id?: string; key: string; name: string; name_like: string; name_regex: string; branch_regex: string | null; branch_parts: number; exclude_regex: string | null; description: string | null; builtin?: boolean; enabled: boolean }
 export interface Dashboard { source: SourceRef; summary: { activity_days: number; hosts_total?: number; hosts_active?: number; hosts_inactive?: number; products?: number; installs?: number; ksc_version?: string | null; fetched_at: string; hosts_error?: string; software_error?: string } | null; error: string | null; reports_total: number; recent_reports: { id: string; title: string; status: string; created_at: string; rows: number | null }[] }
-export interface SystemStatus { version: string; commit: string; built_at: string; public_url: string; master_key_ok: boolean; checks: Record<string, { ok: boolean; error?: string | null; running?: number; queued?: number; last_done?: string | null; optional?: boolean }>; sources: { id: string; name: string; is_active: boolean; last_check_at: string | null; last_check_ok: boolean | null; ksc_version: string | null }[]; counts: Record<string, number>; disk_free_bytes: number | null }
+export interface SystemStatus { version: string; commit: string; built_at: string; public_url: string; master_key_ok: boolean; uptime_s: number; checks: Record<string, { ok: boolean; error?: string | null; running?: number; queued?: number; last_done?: string | null; optional?: boolean; version?: string; size?: number; connections?: number }>;
+  components: { key: string; title: string; ok: boolean | null; detail: string | null }[];
+  sources: { id: string; name: string; is_active: boolean; last_check_at: string | null; last_check_ok: boolean | null; ksc_version: string | null; catalog_status: string; catalog_built_at: string | null }[]; counts: Record<string, number>; disk_free_bytes: number | null;
+  resources: { cpu_count: number | null; load: number[] | null; memory_total?: number; memory_available?: number; disk_data: { total: number; used: number; free: number } | null; disk_root: { total: number; used: number; free: number } | null };
+  storage: { database: number | null; reports: number | null; backups: number | null; images: number | null; images_list: { name: string; bytes: number }[]; docker_free: number | null; data_free: number | null; host_checked_at: number | null };
+  recent_errors: { at: string; category: string; event: string; source: string | null; message: string | null }[]; recent_checks: { at: string; level: string; event: string; source: string | null; message: string | null }[];
+  update_history: { at: number; action: string; result: string; from_version: string; to_version: string; by: string; stage?: string }[]; security: { https: boolean; secure_cookie: boolean; cookie_mode: string; totp_policy: string } }
 export interface AuditRow { id: number; at: string; actor: string; action: string; target_type: string; target_id: string; source_id: string | null; details: unknown; result: string; ip: string | null; duration_ms: number | null }
 export interface JournalRow { id: number; at: string; level: string; category: string; event: string; user: string | null; source: string | null; message: string | null; data: unknown; duration_ms: number | null; ip: string | null; request_id: string | null }
-export interface UpdatesOverview { installed: { version: string; commit: string; built_at: string }; updater: { available: boolean; heartbeat_age_s: number | null; state: string; action: string; step_no: number; step_total: number; step_name: string; started_at: number; finished_at: number; exit_code: number | null; result: string; request_pending: boolean; by: string; target: string }; remote: { checked_at: number; ok: boolean; error: string; current_version: string; latest_version: string; latest_tag: string; behind: boolean; notes: string; published_at: string; age_s: number } | null; history: { at: number; action: string; result: string; from_version: string; to_version: string; by: string; stage?: string }[]; backups: { name: string; size: number; at: number }[]; can_act: boolean; reasons: string[]; commands: Record<string, string> }
+export interface UpdatesOverview { installed: { version: string; commit: string; built_at: string }; updater: { available: boolean; heartbeat_age_s: number | null; state: string; action: string; step_no: number; step_total: number; step_name: string; started_at: number; finished_at: number; exit_code: number | null; result: string; request_pending: boolean; by: string; target: string }; remote: { checked_at: number; ok: boolean; error: string; current_version: string; latest_version: string; latest_tag: string; behind: boolean; notes: string; published_at: string; age_s: number } | null; history: { at: number; action: string; result: string; from_version: string; to_version: string; by: string; stage?: string }[]; backups: { name: string; size: number; at: number }[]; can_act: boolean; reasons: string[]; commands: Record<string, string>;
+  preflight: { checked_at: number; age_s: number; target: string; ok: boolean; items: { key: string; status: "ok" | "warn" | "fail"; message: string }[] } | null;
+  report: { finished_at: number; result: "ok" | "failed"; stage: string; from_version: string; to_version: string; advice: string; actions: string[] } | null }
 export type SettingsValues = Record<string, string | number | boolean | null>;
+export interface TotpStatus { available: boolean; policy: string; enabled: boolean; required: boolean; backup_left: number; enabled_at: string | null }
+export interface LdapConn { id: string; name: string; enabled: boolean; is_primary: boolean; protocol: "ldaps" | "starttls"; host: string; port: number; url: string; ldap_version: number; timeout_s: number; base_dn: string; domain_dns: string; netbios: string; bind_dn: string; bind_password_set: boolean; login_attribute: string; display_name_attribute: string; email_attribute: string; user_filter: string; nested_groups: boolean; position: number; last_check_at: string | null; last_check_ok: boolean | null; created_at: string; updated_at: string | null }
+export interface CaCert { id: string; label: string; subject: string; issuer: string; serial: string; sha256: string; not_before: string; not_after: string; is_ca: boolean; self_signed: boolean; type: string; expired: boolean; expires_soon: boolean; added_by: string | null; created_at: string }
+export interface CertPreview { subject: string; issuer: string; serial: string; sha256: string; not_before: string; not_after: string; is_ca: boolean; self_signed: boolean; expired: boolean; not_yet_valid: boolean; type: string }
+export interface AccessRuleT { id: string; connection_id: string | null; connection: string; group_dn: string; role: User["role"]; all_sources: boolean; source_ids: string[]; note: string | null; created_at: string }
+export interface LdapDiag extends DiagResult { server_certificate?: { subject: string; issuer: string; not_after: string; san: string[] }; test_user?: { display_name: string; username: string; email?: string | null; groups: string[]; role: string | null; sources?: string; rules?: string[]; disabled?: boolean } }
 
 let csrf = "";
 let sourceId: string | null = null;
@@ -72,7 +86,15 @@ async function req<T>(method: string, path: string, body?: unknown, opts: { raw?
 const qs = (o: Record<string, string | number | boolean | undefined | null>) => { const p = new URLSearchParams(); for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== null && v !== "") p.set(k, String(v)); const s = p.toString(); return s ? `?${s}` : ""; };
 
 export const api = {
-  login: (login: string, password: string) => req<Me>("POST", "/auth/login", { login, password }),
+  login: (login: string, password: string) => req<Me | { totp_required: true; challenge: string }>("POST", "/auth/login", { login, password }),
+  loginTotp: (challenge: string, code: string) => req<Me>("POST", "/auth/login/totp", { challenge, code }),
+  totp: {
+    status: () => req<TotpStatus>("GET", "/auth/totp/status"),
+    setup: (password: string) => req<{ secret: string; uri: string; qr_svg: string; expires_in: number }>("POST", "/auth/totp/setup", { password }),
+    enable: (code: string) => req<{ backup_codes: string[] }>("POST", "/auth/totp/enable", { code }),
+    disable: (password: string, code: string) => req<void>("POST", "/auth/totp/disable", { password, code }),
+    backupCodes: (password: string, code: string) => req<{ backup_codes: string[] }>("POST", "/auth/totp/backup-codes", { password, code }),
+  },
   logout: () => req<void>("POST", "/auth/logout"),
   me: () => req<Me>("GET", "/auth/me"),
   changePassword: (current_password: string, new_password: string) => req<void>("POST", "/auth/change-password", { current_password, new_password }),
@@ -144,7 +166,25 @@ export const api = {
     pingSource: (id: string) => req<{ ok: boolean; ms: number; error?: string }>("POST", `/admin/sources/${id}/ping`),
     settings: (group: string) => req<SettingsValues>("GET", `/admin/settings/${group}`),
     saveSettings: (group: string, body: SettingsValues) => req<SettingsValues>("PUT", `/admin/settings/${group}`, body),
-    ldapTest: (test_login?: string, test_password?: string) => req<DiagResult>("POST", "/admin/ldap/test", { test_login, test_password }),
+    ldap: {
+      connections: () => req<{ items: LdapConn[] }>("GET", "/admin/ldap/connections"),
+      create: (body: Partial<LdapConn> & { url?: string; bind_password?: string }) => req<LdapConn>("POST", "/admin/ldap/connections", body),
+      update: (id: string, body: Partial<LdapConn> & { url?: string; bind_password?: string | null }) => req<LdapConn>("PUT", `/admin/ldap/connections/${id}`, body),
+      remove: (id: string) => req<void>("DELETE", `/admin/ldap/connections/${id}`),
+      removeSecret: (id: string) => req<LdapConn>("DELETE", `/admin/ldap/connections/${id}/secret`),
+      test: (id: string, test_login = "", test_password = "") => req<LdapDiag>("POST", `/admin/ldap/connections/${id}/test`, { test_login, test_password }),
+      groups: (q: string) => req<{ items: { dn: string; name: string; description: string; connection: string }[]; errors: string[] }>("GET", `/admin/ldap/groups${qs({ q })}`),
+      certs: () => req<{ items: CaCert[] }>("GET", "/admin/ldap/certs"),
+      previewCert: (body: { pem?: string; data_base64?: string }) => req<{ new: CertPreview[]; existing: CertPreview[] }>("POST", "/admin/ldap/certs/preview", body),
+      addCert: (body: { pem?: string; data_base64?: string; label?: string; confirm_non_ca?: boolean }) => req<{ added: CertPreview[]; existing: CertPreview[] }>("POST", "/admin/ldap/certs", body),
+      deleteCert: (id: string) => req<void>("DELETE", `/admin/ldap/certs/${id}`),
+      rules: () => req<{ items: AccessRuleT[] }>("GET", "/admin/ldap/rules"),
+      createRule: (body: { connection_id: string | null; group_dn: string; role: string; all_sources: boolean; source_ids: string[]; note?: string | null }) => req<AccessRuleT>("POST", "/admin/ldap/rules", body),
+      updateRule: (id: string, body: { connection_id: string | null; group_dn: string; role: string; all_sources: boolean; source_ids: string[]; note?: string | null }) => req<AccessRuleT>("PUT", `/admin/ldap/rules/${id}`, body),
+      deleteRule: (id: string) => req<void>("DELETE", `/admin/ldap/rules/${id}`),
+      checkUser: (login: string) => req<{ found: boolean; message?: string; display_name?: string; username?: string; email?: string | null; connection?: string; disabled?: boolean; groups?: string[]; role?: string | null; all_sources?: boolean; sources?: string[]; rules?: string[] }>("POST", "/admin/ldap/check-user", { login }),
+    },
+    resetTotp: (userId: string, password: string) => req<void>("POST", `/admin/users/${userId}/totp/reset`, { password }),
     catalog: () => req<{ items: (CatalogState & { source_id: string; source: string; is_active: boolean })[] }>("GET", "/admin/catalog"),
     catalogRebuild: (sourceId: string) => req<CatalogState>("POST", `/admin/catalog/${sourceId}/rebuild`),
     rules: () => req<{ items: Rule[] }>("GET", "/admin/rules"),
@@ -162,6 +202,8 @@ export const api = {
     updatesRun: (target = "") => req<{ request_id: string }>("POST", "/admin/updates/run", { confirm: true, target }),
     updatesRollback: () => req<{ request_id: string }>("POST", "/admin/updates/rollback", { confirm: true }),
     updatesBackup: () => req<{ request_id: string }>("POST", "/admin/updates/backup"),
+    updatesPreflight: () => req<{ request_id: string }>("POST", "/admin/updates/preflight"),
+    updatesRestore: (name: string, confirm: string) => req<{ request_id: string }>("POST", "/admin/updates/restore", { name, confirm }),
     updatesLog: (offset: number) => req<{ offset: number; size: number; text: string; reset: boolean; state: string; step_no: number; step_total: number; step_name: string; result: string; exit_code: number | null; finished_at: number }>("GET", `/admin/updates/log${qs({ offset })}`),
   },
 };
