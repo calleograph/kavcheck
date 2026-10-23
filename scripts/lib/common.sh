@@ -109,17 +109,18 @@ preflight() {
   [ "$PF_FAIL" -eq 0 ]
 }
 
-# restore_db_exact ДАМП — точный возврат внутренней базы к копии: текущая база не удаляется, а переименовывается (<имя>_failed_<время>) для разбора.
+# restore_db_exact ДАМП [ВИД] — точный возврат внутренней базы к копии: текущая база не удаляется, а переименовывается (<имя>_<вид>_<время>, вид по умолчанию failed),
+# создаётся пустая база и в неё восстанавливается копия; при ошибке прежняя база возвращается на место.
 restore_db_exact() {
   local bk="$1" db="$POSTGRES_DB" keep
   [ -s "$bk" ] || { warn "Резервная копия $bk не найдена — восстановление базы невозможно"; return 1; }
-  keep="${db}_failed_$(date +%Y%m%d%H%M%S)"
+  keep="${db}_${2:-failed}_$(date +%Y%m%d%H%M%S)"
   dc stop backend worker >/dev/null 2>&1
   local q='psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -tAc'
   dc exec -T postgres sh -c "$q \"SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '$db' AND pid <> pg_backend_pid()\"" >/dev/null 2>&1
   dc exec -T postgres sh -c "$q 'ALTER DATABASE \"$db\" RENAME TO \"$keep\"'" >/dev/null || { warn "Не удалось отложить текущую базу — восстановление не начато"; return 1; }
   if dc exec -T postgres sh -c "$q 'CREATE DATABASE \"$db\" OWNER \"$POSTGRES_USER\"'" >/dev/null && dc exec -T postgres pg_restore -U "$POSTGRES_USER" -d "$db" --no-owner --exit-on-error < "$bk"; then
-    action_log "база возвращена к резервной копии $(basename "$bk"); база после неудачной попытки сохранена как $keep"
+    action_log "база восстановлена из копии $(basename "$bk"); прежняя база сохранена как $keep"
     return 0
   fi
   dc exec -T postgres sh -c "$q 'DROP DATABASE IF EXISTS \"$db\"'" >/dev/null 2>&1
