@@ -24,6 +24,10 @@ check_placeholders() { grep -nE '^[A-Z_]+=CHANGE_ME' "$ENV_FILE" && die "В .env
 
 dc() { docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$REPO_ROOT/deployment" --env-file "$ENV_FILE" -f "$REPO_ROOT/deployment/compose.yml" "$@"; }
 
+# Образы: из реестра релизов (IMAGE_REPO с «/», например ghcr.io/владелец/kavcheck) или локальная сборка. Локально собранные образы называются по имени
+# compose-проекта (<проект>-backend:<commit>), чтобы очистка одного экземпляра не задевала образы другого на том же сервере.
+is_local_repo() { [[ "${IMAGE_REPO:-kavcheck}" != */* ]]; }
+local_build_repo() { echo "${COMPOSE_PROJECT_NAME:-kavcheck}"; }
 version_file_read() { tr -d '[:space:]' < "$REPO_ROOT/VERSION" 2>/dev/null; }
 host_version_info() { # APP_VERSION/APP_GIT_COMMIT/APP_BUILT_AT для сборки образов
   export APP_VERSION="$(version_file_read)"
@@ -81,7 +85,7 @@ preflight() {
   g="$(free_gb "$DATA_ROOT")"
   if [ -n "$g" ] && [ "$g" -lt 1 ]; then pf_add disk_data fail "Свободно меньше 1 ГБ в $DATA_ROOT: резервная копия базы может не поместиться"; else pf_add disk_data ok "Каталог данных: свободно ${g:-?} ГБ"; fi
   if timeout 25 git -C "$REPO_ROOT" ls-remote --tags origin >/dev/null 2>&1; then pf_add github ok "GitHub доступен (git ls-remote)"; else pf_add github warn "GitHub недоступен: обновиться можно только до уже полученных тегов"; fi
-  if [ "${IMAGE_REPO:-kavcheck}" != kavcheck ]; then
+  if [ "${PF_BUILD:-0}" != 1 ] && ! is_local_repo; then
     if timeout 30 docker manifest inspect "${IMAGE_REPO}-backend:${target:-$IMAGE_TAG}" >/dev/null 2>&1; then pf_add registry ok "Реестр образов доступен: ${IMAGE_REPO}"
     else pf_add registry fail "Реестр образов ${IMAGE_REPO} недоступен или нет образа ${target:-$IMAGE_TAG}: обновитесь с локальной сборкой (--build)"; fi
   else

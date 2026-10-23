@@ -30,7 +30,8 @@ stop_update() {
   elif [ -n "${PREV_HEAD:-}" ] && [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$PREV_HEAD" ]; then
     git -C "$REPO_ROOT" checkout -q --detach "$PREV_HEAD" && action_log "код возвращён на прежнюю версию $OLD_VER; работающие сервисы не останавливались"
     if [ "$(svc_state backend)" = missing ] || [ "$(docker inspect -f '{{.State.Running}}' "$(dc ps -q backend 2>/dev/null | head -1)" 2>/dev/null)" != true ]; then
-      export IMAGE_TAG="$OLD_TAG"; sed -i "s#^IMAGE_TAG=.*#IMAGE_TAG=$OLD_TAG#" "$ENV_FILE"; dc up -d >/dev/null 2>&1 && action_log "прежние контейнеры запущены снова"
+      export IMAGE_TAG="$OLD_TAG" IMAGE_REPO="${OLD_REPO:-$IMAGE_REPO}"; sed -i "s#^IMAGE_TAG=.*#IMAGE_TAG=$OLD_TAG#; s#^IMAGE_REPO=.*#IMAGE_REPO=$IMAGE_REPO#" "$ENV_FILE"
+      dc up -d >/dev/null 2>&1 && action_log "прежние контейнеры запущены снова"
     fi
     advice="Работает прежняя версия $OLD_VER. Устраните причину и повторите обновление."
   fi
@@ -48,7 +49,7 @@ git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$TARGET_TAG" >/dev/null || 
 NEW_VER="${TARGET_TAG#v}"
 log "Целевой релиз: $TARGET_TAG"
 step "Проверки перед обновлением"
-if [ "$SKIP_PF" -eq 1 ]; then warn "Проверки пропущены (--skip-preflight)"; else preflight "$TARGET_TAG" || stop_update "Проверки перед обновлением не пройдены — ничего не изменено"; fi
+if [ "$SKIP_PF" -eq 1 ]; then warn "Проверки пропущены (--skip-preflight)"; else PF_BUILD=$BUILD preflight "$TARGET_TAG" || stop_update "Проверки перед обновлением не пройдены — ничего не изменено"; fi
 if [ "$DRY_RUN" = 1 ]; then info "[dry-run] дальше: checkout $TARGET_TAG → образы → остановка → резервная копия → миграции → запуск → проверка → очистка"; exit 0; fi
 if [ "$YES" -ne 1 ]; then if [ -t 0 ]; then read -r -p "Обновить $OLD_VER → $NEW_VER? [y/N] " a; [ "$a" = y ] || die "Отменено."; else die "Нет терминала: добавьте --yes"; fi; fi
 step "Переход кода на $TARGET_TAG"
@@ -57,11 +58,12 @@ mirror_local_fix
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]; then git -C "$REPO_ROOT" stash push -q -m "update-$(date +%s)" && action_log "прочие локальные изменения файлов проекта сохранены в git stash"; fi
 git -C "$REPO_ROOT" checkout -q --detach "$TARGET_TAG" || stop_update "git checkout $TARGET_TAG не удался"
 host_version_info
-state_set previous_version "$OLD_VER"; state_set previous_commit "$OLD_COMMIT"; state_set previous_tag "$OLD_TAG"; state_set previous_head "$PREV_HEAD"
+OLD_REPO="${IMAGE_REPO:-kavcheck}"
+state_set previous_version "$OLD_VER"; state_set previous_commit "$OLD_COMMIT"; state_set previous_tag "$OLD_TAG"; state_set previous_head "$PREV_HEAD"; state_set previous_repo "$OLD_REPO"
 step "Образы релиза"
-if [ "$BUILD" -eq 1 ] || [ "${IMAGE_REPO:-kavcheck}" = kavcheck ]; then
+if [ "$BUILD" -eq 1 ] || is_local_repo; then
   [ -n "${NPM_REGISTRY:-}" ] && info "Сборка интерфейса через зеркало npm: $NPM_REGISTRY"
-  export IMAGE_REPO=kavcheck IMAGE_TAG="$APP_GIT_COMMIT"; dc build || stop_update "Сборка образов не удалась (при недоступности реестров укажите NPM_REGISTRY и PIP_INDEX_URL в .env)"
+  export IMAGE_REPO="$(local_build_repo)" IMAGE_TAG="$APP_GIT_COMMIT"; dc build || stop_update "Сборка образов не удалась (при недоступности реестров укажите NPM_REGISTRY и PIP_INDEX_URL в .env)"
 else
   export IMAGE_TAG="$TARGET_TAG"; dc pull backend web || stop_update "Не удалось получить образы ${IMAGE_REPO}:${IMAGE_TAG} — проверьте доступ к реестру или используйте --build"
 fi

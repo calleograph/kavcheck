@@ -23,7 +23,7 @@ chmod 1777 "$DATA_ROOT/updater"; chown 10001 "$DATA_ROOT/reports" 2>/dev/null ||
 host_version_info
 [ -n "$NPM_OPT" ] && env_set NPM_REGISTRY "${NPM_OPT%/}" && ok "Зеркало npm: $NPM_REGISTRY (сохранено в .env)"
 [ -n "$PIP_OPT" ] && env_set PIP_INDEX_URL "$PIP_OPT" && ok "Зеркало pip: $PIP_INDEX_URL (сохранено в .env)"
-if [ "$BUILD" -eq 1 ] || [ "${IMAGE_REPO:-kavcheck}" = kavcheck ]; then
+if [ "$BUILD" -eq 1 ] || is_local_repo; then
   # локальная сборка: реестр npm должен отвечать, иначе сборка интерфейса зависнет (ETIMEDOUT); предлагаем зеркало
   REG="${NPM_REGISTRY:-https://registry.npmjs.org}"
   if ! curl -fsS -m 20 -o /dev/null "${REG%/}/typescript"; then
@@ -33,8 +33,8 @@ if [ "$BUILD" -eq 1 ] || [ "${IMAGE_REPO:-kavcheck}" = kavcheck ]; then
       [ -n "$M" ] && env_set NPM_REGISTRY "${M%/}" && ok "Зеркало npm сохранено в .env: $NPM_REGISTRY"
     else warn "Укажите зеркало: scripts/install.sh --npm-registry URL (или NPM_REGISTRY в .env)"; fi
   fi
-  export IMAGE_TAG="${APP_GIT_COMMIT}"; export IMAGE_REPO=kavcheck
-  sed -i "s#^IMAGE_TAG=.*#IMAGE_TAG=$IMAGE_TAG#; s#^IMAGE_REPO=.*#IMAGE_REPO=kavcheck#" "$ENV_FILE"
+  export IMAGE_TAG="${APP_GIT_COMMIT}"; export IMAGE_REPO="$(local_build_repo)"
+  sed -i "s#^IMAGE_TAG=.*#IMAGE_TAG=$IMAGE_TAG#; s#^IMAGE_REPO=.*#IMAGE_REPO=$IMAGE_REPO#" "$ENV_FILE"
   info "Сборка образов локально (тег $IMAGE_TAG)…"; dc build || die "Сборка образов не удалась"
 else
   info "Получение образов ${IMAGE_REPO}:${IMAGE_TAG}…"; dc pull backend web || die "Не удалось получить образы: проверьте доступ к реестру или установите с --build"
