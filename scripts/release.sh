@@ -8,7 +8,8 @@ V="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 case "${1:-check}" in
   check)
     [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "VERSION некорректна: $V"; exit 1; }
-    grep -q "^## \[$V\]" "$ROOT/CHANGELOG.md" || { echo "В CHANGELOG.md нет раздела ## [$V]"; exit 1; }
+    # между выпусками (ALLOW_UNRELEASED=1, CI на обычных push) изменения копятся в разделе [Unreleased]; для тега нужен раздел версии
+    grep -q "^## \[$V\]" "$ROOT/CHANGELOG.md" || { [ "${ALLOW_UNRELEASED:-}" = 1 ] && grep -q "^## \[Unreleased\]" "$ROOT/CHANGELOG.md"; } || { echo "В CHANGELOG.md нет раздела ## [$V]"; exit 1; }
     grep -q "\"version\": \"$V\"" "$ROOT/frontend/package.json" || { echo "frontend/package.json version != $V"; exit 1; }
     echo "Версия $V согласована." ;;
   notes) awk -v v="$V" '$0 ~ "^## \\[" && found {exit} $0 ~ "^## \\["v"\\]" {found=1; next} found' "$ROOT/CHANGELOG.md" ;;

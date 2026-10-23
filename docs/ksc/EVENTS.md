@@ -35,3 +35,12 @@
 - Срок хранения — по типу и важности (`nf_rule.day_count_to_store`), плюс предел по количеству; старые события удаляются процедурами KSC.
 - Индексы: `rise_time`, `event_type`, `nHostId`, `severity`. Фильтр по периоду и типу дёшев; распределения за весь период (`GROUP BY` по большой таблице) выполняйте с осторожностью и ограничением периода.
 - Пример запроса (обнаружения за 7 суток): `SELECT TOP (1000) … FROM dbo.v_akpub_ev_event e LEFT JOIN dbo.v_akpub_host h ON h.nId = e.nHostId WHERE e.tmRiseTime >= DATEADD(day, -7, GETUTCDATE()) AND e.strEventType = 'GNRL_EV_VIRUS_FOUND'`.
+
+## Как использует KAV Checker (раздел «События безопасности»)
+
+- Типы: `GNRL_EV_VIRUS_FOUND`, `GNRL_EV_SUSPICIOUS_OBJECT_FOUND` (обнаружения), `GNRL_EV_OBJECT_NOTCURED` (не вылечено), `GNRL_EV_OBJECT_DELETED`, `GNRL_EV_OBJECT_CURED`, `GNRL_EV_OBJECT_QUARANTINED` (обработано), `GNRL_EV_ATTACK_DETECTED` (сетевые атаки).
+- Каждый запрос: `tmRiseTime >= DATEADD(hour, -N, GETUTCDATE()) AND tmRiseTime < DATEADD(hour, 1, GETUTCDATE())` (период до 90 суток; значения из будущего отсекаются) и `strEventType IN (…)` — только константы.
+- Сводка (`queries.EVENTS_*`): по типам, число компьютеров по группам, динамика по часам (сутки) или суткам, 15 компьютеров и 15 угроз/атак с наибольшим числом событий; кэш на `CACHE_TTL_SECONDS`.
+- Журнал: `OFFSET … FETCH` по `tmRiseTime DESC, nId DESC`, поиск `LIKE` по имени компьютера, `wstrPar1`, `wstrPar2`, `wstrPar5`, `wstrPar7` (значение — параметром).
+- Адрес атакующего `wstrPar3` — целое в том же порядке байтов, что `nIp` (первый октет в старшем байте).
+

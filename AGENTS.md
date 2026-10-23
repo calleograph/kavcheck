@@ -27,8 +27,8 @@ KAV Checker — самостоятельный продукт. Для работ
 ## Как добавить
 
 - **Новый отчёт:** вид в `reports/builder.py` (функция `build_<kind>` → `(rows, summary)`), колонки в `builder.*_COLUMNS`, ветка в `reports/runner.py`, схема параметров в `api/schemas.py`, тип в `frontend/src/api.ts` и форма в `pages/ReportsPage.tsx`.
-- **Новый модуль аудита** (защита, события…): SQL-шаблоны в `ksc/queries.py` + объекты в `FEATURE_OBJECTS`, сервис в `ksc/<module>.py`, маршрут в `api/`, страница во frontend вместо заглушки из `pages/PlannedPages.tsx`. Используйте общие компоненты: `current_source`, роли (`require_user/analyst/admin`), `write_audit`, `Journal`, `Pager`, `Fetched`.
-- **Правило группировки продукта:** через интерфейс (Администрирование → Правила группировки) или встроенное в `ksc/grouping.py BUILTIN_RULES` (с тестом в `tests/test_versions.py`).
+- **Новый модуль аудита** (лицензии, сравнение периодов…): SQL-шаблоны в `ksc/queries.py` + объекты в `FEATURE_OBJECTS`, сервис в `ksc/<module>.py`, маршрут в `api/` (образец — `api/protection.py`: кэш, глобальный фильтр активности, `unsupported`), страница в `pages/` и пункт в `NAV`. Используйте общие компоненты: `current_source`, роли (`require_user/analyst/admin`), `write_audit`, `Journal`, `Pager`, `Fetched`, `HiddenNote`.
+- **Продукт в каталоге:** встроенное описание `P(...)` в `ksc/catalog.py BUILTIN` (шаблон имени, схема версий, правило ветки) с тестом в `tests/test_versions.py`; ошибки группировки на конкретной установке исправляются в интерфейсе (Администрирование → Каталог программ).
 
 ## Проверка перед изменениями
 

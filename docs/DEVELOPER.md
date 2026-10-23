@@ -18,7 +18,9 @@ Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=
 
 Полная среда в Docker: `cp .env.example .env`, заполнить, `./scripts/install.sh --build`.
 
-Синтетическая база «как KSC» для проверки SQL-шаблонов (SQL Server 2022 в Docker, вымышленные данные): `tests/ksc_synthetic/run.sh up`, затем `KSC_TEST_HOST=127.0.0.1 backend/.venv/bin/python -m pytest -q backend/tests/test_ksc_live.py`. Схема — `tests/ksc_synthetic/schema.sql`; при добавлении шаблонов, использующих новые объекты, дополните её.
+Синтетическая база «как KSC» для проверки SQL-шаблонов (SQL Server 2022 в Docker, вымышленные данные): `tests/ksc_synthetic/run.sh up`, затем `KSC_TEST_HOST=127.0.0.1 backend/.venv/bin/python -m pytest -q backend/tests/test_ksc_live.py`. Схема — `tests/ksc_synthetic/schema.sql` (с индексами как в KSC 15.1); при добавлении шаблонов, использующих новые объекты, дополните её. Крупная база для проверки производительности: `tests/ksc_synthetic/run.sh bulk [число компьютеров]` создаёт KAVBIG (`gen_bulk.py`: 20 тыс. компьютеров, 600 тыс. установок, уязвимости, состояние защиты, 300 тыс. событий за 90 суток; адреса из 198.18.0.0/15).
+
+Тестовый каталог для LDAP: `tests/ldap_test/run.sh up [сеть docker]` — OpenLDAP с LDAPS (ldap.example.local:636 в сети compose, 127.0.0.1:10636 снаружи), сгенерированная цепочка корневой → промежуточный CA → сервер (`run.sh ca` печатает корневой сертификат), пользователи `ivanov` (группа KAV-Analysts) и `petrova`. Пароли тестовых записей — в `seed.ldif`, только для стенда.
 
 ## Архитектура SQL-запросов
 
@@ -30,10 +32,12 @@ Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=
 
 ## Адаптер KSC: алгоритмы
 
-- `versions.py`: сравнение dpkg (`compare`), `upstream` (без эпохи и ревизии), `branch_of`, `compared_version(name, version, branch_regex)`, `in_range`.
-- `grouping.py`: `Rule` (LIKE → regex → ветка из имени или из версии), встроенные правила.
+- `versions.py`: сравнение dpkg (`compare`) и числовое для Windows (`compare_numeric`: 130 = 130.0.0.0, rc/beta ниже выпуска, буквенный суффикс 1.1.1w выше 1.1.1), приведение нумерации (`transform`: java 8.0.4010.7 → 8.0.401, python 3.12.3150.0 → 3.12.3), `scheme_for`, условия `matches` (lt/le/eq/ge/gt/range/any) и исключения `excluded` (сборка или префикс ветки).
+- `catalog.py`: встроенные описания продуктов (`BUILTIN`, около 70: имя, шаблон, схема версий, правило ветки), `classify` записи реестра, нормализация имени и производителя, `branch` (`parts:N`, `postgres`, `mssql`, `name:<regex>`, `phpname`). `catalog_build.py`: построение каталога keyset-чтением компьютеров, продуктов и установок; ручные правки (`Overrides`: объединение, выделение, переименование).
+- `grouping.py`: правила группировки по LIKE и регулярному выражению (отбор по названию в проверке версий).
+- `protection.py`: основной защитный продукт компьютера, проблемы защиты с порогами (`problems`), спектр версий (`versions`). `events.py`: типы обнаружений, параметры событий (`event_row`), сводка и страница журнала.
 - `hosts.py`: активность по `tmLastNagentConnected`, IP из `nIp` (первый октет в старшем байте), путь группы, дистрибутив Linux по `base-files`/`*-release`.
-- `software.py`: страницы реестра со счётчиками, группировка по ветке, отбор по версиям.
+- `software.py`: страницы реестра со счётчиками. `vulns.py`: агрегаты уязвимостей по компьютерам и программам.
 
 Знания о структуре KSC — `docs/ksc/`.
 
@@ -47,7 +51,7 @@ Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=
 
 ## Добавить модуль (раздел)
 
-Сервис в `ksc/<module>.py` (шаблоны в `queries.py`, объекты в `FEATURE_OBJECTS`), маршрут в `api/` с зависимостями `require_user`/`current_source`, аудит важных действий (`write_audit`) и события (`Journal.emit`), страница во frontend вместо заглушки из `PlannedPages.tsx`, пункт в `NAV` (`App.tsx`).
+Сервис в `ksc/<module>.py` (шаблоны в `queries.py`, объекты в `FEATURE_OBJECTS`), маршрут в `api/` с зависимостями `require_user`/`current_source` и проверкой `unsupported(src, "<функция>")`, тяжёлые агрегаты — через `request.app.state.cache` (как `api/protection.py`), глобальный фильтр активности — из `settings_svc.get(db, "general").activity_days` со счётчиком скрытых, аудит важных действий (`write_audit`) и события (`Journal.emit`), страница в `pages/` и пункт в `NAV` (`App.tsx`). Тесты: правила без базы — `tests/test_<module>.py`, SQL — `tests/test_ksc_live.py`.
 
 ## Настройки
 

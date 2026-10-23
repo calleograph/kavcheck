@@ -24,9 +24,9 @@ def test_problems():
 
 
 def test_versions_newest_first():
-    recs = [rec(av={**rec()["av"], "build": b}, agent_build="15.1.0.20748") for b in ("12.4.0.467", "12.10.0.1", "12.4.0.467")]
+    recs = [rec(av={**rec()["av"], "build": b}, agent_build="15.1.0.20748") for b in ("12.4.0.467", "12.10.0.1001", "12.4.0.467")]
     v = protection.versions(recs)
-    assert v[0]["latest"] == "12.10.0.1" and v[0]["versions"] == [{"build": "12.10.0.1", "hosts": 1}, {"build": "12.4.0.467", "hosts": 2}]
+    assert v[0]["latest"] == "12.10.0.1001" and v[0]["versions"] == [{"build": "12.10.0.1001", "hosts": 1}, {"build": "12.4.0.467", "hosts": 2}]
     assert v[-1]["code"] == "1103" and v[-1]["hosts"] == 3
 
 
