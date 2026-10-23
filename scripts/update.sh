@@ -79,9 +79,9 @@ action_log "резервная копия базы: $(basename "${BACKUP:-?}")"
 step "Миграции внутренней базы (Alembic)"
 REV_BEFORE="$(dc exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc 'SELECT version_num FROM alembic_version' 2>/dev/null | tr -d '[:space:]')"
 if ! dc run --rm --no-deps backend alembic upgrade head; then
-  REV_AFTER="$(dc exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc 'SELECT version_num FROM alembic_version' 2>/dev/null | tr -d '[:space:]')"
-  if [ "$REV_AFTER" != "$REV_BEFORE" ]; then MIGRATED=1; fi            # схема изменилась частично — нужна копия
-  stop_update "Миграция не выполнена"
+  # приложение остановлено с момента копии — возврат базы к копии безопасен и не теряет данных, даже если миграция успела что-то изменить
+  MIGRATED=1
+  stop_update "Миграция не выполнена (ревизия до попытки: ${REV_BEFORE:-?})"
 fi
 MIGRATED=1
 step "Запуск и проверка работоспособности"
