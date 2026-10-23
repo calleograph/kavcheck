@@ -26,9 +26,10 @@ def _ksc(exc: KscError) -> HTTPException:
 
 @router.get("")
 async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200), group: str = Query("", max_length=200), os: str = Query("", max_length=200),
-                activity: str = Query("all", pattern=r"^(all|active|inactive)$"), days: int | None = Query(None, ge=1, le=3650), sort: str = "name", desc: bool = False,
+                activity: str = Query("active", pattern=r"^(all|active|inactive)$"), days: int | None = Query(None, ge=1, le=3650), sort: str = "name", desc: bool = False,
                 offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
-    """Компьютеры источника: имя, IP, ОС, группа, последнее подключение к KSC и статус активности (порог — из настроек или параметра days)."""
+    """Компьютеры источника: имя, IP, ОС, группа, последнее подключение к KSC и статус активности.
+    По умолчанию (activity=active) — только подключавшиеся к KSC за порог глобального фильтра; hidden — сколько при этом скрыто."""
     client = request.app.state.sources.client(src)
     general = await request.app.state.settings_svc.get(db, "general")
     rcfg = await request.app.state.settings_svc.get(db, "reports")
@@ -38,10 +39,14 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
     try:
         rows = await client.run(q.HOSTS_PAGE.format(where=where, order=H.hosts_order(sort, desc)), {**params, "offset": offset, "limit": limit}, max_rows=limit)
         total = int((await client.run(q.HOSTS_COUNT.format(where=where), params, max_rows=1))[0]["n"])
+        hidden = 0
+        if activity == "active":
+            w_all, p_all = H.hosts_where(qtext=q_, group_contains=group, os_contains=os, exclude_slaves=rcfg.exclude_slave_servers)
+            hidden = int((await client.run(q.HOSTS_COUNT.format(where=w_all), p_all, max_rows=1))[0]["n"]) - total
     except KscError as exc:
         raise _ksc(exc) from None
     now = datetime.now(timezone.utc)
-    return {"items": [H.host_row(h, None, now) for h in rows], "total": total, "offset": offset, "limit": limit, "activity_days": active_days, "fetched_at": now}
+    return {"items": [H.host_row(h, None, now) for h in rows], "total": total, "hidden": hidden, "offset": offset, "limit": limit, "activity_days": active_days, "fetched_at": now}
 
 
 @router.get("/{host_id}")

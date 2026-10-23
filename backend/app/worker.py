@@ -11,6 +11,7 @@ from .logging_setup import configure_logging
 from .reports.runner import Runner
 from .security.secretbox import SecretBox, SecretBoxError
 from .services.audit import Journal
+from .services.catalog import CatalogScheduler
 from .services.settings import SettingsService
 
 log = logging.getLogger("app.worker")
@@ -26,19 +27,24 @@ async def main() -> None:
     except SecretBoxError:
         log.error("APP_MASTER_KEY некорректен — пароли источников недоступны")
         box = None
-    runner = Runner(sm, settings, SettingsService(box), Journal(sm))
+    svc, journal = SettingsService(box), Journal(sm)
+    runner = Runner(sm, settings, svc, journal)
+    catalog = CatalogScheduler(sm, settings, svc, journal)
+    runner.catalog = catalog
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
-    task = asyncio.create_task(runner.loop())
-    log.info("Воркер отчётов запущен", extra={"version": settings.app_version})
+    tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog")]
+    log.info("Воркер отчётов и каталога запущен", extra={"version": settings.app_version})
     await stop.wait()
-    task.cancel()
-    try:
-        await task
-    except (asyncio.CancelledError, Exception):  # noqa: BLE001
-        pass
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
     await engine.dispose()
 
 

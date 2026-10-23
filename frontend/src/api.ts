@@ -1,6 +1,6 @@
 // Клиент REST API. Сессия — HttpOnly cookie; CSRF-токен хранится только в памяти; выбранный источник — в сессии (и дублируется заголовком).
 export interface User { id: string; username: string; display_name: string; role: "admin" | "analyst" | "viewer"; is_admin: boolean; local: boolean }
-export interface Me { user: User; csrf_token: string; must_change_password: boolean; current_source_id: string | null; site_name: string }
+export interface Me { user: User; csrf_token: string; must_change_password: boolean; current_source_id: string | null; site_name: string; activity_days: number }
 export interface SourceRef { id: string; name: string; host: string; port: number; database: string; is_active: boolean; last_check_at: string | null; last_check_ok: boolean | null; ksc_version: string | null; features: Record<string, boolean | null> }
 export interface Stage { stage: string; ok: boolean | null; message: string; ms: number }
 export interface DiagResult { ok: boolean; stages: Stage[]; server?: { version: string; edition: string; database: string }; features?: Record<string, { ok: boolean; title: string; missing: string[] }>; warnings?: string[]; ksc_version?: string | null; hosts?: number; test_user?: { display_name: string; username: string; role: string | null; groups: string[] } }
@@ -13,10 +13,26 @@ export interface Grouped { rule: { key: string; name: string; name_like: string;
 export interface ReportParams { product_ids?: number[]; rule?: string | null; branches?: string[]; name_like?: string | null; name_regex?: string | null; min_version?: string | null; max_version?: string | null; below_version?: string | null; platform?: string | null; group_contains?: string | null; active_days?: number | null; include_inactive?: boolean; inactive_only?: boolean; q?: string | null; os_contains?: string | null }
 export interface SoftwareRow { name: string; fqdn: string; ip: string; os: string; linux_release: string; platform: string; app_name: string; app_version: string; compared_version: string; branch: string; publisher: string; install_date: string | null; last_connected: string | null; days_since_connection: number | null; activity: string; group: string; host_id: number; product_id: number; install_id: number }
 export interface Summary { products: number; installs_total: number; rows: number; hosts: number; excluded_inactive_hosts: number; excluded_not_computers: number; branches?: { branch: string; installs: number; hosts: number; packages: string[] }[]; active_days: number | null; include_inactive: boolean; fetched_at: string }
-export interface Job { id: string; source_id: string; source_name: string; kind: "software_hosts" | "hosts"; title: string; params: ReportParams; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: Summary | null; error: string | null }
-export interface Template { id: string; name: string; kind: Job["kind"]; params: ReportParams; shared: boolean; owner_id: string | null; created_at: string }
-export interface Check { id: string; source_id: string; name: string; selection: ReportParams; cve: string | null; severity: string; description: string | null; comment: string | null; created_by: string; created_at: string; user_defined: true }
-export interface Vuln { occurrence_id: number; host_id: number; host: string; detected: string | null; kla_id: string; severity: string; cve: string; product: string; product_version: string; patches_available: boolean; url: string }
+export interface CatalogState { status: "empty" | "building" | "ready" | "failed"; built_at?: string | null; started_at?: string | null; requested_at?: string | null; activity_days?: number | null; progress?: string | null; error?: string | null; stats?: { hosts: number; hosts_active: number; records: number; installs: number; products: number } | null; duration_ms?: number | null }
+export interface CatalogBranch { branch: string; hosts: number }
+export interface CatalogItem { key: string; name: string; publisher: string; publisher_key: string; origin: "builtin" | "auto" | "manual"; component: boolean; platforms: string[]; hosts: number; hosts_all: number; hosts_active: number; hidden_hosts: number; installs: number; versions_count: number; latest_version: string; oldest_version: string; branches: CatalogBranch[]; first_seen: string | null; built_at: string; scheme: string }
+export interface CatalogVersion { version: string; branch: string; scheme: string; raw: string[]; names: string[]; platform: string[]; hosts: number; hosts_all: number; installs: number; records: number }
+export interface CatalogOverride { id: string; kind: "merge" | "split" | "rename"; from_key: string | null; match_name: string | null; to_key: string; to_name: string | null; to_publisher: string | null; note: string | null; created_by: string | null; created_at: string }
+export interface CatalogProductFull extends Omit<CatalogItem, "branches"> { note: string | null; names: [string, number][]; transform: string | null; versions: CatalogVersion[]; branches: { branch: string; hosts: number; hosts_active: number; hosts_shown: number; installs: number; versions: string[] }[]; builtin: boolean; overrides: CatalogOverride[]; state: CatalogState }
+export interface ProductHost { host_id: number; name: string; fqdn: string; ip: string; os: string; group: string; last_connected: string | null; days_since_connection: number | null; activity: string; linux_release: string; versions: { app_name: string; app_version: string; compared_version: string; branch: string }[] }
+export type VersionOp = "lt" | "le" | "eq" | "ge" | "gt" | "range" | "any";
+export interface AuditItem { kind?: "product" | "pattern" | "rule"; product_key?: string | null; product_name?: string | null; op: VersionOp; value?: string | null; min?: string | null; max?: string | null; exclude?: string[]; branches?: string[]; target_version?: string | null; platform?: string | null; name_like?: string | null; name_regex?: string | null; publisher_like?: string | null; rule?: string | null }
+export interface AuditParams { items: AuditItem[]; active_days?: number | null; include_inactive?: boolean; group_contains?: string | null }
+export interface AuditResultRow { source: string; program: string; item: number; app_name: string; app_version: string; compared_version: string; branch: string; condition: string; target_version: string; publisher: string; install_date: string | null; name: string; fqdn: string; ip: string; os: string; linux_release: string; group: string; last_connected: string | null; days_since_connection: number | null; activity: string; host_id: number; product_id: number }
+export interface AuditSourceSummary { source: string; rows: number; hosts: number; hidden_inactive_hosts: number; excluded_not_computers: number; items: { program: string; condition: string; target_version: string; hosts: number; installs: number; records_checked: number; records_matched: number; versions: [string, number][] }[]; fetched_at: string }
+export interface AuditSummary { rows: number; hosts: number; sources: AuditSourceSummary[]; programs: { program: string; condition: string; target_version: string; hosts: number; installs: number; by_source: { source: string; hosts: number }[] }[]; hidden_inactive_hosts: number; active_days: number | null; include_inactive: boolean; fetched_at: string; notes?: string[]; errors?: { source: string; message: string }[] }
+export interface SavedCheck { id: string; kind: "version_audit" | "legacy"; name: string; description: string | null; params: AuditParams | null; selection: ReportParams | null; source_ids: string[]; source_names: string[]; shared: boolean; owner_id: string | null; created_by: string | null; created_at: string; updated_at: string | null; last_run_at: string | null; last_job_id: string | null; cve: string | null; severity: string }
+export interface VulnHost { host_id: number; name: string; fqdn: string; ip: string; os: string; os_version: string; group: string; last_connected: string | null; days_since_connection: number | null; activity: string; critical: number; high: number; warning: number; total: number; patchable: number; products: number; last_detected: string | null }
+export interface VulnSummary { hosts: number; hidden_hosts: number; total: number; critical_hosts: number; high_hosts: number; warning_hosts: number; critical: number; high: number; warning: number; patchable: number; activity_days: number; fetched_at: string }
+export interface VulnProduct { product_id: number | null; name: string; hosts: number; vulns: number; critical: number; high: number; warning: number; total: number; patchable: number; last_detected: string | null }
+export interface HostVuln { occurrence_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label: string; url: string; product: string; product_version: string; app_name: string; app_version: string; publisher: string; detected: string | null; patches_available: boolean; cve: string[]; mssb: string[]; kb: string[] }
+export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit"; title: string; params: ReportParams & Partial<AuditParams>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary>) | null; error: string | null }
+export interface Template { id: string; name: string; kind: Job["kind"]; params: ReportParams & Partial<AuditParams>; shared: boolean; owner_id: string | null; created_at: string }
 export interface AdminUser { id: string; username: string; display_name: string; email: string | null; auth_source: string; role: User["role"]; is_active: boolean; all_sources: boolean; source_ids: string[]; must_change_password: boolean; last_login_at: string | null; created_at: string }
 export interface Rule { id?: string; key: string; name: string; name_like: string; name_regex: string; branch_regex: string | null; branch_parts: number; exclude_regex: string | null; description: string | null; builtin?: boolean; enabled: boolean }
 export interface Dashboard { source: SourceRef; summary: { activity_days: number; hosts_total?: number; hosts_active?: number; hosts_inactive?: number; products?: number; installs?: number; ksc_version?: string | null; fetched_at: string; hosts_error?: string; software_error?: string } | null; error: string | null; reports_total: number; recent_reports: { id: string; title: string; status: string; created_at: string; rows: number | null }[] }
@@ -71,26 +87,49 @@ export const api = {
     hosts: (params: ReportParams, offset = 0, limit = 100) => req<Page<SoftwareRow> & { summary: Summary; branches: Summary["branches"]; fetched_at: string }>("POST", `/software/hosts${qs({ offset, limit })}`, params),
     productHosts: (id: number) => req<{ items: Host[]; total: number; active: number; inactive: number; activity_days: number; fetched_at: string }>("GET", `/software/${id}/hosts`),
   },
+  catalog: {
+    list: (p: Record<string, string | number | boolean | undefined>) => req<Page<CatalogItem> & { state: CatalogState }>("GET", `/catalog${qs(p)}`),
+    publishers: (p: Record<string, string | number | boolean | undefined>) => req<Page<{ publisher_key: string; publisher: string; products: number; max_hosts: number; top: string[] }>>("GET", `/catalog/publishers${qs(p)}`),
+    state: () => req<CatalogState>("GET", "/catalog/state"),
+    rebuild: () => req<CatalogState>("POST", "/catalog/rebuild"),
+    search: (q: string, sourceIds: string[]) => req<{ items: { key: string; name: string; publisher: string; hosts: number; hosts_all: number; latest_version: string; component: boolean }[] }>("GET", `/catalog/search${qs({ q, source_ids: sourceIds.join(",") })}`),
+    product: (key: string, allHosts = false) => req<CatalogProductFull>("GET", `/catalog/products/${encodeURIComponent(key)}${qs({ all_hosts: allHosts })}`),
+    productHosts: (key: string, p: { version?: string; branch?: string | null; all_hosts?: boolean; offset?: number; limit?: number }) => req<Page<ProductHost> & { hidden_hosts: number; fetched_at: string }>("GET", `/catalog/products/${encodeURIComponent(key)}/hosts${qs(p)}`),
+    overrides: () => req<{ items: CatalogOverride[] }>("GET", "/catalog/overrides"),
+    addOverride: (body: { kind: CatalogOverride["kind"]; from_key?: string | null; match_names?: string[]; to_key?: string | null; to_name?: string | null; to_publisher?: string | null; note?: string | null }) => req<{ items: CatalogOverride[] }>("POST", "/catalog/overrides", body),
+    deleteOverride: (id: string) => req<void>("DELETE", `/catalog/overrides/${id}`),
+  },
+  audit: {
+    preview: (params: AuditParams, sourceIds: string[], limit = 300) => req<{ summary: AuditSummary; items: AuditResultRow[]; total: number }>("POST", "/audit/preview", { params, source_ids: sourceIds, limit }),
+  },
+  checks: {
+    list: () => req<{ items: SavedCheck[] }>("GET", "/checks"),
+    create: (body: { name: string; description?: string | null; params: AuditParams; source_ids: string[]; shared?: boolean }) => req<SavedCheck>("POST", "/checks", body),
+    update: (id: string, body: { name: string; description?: string | null; params: AuditParams; source_ids: string[]; shared?: boolean }) => req<SavedCheck>("PUT", `/checks/${id}`, body),
+    remove: (id: string) => req<void>("DELETE", `/checks/${id}`),
+    run: (id: string) => req<Job>("POST", `/checks/${id}/run`),
+  },
+  vulns: {
+    hosts: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VulnHost> & { summary: VulnSummary | null; unsupported?: string[] }>("GET", `/vulnerabilities/hosts${qs(p)}`),
+    products: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VulnProduct> & { fetched_at?: string; activity_days?: number; unsupported?: string[] }>("GET", `/vulnerabilities/products${qs(p)}`),
+    host: (id: number) => req<{ host: Host; items: HostVuln[]; counts: Record<"critical" | "high" | "warning", number>; total: number; fetched_at: string; unsupported?: string[] }>("GET", `/vulnerabilities/hosts/${id}`),
+  },
   hosts: {
-    list: (p: Record<string, string | number | boolean | undefined>) => req<Page<Host> & { activity_days: number; fetched_at: string }>("GET", `/hosts${qs(p)}`),
+    list: (p: Record<string, string | number | boolean | undefined>) => req<Page<Host> & { hidden: number; activity_days: number; fetched_at: string }>("GET", `/hosts${qs(p)}`),
     one: (id: number) => req<{ host: Host; activity_days: number; fetched_at: string; software: { install_id: number; product_id: number; name: string; version: string; publisher: string; install_date: string | null }[]; kaspersky: { product_code: string; product: string; build: string; state: string; av_bases_date: string | null; is_av: boolean; has_rtp: boolean }[] }>("GET", `/hosts/${id}`),
   },
-  vulns: (p: Record<string, string | number | undefined>) => req<Page<Vuln> & { unsupported?: string[]; approximate_total?: boolean }>("GET", `/vulnerabilities${qs(p)}`),
   reports: {
     list: (sourceOnly = true) => req<{ items: Job[] }>("GET", `/reports${qs({ source_only: sourceOnly })}`),
-    create: (kind: Job["kind"], title: string, params: ReportParams) => req<Job>("POST", "/reports", { kind, title, params }),
+    create: (kind: Job["kind"], title: string, params: ReportParams | AuditParams, sourceIds: string[] = []) => req<Job>("POST", "/reports", { kind, title, params, source_ids: sourceIds }),
     get: (id: string) => req<Job>("GET", `/reports/${id}`),
-    rows: (id: string, offset: number, limit: number) => req<Page<SoftwareRow & Host>>("GET", `/reports/${id}/rows${qs({ offset, limit })}`),
+    rows: (id: string, p: { offset: number; limit: number; q?: string; source?: string; program?: string; sort?: string; desc?: boolean }) => req<Page<SoftwareRow & Host & AuditResultRow>>("GET", `/reports/${id}/rows${qs(p)}`),
     downloadUrl: (id: string, fmt: "csv" | "xlsx") => `/api/v1/reports/${id}/download/${fmt}`,
     cancel: (id: string) => req<Job>("POST", `/reports/${id}/cancel`),
     rerun: (id: string) => req<Job>("POST", `/reports/${id}/rerun`),
     remove: (id: string) => req<void>("DELETE", `/reports/${id}`),
     templates: () => req<{ items: Template[] }>("GET", "/report-templates"),
-    saveTemplate: (name: string, kind: Job["kind"], params: ReportParams, shared = true) => req<Template>("POST", "/report-templates", { name, kind, params, shared }),
+    saveTemplate: (name: string, kind: Job["kind"], params: ReportParams | AuditParams, shared = true) => req<Template>("POST", "/report-templates", { name, kind, params, shared }),
     deleteTemplate: (id: string) => req<void>("DELETE", `/report-templates/${id}`),
-    checks: () => req<{ items: Check[] }>("GET", "/checks"),
-    saveCheck: (body: { name: string; selection: ReportParams; cve?: string | null; severity: string; description?: string | null; comment?: string | null }) => req<Check>("POST", "/checks", body),
-    deleteCheck: (id: string) => req<void>("DELETE", `/checks/${id}`),
   },
   admin: {
     users: (q = "") => req<{ items: AdminUser[] }>("GET", `/admin/users${qs({ q })}`),
@@ -106,6 +145,8 @@ export const api = {
     settings: (group: string) => req<SettingsValues>("GET", `/admin/settings/${group}`),
     saveSettings: (group: string, body: SettingsValues) => req<SettingsValues>("PUT", `/admin/settings/${group}`, body),
     ldapTest: (test_login?: string, test_password?: string) => req<DiagResult>("POST", "/admin/ldap/test", { test_login, test_password }),
+    catalog: () => req<{ items: (CatalogState & { source_id: string; source: string; is_active: boolean })[] }>("GET", "/admin/catalog"),
+    catalogRebuild: (sourceId: string) => req<CatalogState>("POST", `/admin/catalog/${sourceId}/rebuild`),
     rules: () => req<{ items: Rule[] }>("GET", "/admin/rules"),
     createRule: (body: Rule) => req<Rule>("POST", "/admin/rules", body),
     updateRule: (key: string, body: Rule) => req<Rule>("PUT", `/admin/rules/${key}`, body),

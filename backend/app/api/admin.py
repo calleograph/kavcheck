@@ -283,6 +283,32 @@ async def reset_builtin(su: SessionUser = Depends(require_admin), db: AsyncSessi
     return {"ok": True}
 
 
+# ----------------------------------------------------------------------------------------------- каталог программ
+@router.get("/catalog")
+async def catalog_states(su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Состояние каталога по каждому источнику: когда построен, сколько продуктов, сколько длилась сборка, ошибки."""
+    from ..models import CatalogState  # noqa: PLC0415
+    from ..services import catalog as csvc  # noqa: PLC0415
+
+    srcs = (await db.execute(select(KscSource).order_by(KscSource.position, KscSource.name))).scalars().all()
+    out = []
+    for s in srcs:
+        out.append({"source_id": str(s.id), "source": s.name, "is_active": s.is_active, **csvc.state_out(await db.get(CatalogState, s.id))})
+    return {"items": out}
+
+
+@router.post("/catalog/{source_id}/rebuild")
+async def catalog_rebuild(source_id: uuid.UUID, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    from ..services import catalog as csvc  # noqa: PLC0415
+
+    if await db.get(KscSource, source_id) is None:
+        raise HTTPException(status_code=404, detail="Источник не найден")
+    st = await csvc.request_rebuild(db, source_id)
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="catalog.rebuild", target_type="catalog", target_id=str(source_id), source_id=source_id)
+    await db.commit()
+    return csvc.state_out(st)
+
+
 # ----------------------------------------------------------------------------------------------- журналы
 @router.get("/audit")
 async def audit(q: str = Query("", max_length=200), action: str = Query("", max_length=80), since: datetime | None = None, until: datetime | None = None,

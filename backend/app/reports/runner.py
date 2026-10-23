@@ -17,9 +17,10 @@ from ..config import Settings
 from ..ksc.driver import ConnParams, KscError, Session
 from ..ksc.grouping import Rule
 from ..models import GroupingRule, KscSource, ReportJob, utcnow
+from ..services import catalog as catalog_svc
 from ..services.audit import Journal
 from ..services.settings import ReportsSettings, SettingsService
-from . import builder, export
+from . import audit, builder, export
 
 log = logging.getLogger("app.reports")
 WORKER = f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}"
@@ -39,6 +40,7 @@ class Runner:
         self._sm, self._cfg, self._svc, self._journal = session_maker, settings, settings_svc, journal
         self._sem = asyncio.Semaphore(settings.report_concurrency)
         self._tasks: set[asyncio.Task] = set()
+        self.catalog = None          # services.catalog.CatalogScheduler: сборка каталога источника, если его ещё нет (задаётся в worker)
 
     async def _claim(self) -> ReportJob | None:
         async with self._sm() as db:
@@ -66,6 +68,9 @@ class Runner:
             await self._execute(job)
 
     async def _execute(self, job: ReportJob) -> None:
+        if job.kind == "version_audit":
+            await self._execute_audit(job)
+            return
         started = utcnow()
         async with self._sm() as db:
             src = await db.get(KscSource, job.source_id)
@@ -126,10 +131,100 @@ class Runner:
         finally:
             watcher.cancel()
 
+    async def _execute_audit(self, job: ReportJob) -> None:
+        """Проверка версий по одному или нескольким источникам: источники обрабатываются по очереди, каждый на своём соединении."""
+        started = utcnow()
+        params = job.params or {}
+        items = params.get("items") or []
+        ids = [uuid.UUID(str(x)) for x in (job.source_ids or ([str(job.source_id)] if job.source_id else []))]
+        async with self._sm() as db:
+            rcfg: ReportsSettings = await self._svc.get(db, "reports")  # type: ignore[assignment]
+            rules = {r.key: Rule(r.key, r.name, r.name_like, r.name_regex, r.branch_regex, r.branch_parts, r.exclude_regex)
+                     for r in (await db.execute(select(GroupingRule).where(GroupingRule.enabled.is_(True)))).scalars().all()}
+            srcs = [s for s in [await db.get(KscSource, i) for i in ids] if s is not None]
+        if not srcs:
+            await self._set(job.id, status="failed", finished_at=utcnow(), error="Источники отчёта удалены")
+            return
+        plan = []
+        notes: list[str] = []
+        for src in srcs:
+            async with self._sm() as db:
+                if not await catalog_svc.catalog_ready(db, src.id) and any((it.get("kind") or "product") == "product" for it in items):
+                    if self.catalog is None:
+                        notes.append(f"{src.name}: каталог программ ещё не построен")
+                    else:
+                        await self._set(job.id, progress=f"{src.name}: построение каталога программ")
+                        await self.catalog.build(src.id, "нужен для отчёта")
+                async with self._sm() as db2:
+                    resolved, missing = await catalog_svc.resolve_items(db2, src.id, items)
+            if missing:
+                notes.append(f"{src.name}: нет в каталоге — {', '.join(missing)}")
+            plan.append((src.name, conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), resolved))
+        loop = asyncio.get_running_loop()
+        flag = {"cancel": False}
+
+        async def watch():
+            while True:
+                await asyncio.sleep(2)
+                if await self._cancelled(job.id):
+                    flag["cancel"] = True
+                    return
+
+        watcher = asyncio.create_task(watch())
+
+        def progress(text: str) -> None:
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=text[:300])))
+
+        def work():
+            all_rows, per_source = [], []
+            for name, cp, resolved in plan:
+                progress(f"{name}: подключение")
+                with Session(cp) as conn:
+                    rows, summ = audit.build_source(conn, source_name=name, items=resolved, rules=rules, active_days=params.get("active_days"),
+                                                    include_inactive=bool(params.get("include_inactive")), group_contains=params.get("group_contains") or "",
+                                                    exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows - len(all_rows), progress=progress,
+                                                    cancelled=lambda: flag["cancel"])
+                all_rows += rows
+                per_source.append(summ)
+            return all_rows, audit.merge_summaries(per_source, items, active_days=params.get("active_days"), include_inactive=bool(params.get("include_inactive")), rows=all_rows)
+
+        try:
+            rows, summary = await asyncio.to_thread(work)
+            summary["notes"] = notes
+            d = job_dir(self._cfg, job.id)
+            d.mkdir(parents=True, exist_ok=True)
+            meta = {"Отчёт": job.title, "Вид": "Проверка версий программ", "Источники KSC": ", ".join(s.name for s in srcs), "Данные получены (UTC)": summary.get("fetched_at"),
+                    "Сформировал": job.created_by, "Программы и условия": "; ".join(f"{p['program']}: {p['condition']}" + (f" → {p['target_version']}" if p["target_version"] else "")
+                                                                        for p in summary["programs"]),
+                    "Строк": summary.get("rows"), "Компьютеров (по источникам)": summary.get("hosts"),
+                    "Скрыто давно не подключавшихся компьютеров": summary.get("hidden_inactive_hosts"),
+                    "Показаны компьютеры, активные за, сут": "все" if summary.get("include_inactive") else summary.get("active_days"),
+                    "Примечания": "; ".join(notes) or "—", "Время": "все даты в UTC",
+                    "Смысл результата": "Соответствие заданному условию версии, а не подтверждённая уязвимость. Подтверждённые KSC уязвимости — раздел «Уязвимости».",
+                    "Сравнение версий": "Пакеты Linux — по версии без эпохи и ревизии (граница с ревизией сравнивается с полной версией), программы Windows — по числовым частям "
+                                        "(130 = 130.0.0.0); нестандартная нумерация Java и Python для Windows приводится к обычной."}
+            await asyncio.to_thread(self._write, d, job.kind, rows, summary, meta)
+            await self._set(job.id, status="done", finished_at=utcnow(), rows=len(rows), summary=summary, progress="готово",
+                            data_fetched_at=datetime.fromisoformat(summary["fetched_at"]).replace(tzinfo=timezone.utc) if summary.get("fetched_at") else utcnow())
+            await self._journal.emit("report", "report_done", user=job.created_by, source=job.source_name[:120], message=f"{job.title}: строк {len(rows)}",
+                                     duration_ms=int((utcnow() - started).total_seconds() * 1000), data={"job_id": str(job.id), "kind": job.kind})
+        except builder.Cancelled:
+            await self._set(job.id, status="cancelled", finished_at=utcnow(), progress="отменён")
+        except KscError as exc:
+            await self._set(job.id, status="failed", finished_at=utcnow(), error=exc.message, progress="ошибка")
+            await self._journal.emit("report", "report_failed", level="error", user=job.created_by, source=job.source_name[:120], message=f"{job.title}: {exc.message}",
+                                     data={"job_id": str(job.id), "code": exc.code})
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Сбой формирования отчёта", extra={"job_id": str(job.id)})
+            await self._set(job.id, status="failed", finished_at=utcnow(), error=f"Внутренняя ошибка: {type(exc).__name__}", progress="ошибка")
+        finally:
+            watcher.cancel()
+
     @staticmethod
     def _write(d: Path, kind: str, rows: list[dict], summary: dict, meta: dict) -> None:
         export.write_jsonl(d / "rows.jsonl", rows)
-        export.write_csv(d / "report.csv", rows, builder.SOFTWARE_COLUMNS if kind == "software_hosts" else builder.HOST_COLUMNS)
+        cols = audit.AUDIT_COLUMNS if kind == "version_audit" else builder.SOFTWARE_COLUMNS if kind == "software_hosts" else builder.HOST_COLUMNS
+        export.write_csv(d / "report.csv", rows, cols)
         export.write_xlsx(d / "report.xlsx", kind, rows, summary, meta)
 
     async def recover_orphans(self) -> int:

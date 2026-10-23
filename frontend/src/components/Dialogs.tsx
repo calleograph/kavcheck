@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "./Icons";
 
 /** Модальное окно: фокус внутрь и возврат, Escape и щелчок по фону закрывают, Tab не уходит за пределы окна; появление и закрытие анимированы. */
@@ -25,14 +26,14 @@ export function Modal({ title, onClose, children, wide, footer }: { title: strin
     const ov = document.body.style.overflow; document.body.style.overflow = "hidden";
     return () => { document.removeEventListener("keydown", key); document.body.style.overflow = ov; prev?.focus?.(); };
   }, [close]);
-  return (
+  // портал в body: окно не зависит от того, где объявлено (вложенные формы, карточки с overflow, стек z-index)
+  return createPortal(
     <div className={`modal-back ${closing ? "closing" : ""}`} onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
       <div className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} ref={ref} tabIndex={-1}>
         <div className="modal-head"><h2>{title}</h2><button className="btn ghost icon modal-x" onClick={close} aria-label="Закрыть"><Icon name="close" /></button></div>
         <div className="modal-body">{children}{footer && <div className="modal-foot">{footer}</div>}</div>
       </div>
-    </div>
-  );
+    </div>, document.body);
 }
 
 /** Подтверждение необратимого действия; `typed` — слово для ввода при самых опасных операциях. */

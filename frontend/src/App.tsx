@@ -8,7 +8,8 @@ import ChangePasswordPage from "./pages/ChangePasswordPage";
 import DashboardPage from "./pages/DashboardPage";
 import SoftwarePage from "./pages/SoftwarePage";
 import HostsPage, { HostPage } from "./pages/HostsPage";
-import VulnsPage from "./pages/VulnsPage";
+import VulnsPage, { VulnHostPage } from "./pages/VulnsPage";
+import ProductPage from "./pages/ProductPage";
 import { EventsPage, ProtectionPage } from "./pages/PlannedPages";
 import ReportsPage from "./pages/ReportsPage";
 import { fmt, versionLabel } from "./util";
@@ -19,7 +20,7 @@ export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; 
 
 const NAV: { to: string; label: string; icon: IconName; soon?: boolean; end?: boolean }[] = [
   { to: "/", label: "Главная", icon: "home", end: true },
-  { to: "/software", label: "Программное обеспечение", icon: "layers" },
+  { to: "/software", label: "Программы", icon: "layers" },
   { to: "/hosts", label: "Компьютеры", icon: "monitor" },
   { to: "/vulnerabilities", label: "Уязвимости", icon: "bug" },
   { to: "/protection", label: "Состояние защиты", icon: "shieldPulse", soon: true },
@@ -28,7 +29,7 @@ const NAV: { to: string; label: string; icon: IconName; soon?: boolean; end?: bo
 ];
 export const ADMIN_TABS: { id: string; label: string }[] = [
   { id: "system", label: "Состояние системы" }, { id: "sources", label: "Источники KSC" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAP" },
-  { id: "general", label: "Общие настройки" }, { id: "rules", label: "Правила группировки" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
+  { id: "general", label: "Общие настройки" }, { id: "catalog", label: "Каталог программ" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
 ];
 
 type Theme = "system" | "light" | "dark";
@@ -154,7 +155,7 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
               {ADMIN_TABS.map((t) => {
                 const active = inAdmin && tab === t.id;
                 return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>
-                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", rules: "branch", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
+                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", catalog: "layers", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
               })}
             </>}
           </div>
@@ -214,9 +215,11 @@ export default function App() {
         <Routes>
           <Route path="/" element={<DashboardPage key={currentId} ctx={ctx} />} />
           <Route path="/software" element={<SoftwarePage key={currentId} ctx={ctx} />} />
+          <Route path="/software/p/:key" element={<ProductPage key={currentId} ctx={ctx} />} />
           <Route path="/hosts" element={<HostsPage key={currentId} ctx={ctx} />} />
           <Route path="/hosts/:hostId" element={<HostPage key={currentId} ctx={ctx} />} />
           <Route path="/vulnerabilities" element={<VulnsPage key={currentId} ctx={ctx} />} />
+          <Route path="/vulnerabilities/hosts/:hostId" element={<VulnHostPage key={currentId} ctx={ctx} />} />
           <Route path="/protection" element={<ProtectionPage />} />
           <Route path="/events" element={<EventsPage />} />
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />

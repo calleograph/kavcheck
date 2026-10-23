@@ -39,22 +39,24 @@ def product_row(r: dict, counts: dict | None = None) -> dict:
             "upstream_version": versions.upstream(r.get("version") or ""), "installs": int(c.get("installs", 0)), "hosts": int(c.get("hosts", 0))}
 
 
-async def install_counts(client: SourceClient, product_ids: list[int]) -> dict[int, dict]:
+async def install_counts(client: SourceClient, product_ids: list[int], active_days: int | None = None) -> dict[int, dict]:
+    """Установок и компьютеров на запись реестра; active_days — только компьютеры, подключавшиеся к KSC за этот срок (глобальный фильтр)."""
     out: dict[int, dict] = {}
     for k in range(0, len(product_ids), 500):
         chunk = product_ids[k:k + 500]
-        for r in await client.run(q.INSTALL_COUNTS.format(ids=q.ids_list(chunk)), max_rows=len(chunk) + 1):
+        sql = (q.INSTALL_COUNTS_ACTIVE if active_days else q.INSTALL_COUNTS).format(ids=q.ids_list(chunk))
+        for r in await client.run(sql, {"days": int(active_days)} if active_days else None, max_rows=len(chunk) + 1):
             out[int(r["product_id"])] = {"installs": int(r["installs"]), "hosts": int(r["hosts"])}
     return out
 
 
-async def registry_page(client: SourceClient, *, offset: int, limit: int, sort: str = "name", desc: bool = False, **filters) -> dict:
+async def registry_page(client: SourceClient, *, offset: int, limit: int, sort: str = "name", desc: bool = False, active_days: int | None = None, **filters) -> dict:
     where, params = products_where(**filters)
     col = _SORT.get(sort, "p.wstrDisplayName")
     order = f"{col} {'DESC' if desc else 'ASC'}, p.nId"
     rows = await client.run(q.PRODUCTS_PAGE.format(where=where, order=order), {**params, "offset": offset, "limit": limit}, max_rows=limit)
     total = int((await client.run(q.PRODUCTS_COUNT.format(where=where), params, max_rows=1))[0]["n"])
-    counts = await install_counts(client, [int(r["product_id"]) for r in rows]) if rows else {}
+    counts = await install_counts(client, [int(r["product_id"]) for r in rows], active_days) if rows else {}
     return {"items": [product_row(r, counts) for r in rows], "total": total, "offset": offset, "limit": limit}
 
 

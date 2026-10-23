@@ -25,7 +25,7 @@ class _Group(BaseModel):
 class GeneralSettings(_Group):
     """Общие параметры: порог активности устройств, часовой пояс, название установки."""
     site_name: str = Field(default="KAV Checker", max_length=80)
-    activity_days: int = Field(default=7, ge=1, le=3650)             # устройство считается актуальным, если подключалось к KSC за N суток
+    activity_days: int = Field(default=30, ge=1, le=3650)            # «Показывать компьютеры, активные за последние N суток»: остальные скрыты в рабочих разделах
     timezone: str = Field(default="UTC", max_length=64)
     report_keep_days: int = Field(default=90, ge=1, le=3650)         # сколько хранить сформированные отчёты
     journal_keep_days: int = Field(default=90, ge=1, le=3650)

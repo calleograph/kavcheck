@@ -35,7 +35,15 @@ CREATE TABLE dbo.vapm_product_exact_version (nId bigint PRIMARY KEY, nProductId 
 CREATE TABLE dbo.vapm_product_vulnerability (nId bigint PRIMARY KEY, nVulnerabilityDescrId bigint NULL, nProductExactVersionId bigint NULL, bIgnore bit NOT NULL DEFAULT 0);
 CREATE TABLE dbo.vapm_vulnerability_occurence (nId bigint PRIMARY KEY, nHostId bigint, nProductVulnerabilityId bigint, nVulnerabilityDescrId bigint NULL, strSoftwareInventoryProductId char(32) NULL,
   tmDetectTime datetime, tmDisappearanceTime datetime NULL, bIgnore bit NOT NULL DEFAULT 0, bPatchesAvailable bit NOT NULL DEFAULT 0);
-CREATE TABLE dbo.v_akpub_ev_event (nId bigint PRIMARY KEY, nHostId bigint, tmRiseTime datetime, strEventType varchar(64), nSeverity int, wstrPar2 nvarchar(256), wstrPar5 nvarchar(256), wstrPar8 nvarchar(64));
+CREATE TABLE dbo.v_akpub_ev_event (nId bigint PRIMARY KEY, nHostId bigint, tmRiseTime datetime, tmRegistrationTime datetime NULL, strEventType varchar(64), wstrEventTypeDisplayName nvarchar(256) NULL,
+  nSeverity int, wstrProductNameId nvarchar(64) NULL, wstrProductVersionId nvarchar(64) NULL, wstrDescription nvarchar(1000) NULL, wstrPar1 nvarchar(256) NULL, wstrPar2 nvarchar(256),
+  wstrPar3 nvarchar(256) NULL, wstrPar4 nvarchar(256) NULL, wstrPar5 nvarchar(256), wstrPar7 nvarchar(256) NULL, wstrPar8 nvarchar(64), wstrTaskDisplayName nvarchar(256) NULL);
+CREATE INDEX IX_ev_rise ON dbo.v_akpub_ev_event (tmRiseTime);
+-- индексы как в KSC 15.1 (UK_hst_inventory_products__strID, IX_vapm_vulnerability_occurence__complex*)
+CREATE UNIQUE INDEX UK_hst_inventory_products__strID ON dbo.hst_inventory_products (strID);
+CREATE INDEX IX_vapm_occ_host ON dbo.vapm_vulnerability_occurence (nHostId, nProductVulnerabilityId, tmDisappearanceTime, bIgnore);
+CREATE INDEX IX_vapm_occ_pv ON dbo.vapm_vulnerability_occurence (nProductVulnerabilityId, tmDisappearanceTime, bIgnore) INCLUDE (nHostId, bPatchesAvailable, strSoftwareInventoryProductId);
+CREATE INDEX IX_ev_host ON dbo.v_akpub_ev_event (nHostId, tmRiseTime);
 GO
 -- Группы: 0 — корень управляемых, 1 — нераспределённые, 10 — Серверы, 11 — Web (внутри Серверов), 12 — Рабочие станции
 INSERT INTO dbo.v_akpub_adm_group VALUES (0, N'Управляемые устройства', 2, 0), (1, N'Нераспределенные устройства', NULL, 0), (10, N'Серверы', 0, 0), (11, N'Web', 10, 0), (12, N'Рабочие станции', 0, 0);
@@ -97,7 +105,43 @@ INSERT INTO dbo.v_vapm_product VALUES (7001,N'Google Chrome');
 INSERT INTO dbo.vapm_product_exact_version VALUES (7101,7001,N'120.0.6099.130');
 INSERT INTO dbo.vapm_product_vulnerability VALUES (8001,5001,7101,0),(8002,5002,7101,0);
 INSERT INTO dbo.vapm_vulnerability_occurence VALUES (9001,7,8001,NULL,REPLICATE('b',31)+'8',DATEADD(day,-30,GETUTCDATE()),NULL,0,1),(9002,8,8001,NULL,NULL,DATEADD(day,-20,GETUTCDATE()),NULL,0,1),(9003,7,8002,5002,REPLICATE('b',31)+'8',DATEADD(day,-30,GETUTCDATE()),DATEADD(day,-5,GETUTCDATE()),0,0);
-INSERT INTO dbo.v_akpub_ev_event VALUES (1,7,DATEADD(day,-1,GETUTCDATE()),'GNRL_EV_VIRUS_FOUND',4,N'C:\Users\user\Downloads\sample.bin',N'EICAR-Test-File',N'60');
+-- 0.2.0: продукты для каталога и проверки версий (нестандартная нумерация Java и Python для Windows, компоненты, пакеты Linux)
+INSERT INTO dbo.hst_inventory_products (nId, strID, wstrDisplayName, wstrDisplayVersion, wstrPublisher, nPlatformTypeMask, bIsMsi, tmFirstAppear) VALUES
+ (150, REPLICATE('d',31)+'0', N'Mozilla Firefox (x64 ru)', N'125.0.3', N'Mozilla', 1, 0, DATEADD(day,-20,GETUTCDATE())),
+ (151, REPLICATE('d',31)+'1', N'Mozilla Firefox ESR (x64 ru)', N'115.10.0', N'Mozilla', 1, 0, DATEADD(day,-120,GETUTCDATE())),
+ (152, REPLICATE('d',31)+'2', N'Java 8 Update 401 (64-bit)', N'8.0.4010.7', N'Oracle Corporation', 1, 1, DATEADD(day,-40,GETUTCDATE())),
+ (153, REPLICATE('d',31)+'3', N'Java 8 Update 391 (64-bit)', N'8.0.3910.13', N'Oracle Corporation', 1, 1, DATEADD(day,-200,GETUTCDATE())),
+ (154, REPLICATE('d',31)+'4', N'Python 3.12.3 Core Interpreter (64-bit)', N'3.12.3150.0', N'Python Software Foundation', 1, 1, DATEADD(day,-30,GETUTCDATE())),
+ (155, REPLICATE('d',31)+'5', N'Python 3.12.3 Standard Library (64-bit)', N'3.12.3150.0', N'Python Software Foundation', 1, 1, DATEADD(day,-30,GETUTCDATE())),
+ (156, REPLICATE('d',31)+'6', N'libssl1.1', N'1.1.1w-0+deb11u1', N'Debian OpenSSL Team <team@example.org>', 2, 0, DATEADD(day,-300,GETUTCDATE())),
+ (157, REPLICATE('d',31)+'7', N'openssl', N'3.0.13-0ubuntu3.1', N'Ubuntu Developers <team@example.org>', 2, 0, DATEADD(day,-50,GETUTCDATE())),
+ (158, REPLICATE('d',31)+'8', N'openssh-server', N'1:8.4p1-5+deb11u3', N'Debian OpenSSH Maintainers <team@example.org>', 2, 0, DATEADD(day,-300,GETUTCDATE())),
+ (159, REPLICATE('d',31)+'9', N'Microsoft Edge', N'124.0.2478.80', N'Microsoft Corporation', 1, 0, DATEADD(day,-15,GETUTCDATE())),
+ (160, REPLICATE('e',31)+'0', N'Notepad++ (64-bit x64)', N'8.6.4', N'Notepad++ Team', 1, 0, DATEADD(day,-60,GETUTCDATE())),
+ (161, REPLICATE('e',31)+'1', N'Mozilla Maintenance Service', N'125.0.3', N'Mozilla', 1, 0, DATEADD(day,-20,GETUTCDATE()));
+INSERT INTO dbo.hst_inventory_hstprds (nHostId, nProduct, tmInstallDate, bDeleted) VALUES
+ (6,150,DATEADD(day,-20,GETUTCDATE()),0),(6,161,DATEADD(day,-20,GETUTCDATE()),0),(6,159,DATEADD(day,-15,GETUTCDATE()),0),(6,154,DATEADD(day,-30,GETUTCDATE()),0),
+ (6,155,DATEADD(day,-30,GETUTCDATE()),0),(6,160,DATEADD(day,-60,GETUTCDATE()),0),(6,152,DATEADD(day,-40,GETUTCDATE()),0),
+ (7,151,DATEADD(day,-120,GETUTCDATE()),0),(7,153,DATEADD(day,-200,GETUTCDATE()),0),
+ (1,159,DATEADD(day,-15,GETUTCDATE()),0),(1,153,DATEADD(day,-200,GETUTCDATE()),0),
+ (2,156,DATEADD(day,-300,GETUTCDATE()),0),(2,158,DATEADD(day,-300,GETUTCDATE()),0),(3,156,DATEADD(day,-300,GETUTCDATE()),0),(6,157,DATEADD(day,-40,GETUTCDATE()),0);
+-- уязвимости 0.2.0: Firefox на ws-001 (высокая), Java 8u391 на ksc-server (критическая и предупреждение), исправление доступно не везде
+INSERT INTO dbo.vapm_vulnerability_descr VALUES (5003,N'KLA10003',2,N'https://threats.kaspersky.com/en/vulnerability/KLA10003',0),(5004,N'KLA10004',4,N'https://threats.kaspersky.com/en/vulnerability/KLA10004',0),
+ (5005,N'KLA10005',1,N'https://threats.kaspersky.com/en/vulnerability/KLA10005',0);
+INSERT INTO dbo.vapm_vulnerability_names VALUES (5003,3,N'CVE-2024-1111'),(5004,3,N'CVE-2024-2222'),(5004,6,N'5034441'),(5005,5,N'MS24-001');
+INSERT INTO dbo.v_vapm_product VALUES (7002,N'Mozilla Firefox'),(7003,N'Oracle Java');
+INSERT INTO dbo.vapm_product_exact_version VALUES (7102,7002,N'125.0.3'),(7103,7003,N'8.0.391');
+INSERT INTO dbo.vapm_product_vulnerability VALUES (8003,5003,7102,0),(8004,5004,7103,0),(8005,5005,7103,0);
+INSERT INTO dbo.vapm_vulnerability_occurence VALUES (9004,6,8003,NULL,REPLICATE('d',31)+'0',DATEADD(day,-3,GETUTCDATE()),NULL,0,1),
+ (9005,1,8004,NULL,REPLICATE('d',31)+'3',DATEADD(day,-60,GETUTCDATE()),NULL,0,0),(9006,1,8005,NULL,REPLICATE('d',31)+'3',DATEADD(day,-60,GETUTCDATE()),NULL,0,1);
+INSERT INTO dbo.v_akpub_ev_event (nId, nHostId, tmRiseTime, tmRegistrationTime, strEventType, wstrEventTypeDisplayName, nSeverity, wstrProductNameId, wstrDescription, wstrPar1, wstrPar2, wstrPar3, wstrPar4, wstrPar5, wstrPar7, wstrPar8) VALUES
+ (1,7,DATEADD(day,-1,GETUTCDATE()),DATEADD(day,-1,GETUTCDATE()),'GNRL_EV_VIRUS_FOUND',N'Обнаружен вредоносный объект',4,N'KES',N'Обнаружен объект',NULL,N'C:\Users\user\Downloads\sample.bin',NULL,NULL,N'EICAR-Test-File',N'EXAMPLE\user',N'60'),
+ (2,6,DATEADD(hour,-5,GETUTCDATE()),DATEADD(hour,-5,GETUTCDATE()),'GNRL_EV_VIRUS_FOUND',N'Обнаружен вредоносный объект',4,N'KES',N'Обнаружен объект',NULL,N'C:\Users\user\AppData\Local\Temp\tool.exe',NULL,NULL,N'HEUR:Trojan.Win32.Generic',N'EXAMPLE\user',N'61'),
+ (3,6,DATEADD(hour,-5,GETUTCDATE()),DATEADD(hour,-5,GETUTCDATE()),'GNRL_EV_OBJECT_DELETED',N'Объект удалён',2,N'KES',N'Объект удалён',NULL,N'C:\Users\user\AppData\Local\Temp\tool.exe',NULL,NULL,NULL,NULL,NULL),
+ (4,2,DATEADD(hour,-30,GETUTCDATE()),DATEADD(hour,-30,GETUTCDATE()),'GNRL_EV_ATTACK_DETECTED',N'Обнаружена сетевая атака',4,N'kesl',N'Сетевая атака',N'Scan.Generic.PortScan.TCP',N'TCP',N'3325256824',N'22',NULL,NULL,NULL),
+ (5,7,DATEADD(day,-2,GETUTCDATE()),DATEADD(day,-2,GETUTCDATE()),'GNRL_EV_OBJECT_NOTCURED',N'Объект не вылечен',3,N'KES',N'Объект не вылечен',NULL,N'C:\Users\user\Downloads\sample.bin',NULL,NULL,N'EICAR-Test-File',NULL,NULL),
+ (6,1,DATEADD(hour,-2,GETUTCDATE()),DATEADD(hour,-2,GETUTCDATE()),'KLEVP_GroupTaskSyncState',N'Синхронизация задачи',1,N'1103',N'Служебное',NULL,NULL,NULL,NULL,NULL,NULL,NULL),
+ (7,6,DATEADD(day,-40,GETUTCDATE()),DATEADD(day,-40,GETUTCDATE()),'GNRL_EV_VIRUS_FOUND',N'Обнаружен вредоносный объект',4,N'KES',N'Обнаружен объект',NULL,N'D:\old\setup.exe',NULL,NULL,N'not-a-virus:RiskTool.Win32.Example',NULL,N'65');
 GO
 -- Учётная запись только для чтения (так же, как рекомендуется для реальной базы KSC)
 IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'kavcheck_ro') CREATE LOGIN kavcheck_ro WITH PASSWORD = 'KavCheck-Test-Pass-1', CHECK_POLICY = OFF; -- private-data: ignore (тестовый пароль синтетической базы)

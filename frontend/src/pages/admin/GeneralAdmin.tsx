@@ -14,8 +14,8 @@ function Group({ group, title, intro, children }: { group: string; title: string
   const dirty = base !== JSON.stringify(v);
   const save = async (e: FormEvent) => { e.preventDefault(); setErr(""); setBusy(true); try { const x = await api.admin.saveSettings(group, v); setV(x); setBase(JSON.stringify(x)); show("Настройки сохранены"); } catch (y) { setErr((y as ApiError).message); } finally { setBusy(false); } };
   return (
-    <form className="card" onSubmit={save}>
-      <h2>{title}</h2><p className="muted small" style={{ marginBottom: 16, maxWidth: "76ch" }}>{intro}</p>
+    <form className="card form" onSubmit={save}>
+      <h2>{title}</h2><p className="muted small intro">{intro}</p>
       {children(v, (k, val) => setV({ ...v, [k]: val }))}
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       <div className="form-actions"><button className="btn primary" aria-busy={busy} disabled={!dirty}><span>Сохранить</span></button>
@@ -30,13 +30,14 @@ const PRESET = [1, 3, 7, 14, 30];
 export default function GeneralAdmin() {
   return (
     <div className="stack">
-      <Group group="general" title="Компьютеры и хранение" intro="Порог активности применяется по умолчанию в разделах и отчётах: компьютер считается актуальным, если его Агент подключался к KSC за это число суток. В каждом отчёте порог можно изменить или включить все компьютеры.">
-        {(v, set) => { const d = Number(v.activity_days ?? 7); const custom = !PRESET.includes(d); return (<>
-          <label>Порог активности
+      <Group group="general" title="Компьютеры и хранение" intro="Компьютеры, которые давно не подключались к KSC, скрываются в рабочих разделах: программы, карточки продуктов, списки компьютеров, уязвимости и отчёты (подсчёты тоже). Данные о них не удаляются — на каждой странице их можно показать кнопкой «Показать все».">
+        {(v, set) => { const d = Number(v.activity_days ?? 30); const custom = !PRESET.includes(d); return (<>
+          <label>Показывать компьютеры, активные за последние
             <span className="row">
-              <Segmented label="Порог активности" value={custom ? "" : String(d)} onChange={(x) => set("activity_days", Number(x))} options={PRESET.map((p) => [String(p), `${p} сут`] as [string, string])} />
-              <span className="row tight"><input type="number" min={1} max={3650} value={d} onChange={(e) => set("activity_days", Number(e.target.value))} style={{ width: 96 }} aria-label="Произвольное число суток" /><span className="muted small">{custom ? "свой порог" : "или своё число"}</span></span>
-            </span></label>
+              <Segmented label="Показывать компьютеры, активные за последние" value={custom ? "" : String(d)} onChange={(x) => set("activity_days", Number(x))} options={PRESET.map((p) => [String(p), `${p} сут`] as [string, string])} />
+              <span className="row tight"><input type="number" min={1} max={3650} value={d} onChange={(e) => set("activity_days", Number(e.target.value))} className="w-num" aria-label="Произвольное число суток" /><span className="muted small">{custom ? "своё значение" : "или своё число"}</span></span>
+            </span>
+            <span className="help">Активность — давность последнего подключения Агента администрирования к KSC. После изменения каталог программ пересчитывается автоматически.</span></label>
           <div className="cols">
             <label>Название установки<input value={String(v.site_name ?? "")} onChange={(e) => set("site_name", e.target.value)} maxLength={80} /><span className="help">Показывается в меню и заголовке вкладки</span></label>
             <label>Часовой пояс<input className="mono" value={String(v.timezone ?? "UTC")} onChange={(e) => set("timezone", e.target.value)} placeholder="Europe/Moscow" /><span className="help">Даты KSC хранятся в UTC; интерфейс показывает время браузера</span></label>

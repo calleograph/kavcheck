@@ -2,6 +2,14 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { num } from "../util";
 import { Icon, type IconName } from "./Icons";
 
+/** Заголовок сортируемого столбца: щелчок или Enter меняет порядок. */
+export function SortTh({ k, label, sort, desc, onSort, className = "" }: { k: string; label: string; sort: string; desc: boolean; onSort: (k: string) => void; className?: string }) {
+  const on = sort === k;
+  return <th className={`sortable ${className}`} aria-sort={on ? (desc ? "descending" : "ascending") : undefined} onClick={() => onSort(k)} tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSort(k); } }}>
+    {label}<Icon name={on ? (desc ? "chevronD" : "chevronU") : "sort"} size={13} className="sort-ic" /></th>;
+}
+
+
 /** Заголовок страницы: название, пояснение и действия справа. */
 export function PageHead({ title, lede, children, back }: { title: ReactNode; lede?: ReactNode; children?: ReactNode; back?: ReactNode }) {
   return (
@@ -128,4 +136,37 @@ export function Spectrum({ segs, selected, onToggle, onHover, hover, size, label
 /** Плавающая панель действий над выбранными строками. */
 export function Dock({ children, label }: { children: ReactNode; label: string }) {
   return <div className="dock" role="toolbar" aria-label={label}>{children}</div>;
+}
+
+/** Строка о скрытых устройствах: глобальный фильтр активности прячет давно не подключавшиеся к KSC компьютеры. */
+export function HiddenNote({ hidden, days, all, onToggle }: { hidden: number; days: number | null | undefined; all: boolean; onToggle: () => void }) {
+  if (!all && !hidden) return null;
+  return (
+    <p className="hidden-note">
+      <Icon name={all ? "eye" : "eyeOff"} size={15} />
+      {all ? <span>Показаны все компьютеры, включая не подключавшиеся к KSC дольше {days ?? "…"} сут.</span>
+        : <span>Скрыто {num(hidden)} {hidden % 10 === 1 && hidden % 100 !== 11 ? "компьютер" : "компьютеров"} без связи с KSC дольше {days ?? "…"} сут.</span>}
+      <button type="button" className="link-btn" onClick={onToggle}>{all ? "Скрыть неактивные" : "Показать все"}</button>
+    </p>
+  );
+}
+
+/** Счётчики уязвимостей по уровням опасности: нули приглушены, чтобы взгляд цеплялся за опасное. */
+export function SevCounts({ critical, high, warning, compact }: { critical: number; high: number; warning: number; compact?: boolean }) {
+  const cell = (n: number, cls: string, title: string) => <span className={`sev ${cls} ${n ? "" : "zero"}`} title={`${title}: ${n}`}>{compact ? num(n) : <><b>{num(n)}</b> {title.toLowerCase()}</>}</span>;
+  return <span className="sev-row">{cell(critical, "crit", "Критические")}{cell(high, "high", "Высокие")}{cell(warning, "warn", "Предупреждения")}</span>;
+}
+
+/** Ввод списка значений (версии, ветки): Enter или запятая добавляют, Backspace в пустом поле убирает последнее. */
+export function TagInput({ value, onChange, placeholder, label, mono = true }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string; label: string; mono?: boolean }) {
+  const [text, setText] = useState("");
+  const add = (raw: string) => { const parts = raw.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean); if (parts.length) onChange([...value, ...parts.filter((p) => !value.includes(p))]); setText(""); };
+  return (
+    <div className="tag-input" onClick={(e) => (e.currentTarget.querySelector("input") as HTMLInputElement | null)?.focus()}>
+      {value.map((v) => <span key={v} className={`tag ${mono ? "mono" : ""}`}>{v}<button type="button" aria-label={`Убрать ${v}`} onClick={() => onChange(value.filter((x) => x !== v))}><Icon name="close" size={12} /></button></span>)}
+      <input value={text} aria-label={label} placeholder={value.length ? "" : placeholder} onChange={(e) => { const t = e.target.value; if (/[,;]/.test(t)) add(t); else setText(t); }}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(text); } else if (e.key === "Backspace" && !text && value.length) onChange(value.slice(0, -1)); }}
+        onBlur={() => text && add(text)} />
+    </div>
+  );
 }

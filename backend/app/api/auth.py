@@ -23,7 +23,8 @@ log = logging.getLogger("app.auth")
 async def _me(request: Request, db: AsyncSession, su: SessionUser) -> MeOut:
     general = await request.app.state.settings_svc.get(db, "general")
     return MeOut(user=UserOut(id=su.user_id, username=su.username, display_name=su.display_name, role=su.role, is_admin=su.is_admin, local=su.local),
-                 csrf_token=su.csrf, must_change_password=su.must_change, current_source_id=str(su.current_source_id) if su.current_source_id else None, site_name=general.site_name)
+                 csrf_token=su.csrf, must_change_password=su.must_change, current_source_id=str(su.current_source_id) if su.current_source_id else None, site_name=general.site_name,
+                 activity_days=general.activity_days)
 
 
 @router.post("/login", response_model=MeOut)
@@ -42,12 +43,13 @@ async def login(body: LoginIn, request: Request, response: Response, db: AsyncSe
         await journal.emit("auth", "login_failed", level="warn", user=body.login[:80], ip=ip, message=exc.message, data={"code": exc.code})
         raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message}, headers={"Retry-After": str(exc.retry_after)} if exc.retry_after else None) from None
     sid = await request.app.state.sessions.create(db, user, ip=ip, ua=request.headers.get("user-agent") or "")
-    # источник по умолчанию — первый доступный
+    # источник: последний выбранный этим пользователем (если ещё доступен), иначе первый доступный
     got = await request.app.state.sessions.get(db, sid)
     su = SessionUser.build(sid, got[0], got[1])
     srcs = await visible_sources(db, su)
     if srcs:
-        await request.app.state.sessions.set_source(db, sid, srcs[0].id)
+        pick = next((s for s in srcs if s.id == user.current_source_id), srcs[0])
+        await request.app.state.sessions.set_source(db, sid, pick.id)
         su = SessionUser.build(sid, *(await request.app.state.sessions.get(db, sid)))
     write_audit(db, actor_user_id=user.id, actor=user.display_name, action="auth.login", target_type="user", target_id=str(user.id), details={"login": user.username, "role": user.role, "local": user.auth_source == "local"})
     await db.commit()
@@ -87,6 +89,10 @@ async def select_source(request: Request, body: dict = Body(...), su: SessionUse
     if src is None or not src.is_active or not su.can_use_source(sid):
         raise HTTPException(status_code=403, detail="Нет доступа к этому источнику")
     await request.app.state.sessions.set_source(db, su.session_id, sid)
+    user = await db.get(User, su.user_id)
+    if user is not None:                       # запоминается для пользователя: следующий вход откроет этот же источник; другие пользователи не затрагиваются
+        user.current_source_id = sid
+        await db.commit()
     return {"current": str(sid)}
 
 

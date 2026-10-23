@@ -56,6 +56,7 @@ class User(Base):
     source_ids: Mapped[list | None] = mapped_column(JSONType)                               # явный список источников, если all_sources = false
     last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    current_source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)   # последний выбранный источник KSC (свой у каждого пользователя)
 
 
 class Session(Base):
@@ -130,12 +131,21 @@ class GroupingRule(Base):
 
 
 class AuditCheck(Base):
-    """Сохранённый сценарий аудита: пользовательский критерий «эти версии потенциально уязвимы»."""
+    """Сохранённая проверка версий: программы, условия версий, целевые версии и источники — запускается повторно одним действием.
+    kind = version_audit (0.2.0+, params — параметры проверки, source_ids — источники); legacy — сценарий 0.1.0 (selection на одном источнике)."""
     __tablename__ = "audit_checks"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="version_audit", server_default="legacy", nullable=False)
+    params: Mapped[dict | None] = mapped_column(JSONType)
+    source_ids: Mapped[list | None] = mapped_column(JSONType)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    shared: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"), nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    selection: Mapped[dict] = mapped_column(JSONType, nullable=False)     # {"product_ids":[…]} | {"rule":"php","branches":[…]} | {"name_like":…,"min_version":…}
+    selection: Mapped[dict | None] = mapped_column(JSONType)     # legacy: {"product_ids":[…]} | {"rule":"php","branches":[…]} | {"name_like":…,"min_version":…}
     cve: Mapped[str | None] = mapped_column(String(300))
     severity: Mapped[str] = mapped_column(String(16), default="medium", server_default="medium", nullable=False)   # low | medium | high | critical
     description: Mapped[str | None] = mapped_column(Text)
@@ -160,8 +170,9 @@ class ReportJob(Base):
     """Фоновое формирование отчёта. Результат — файлы в DATA_DIR/reports/<id>/ (rows.jsonl, report.xlsx, report.csv)."""
     __tablename__ = "report_jobs"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), nullable=False, index=True)
-    source_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="SET NULL"), index=True)   # первый источник (совместимость)
+    source_ids: Mapped[list | None] = mapped_column(JSONType)          # все источники отчёта (version_audit — несколько)
+    source_name: Mapped[str] = mapped_column(String(600), nullable=False)
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     params: Mapped[dict] = mapped_column(JSONType, nullable=False)
@@ -224,4 +235,67 @@ class KscCache(Base):
     payload: Mapped[dict] = mapped_column(JSONType, nullable=False)
 
 
+class CatalogProduct(Base):
+    """Каталог продуктов источника: записи реестра KSC, объединённые в продукты и ветки (строится фоновой задачей, см. ksc/catalog_build.py)."""
+    __tablename__ = "catalog_products"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    publisher: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    publisher_key: Mapped[str] = mapped_column(String(160), nullable=False, default="", index=True)
+    origin: Mapped[str] = mapped_column(String(10), nullable=False, default="auto")        # builtin | auto | manual
+    component: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    platforms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    note: Mapped[str | None] = mapped_column(Text)
+    names: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    versions: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    branches: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    versions_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latest_version: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    scheme: Mapped[str] = mapped_column(String(10), nullable=False, default="numeric")
+    transform: Mapped[str | None] = mapped_column(String(20))
+    hosts_all: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hosts_active: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    installs_all: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    installs_active: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    first_seen: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    search: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    built_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class CatalogState(Base):
+    """Состояние каталога источника: когда построен, по какому порогу активности, отпечаток данных KSC, запрос на перестроение, ошибка."""
+    __tablename__ = "catalog_state"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="empty")       # empty | building | ready | failed
+    built_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    requested_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    signature: Mapped[str | None] = mapped_column(String(200))
+    activity_days: Mapped[int | None] = mapped_column(Integer)
+    overrides_rev: Mapped[str | None] = mapped_column(String(64))
+    progress: Mapped[str | None] = mapped_column(String(300))
+    error: Mapped[str | None] = mapped_column(Text)
+    stats: Mapped[dict | None] = mapped_column(JSONType)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+
+
+class CatalogOverride(Base):
+    """Ручная корректировка каталога (общая для всех источников, сохраняется при обновлении приложения).
+    merge — продукт from_key входит в to_key; split — записи с названием match_name выделяются в продукт to_key/to_name; rename — название и производитель продукта to_key."""
+    __tablename__ = "catalog_overrides"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    from_key: Mapped[str | None] = mapped_column(String(160))
+    match_name: Mapped[str | None] = mapped_column(String(300))
+    to_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    to_name: Mapped[str | None] = mapped_column(String(300))
+    to_publisher: Mapped[str | None] = mapped_column(String(300))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
 Index("ix_event_log_user", EventLog.user)
+Index("ix_catalog_products_hosts", CatalogProduct.source_id, CatalogProduct.hosts_active)

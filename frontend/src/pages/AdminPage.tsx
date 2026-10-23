@@ -5,7 +5,7 @@ import SourcesAdmin from "./admin/SourcesAdmin";
 import UsersAdmin from "./admin/UsersAdmin";
 import LdapAdmin from "./admin/LdapAdmin";
 import GeneralAdmin from "./admin/GeneralAdmin";
-import RulesAdmin from "./admin/RulesAdmin";
+import CatalogAdmin from "./admin/CatalogAdmin";
 import UpdatesAdmin from "./admin/UpdatesAdmin";
 import { AuditAdmin, JournalAdmin } from "./admin/JournalAdmin";
 import SystemAdmin from "./admin/SystemAdmin";
@@ -15,8 +15,8 @@ const LEDE: Record<string, string> = {
   sources: "Подключения к базам Серверов администрирования KSC. Только чтение: используйте учётную запись с ролью db_datareader.",
   users: "Учётные записи, роли и доступ к источникам KSC.",
   ldap: "Вход по учётным записям каталога и роли по группам.",
-  general: "Порог активности компьютеров, сроки хранения и ограничения отчётов.",
-  rules: "Как пакеты объединяются в продукты и по каким признакам определяется ветка версии.",
+  general: "Какие компьютеры показывать в рабочих разделах, сроки хранения и ограничения отчётов.",
+  catalog: "Как записи реестра KSC объединяются в продукты и ветки: состояние каталога, ручные исправления, правила для опытных.",
   updates: "Версия KAV Checker, релизы GitHub, обновление, откат и резервные копии.",
   journal: "Входы, проверки и запросы к источникам, формирование отчётов, ошибки.",
   audit: "Кто, что и когда сделал в KAV Checker.",
@@ -24,7 +24,8 @@ const LEDE: Record<string, string> = {
 
 export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
   const [sp, setSp] = useSearchParams();
-  const tab = ADMIN_TABS.some((t) => t.id === sp.get("tab")) ? sp.get("tab")! : "system";
+  const raw = sp.get("tab") === "rules" ? "catalog" : sp.get("tab");
+  const tab = ADMIN_TABS.some((t) => t.id === raw) ? raw! : "system";
   const go = (id: string) => setSp({ tab: id });
   const label = ADMIN_TABS.find((t) => t.id === tab)!.label;
   return (
@@ -35,7 +36,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "users" && <UsersAdmin ctx={ctx} />}
       {tab === "ldap" && <LdapAdmin />}
       {tab === "general" && <GeneralAdmin />}
-      {tab === "rules" && <RulesAdmin />}
+      {tab === "catalog" && <CatalogAdmin />}
       {tab === "updates" && <UpdatesAdmin />}
       {tab === "journal" && <JournalAdmin />}
       {tab === "audit" && <AuditAdmin />}

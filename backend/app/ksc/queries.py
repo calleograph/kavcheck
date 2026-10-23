@@ -36,6 +36,9 @@ PRODUCTS_BY_IDS = ("SELECT p.nId AS product_id, p.wstrDisplayName AS name, p.wst
                    "FROM dbo.hst_inventory_products p WHERE p.nId IN ({ids})")
 PRODUCTS_BY_LIKE = ("SELECT p.nId AS product_id, p.wstrDisplayName AS name, p.wstrDisplayVersion AS version, p.wstrPublisher AS publisher, p.nPlatformTypeMask AS platform_mask "
                     "FROM dbo.hst_inventory_products p WHERE p.wstrDisplayName LIKE %(like)s {extra} ORDER BY p.nId OFFSET %(offset)s ROWS FETCH NEXT %(limit)s ROWS ONLY")
+INSTALL_COUNTS_ACTIVE = ("SELECT i.nProduct AS product_id, COUNT(*) AS installs, COUNT(DISTINCT i.nHostId) AS hosts FROM dbo.hst_inventory_hstprds i "
+                         "JOIN dbo.v_akpub_host h ON h.nId = i.nHostId AND h.bIsSlaveServer = 0 AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE()) "
+                         "WHERE i.bDeleted = 0 AND i.nProduct IN ({ids}) GROUP BY i.nProduct")
 INSTALL_COUNTS = ("SELECT i.nProduct AS product_id, COUNT(*) AS installs, COUNT(DISTINCT i.nHostId) AS hosts FROM dbo.hst_inventory_hstprds i "
                   "WHERE i.bDeleted = 0 AND i.nProduct IN ({ids}) GROUP BY i.nProduct")
 INSTALLS_BY_PRODUCTS = ("SELECT i.nId AS install_id, i.nHostId AS host_id, i.nProduct AS product_id, i.tmInstallDate AS install_date FROM dbo.hst_inventory_hstprds i "
@@ -83,6 +86,39 @@ JOIN dbo.vapm_vulnerability_descr d ON d.nId = COALESCE(pv.nVulnerabilityDescrId
 JOIN dbo.v_akpub_host h ON h.nId = o.nHostId
 LEFT JOIN dbo.vapm_vulnerability_names n ON n.nVulnerabilityDescrId = d.nId AND n.nSense = 3
 WHERE {where}"""
+
+# --- уязвимости: сводки по компьютерам и программам, список на компьютере
+VULN_FROM_BASE = """FROM dbo.vapm_vulnerability_occurence o
+JOIN dbo.vapm_product_vulnerability pv ON pv.nId = o.nProductVulnerabilityId
+JOIN dbo.vapm_vulnerability_descr d ON d.nId = COALESCE(pv.nVulnerabilityDescrId, o.nVulnerabilityDescrId)
+LEFT JOIN dbo.vapm_product_exact_version ev ON ev.nId = pv.nProductExactVersionId
+LEFT JOIN dbo.v_vapm_product vp ON vp.nId = ev.nProductId"""
+VULN_JOIN_INVENTORY = "LEFT JOIN dbo.hst_inventory_products p ON p.strID = o.strSoftwareInventoryProductId"
+VULN_FROM = VULN_FROM_BASE + "\n" + VULN_JOIN_INVENTORY
+VULN_SEV_SUMS = ("SUM(CASE WHEN d.nKlSeverity = 4 THEN 1 ELSE 0 END) AS critical, SUM(CASE WHEN d.nKlSeverity = 2 THEN 1 ELSE 0 END) AS high, "
+                 "SUM(CASE WHEN d.nKlSeverity = 1 THEN 1 ELSE 0 END) AS warning, COUNT(*) AS total, SUM(CASE WHEN o.bPatchesAvailable = 1 THEN 1 ELSE 0 END) AS patchable")
+# реестр ПО присоединяется только для фильтра по названию программы ({{join_inventory}}): на крупной базе соединение по strID — заметная часть времени
+VULN_HOSTS_AGG = f"""WITH a AS (SELECT o.nHostId AS host_id, {VULN_SEV_SUMS}, COUNT(DISTINCT ev.nProductId) AS products, MAX(o.tmDetectTime) AS last_detected
+{VULN_FROM_BASE}
+{{join_inventory}}
+WHERE {{where}}
+GROUP BY o.nHostId)
+SELECT {HOST_COLS}, a.critical, a.high, a.warning, a.total, a.patchable, a.products, a.last_detected
+FROM a JOIN dbo.v_akpub_host h ON h.nId = a.host_id"""
+VULN_PRODUCTS_AGG = f"""SELECT COALESCE(vp.nId, 0) AS vp_id, COALESCE(vp.wstrName, p.wstrDisplayName, N'') AS name, COUNT(DISTINCT o.nHostId) AS hosts,
+       COUNT(DISTINCT d.nId) AS vulns, {VULN_SEV_SUMS}, MAX(o.tmDetectTime) AS last_detected
+{VULN_FROM}
+JOIN dbo.v_akpub_host h ON h.nId = o.nHostId
+WHERE {{where}}
+GROUP BY COALESCE(vp.nId, 0), COALESCE(vp.wstrName, p.wstrDisplayName, N'')"""
+VULNS_ON_HOST = f"""SELECT TOP (5000) o.nId AS occurrence_id, d.nId AS descr_id, d.wstrPrimaryName AS kla_id, d.nKlSeverity AS severity, d.wstrDescriptionURL AS url,
+       vp.nId AS vp_id, vp.wstrName AS product, ev.strProductDisplVersion AS product_version, p.wstrDisplayName AS app_name, p.wstrDisplayVersion AS app_version,
+       p.wstrPublisher AS publisher, o.tmDetectTime AS detected, o.bPatchesAvailable AS patches_available
+{VULN_FROM}
+WHERE {VULNS_WHERE} AND o.nHostId = %(host)s
+ORDER BY d.nKlSeverity DESC, o.tmDetectTime DESC"""
+VULN_NAMES = "SELECT n.nVulnerabilityDescrId AS descr_id, n.nSense AS sense, n.wstrName AS name FROM dbo.vapm_vulnerability_names n WHERE n.nSense IN (3, 5, 6) AND n.nVulnerabilityDescrId IN ({ids})"
+VULN_CVE_EXISTS = "EXISTS (SELECT 1 FROM dbo.vapm_vulnerability_names n WHERE n.nVulnerabilityDescrId = d.nId AND n.nSense = 3 AND n.wstrName LIKE %(cve)s)"
 
 # Объекты, необходимые функциям: по ним проверяется совместимость источника при добавлении
 FEATURE_OBJECTS = {

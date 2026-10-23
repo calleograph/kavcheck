@@ -4,9 +4,8 @@ import { api, type ApiError, type Host } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { ActivityBadge, Fetched, Pager } from "../components/Common";
 import { Icon } from "../components/Icons";
-import { Empty, PageHead, Segmented, SkelRows } from "../components/ui";
+import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh } from "../components/ui";
 import { fmt, fmtDate, num } from "../util";
-import { SortTh } from "./SoftwarePage";
 
 const DAYS = [1, 3, 7, 14, 30];
 type Activity = "all" | "active" | "inactive";
@@ -14,13 +13,13 @@ type Activity = "all" | "active" | "inactive";
 export default function HostsPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
   const [q, setQ] = useState(sp.get("q") ?? ""); const [group, setGroup] = useState(""); const [os, setOs] = useState("");
-  const [activity, setActivity] = useState<Activity>((sp.get("activity") as Activity) || "all");
+  const [activity, setActivity] = useState<Activity>((sp.get("activity") as Activity) || "active");
   const [days, setDays] = useState<string>("");
   const [customDays, setCustomDays] = useState("");
   const [sort, setSort] = useState("name"); const [desc, setDesc] = useState(false);
   const [applied, setApplied] = useState({ q, group, os });
   const [offset, setOffset] = useState(0);
-  const [data, setData] = useState<{ items: Host[]; total: number; activity_days: number; fetched_at: string } | null>(null);
+  const [data, setData] = useState<{ items: Host[]; total: number; hidden: number; activity_days: number; fetched_at: string } | null>(null);
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   useEffect(() => { const t = window.setTimeout(() => { setApplied({ q, group, os }); setOffset(0); }, 350); return () => window.clearTimeout(t); }, [q, group, os]);
   const threshold = days === "custom" ? (Number(customDays) || undefined) : days ? Number(days) : undefined;
@@ -29,7 +28,7 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
     setBusy(true);
     api.hosts.list({ ...applied, activity, days: threshold, sort, desc, offset, limit: 50 }).then((r) => { setData(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)).finally(() => setBusy(false));
   }, [ctx.current, applied, activity, threshold, sort, desc, offset]);
-  useEffect(() => { setSp((p) => { if (activity === "all") p.delete("activity"); else p.set("activity", activity); return p; }, { replace: true }); }, [activity, setSp]);
+  useEffect(() => { setSp((p) => { if (activity === "active") p.delete("activity"); else p.set("activity", activity); return p; }, { replace: true }); }, [activity, setSp]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } setOffset(0); };
   const eff = threshold || data?.activity_days || 7;
@@ -42,7 +41,7 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя компьютера или DNS-имя" aria-label="Поиск" /></div>
         <input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа администрирования" aria-label="Группа" style={{ width: 220 }} />
         <input value={os} onChange={(e) => setOs(e.target.value)} placeholder="ОС содержит" aria-label="ОС" style={{ width: 170 }} />
-        <Segmented<Activity> label="Связь с KSC" value={activity} onChange={(v) => { setActivity(v); setOffset(0); }} options={[["all", "Все"], ["active", "Активные"], ["inactive", "Без связи"]]} />
+        <Segmented<Activity> label="Связь с KSC" value={activity} onChange={(v) => { setActivity(v); setOffset(0); }} options={[["active", "Активные"], ["inactive", "Без связи"], ["all", "Все"]]} />
         <label className="inline">Порог
           <select value={days} onChange={(e) => { setDays(e.target.value); setOffset(0); }}>
             <option value="">{data?.activity_days ?? "…"} сут (по настройке)</option>{DAYS.map((d) => <option key={d} value={d}>{d} сут</option>)}<option value="custom">другой…</option>
@@ -65,7 +64,8 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
           </table>)}
       </div>
       {data && <Pager total={data.total} offset={offset} limit={50} onPage={setOffset} />}
-      <p className="muted small" style={{ marginTop: 10 }}>Всего по условиям: {num(data?.total)}. Записи кластеров и подчинённых серверов не считаются компьютерами.</p>
+      {data && (activity === "active" || activity === "all") && <HiddenNote hidden={data.hidden} days={eff} all={activity === "all"} onToggle={() => { setActivity(activity === "all" ? "active" : "all"); setOffset(0); }} />}
+      <p className="muted small mt-sm">Всего по условиям: {num(data?.total)}. Записи кластеров и подчинённых серверов не считаются компьютерами.</p>
     </section>
   );
 }

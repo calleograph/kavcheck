@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 import uuid
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LoginIn(BaseModel):
@@ -25,6 +27,7 @@ class MeOut(BaseModel):
     must_change_password: bool
     current_source_id: str | None
     site_name: str
+    activity_days: int = 30
 
 
 class SourceIn(BaseModel):
@@ -96,16 +99,97 @@ class ReportParams(BaseModel):
     os_contains: str | None = Field(default=None, max_length=200)
 
 
+class AuditItem(BaseModel):
+    """Пункт проверки версий: программа (ключ каталога) или, в дополнительных настройках, шаблон названия / правило группировки."""
+    kind: Literal["product", "pattern", "rule"] = "product"
+    product_key: str | None = Field(default=None, max_length=160)
+    product_name: str | None = Field(default=None, max_length=300)
+    op: Literal["lt", "le", "eq", "ge", "gt", "range", "any"] = "lt"
+    value: str | None = Field(default=None, max_length=100)
+    min: str | None = Field(default=None, max_length=100)
+    max: str | None = Field(default=None, max_length=100)
+    exclude: list[str] = Field(default_factory=list, max_length=50)
+    branches: list[str] = Field(default_factory=list, max_length=100)
+    target_version: str | None = Field(default=None, max_length=100)
+    platform: Literal["windows", "linux", ""] | None = None
+    name_like: str | None = Field(default=None, max_length=200)
+    name_regex: str | None = Field(default=None, max_length=2000)
+    publisher_like: str | None = Field(default=None, max_length=200)
+    rule: str | None = Field(default=None, max_length=64)
+
+    @field_validator("exclude", "branches")
+    @classmethod
+    def _short(cls, v: list[str]) -> list[str]:
+        out = [x.strip()[:100] for x in v if isinstance(x, str)]
+        return [x for x in out if x] if v is not None else []
+
+    @model_validator(mode="after")
+    def _check(self):
+        for f in ("value", "min", "max", "target_version"):
+            v = getattr(self, f)
+            if v is not None:
+                setattr(self, f, v.strip() or None)
+        if self.kind == "product" and not self.product_key:
+            raise ValueError("Выберите программу из каталога")
+        if self.kind == "pattern" and not (self.name_like or self.name_regex):
+            raise ValueError("Укажите шаблон названия (SQL LIKE) или регулярное выражение")
+        if self.kind == "rule" and not self.rule:
+            raise ValueError("Укажите правило группировки")
+        if self.op == "range" and not (self.min or self.max):
+            raise ValueError("Для диапазона укажите хотя бы одну границу")
+        if self.op not in ("range", "any") and not self.value:
+            raise ValueError("Укажите версию для сравнения")
+        if self.name_regex:
+            try:
+                re.compile(self.name_regex, re.I)
+            except re.error as exc:
+                raise ValueError(f"Регулярное выражение некорректно: {exc}") from None
+        return self
+
+
+class AuditParams(BaseModel):
+    """Параметры проверки версий (вид отчёта version_audit)."""
+    items: list[AuditItem] = Field(min_length=1, max_length=50)
+    active_days: int | None = Field(default=None, ge=1, le=3650)
+    include_inactive: bool = False
+    group_contains: str | None = Field(default=None, max_length=200)
+
+
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit)$")
     title: str = Field(default="", max_length=300)
-    params: ReportParams
+    params: dict
+    source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+
+
+class PreviewIn(BaseModel):
+    params: AuditParams
+    source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+    limit: int = Field(default=300, ge=1, le=1000)
+
+
+class SavedCheckIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    params: AuditParams
+    source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+    shared: bool = True
+
+
+class OverrideIn(BaseModel):
+    kind: Literal["merge", "split", "rename"]
+    from_key: str | None = Field(default=None, max_length=160)
+    match_names: list[str] = Field(default_factory=list, max_length=200)
+    to_key: str | None = Field(default=None, max_length=160)
+    to_name: str | None = Field(default=None, max_length=300)
+    to_publisher: str | None = Field(default=None, max_length=300)
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class TemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    kind: str = Field(pattern=r"^(software_hosts|hosts)$")
-    params: ReportParams
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit)$")
+    params: dict
     shared: bool = True
 
 

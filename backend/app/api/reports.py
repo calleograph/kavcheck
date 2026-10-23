@@ -1,4 +1,5 @@
-"""Отчёты: постановка в очередь, состояние, постраничный просмотр, экспорт CSV/XLSX, отмена, шаблоны, сохранённые сценарии аудита."""
+"""Отчёты: постановка в очередь (в том числе проверка версий по нескольким источникам), состояние, просмотр с фильтрами и сортировкой,
+экспорт CSV/XLSX, отмена, повтор, шаблоны, сохранённые проверки версий."""
 from __future__ import annotations
 
 import uuid
@@ -6,55 +7,106 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth.deps import SessionUser, current_source, get_db, require_analyst, require_user
-from ..models import AuditCheck, KscSource, ReportJob, ReportTemplate
-from ..reports.export import read_jsonl
+from ..auth.deps import SessionUser, get_db, require_analyst, require_user
+from ..ksc import versions
+from ..models import AuditCheck, KscSource, ReportJob, ReportTemplate, utcnow
+from ..reports.export import read_all_jsonl
 from ..reports.runner import job_dir
 from ..services.audit import write_audit
-from .schemas import CheckIn, ReportIn, TemplateIn
+from .schemas import AuditParams, ReportIn, ReportParams, SavedCheckIn, TemplateIn
 
 router = APIRouter(prefix="/reports", tags=["reports"])
-KIND_TITLE = {"software_hosts": "Компьютеры с программами", "hosts": "Компьютеры и активность"}
+KIND_TITLE = {"software_hosts": "Компьютеры с программами", "hosts": "Компьютеры и активность", "version_audit": "Проверка версий"}
+
+
+def job_sources(j: ReportJob) -> list[str]:
+    return [str(x) for x in (j.source_ids or ([str(j.source_id)] if j.source_id else []))]
 
 
 def job_out(j: ReportJob) -> dict:
-    return {"id": str(j.id), "source_id": str(j.source_id), "source_name": j.source_name, "kind": j.kind, "title": j.title, "params": j.params, "status": j.status,
-            "progress": j.progress, "created_by": j.created_by, "created_at": j.created_at, "started_at": j.started_at, "finished_at": j.finished_at,
-            "data_fetched_at": j.data_fetched_at, "rows": j.rows, "summary": j.summary, "error": j.error}
+    return {"id": str(j.id), "source_id": str(j.source_id) if j.source_id else None, "source_ids": job_sources(j), "source_name": j.source_name, "kind": j.kind,
+            "title": j.title, "params": j.params, "status": j.status, "progress": j.progress, "created_by": j.created_by, "created_at": j.created_at,
+            "started_at": j.started_at, "finished_at": j.finished_at, "data_fetched_at": j.data_fetched_at, "rows": j.rows, "summary": j.summary, "error": j.error}
+
+
+def can_see(su: SessionUser, j: ReportJob) -> bool:
+    ids = job_sources(j)
+    return bool(ids) and all(su.can_use_source(uuid.UUID(i)) for i in ids)
 
 
 async def _job(db: AsyncSession, job_id: uuid.UUID, su: SessionUser) -> ReportJob:
     j = await db.get(ReportJob, job_id)
-    if j is None or not su.can_use_source(j.source_id):
+    if j is None or not can_see(su, j):
         raise HTTPException(status_code=404, detail="Отчёт не найден")
     return j
+
+
+async def _sources(db: AsyncSession, su: SessionUser, ids: list[uuid.UUID], fallback: uuid.UUID | None) -> list[KscSource]:
+    ids = ids or ([fallback] if fallback else [])
+    if not ids:
+        raise HTTPException(status_code=409, detail={"code": "no_source", "message": "Источник KSC не выбран."})
+    out = []
+    for i in dict.fromkeys(ids):
+        s = await db.get(KscSource, i)
+        if s is None or not s.is_active:
+            raise HTTPException(status_code=409, detail="Источник не найден или выключен")
+        if not su.can_use_source(s.id):
+            raise HTTPException(status_code=403, detail=f"Нет доступа к источнику «{s.name}»")
+        out.append(s)
+    return out
+
+
+def validate_params(kind: str, params: dict) -> dict:
+    try:
+        return (AuditParams if kind == "version_audit" else ReportParams).model_validate(params).model_dump()
+    except ValidationError as exc:
+        msg = "; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())
+        raise HTTPException(status_code=422, detail=msg or "Некорректные параметры") from None
+
+
+async def enqueue(request: Request, db: AsyncSession, su: SessionUser, *, kind: str, title: str, params: dict, sources: list[KscSource], audit_action: str = "report.create",
+                  extra: dict | None = None) -> ReportJob:
+    general = await request.app.state.settings_svc.get(db, "general")
+    if params.get("active_days") is None:
+        params["active_days"] = general.activity_days
+    title = title.strip() or default_title(kind, params)
+    job = ReportJob(id=uuid.uuid4(), source_id=sources[0].id, source_ids=[str(s.id) for s in sources], source_name=", ".join(s.name for s in sources)[:600], kind=kind,
+                    title=title[:300], params=params, created_by=su.display_name, created_by_id=su.user_id)
+    db.add(job)
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action=audit_action, target_type="report", target_id=str(job.id), source_id=sources[0].id,
+                details={"kind": kind, "title": title, "sources": [s.name for s in sources], **(extra or {})})
+    await db.commit()
+    await request.app.state.journal.emit("report", "report_queued", user=su.username, source=job.source_name[:120], message=title, data={"job_id": str(job.id), "kind": kind})
+    return job
+
+
+def default_title(kind: str, params: dict) -> str:
+    if kind == "version_audit":
+        items = params.get("items") or []
+        names = [i.get("product_name") or i.get("product_key") or i.get("name_like") or "?" for i in items]
+        cond = versions.condition_text(items[0].get("op") or "lt", items[0].get("value"), items[0].get("min"), items[0].get("max")) if len(items) == 1 else ""
+        return (f"{names[0]}: версия {cond}" if len(items) == 1 else f"Проверка версий: {', '.join(names[:4])}{'…' if len(names) > 4 else ''}")[:300]
+    return KIND_TITLE.get(kind, kind)
 
 
 @router.get("")
 async def list_jobs(source_only: bool = True, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_user),
                     db: AsyncSession = Depends(get_db)):
-    stmt = select(ReportJob).order_by(ReportJob.created_at.desc()).offset(offset).limit(limit)
-    if source_only and su.current_source_id:
-        stmt = stmt.where(ReportJob.source_id == su.current_source_id)
-    rows = [j for j in (await db.execute(stmt)).scalars().all() if su.can_use_source(j.source_id)]
-    return {"items": [job_out(j) for j in rows]}
+    rows = (await db.execute(select(ReportJob).order_by(ReportJob.created_at.desc()).offset(offset).limit(limit * 3))).scalars().all()
+    cur = str(su.current_source_id) if su.current_source_id else None
+    out = [j for j in rows if can_see(su, j) and (not source_only or not cur or cur in job_sources(j))]
+    return {"items": [job_out(j) for j in out[:limit]]}
 
 
 @router.post("", status_code=201)
-async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_analyst), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
-    general = await request.app.state.settings_svc.get(db, "general")
-    params = body.params.model_dump()
-    if params.get("active_days") is None:
-        params["active_days"] = general.activity_days
-    title = body.title.strip() or KIND_TITLE[body.kind]
-    job = ReportJob(source_id=src.id, source_name=src.name, kind=body.kind, title=title[:300], params=params, created_by=su.display_name, created_by_id=su.user_id)
-    db.add(job)
-    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="report.create", target_type="report", target_id=str(job.id), source_id=src.id, details={"kind": body.kind, "title": title})
-    await db.commit()
-    await request.app.state.journal.emit("report", "report_queued", user=su.username, source=src.name, message=title, data={"job_id": str(job.id), "kind": body.kind})
+async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+    params = validate_params(body.kind, body.params)
+    sources = await _sources(db, su, body.source_ids if body.kind == "version_audit" else body.source_ids[:1], su.current_source_id)
+    job = await enqueue(request, db, su, kind=body.kind, title=body.title, params=params, sources=sources)
     return job_out(job)
 
 
@@ -63,15 +115,36 @@ async def get_job(job_id: uuid.UUID, su: SessionUser = Depends(require_user), db
     return job_out(await _job(db, job_id, su))
 
 
+SORTABLE = {"name", "program", "app_version", "compared_version", "source", "ip", "os", "last_connected", "days_since_connection", "group", "app_name", "activity", "target_version"}
+
+
 @router.get("/{job_id}/rows")
-async def job_rows(job_id: uuid.UUID, request: Request, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000), su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+async def job_rows(job_id: uuid.UUID, request: Request, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000), q: str = Query("", max_length=200),
+                   source: str = Query("", max_length=200), program: str = Query("", max_length=300), sort: str = Query("", max_length=40), desc: bool = False,
+                   su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    """Строки отчёта: фильтры по тексту, источнику и программе, сортировка по столбцу — на сервере."""
     j = await _job(db, job_id, su)
     if j.status != "done":
         raise HTTPException(status_code=409, detail="Отчёт ещё не сформирован")
-    p = job_dir(request.app.state.settings, j.id) / "rows.jsonl"
+    p: Path = job_dir(request.app.state.settings, j.id) / "rows.jsonl"
     if not p.exists():
         raise HTTPException(status_code=410, detail="Файлы отчёта удалены по сроку хранения")
-    return {"items": read_jsonl(p, offset, limit), "total": j.rows, "offset": offset, "limit": limit}
+    rows = read_all_jsonl(p)
+    if source:
+        rows = [r for r in rows if r.get("source") == source]
+    if program:
+        rows = [r for r in rows if r.get("program") == program]
+    if q.strip():
+        needle = q.strip().lower()
+        rows = [r for r in rows if needle in " ".join(str(r.get(k) or "") for k in ("name", "fqdn", "ip", "os", "app_name", "app_version", "group", "program")).lower()]
+    if sort in SORTABLE:
+        if sort in ("app_version", "compared_version"):
+            rows.sort(key=lambda r: versions.sort_key(str(r.get(sort) or "0")), reverse=desc)
+        elif sort == "days_since_connection":
+            rows.sort(key=lambda r: (r.get(sort) is None, r.get(sort) or 0), reverse=desc)
+        else:
+            rows.sort(key=lambda r: str(r.get(sort) or "").lower(), reverse=desc)
+    return {"items": rows[offset:offset + limit], "total": len(rows), "offset": offset, "limit": limit}
 
 
 @router.get("/{job_id}/download/{fmt}")
@@ -105,15 +178,10 @@ async def cancel(job_id: uuid.UUID, su: SessionUser = Depends(require_analyst), 
 
 @router.post("/{job_id}/rerun", status_code=201)
 async def rerun(job_id: uuid.UUID, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
-    """Повторить ранее сформированный отчёт с теми же условиями (на том же источнике)."""
+    """Повторить отчёт с теми же условиями и источниками."""
     old = await _job(db, job_id, su)
-    src = await db.get(KscSource, old.source_id)
-    if src is None or not src.is_active:
-        raise HTTPException(status_code=409, detail="Источник отчёта недоступен")
-    job = ReportJob(source_id=src.id, source_name=src.name, kind=old.kind, title=old.title, params=old.params, created_by=su.display_name, created_by_id=su.user_id)
-    db.add(job)
-    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="report.rerun", target_type="report", target_id=str(job.id), source_id=src.id, details={"from": str(old.id)})
-    await db.commit()
+    sources = await _sources(db, su, [uuid.UUID(i) for i in job_sources(old)], None)
+    job = await enqueue(request, db, su, kind=old.kind, title=old.title, params=dict(old.params or {}), sources=sources, audit_action="report.rerun", extra={"from": str(old.id)})
     return job_out(job)
 
 
@@ -146,7 +214,7 @@ async def list_templates(su: SessionUser = Depends(require_user), db: AsyncSessi
 
 @templates.post("", status_code=201)
 async def create_template(body: TemplateIn, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
-    t = ReportTemplate(name=body.name, kind=body.kind, params=body.params.model_dump(), shared=body.shared, owner_id=su.user_id)
+    t = ReportTemplate(name=body.name, kind=body.kind, params=validate_params(body.kind, body.params), shared=body.shared, owner_id=su.user_id)
     db.add(t)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="template.create", target_type="template", target_id=str(t.id), details={"name": body.name})
     await db.commit()
@@ -165,35 +233,91 @@ async def delete_template(template_id: uuid.UUID, su: SessionUser = Depends(requ
     await db.commit()
 
 
-# ------------------------------------------------------------------------------------------------- сценарии аудита (пользовательские критерии)
+# ------------------------------------------------------------------------------------------------- сохранённые проверки версий
 checks = APIRouter(prefix="/checks", tags=["checks"])
 
 
-def check_out(c: AuditCheck) -> dict:
-    return {"id": str(c.id), "source_id": str(c.source_id), "name": c.name, "selection": c.selection, "cve": c.cve, "severity": c.severity, "description": c.description,
-            "comment": c.comment, "created_by": c.created_by, "created_at": c.created_at, "user_defined": True}
+def check_out(c: AuditCheck, names: dict[str, str]) -> dict:
+    ids = [str(x) for x in (c.source_ids or ([str(c.source_id)] if c.source_id else []))]
+    return {"id": str(c.id), "kind": c.kind, "name": c.name, "description": c.description, "params": c.params if c.kind == "version_audit" else None,
+            "selection": c.selection if c.kind == "legacy" else None, "source_ids": ids, "source_names": [names.get(i, "удалён") for i in ids],
+            "shared": c.shared, "owner_id": str(c.owner_id) if c.owner_id else None, "created_by": c.created_by, "created_at": c.created_at, "updated_at": c.updated_at,
+            "last_run_at": c.last_run_at, "last_job_id": str(c.last_job_id) if c.last_job_id else None, "cve": c.cve, "severity": c.severity}
+
+
+async def _names(db: AsyncSession) -> dict[str, str]:
+    return {str(s.id): s.name for s in (await db.execute(select(KscSource))).scalars().all()}
+
+
+def _visible(su: SessionUser, c: AuditCheck) -> bool:
+    ids = [str(x) for x in (c.source_ids or ([str(c.source_id)] if c.source_id else []))]
+    return (c.shared or c.owner_id == su.user_id or su.is_admin) and all(su.can_use_source(uuid.UUID(i)) for i in ids)
 
 
 @checks.get("")
-async def list_checks(su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
-    rows = (await db.execute(select(AuditCheck).where(AuditCheck.source_id == src.id).order_by(AuditCheck.created_at.desc()))).scalars().all()
-    return {"items": [check_out(c) for c in rows]}
+async def list_checks(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(AuditCheck).order_by(AuditCheck.created_at.desc()))).scalars().all()
+    names = await _names(db)
+    return {"items": [check_out(c, names) for c in rows if _visible(su, c)]}
 
 
 @checks.post("", status_code=201)
-async def create_check(body: CheckIn, su: SessionUser = Depends(require_analyst), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
-    c = AuditCheck(source_id=src.id, name=body.name, selection=body.selection.model_dump(), cve=body.cve, severity=body.severity, description=body.description, comment=body.comment, created_by=su.display_name)
+async def create_check(body: SavedCheckIn, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+    sources = await _sources(db, su, body.source_ids, su.current_source_id)
+    c = AuditCheck(id=uuid.uuid4(), kind="version_audit", name=body.name.strip(), description=body.description, params=body.params.model_dump(),
+                   source_ids=[str(s.id) for s in sources], source_id=None, shared=body.shared, owner_id=su.user_id, created_by=su.display_name, updated_at=utcnow())
     db.add(c)
-    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="check.create", target_type="check", target_id=str(c.id), source_id=src.id, details={"name": body.name, "cve": body.cve})
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="check.create", target_type="check", target_id=str(c.id), details={"name": c.name})
     await db.commit()
-    return check_out(c)
+    return check_out(c, await _names(db))
+
+
+async def _check(db: AsyncSession, su: SessionUser, check_id: uuid.UUID, *, write: bool = False) -> AuditCheck:
+    c = await db.get(AuditCheck, check_id)
+    if c is None or not _visible(su, c):
+        raise HTTPException(status_code=404, detail="Проверка не найдена")
+    if write and c.owner_id not in (None, su.user_id) and not su.is_admin:
+        raise HTTPException(status_code=403, detail="Изменить чужую проверку может только её автор или администратор")
+    return c
+
+
+@checks.put("/{check_id}")
+async def update_check(check_id: uuid.UUID, body: SavedCheckIn, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+    c = await _check(db, su, check_id, write=True)
+    sources = await _sources(db, su, body.source_ids, su.current_source_id)
+    c.kind, c.name, c.description, c.params, c.source_ids, c.shared, c.updated_at = "version_audit", body.name.strip(), body.description, body.params.model_dump(), \
+        [str(s.id) for s in sources], body.shared, utcnow()
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="check.update", target_type="check", target_id=str(c.id), details={"name": c.name})
+    await db.commit()
+    return check_out(c, await _names(db))
 
 
 @checks.delete("/{check_id}", status_code=204)
 async def delete_check(check_id: uuid.UUID, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
-    c = await db.get(AuditCheck, check_id)
-    if c is None or not su.can_use_source(c.source_id):
-        raise HTTPException(status_code=404, detail="Сценарий не найден")
+    c = await _check(db, su, check_id, write=True)
     await db.delete(c)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="check.delete", target_type="check", target_id=str(check_id), source_id=c.source_id)
     await db.commit()
+
+
+@checks.post("/{check_id}/run", status_code=201)
+async def run_check(check_id: uuid.UUID, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+    """Повторный запуск сохранённой проверки без заполнения параметров: создаётся фоновый отчёт по тем же источникам."""
+    c = await _check(db, su, check_id)
+    ids = [uuid.UUID(str(x)) for x in (c.source_ids or ([str(c.source_id)] if c.source_id else []))]
+    actives = [s for s in [await db.get(KscSource, i) for i in ids] if s is not None and s.is_active and su.can_use_source(s.id)]
+    if not actives:
+        raise HTTPException(status_code=409, detail="Источники проверки удалены или выключены")
+    if c.kind == "legacy":
+        params, kind = validate_params("software_hosts", dict(c.selection or {})), "software_hosts"
+        actives = actives[:1]
+    else:
+        params, kind = dict(c.params or {}), "version_audit"
+        params["active_days"] = None              # текущий порог из общих настроек
+    job = await enqueue(request, db, su, kind=kind, title=c.name, params=params, sources=actives, audit_action="check.run", extra={"check": str(c.id)})
+    c.last_run_at, c.last_job_id = utcnow(), job.id
+    await db.commit()
+    return job_out(job)
+
+
+

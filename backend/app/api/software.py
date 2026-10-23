@@ -33,13 +33,17 @@ async def load_rule(db: AsyncSession, key: str) -> Rule:
 
 @router.get("")
 async def registry(request: Request, q_: str = Query("", alias="q", max_length=200), publisher: str = Query("", max_length=200), version: str = Query("", max_length=100),
-                   platform: str = Query("", pattern=r"^(windows|linux)?$"), installed_only: bool = True, sort: str = Query("name"), desc: bool = False,
-                   offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source)):
-    """Исходный реестр программ KSC: название, версия, производитель, установок и уникальных компьютеров. Постранично."""
+                   platform: str = Query("", pattern=r"^(windows|linux)?$"), installed_only: bool = True, sort: str = Query("name"), desc: bool = False, all_hosts: bool = False,
+                   offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source),
+                   db: AsyncSession = Depends(get_db)):
+    """Исходный реестр программ KSC: название, версия, производитель, установок и уникальных компьютеров (активных — по глобальному фильтру). Постранично."""
     client = request.app.state.sources.client(src)
+    general = await request.app.state.settings_svc.get(db, "general")
     try:
-        return await S.registry_page(client, offset=offset, limit=min(limit, request.app.state.settings.ksc_page_max), sort=sort, desc=desc, qtext=q_, publisher=publisher,
-                                     version=version, platform=platform, installed_only=installed_only)
+        out = await S.registry_page(client, offset=offset, limit=min(limit, request.app.state.settings.ksc_page_max), sort=sort, desc=desc, qtext=q_, publisher=publisher,
+                                    version=version, platform=platform, installed_only=installed_only, active_days=None if all_hosts else general.activity_days)
+        out["activity_days"] = general.activity_days
+        return out
     except KscError as exc:
         raise _ksc(exc) from None
 

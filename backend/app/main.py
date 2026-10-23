@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from starlette.datastructures import MutableHeaders
 
-from .api import admin, admin_updates, auth, dashboard, health, hosts, reports, software
+from .api import admin, admin_updates, auth, catalog, dashboard, health, hosts, reports, software, vulns
 from .auth.deps import client_ip
 from .auth.service import AuthService
 from .auth.sessions import SessionStore
@@ -26,6 +26,7 @@ from .models import GroupingRule
 from .reports.runner import Runner
 from .security.secretbox import SecretBox, SecretBoxError
 from .services.audit import Journal, audit_ctx
+from .services.cache import TtlCache
 from .services.settings import SettingsService
 from .services.sources import SourceRegistry
 
@@ -105,6 +106,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         app.state.journal = Journal(session_maker)
         app.state.sources = SourceRegistry(settings, settings_svc)
         app.state.runner = Runner(session_maker, settings, settings_svc, app.state.journal)
+        app.state.cache = TtlCache()
         tasks: list[asyncio.Task] = []
         try:
             await seed_builtin_rules(session_maker)
@@ -150,7 +152,8 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         return JSONResponse({"detail": "Внутренняя база данных временно недоступна. Повторите через несколько секунд."}, status_code=503, headers={"Retry-After": "5"})
 
     prefix = "/api/v1"
-    for r in (auth.router, software.router, hosts.router, reports.router, reports.templates, reports.checks, dashboard.router, admin.router, admin_updates.router, health.router):
+    for r in (auth.router, software.router, catalog.router, hosts.router, vulns.router, reports.router, reports.templates, reports.checks, dashboard.router, admin.router,
+              admin_updates.router, health.router):
         app.include_router(r, prefix=prefix)
     return app
 
