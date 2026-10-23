@@ -1,0 +1,106 @@
+# Compose-описание ОДНОГО экземпляра KAV Checker. Запускать через scripts/*.sh (они задают --env-file и -p ${COMPOSE_PROJECT_NAME}).
+# Порт наружу публикует только web (по умолчанию на loopback — за внешним reverse proxy с TLS). PostgreSQL не публикуется.
+# Образы: по умолчанию готовые из реестра релизов (IMAGE_REPO:IMAGE_TAG); при отсутствии доступа к реестру — локальная сборка (scripts/update.sh --build).
+
+name: ${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required}
+
+x-logging: &default-logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+x-app-env: &app-env
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:?}
+  POSTGRES_USER: ${POSTGRES_USER:?}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+  APP_PUBLIC_URL: ${APP_PUBLIC_URL:?}
+  APP_MASTER_KEY: ${APP_MASTER_KEY:?}
+  COOKIE_SECURE: ${COOKIE_SECURE:-true}
+  TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
+  ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+  SESSION_IDLE_TIMEOUT_SECONDS: ${SESSION_IDLE_TIMEOUT_SECONDS:-28800}
+  SESSION_ABSOLUTE_TIMEOUT_SECONDS: ${SESSION_ABSOLUTE_TIMEOUT_SECONDS:-86400}
+  KSC_MAX_ROWS: ${KSC_MAX_ROWS:-100000}
+  KSC_CONCURRENCY: ${KSC_CONCURRENCY:-3}
+  REPORT_CONCURRENCY: ${REPORT_CONCURRENCY:-2}
+  CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-600}
+  DOCS_ENABLED: ${DOCS_ENABLED:-false}
+  DATA_DIR: /data
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?}
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    volumes:
+      - ${DATA_ROOT:?DATA_ROOT is required}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    stop_grace_period: 30s
+    logging: *default-logging
+
+  backend:
+    image: ${IMAGE_REPO:-kavcheck}-backend:${IMAGE_TAG:?}
+    build:
+      context: ../backend
+      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}" }
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      <<: *app-env
+    volumes:
+      - ${DATA_ROOT}/reports:/data/reports
+      - ${DATA_ROOT}/updater:/data/updater
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 20s
+    logging: *default-logging
+
+  worker:
+    image: ${IMAGE_REPO:-kavcheck}-backend:${IMAGE_TAG:?}
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      <<: *app-env
+    command: ["python", "-m", "app.worker"]
+    volumes:
+      - ${DATA_ROOT}/reports:/data/reports
+    stop_grace_period: 60s
+    logging: *default-logging
+
+  web:
+    image: ${IMAGE_REPO:-kavcheck}-web:${IMAGE_TAG:?}
+    build:
+      context: ../frontend
+      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}" }
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      backend: { condition: service_healthy }
+    ports:
+      - "${WEB_BIND_ADDR:?}:${WEB_PORT:?}:8080/tcp"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging

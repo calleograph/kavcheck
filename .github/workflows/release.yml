@@ -1,0 +1,37 @@
+name: Release
+# Публикация релиза при пуше тега vX.Y.Z: образы backend и web в GitHub Container Registry с тегом версии, страница релиза с описанием из CHANGELOG.
+# Релиз выполняется только после явного действия сопровождающего: создание и push тега (scripts/release.sh patch|minor, затем git push --tags).
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Тег, VERSION и CHANGELOG согласованы
+        run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < VERSION)" && ./scripts/release.sh check
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Сборка и публикация образов
+        env:
+          REPO: ghcr.io/${{ github.repository }}
+        run: |
+          repo="$(echo "$REPO" | tr '[:upper:]' '[:lower:]')"
+          args="--build-arg APP_VERSION=${GITHUB_REF_NAME#v} --build-arg APP_GIT_COMMIT=${GITHUB_SHA::12} --build-arg APP_BUILT_AT=$(date -u +%FT%TZ)"
+          docker build $args -t "$repo-backend:${GITHUB_REF_NAME}" -t "$repo-backend:latest" backend
+          docker build $args -t "$repo-web:${GITHUB_REF_NAME}" -t "$repo-web:latest" frontend
+          docker push "$repo-backend:${GITHUB_REF_NAME}"; docker push "$repo-backend:latest"
+          docker push "$repo-web:${GITHUB_REF_NAME}"; docker push "$repo-web:latest"
+      - name: Страница релиза
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/release.sh notes > notes.md
+          printf '\n\nОбразы: ghcr.io/%s-backend:%s, ghcr.io/%s-web:%s\n' "${GITHUB_REPOSITORY,,}" "$GITHUB_REF_NAME" "${GITHUB_REPOSITORY,,}" "$GITHUB_REF_NAME" >> notes.md
+          gh release create "$GITHUB_REF_NAME" --title "KAV Checker ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag || gh release edit "$GITHUB_REF_NAME" --notes-file notes.md

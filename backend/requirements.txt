@@ -1,0 +1,15 @@
+# Зависимости backend KAV Checker. Нижняя граница — версия, на которой проект проверен; верхняя — следующий мажорный выпуск.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+SQLAlchemy[asyncio]>=2.0.30,<3
+asyncpg>=0.29,<1
+alembic>=1.13,<2
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
+ldap3>=2.9.1,<3
+cryptography>=42
+argon2-cffi>=23.1,<26
+httpx>=0.27,<1
+pymssql>=2.3.1,<3
+openpyxl>=3.1,<4
+tzdata

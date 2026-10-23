@@ -1,0 +1,35 @@
+# Разрешённые в репозитории домены и адреса: зарезервированные для документации (RFC 2606/6761), вымышленные примеры и публичная инфраструктура.
+# Всё остальное проверка scripts/check_private_data.py считает возможной частной настройкой конкретной организации.
+example.com
+example.org
+example.net
+example.local
+example
+test
+invalid
+localhost
+github.com
+githubusercontent.com
+ghcr.io
+docker.io
+docker.com
+microsoft.com
+kaspersky.com
+kaspersky.ru
+support.kaspersky.com
+threats.kaspersky.com
+pypi.org
+npmjs.org
+debian.org
+ubuntu.com
+# IP-адреса: loopback, документационные (RFC 5737), маски и примеры версий
+ip:127\.0\.0\.\d+
+ip:0\.0\.0\.0
+ip:192\.0\.2\.\d+
+ip:198\.51\.100\.\d+
+ip:203\.0\.113\.\d+
+ip:255\.255\.255\.\d+
+ip:172\.30\.10\.33
+# идентификаторы линеек продуктов Kaspersky вида 11.0.0.0 (не адреса)
+ip:\d{1,2}\.0\.0\.0
+sil.org

@@ -1,0 +1,57 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r backend/requirements-dev.txt
+      - run: pytest -q
+        working-directory: backend
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+  scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Синтаксис скриптов
+        run: for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f" || exit 1; done
+      - name: compose config
+        run: |
+          cp .env.example .env
+          sed -i 's#^POSTGRES_PASSWORD=.*#POSTGRES_PASSWORD=ci#; s#^APP_MASTER_KEY=.*#APP_MASTER_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=#; s#^DATA_ROOT=.*#DATA_ROOT=/tmp/kc-data#' .env
+          docker compose -p ci --project-directory deployment --env-file .env -f deployment/compose.yml config -q
+  private-data:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_private_data.py
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/release.sh check
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < VERSION)"
+  images:
+    # Сборка образов проверяется на каждом push; публикация в GHCR — только для тега релиза (release.yml)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t kavcheck-backend:ci backend
+      - run: docker build -t kavcheck-web:ci frontend
