@@ -1,47 +1,59 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useState, type ReactNode } from "react";
 import { api, type ApiError, type SettingsValues } from "../../api";
+import { Icon } from "../../components/Icons";
+import { useToast } from "../../components/Toast";
+import { Segmented, SkelRows } from "../../components/ui";
 
-function Group({ group, title, intro, children }: { group: string; title: string; intro: string; children: (v: SettingsValues, set: (k: string, val: string | number | boolean) => void) => React.ReactNode }) {
+function Group({ group, title, intro, children }: { group: string; title: string; intro: string; children: (v: SettingsValues, set: (k: string, val: string | number | boolean) => void) => ReactNode }) {
   const [v, setV] = useState<SettingsValues | null>(null);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  useEffect(() => { api.admin.settings(group).then(setV).catch((e) => setMsg({ ok: false, text: (e as ApiError).message })); }, [group]);
-  if (!v) return <div className="muted">Загрузка…</div>;
-  const save = async (e: FormEvent) => { e.preventDefault(); setMsg(null); try { setV(await api.admin.saveSettings(group, v)); setMsg({ ok: true, text: "Сохранено" }); } catch (x) { setMsg({ ok: false, text: (x as ApiError).message }); } };
+  const [base, setBase] = useState("");
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [toast, show] = useToast();
+  useEffect(() => { api.admin.settings(group).then((x) => { setV(x); setBase(JSON.stringify(x)); }).catch((e) => setErr((e as ApiError).message)); }, [group]);
+  if (!v) return <div className="card">{err ? <div className="alert error"><Icon name="alert" /><div className="alert-body">{err}</div></div> : <SkelRows rows={3} cols={2} />}</div>;
+  const dirty = base !== JSON.stringify(v);
+  const save = async (e: FormEvent) => { e.preventDefault(); setErr(""); setBusy(true); try { const x = await api.admin.saveSettings(group, v); setV(x); setBase(JSON.stringify(x)); show("Настройки сохранены"); } catch (y) { setErr((y as ApiError).message); } finally { setBusy(false); } };
   return (
-    <form className="card form" onSubmit={save}>
-      <h2>{title}</h2><p className="muted">{intro}</p>
+    <form className="card" onSubmit={save}>
+      <h2>{title}</h2><p className="muted small" style={{ marginBottom: 16, maxWidth: "76ch" }}>{intro}</p>
       {children(v, (k, val) => setV({ ...v, [k]: val }))}
-      <div className="row"><button className="btn primary">Сохранить</button>{msg && <span className={msg.ok ? "ok-text" : "bad-text"}>{msg.text}</span>}</div>
+      {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
+      <div className="form-actions"><button className="btn primary" aria-busy={busy} disabled={!dirty}><span>Сохранить</span></button>
+        {dirty && <><button type="button" className="btn ghost" onClick={() => setV(JSON.parse(base))}>Отменить изменения</button><span className="badge warn">есть несохранённые изменения</span></>}</div>
+      {toast}
     </form>
   );
 }
 
+const PRESET = [1, 3, 7, 14, 30];
+
 export default function GeneralAdmin() {
   return (
-    <section>
-      <Group group="general" title="Общие настройки" intro="Порог активности применяется по умолчанию в разделах и отчётах: компьютер считается актуальным, если подключался к KSC в течение этого числа суток. В каждом отчёте порог можно изменить или включить все компьютеры.">
-        {(v, set) => (<>
+    <div className="stack">
+      <Group group="general" title="Компьютеры и хранение" intro="Порог активности применяется по умолчанию в разделах и отчётах: компьютер считается актуальным, если его Агент подключался к KSC за это число суток. В каждом отчёте порог можно изменить или включить все компьютеры.">
+        {(v, set) => { const d = Number(v.activity_days ?? 7); const custom = !PRESET.includes(d); return (<>
+          <label>Порог активности
+            <span className="row">
+              <Segmented label="Порог активности" value={custom ? "" : String(d)} onChange={(x) => set("activity_days", Number(x))} options={PRESET.map((p) => [String(p), `${p} сут`] as [string, string])} />
+              <span className="row tight"><input type="number" min={1} max={3650} value={d} onChange={(e) => set("activity_days", Number(e.target.value))} style={{ width: 96 }} aria-label="Произвольное число суток" /><span className="muted small">{custom ? "свой порог" : "или своё число"}</span></span>
+            </span></label>
           <div className="cols">
-            <label>Название установки<input value={String(v.site_name ?? "")} onChange={(e) => set("site_name", e.target.value)} maxLength={80} /></label>
-            <label>Порог активности, суток<select value={Number(v.activity_days ?? 7)} onChange={(e) => set("activity_days", Number(e.target.value))}>{[1, 3, 7, 14, 30].map((d) => <option key={d} value={d}>{d}</option>)}{![1, 3, 7, 14, 30].includes(Number(v.activity_days)) && <option value={Number(v.activity_days)}>{Number(v.activity_days)}</option>}</select>
-              <span className="row tight"><span className="help">или произвольно:</span><input type="number" min={1} max={3650} value={Number(v.activity_days ?? 7)} onChange={(e) => set("activity_days", Number(e.target.value))} style={{ width: 100 }} aria-label="Произвольный порог" /></span></label>
+            <label>Название установки<input value={String(v.site_name ?? "")} onChange={(e) => set("site_name", e.target.value)} maxLength={80} /><span className="help">Показывается в меню и заголовке вкладки</span></label>
+            <label>Часовой пояс<input className="mono" value={String(v.timezone ?? "UTC")} onChange={(e) => set("timezone", e.target.value)} placeholder="Europe/Moscow" /><span className="help">Даты KSC хранятся в UTC; интерфейс показывает время браузера</span></label>
           </div>
           <div className="cols">
-            <label>Часовой пояс<input value={String(v.timezone ?? "UTC")} onChange={(e) => set("timezone", e.target.value)} placeholder="Europe/Moscow" /><span className="help">Даты KSC хранятся в UTC; в интерфейсе показывается время браузера, пояс — для служебных задач.</span></label>
             <label>Хранить отчёты, дней<input type="number" min={1} max={3650} value={Number(v.report_keep_days ?? 90)} onChange={(e) => set("report_keep_days", Number(e.target.value))} /></label>
             <label>Хранить журнал событий, дней<input type="number" min={1} max={3650} value={Number(v.journal_keep_days ?? 90)} onChange={(e) => set("journal_keep_days", Number(e.target.value))} /></label>
           </div>
-        </>)}
+        </>); }}
       </Group>
-      <Group group="reports" title="Ограничения отчётов и запросов" intro="Защита производственных SQL Server: предел строк одного отчёта и учёт только компьютеров (записи кластеров и подчинённых серверов не считаются компьютерами).">
+      <Group group="reports" title="Ограничения отчётов" intro="Защита производственных SQL Server: предел строк одного отчёта и учёт только компьютеров (записи кластеров и подчинённых серверов компьютерами не считаются).">
         {(v, set) => (<>
-          <div className="cols">
-            <label>Предел строк отчёта<input type="number" min={1000} max={5000000} value={Number(v.max_rows ?? 100000)} onChange={(e) => set("max_rows", Number(e.target.value))} /></label>
-          </div>
-          <label className="check"><input type="checkbox" checked={!!v.exclude_slave_servers} onChange={(e) => set("exclude_slave_servers", e.target.checked)} /> Исключать записи кластеров и подчинённых серверов (bIsSlaveServer = 1)</label>
-          <label className="check"><input type="checkbox" checked={!!v.include_inactive_default} onChange={(e) => set("include_inactive_default", e.target.checked)} /> По умолчанию включать в отчёты компьютеры без связи</label>
+          <div className="cols"><label>Предел строк отчёта<input type="number" min={1000} max={5000000} value={Number(v.max_rows ?? 100000)} onChange={(e) => set("max_rows", Number(e.target.value))} /></label><span /></div>
+          <label className="check"><input type="checkbox" className="switch" checked={!!v.exclude_slave_servers} onChange={(e) => set("exclude_slave_servers", e.target.checked)} /><span className="check-body">Исключать кластеры и подчинённые серверы<span className="help">Записи с признаком bIsSlaveServer = 1</span></span></label>
+          <label className="check"><input type="checkbox" className="switch" checked={!!v.include_inactive_default} onChange={(e) => set("include_inactive_default", e.target.checked)} />По умолчанию включать в отчёты компьютеры без связи</label>
         </>)}
       </Group>
-    </section>
+    </div>
   );
 }

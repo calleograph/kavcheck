@@ -8,6 +8,12 @@ cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev
 cd ../frontend && npm install && npm run dev        # http://localhost:5173, прокси /api → 127.0.0.1:8000
 ```
 
+Прокси можно направить на запущенный контейнер `web`: `DEV_BACKEND_URL=http://127.0.0.1:18080 npm run dev` (добавьте `http://127.0.0.1:5173` в `ALLOWED_ORIGINS` локального `.env`).
+
+### Интерфейс
+
+Стили — только `frontend/src/styles.css`: сначала токены (цвета обеих тем, радиусы, тени, движение), затем компоненты. Новые цвета и отступы берите из токенов, тёмную тему задавайте в обоих блоках (`[data-theme=dark]` и `prefers-color-scheme`). Общие элементы страниц — `components/ui.tsx` (заголовок страницы, пустое состояние, скелет, сегменты, вкладки, спектр, плавающая панель), пиктограммы — `components/Icons.tsx`. Моноширинный шрифт (`.mono`) — только для версий, адресов, CVE и команд. Анимации — через `transform`/`opacity`, с правилом в блоке `prefers-reduced-motion`.
+
 Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=… COOKIE_SECURE=false APP_PUBLIC_URL=http://localhost:5173 .venv/bin/uvicorn app.main:app_factory --factory --reload`.
 
 Полная среда в Docker: `cp .env.example .env`, заполнить, `./scripts/install.sh --build`.

@@ -22,6 +22,7 @@ pypi.org
 npmjs.org
 debian.org
 ubuntu.com
+w3.org
 # IP-адреса: loopback, документационные (RFC 5737), маски и примеры версий
 ip:127\.0\.0\.\d+
 ip:0\.0\.0\.0
