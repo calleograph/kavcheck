@@ -13,6 +13,7 @@ const SoftwarePage = lazy(() => import("./pages/SoftwarePage"));
 const HostsPage = lazy(() => import("./pages/HostsPage"));
 const HostPage = lazy(() => import("./pages/HostsPage").then((m) => ({ default: m.HostPage })));
 const VulnsPage = lazy(() => import("./pages/VulnsPage"));
+const VdbPage = lazy(() => import("./pages/VdbPage"));
 const VulnHostPage = lazy(() => import("./pages/VulnsPage").then((m) => ({ default: m.VulnHostPage })));
 const ProductPage = lazy(() => import("./pages/ProductPage"));
 const EventsPage = lazy(() => import("./pages/EventsPage"));
@@ -29,13 +30,14 @@ const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/software", label: "Программы", icon: "layers" },
   { to: "/hosts", label: "Компьютеры", icon: "monitor" },
   { to: "/vulnerabilities", label: "Уязвимости", icon: "bug" },
+  { to: "/vdb", label: "База уязвимостей", icon: "vault" },
   { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" },
   { to: "/events", label: "События безопасности", icon: "bell" },
   { to: "/reports", label: "Отчёты", icon: "file" },
 ];
 export const ADMIN_TABS: { id: string; label: string }[] = [
   { id: "system", label: "Состояние системы" }, { id: "sources", label: "Источники KSC" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" },
-  { id: "general", label: "Общие настройки" }, { id: "catalog", label: "Каталог программ" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
+  { id: "general", label: "Общие настройки" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
 ];
 
 type Theme = "system" | "light" | "dark";
@@ -143,6 +145,8 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
   const [open, setOpen] = useState(false);
   const { pathname, search } = useLocation();
   useEffect(() => setOpen(false), [pathname, search]);
+  const [vdbNew, setVdbNew] = useState(0);        // новые серьёзные уязвимости из внешних баз, затрагивающие установленное ПО (уведомление внутри приложения)
+  useEffect(() => { if (current) api.vdb.summary().then((c) => setVdbNew(c.new_serious)).catch(() => setVdbNew(0)); else setVdbNew(0); }, [current?.id, pathname]);
   useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [pathname]);   // новая страница — с начала; списки при возврате восстанавливают своё место сами
   useEffect(() => { if (!open) return; const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); document.querySelector<HTMLElement>(".topbar .burger")?.focus(); } }; document.addEventListener("keydown", esc); return () => document.removeEventListener("keydown", esc); }, [open]);
   const inAdmin = pathname.startsWith("/admin");
@@ -160,13 +164,13 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
           <div className="nav-list">
             <NavIndicator deps={[pathname, search, adminOpen]} />
             <div className="nav-label">Аудит</div>
-            {NAV.map((n) => <NavLink key={n.to} to={n.to} end={n.end}><Icon name={n.icon} />{n.label}</NavLink>)}
+            {NAV.map((n) => <NavLink key={n.to} to={n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.to === "/vdb" && vdbNew > 0 && <span className="nav-badge" title="Новых серьёзных уязвимостей, затрагивающих установленное ПО">{vdbNew}</span>}</NavLink>)}
             {me.user.is_admin && <>
               <button type="button" className="nav-label nav-toggle" aria-expanded={adminOpen} onClick={toggleAdmin}>Администрирование<Icon name="chevronD" size={14} /></button>
               {adminOpen && ADMIN_TABS.map((t) => {
                 const active = inAdmin && tab === t.id;
                 return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>
-                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", catalog: "package", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
+                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", catalog: "package", vdb: "vault", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
               })}
             </>}
           </div>
@@ -233,6 +237,7 @@ export default function App() {
           <Route path="/hosts/:hostId" element={<HostPage key={currentId} ctx={ctx} />} />
           <Route path="/vulnerabilities" element={<VulnsPage key={currentId} ctx={ctx} />} />
           <Route path="/vulnerabilities/hosts/:hostId" element={<VulnHostPage key={currentId} ctx={ctx} />} />
+          <Route path="/vdb" element={<VdbPage key={currentId} ctx={ctx} />} />
           <Route path="/protection" element={<ProtectionPage key={currentId} ctx={ctx} />} />
           <Route path="/events" element={<EventsPage key={currentId} ctx={ctx} />} />
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />

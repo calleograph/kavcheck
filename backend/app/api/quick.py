@@ -17,6 +17,7 @@ from ..ksc import protection as P
 from ..ksc.driver import KscError
 from ..models import KscSource
 from ..reports import quick, quick_export
+from ..vdb import store as vdb_store
 from .catalog import audit_preview
 from .schemas import QUICK_PARAMS, AuditParams
 from .vulns import _ksc, groups_cached, unsupported
@@ -26,13 +27,13 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_vulns|quick_hosts|quick_protection|quick_events)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
 
 
-FEATURE = {"quick_vulns": "vulnerabilities", "quick_protection": "protection", "quick_events": "events", "quick_hosts": "hosts"}
+FEATURE = {"quick_vulns": "vulnerabilities", "quick_protection": "protection", "quick_events": "events", "quick_hosts": "hosts", "quick_extvulns": "software"}
 
 
 @router.post("/preview")
@@ -62,11 +63,12 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
     client = request.app.state.sources.client(src)
     ttl = request.app.state.settings.cache_ttl_seconds
     cache = request.app.state.cache
-    key = (str(src.id), "quick", body.kind, hashlib.sha1(json.dumps(params, sort_keys=True, default=str).encode()).hexdigest(), general.activity_days, rcfg.exclude_slave_servers)
+    rev = await vdb_store.revision(db, src.id) if body.kind == "quick_extvulns" else ""      # данные внешних баз, сопоставления и каталог меняют результат
+    key = (str(src.id), "quick", body.kind, hashlib.sha1(json.dumps(params, sort_keys=True, default=str).encode()).hexdigest(), general.activity_days, rcfg.exclude_slave_servers, rev)
 
     async def make() -> dict:
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
-                        protection_loader=lambda: _cached_protection(request, src, rcfg.exclude_slave_servers))
+                        protection_loader=lambda: _cached_protection(request, src, rcfg.exclude_slave_servers), sm=request.app.state.session_maker, source_id=src.id)
         doc = await quick.build(body.kind, client, params, ctx)
         main = doc["tables"][0]
         # в кэше и ответе — только документ без строк и первые строки основной таблицы

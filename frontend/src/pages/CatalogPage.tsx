@@ -7,6 +7,7 @@ import { Icon } from "../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { useToast } from "../components/Toast";
 import { QuickReportPanel } from "../components/QuickReport";
+import { VdbCountBadge, useVdbCounts } from "../components/VdbBits";
 import { Dock, Empty, HiddenNote, SkelRows, SortTh } from "../components/ui";
 import { selLabel, useSelection } from "../selection";
 import { fmt, num, plural } from "../util";
@@ -58,6 +59,7 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
   const list = useInfinite<CatalogItem>(`catalog:${sid}`, [applied, publisher, platform, components, all, sort, desc, tick],
     (offset, limit) => api.catalog.list({ q: applied, publisher, platform, components, all_hosts: all, sort, desc, offset, limit, roots: grouped }) as unknown as Promise<Chunk<CatalogItem>>);
   const state = (list.extra as { state?: CatalogState } | null)?.state ?? null;
+  const vcounts = useVdbCounts(list.items.map((p) => p.key), state?.status === "ready");
   // пока каталог строится — обновляем раз в 5 секунд
   const building = state?.status === "building" || state?.status === "empty";
   useEffect(() => { if (!building) return; const t = window.setInterval(() => setTick((x) => x + 1), 5000); return () => window.clearInterval(t); }, [building]);
@@ -122,9 +124,10 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
                 <SortTh k="versions" label="Версий" sort={sort} desc={desc} onSort={onSort} className="num" />
                 <th className="hide-sm">Новейшая · старейшая</th>
                 <SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" />
+                <th className="hide-sm" title="Известные уязвимости по внешним базам (NVD, CISA KEV, OSV, БДУ) для установленных версий; подтверждённые KSC — в разделе «Уязвимости»">Уязвимости</th>
                 <th><span className="sr-only">Действия</span></th></tr></thead>
               <tbody>
-                <VirtualRows list={view} colSpan={canEdit ? 8 : 7} estimate={46} row={({ item: p, member, self }) => {
+                <VirtualRows list={view} colSpan={canEdit ? 9 : 8} estimate={46} row={({ item: p, member, self }) => {
                   const fam = !member && p.family_size > 1 && p.family_key === p.key;   // основной продукт семейства: отметка — весь набор
                   const checked = self ? sel.has(p.key) && !sel.hasFamily(p.key) : fam ? sel.hasFamily(p.key) : sel.has(p.key);
                   const partial = fam && !checked && (sel.has(p.key) || (members[`${p.key}|${all}`] ?? []).some((m) => sel.has(m.key)));
@@ -144,10 +147,11 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
                       <td className="num">{self ? "" : num(p.versions_count)}</td>
                       <td className="mono small nowrap hide-sm">{self ? "" : <>{p.latest_version}{p.oldest_version && p.oldest_version !== p.latest_version ? <span className="muted"> · {p.oldest_version}</span> : null}</>}</td>
                       <td className="num">{self ? "" : <button type="button" className="count-btn" onClick={() => openHosts(p)} title="Показать компьютеры">{num(p.hosts)}</button>}{!self && all && p.hidden_hosts > 0 && <span className="sub">{num(p.hidden_hosts)} неакт.</span>}</td>
+                      <td className="hide-sm">{!self && <VdbCountBadge c={vcounts[p.key]} productKey={p.key} />}</td>
                       <td className="actions">{canEdit && !self && <Link className="btn mini ghost row-act" to={`/reports?product=${encodeURIComponent(p.key)}&name=${encodeURIComponent(p.name)}${p.latest_version ? `&latest=${encodeURIComponent(p.latest_version)}` : ""}`} title={`Найти устаревшие версии: ${p.name}`}><Icon name="target" size={15} />Проверить</Link>}</td>
                     </tr>);
                 }} />
-                {!list.items.length && !list.loading && state?.status === "ready" && <tr><td colSpan={8}><Empty icon="search" title="Ничего не найдено">Измените запрос или включите служебные компоненты и показ всех устройств.</Empty></td></tr>}
+                {!list.items.length && !list.loading && state?.status === "ready" && <tr><td colSpan={9}><Empty icon="search" title="Ничего не найдено">Измените запрос или включите служебные компоненты и показ всех устройств.</Empty></td></tr>}
               </tbody>
             </table>)}
         </div>)}

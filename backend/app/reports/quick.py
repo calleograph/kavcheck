@@ -23,8 +23,8 @@ from ..ksc import queries as q
 from ..ksc import vulns as V
 from ..ksc.driver import KscError, SourceClient
 
-QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events")
-KIND_TITLE = {"quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности"}
+QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns")
+KIND_TITLE = {"quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
 ONLINE_RU = {True: "в сети", False: "не в сети", None: "нет данных"}
@@ -40,6 +40,8 @@ class Ctx:
     progress: Callable[[str], None] = lambda _t: None
     cancelled: Callable[[], bool] = lambda: False
     protection_loader: Callable | None = None         # асинхронный источник набора «Состояния защиты» (кэш страницы); без него набор читается из KSC
+    sm: object | None = None                          # фабрика сессий внутренней базы (отчёты по внешним базам уязвимостей)
+    source_id: object | None = None
 
 
 def col(key: str, title: str, kind: str = "text") -> dict:
@@ -483,6 +485,10 @@ BUILDERS = {"quick_vulns": build_vulns, "quick_hosts": build_hosts, "quick_prote
 
 
 async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict:
+    if kind == "quick_extvulns" and kind not in BUILDERS:
+        from .quick_ext import build_extvulns  # noqa: PLC0415 — отложенный импорт: модуль использует помощники этого файла
+
+        BUILDERS[kind] = build_extvulns
     if kind not in BUILDERS:
         raise KscError("kind", f"Неизвестный вид быстрого отчёта: {kind}")
     doc = await BUILDERS[kind](client, params, ctx)

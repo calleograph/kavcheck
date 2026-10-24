@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<vulnerabilities>
+ <vul>
+  <identifier>BDU:2024-00001</identifier>
+  <name>Уязвимость программы Contoso Agent, позволяющая нарушителю выполнить произвольный код</name>
+  <description>Описание уязвимости в Contoso Agent. Пример для проверки разбора.</description>
+  <vulnerable_software>
+   <soft><vendor>Contoso</vendor><name>Agent</name><version>до 8.4.15</version><platform>Windows</platform><types><type>Прикладное ПО</type></types></soft>
+   <soft><vendor>Contoso</vendor><name>Agent</name><version>с 9.0 по 9.2</version><platform>Windows</platform></soft>
+  </vulnerable_software>
+  <environment><os><vendor>Microsoft</vendor><name>Windows</name></os></environment>
+  <cwe><identifier>CWE-787</identifier></cwe>
+  <identify_date>01.02.2024</identify_date>
+  <last_upd_date>15.03.2024</last_upd_date>
+  <cvss><vector score="7.5">AV:N/AC:L/Au:N/C:P/I:P/A:P</vector></cvss>
+  <cvss3><vector score="9.8">AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</vector></cvss3>
+  <severity>Критический уровень опасности (базовая оценка CVSS 3.0 составляет 9,8)</severity>
+  <solution>Установить обновление Contoso Agent 8.4.15 или выше.</solution>
+  <vul_status>Подтверждена производителем</vul_status>
+  <exploit_status>Существует в открытом доступе</exploit_status>
+  <fix_status>Уязвимость устранена</fix_status>
+  <sources>https://contoso.example.com/advisories/2024-01</sources>
+  <identifiers><identifier type="CVE" link="https://nvd.nist.gov/vuln/detail/CVE-2024-99001">CVE-2024-99001</identifier></identifiers>
+ </vul>
+ <vul>
+  <identifier>BDU:2024-00002</identifier>
+  <name>Уязвимость библиотеки Fabrikam Lib</name>
+  <description>Только БДУ, без CVE.</description>
+  <vulnerable_software>
+   <soft><vendor>Fabrikam</vendor><name>Fabrikam Lib</name><version>2.0 и более ранние версии</version><platform>Linux</platform></soft>
+   <soft><vendor>Fabrikam</vendor><name>Fabrikam Lib</name><version>неопределённая версия по сведениям вендора</version><platform>Linux</platform></soft>
+  </vulnerable_software>
+  <identify_date>10.02.2024</identify_date>
+  <severity>Средний уровень опасности (базовая оценка CVSS 2.0 составляет 5,0)</severity>
+  <cvss><vector score="5.0">AV:N/AC:L/Au:N/C:N/I:N/A:P</vector></cvss>
+  <fix_status>Информация об устранении отсутствует</fix_status>
+ </vul>
+</vulnerabilities>

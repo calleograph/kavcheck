@@ -232,11 +232,29 @@ class QuickEvents(BaseModel):
     event_ids: list[int] = Field(default_factory=list, max_length=5000)
 
 
-QUICK_PARAMS = {"quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents}
+class QuickExtVulns(QuickScope):
+    """Уязвимости из внешних баз (локальная база NVD, KEV, OSV, БДУ): выбранные уязвимости (CVE, БДУ…) и/или продукты каталога → компьютеры с потенциально затронутым ПО."""
+    vuln_keys: list[str] = Field(default_factory=list, max_length=300)
+    product_keys: list[str] = Field(default_factory=list, max_length=50)
+    statuses: list[Literal["confirmed", "potential", "clarify", "fixed", "insufficient"]] = Field(default_factory=lambda: ["confirmed", "potential", "clarify", "insufficient"])
+    min_severity: Literal["", "critical", "high", "medium", "low"] = ""
+    exploited_only: bool = False
+
+    @model_validator(mode="after")
+    def _need_selection(self):
+        if not (self.vuln_keys or self.product_keys):
+            raise ValueError("Выберите уязвимости или программы")
+        self.vuln_keys = [v.strip().upper() for v in self.vuln_keys if v.strip()]
+        if not self.statuses:
+            raise ValueError("Выберите хотя бы один статус сопоставления")
+        return self
+
+
+QUICK_PARAMS = {"quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns}
 
 
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_vulns|quick_hosts|quick_protection|quick_events)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)

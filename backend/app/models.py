@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, text
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, Uuid, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
@@ -398,3 +398,148 @@ class ServiceHeartbeat(Base):
 
 Index("ix_event_log_user", EventLog.user)
 Index("ix_catalog_products_hosts", CatalogProduct.source_id, CatalogProduct.hosts_active)
+
+
+# ------------------------------------------------------------------------------------------------ база уязвимостей (внешние источники)
+class VdbSource(Base):
+    """Внешний источник сведений об уязвимостях (nvd | kev | osv | bdu): настройки, расписание и состояние последней загрузки.
+    Источники с полной выгрузкой (kev, bdu) пишутся в новое «поколение» и подменяют активное только после проверки; предыдущее поколение хранится для отката."""
+    __tablename__ = "vdb_sources"
+    key: Mapped[str] = mapped_column(String(16), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    interval_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    settings: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    secret_enc: Mapped[str | None] = mapped_column(Text)
+    active_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    prev_generation: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="never")      # never | running | ok | error
+    progress: Mapped[str | None] = mapped_column(String(300))
+    requested_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                    # ручной запуск: подхватывает воркер
+    last_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_ok_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_duration_ms: Mapped[int | None] = mapped_column(Integer)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    records: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cursor: Mapped[dict | None] = mapped_column(JSONType)                                 # NVD: до какой даты изменений загружено; OSV: обработанные идентификаторы
+
+
+class VdbRun(Base):
+    """История загрузок источников (последние записи хранятся ограниченное время)."""
+    __tablename__ = "vdb_runs"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    trigger: Mapped[str] = mapped_column(String(10), nullable=False, default="schedule")  # schedule | manual | file
+    mode: Mapped[str] = mapped_column(String(12), nullable=False, default="")             # full | incremental
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="running")
+    fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class VdbRecord(Base):
+    """Сведения одного источника об одной уязвимости. Данные источников хранятся раздельно и объединяются только при показе (по vuln_key)."""
+    __tablename__ = "vdb_records"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    ext_id: Mapped[str] = mapped_column(String(80), nullable=False)                       # идентификатор в источнике: CVE-…, BDU:…, GHSA-…
+    vuln_key: Mapped[str] = mapped_column(String(80), nullable=False, index=True)         # общий ключ: CVE, а если его нет — идентификатор источника
+    aliases: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    severity: Mapped[str] = mapped_column(String(10), nullable=False, default="")         # critical | high | medium | low | ""
+    score: Mapped[float | None] = mapped_column(Float)
+    vector: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    published: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    modified: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    exploited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)       # подтверждённая эксплуатация (CISA KEV)
+    fix_available: Mapped[bool | None] = mapped_column(Boolean)
+    fix_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    refs: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    extra: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    __table_args__ = (Index("ux_vdb_records_ext", "source", "generation", "ext_id", unique=True), Index("ix_vdb_records_mod", "source", "generation", "modified"))
+
+
+class VdbAffected(Base):
+    """Затронутый продукт из записи источника: производитель и продукт (CPE) или пакет (PURL), границы версий, исправление."""
+    __tablename__ = "vdb_affected"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    ext_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    vuln_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    vendor: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    product: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    vendor_key: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    product_key: Mapped[str] = mapped_column(String(300), nullable=False, default="", index=True)
+    cpe: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    purl: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    ecosystem: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    pkg_name: Mapped[str] = mapped_column(String(300), nullable=False, default="", index=True)
+    platform: Mapped[str] = mapped_column(String(80), nullable=False, default="")         # windows | linux | macos | … либо целевая среда (плагин другого продукта)
+    exact: Mapped[str] = mapped_column(String(120), nullable=False, default="")           # конкретная версия
+    v_start: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    v_start_incl: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    v_end: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    v_end_incl: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    fixed: Mapped[str] = mapped_column(String(120), nullable=False, default="")           # версия, в которой исправлено (OSV)
+    versions_all: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)   # затронуты все версии / границы не заданы
+    version_text: Mapped[str] = mapped_column(String(300), nullable=False, default="")   # исходный текст версии (БДУ), если разобрать не удалось
+    conditional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)   # уязвимость зависит от среды выполнения (конфигурация «И»)
+    __table_args__ = (Index("ix_vdb_aff_rec", "source", "generation", "ext_id"), Index("ix_vdb_aff_key", "vuln_key"))
+
+
+class VdbVuln(Base):
+    """Сводка по уязвимости: объединяет записи всех источников для быстрого поиска и списков (пересчитывается при загрузке)."""
+    __tablename__ = "vdb_vulns"
+    vuln_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    sev_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)  # 4 critical … 1 low, 0 — нет оценки
+    score: Mapped[float | None] = mapped_column(Float)
+    exploited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    has_fix: Mapped[bool | None] = mapped_column(Boolean)
+    published: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)
+    modified: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)
+    sources: Mapped[str] = mapped_column(String(80), nullable=False, default="")          # через запятую: nvd,kev
+    ids_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    products_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    __table_args__ = (Index("ix_vdb_vulns_priority", text("exploited DESC"), text("sev_rank DESC"), text("published DESC")),)
+
+
+class VdbMapping(Base):
+    """Решение администратора о соответствии продукта из базы уязвимостей (производитель+продукт CPE или пакет) продукту каталога.
+    map — считать продуктом каталога; exclude — не считать (ложное совпадение). Сохраняется при обновлении базы и приложения."""
+    __tablename__ = "vdb_mappings"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    vendor_key: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    product_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    catalog_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    action: Mapped[str] = mapped_column(String(8), nullable=False, default="map")
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    __table_args__ = (Index("ix_vdb_mappings_key", "vendor_key", "product_key"),)
+
+
+class VdbFinding(Base):
+    """Уязвимость из внешней базы, потенциально затрагивающая установленное ПО источника KSC (оценка по каталогу, без обращения к KSC).
+    Пересчитывается после загрузки новых и изменённых записей; «новые» — ещё не просмотренные специалистом."""
+    __tablename__ = "vdb_findings"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    vuln_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    status: Mapped[str] = mapped_column(String(14), nullable=False, default="")           # лучший статус сопоставления
+    sev_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    exploited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    products: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)        # [{key, name, versions, installs}]
+    installs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hosts_max: Mapped[int] = mapped_column(Integer, nullable=False, default=0)            # верхняя оценка числа компьютеров (сумма по версиям каталога)
+    seen_by: Mapped[str | None] = mapped_column(String(300))
+    seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

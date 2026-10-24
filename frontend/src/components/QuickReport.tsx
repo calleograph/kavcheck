@@ -48,7 +48,8 @@ function cell(c: QuickCol, v: string | number | null | undefined) {
   return c.type === "mono" ? <span className="mono small nowrap">{v}</span> : <>{v}</>;
 }
 
-export type QuickScopeOpts = { period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean };
+export type QuickScopeOpts = { period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean };
+const EXT_STATUSES: [string, string][] = [["confirmed", "Подтверждено источником"], ["potential", "Потенциально затронуто"], ["clarify", "Требуется уточнение"], ["insufficient", "Данных недостаточно"], ["fixed", "Исправлено (показать отдельно)"]];
 const SECTIONS: [string, string][] = [["software", "Установленное ПО"], ["vulns", "Уязвимости"], ["protection", "Состояние защиты"]];
 const FORMATS: [string, string][] = [["xlsx", "Excel (XLSX)"], ["html", "HTML для руководства"], ["csv", "CSV"]];
 const PREVIEW_SHOWN = 60;
@@ -116,7 +117,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
         {doc && (<>
           <div className="qr-hero">
             <span className="qr-big">{hosts ? num(Number(hosts.value)) : num(data!.total)}</span>
-            <span className="qr-cap">{hosts ? (kind === "quick_vulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
+            <span className="qr-cap">{hosts ? (kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
               {hosts?.hint && <span className="muted small"> · {hosts.hint}</span>}</span>
           </div>
           <dl className="qr-cond">{doc.conditions.map((c) => <div key={c.label}><dt>{c.label}</dt><dd>{c.text}</dd></div>)}</dl>
@@ -155,6 +156,15 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
               const cur = (params.sections as string[] | undefined) ?? SECTIONS.map(([x]) => x);
               return <label key={k} className="check"><input type="checkbox" checked={cur.includes(k)} disabled={cur.length === 1 && cur.includes(k)}
                 onChange={(e) => setExtra({ ...extra, sections: e.target.checked ? [...cur, k] : cur.filter((x) => x !== k) })} />{l}</label>; })}</fieldset>}
+            {options.ext && <>
+              <fieldset className="qr-sections"><legend>Результат сопоставления</legend>{EXT_STATUSES.map(([k, l]) => {
+                const cur = (params.statuses as string[] | undefined) ?? ["confirmed", "potential", "clarify", "insufficient"];
+                return <label key={k} className="check"><input type="checkbox" checked={cur.includes(k)} disabled={cur.length === 1 && cur.includes(k)}
+                  onChange={(e) => setExtra({ ...extra, statuses: e.target.checked ? [...cur, k] : cur.filter((x) => x !== k) })} />{l}</label>; })}</fieldset>
+              <label className="field">Опасность не ниже<select value={String(params.min_severity ?? "")} onChange={(e) => setExtra({ ...extra, min_severity: e.target.value })}>
+                <option value="">Любая</option><option value="critical">Критическая</option><option value="high">Высокая</option><option value="medium">Средняя</option></select></label>
+              <label className="check"><input type="checkbox" checked={!!params.exploited_only} onChange={(e) => setExtra({ ...extra, exploited_only: e.target.checked })} />Только с подтверждённой эксплуатацией (CISA KEV)</label>
+            </>}
             {options.severity && <label className="field">Опасность<select value={String(params.severity ?? "")} onChange={(e) => setExtra({ ...extra, severity: e.target.value })}>
               <option value="">Все уровни</option><option value="critical">Только критические</option><option value="high">Только высокие</option><option value="warning">Только предупреждения</option></select></label>}
             {options.patchable && <label className="check"><input type="checkbox" checked={!!params.patchable} onChange={(e) => setExtra({ ...extra, patchable: e.target.checked })} />Только с доступным исправлением</label>}

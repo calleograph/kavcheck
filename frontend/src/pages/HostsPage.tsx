@@ -9,6 +9,7 @@ import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import { EventList, type EvFilter } from "./EventsPage";
 import { ProblemBadges } from "./ProtectionPage";
+import { Kev, StatusBadge } from "../components/VdbBits";
 import { HostVulns } from "./VulnsPage";
 import { fmt, fmtDate, num } from "../util";
 
@@ -80,16 +81,18 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
   );
 }
 
-type HostTab = "software" | "vulns" | "events";
+type HostTab = "software" | "vulns" | "vdb" | "events";
 
 export function HostPage({ ctx }: { ctx: Ctx }) {
   const { hostId } = useParams();
   const [sp, setSp] = useSearchParams();
-  const tab = (["software", "vulns", "events"].includes(sp.get("tab") ?? "") ? sp.get("tab") : "software") as HostTab;
+  const tab = (["software", "vulns", "vdb", "events"].includes(sp.get("tab") ?? "") ? sp.get("tab") : "software") as HostTab;
   const [vulns, setVulns] = useState<{ items: HostVuln[]; unsupported?: string[] } | null>(null);
   const [vErr, setVErr] = useState("");
+  const [vdb, setVdb] = useState<Awaited<ReturnType<typeof api.vdb.host>> | null>(null); const [vdbErr, setVdbErr] = useState("");
   const [evGroup, setEvGroup] = useState<EvFilter>(""); const [evThreat, setEvThreat] = useState(""); const [report, setReport] = useState(false);
-  useEffect(() => { setVulns(null); setVErr(""); }, [ctx.current, hostId]);
+  useEffect(() => { setVulns(null); setVErr(""); setVdb(null); setVdbErr(""); }, [ctx.current, hostId]);
+  useEffect(() => { if (tab === "vdb" && !vdb && !vdbErr && ctx.current && hostId) api.vdb.host(Number(hostId)).then(setVdb).catch((e) => setVdbErr((e as ApiError).message)); }, [tab, vdb, vdbErr, ctx.current, hostId]);
   useEffect(() => { if (tab === "vulns" && !vulns && !vErr && ctx.current && hostId) api.vulns.host(Number(hostId)).then(setVulns).catch((e) => setVErr((e as ApiError).message)); }, [tab, vulns, vErr, ctx.current, hostId]);
   const [d, setD] = useState<Awaited<ReturnType<typeof api.hosts.one>> | null>(null);
   const [err, setErr] = useState("");
@@ -133,7 +136,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       </div>
       <div className="mt">
         <Tabs<HostTab> label="Сведения о компьютере" value={tab} onChange={(t) => setSp((p) => { if (t === "software") p.delete("tab"); else p.set("tab", t); return p; }, { replace: true })}
-          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: "Уязвимости", count: vulns?.items.length }, { id: "events", label: "События безопасности" }]} />
+          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: "Уязвимости", count: vulns?.items.length }, { id: "vdb", label: "Внешние базы", count: vdb?.total }, { id: "events", label: "События безопасности" }]} />
       </div>
       {tab === "software" && <>
         <div className="section-head"><span className="muted small">Программ: {num(d.software.length)}</span><div className="spacer" />
@@ -151,6 +154,16 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
         : !vulns ? <div className="card"><SkelRows rows={4} cols={5} /></div>
           : vulns.unsupported ? <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет объектов уязвимостей KSC.</div></div>
             : <><HostVulns items={vulns.items} /><p className="muted small mt-sm"><Link to={`/vulnerabilities/hosts/${h.host_id}`}>Сводка уязвимостей компьютера</Link> — счётчики по уровням опасности.</p></>)}
+      {tab === "vdb" && (vdbErr ? <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{vdbErr}</div></div> : !vdb ? <div className="card"><SkelRows rows={4} cols={5} /></div> : (
+        <>
+          <div className="alert info"><Icon name="info" /><div className="alert-body">Независимая проверка: установленное ПО компьютера сопоставлено с внешними базами (NVD, CISA KEV, OSV, БДУ ФСТЭК). Это потенциальные уязвимости, не подтверждённые KSC — подтверждённые на вкладке «Уязвимости».</div></div>
+          <div className="table-scroll"><table className="table compact">
+            <thead><tr><th>Уязвимость</th><th>Опасность</th><th>Программа</th><th>Результат</th></tr></thead>
+            <tbody>{vdb.items.map((v, i) => <tr key={i}><td><Link className="mono strong-link" to={`/vdb?tab=search&q=${encodeURIComponent(v.key)}&v=${encodeURIComponent(v.key)}`}>{v.key}</Link><span className="sub">{v.title}</span></td>
+              <td className="nowrap"><span className={`sev ${v.sev_rank >= 4 ? "crit" : v.sev_rank === 3 ? "high" : "warn"}`}>{v.severity_ru}</span>{v.exploited && <> <Kev /></>}</td>
+              <td>{v.product}<span className="sub mono">{v.version}</span></td><td><StatusBadge s={v.status} label={v.status_ru} /><span className="sub small">{v.basis}</span></td></tr>)}
+              {!vdb.items.length && <tr><td colSpan={4}><Empty icon="checkCircle" title="Совпадений нет">{vdb.catalog ? "Для установленного ПО компьютера уязвимости во внешних базах не найдены (или базы не загружены)." : "Каталог программ источника ещё не построен."}</Empty></td></tr>}</tbody></table></div>
+        </>))}
       {tab === "events" && <><p className="muted small">События обнаружения за 30 суток: новые сверху.</p><EventList ctx={ctx} days={30} hostId={h.host_id} group={evGroup} threat={evThreat} onGroup={setEvGroup} onThreat={setEvThreat} /></>}
     </section>
   );

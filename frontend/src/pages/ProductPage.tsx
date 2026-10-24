@@ -7,7 +7,9 @@ import { type Chunk } from "../components/Infinite";
 import { ConfirmDialog, Modal } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
 import { ProductPicker, type PickedProduct } from "../components/ProductPicker";
+import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
+import { ProductVulns } from "../components/VdbBits";
 import { Empty, HiddenNote, PageHead, SkelRows, Spectrum } from "../components/ui";
 import { fmtDate, num } from "../util";
 import { CatalogStateLine } from "./CatalogPage";
@@ -28,6 +30,7 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
   const setSel = (s: { version?: string; branch?: string } | null) => setSp((x) => { x.delete("v"); x.delete("b"); if (s?.version !== undefined) x.set("v", s.version); else if (s?.branch !== undefined) x.set("b", s.branch); return x; });
   const [hover, setHover] = useState<string | null>(null);
   const [dialog, setDialog] = useState<"split" | "merge" | "rename" | null>(null);
+  const [vdbReport, setVdbReport] = useState(false);
   const [names, setNames] = useState<Set<string>>(new Set());
   const [del, setDel] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -95,6 +98,9 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
         fetchPage={(offset, limit) => api.catalog.productHosts(p.key, { version: sel.version, branch: sel.branch, all_hosts: all, offset, limit }) as unknown as Promise<Chunk<DrawerHost>>}
         onClose={() => setSel(null)} />}
 
+      <div className="section-gap"><ProductVulns productKey={p.key} canReport={canEdit} onCheck={() => setVdbReport(true)} /></div>
+      {vdbReport && <QuickReportPanel kind="quick_extvulns" title={`Проверка инфраструктуры: ${p.name}`} lede="Известные уязвимости продукта по внешним базам" options={{ scope: true, ext: true }}
+        params={{ product_keys: [p.key] }} activityDays={ctx.me.activity_days} canReport={canEdit} onClose={() => setVdbReport(false)} />}
       <div className="split even section-gap">
         <div className="card flush">
           <div className="card-head"><h2>Записи реестра KSC</h2><span className="muted small">варианты названия, вошедшие в продукт</span><div className="spacer" />

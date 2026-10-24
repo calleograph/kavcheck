@@ -81,6 +81,7 @@
 | Подтверждение опасного действия | `ConfirmDialog` (`typed` — для необратимых) |
 | Короткий итог действия | `useToast` |
 | Действия над выбранными строками | `Dock`; для отчётов — `useRowSel` + `ReportDock` + `CheckAll` (`components/QuickReport.tsx`) |
+| Отметки уязвимостей из внешних баз | `Kev` («эксплуатируется»), `SevBadge`, `StatusBadge`, `VdbCountBadge` (`components/VdbBits.tsx`) |
 | Отчёт из раздела: предпросмотр и выгрузка | `QuickReportPanel` (боковая панель: число компьютеров, условия, замечания, предпросмотр, «Дополнительно», Excel/HTML/CSV) |
 
 ### Таблицы

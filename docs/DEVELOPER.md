@@ -57,6 +57,10 @@ Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=
 
 Новый быстрый отчёт: SQL-шаблон в `ksc/queries.py` (если нужен) → построитель в `reports/quick.py` + ветка в `build()` → схема параметров в `api/schemas.py` (`Quick*`, `QUICK_PARAMS`, `ReportIn.kind`) → `KIND_TITLE` в `api/reports.py` → в интерфейсе `useRowSel` + `ReportDock` + `QuickReportPanel` (`components/QuickReport.tsx`) на нужной странице. Тесты — `tests/test_quick_reports.py` (синтетический SQL Server): совпадение просмотра и отчёта, отсутствие двойного подсчёта, содержимое XLSX/HTML.
 
+## База уязвимостей
+
+Загрузчики, локальная база, сопоставление с каталогом и отчёт `quick_extvulns` — пакет `app/vdb`, `app/reports/quick_ext.py`, `app/api/vdb.py`; как добавить источник и как устроены статусы — в [VULNDB.md](VULNDB.md). Загрузка выполняется воркером (`VdbSync.loop`), API только ставит запрос на запуск.
+
 ## Добавить модуль (раздел)
 
 Сервис в `ksc/<module>.py` (шаблоны в `queries.py`, объекты в `FEATURE_OBJECTS`), маршрут в `api/` с зависимостями `require_user`/`current_source` и проверкой `unsupported(src, "<функция>")`, тяжёлые агрегаты — через `request.app.state.cache` (как `api/protection.py`), глобальный фильтр активности — из `settings_svc.get(db, "general").activity_days` со счётчиком скрытых, аудит важных действий (`write_audit`) и события (`Journal.emit`), страница в `pages/` и пункт в `NAV` (`App.tsx`). Тесты: правила без базы — `tests/test_<module>.py`, SQL — `tests/test_ksc_live.py`.

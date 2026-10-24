@@ -6,6 +6,7 @@ import UsersAdmin from "./admin/UsersAdmin";
 import LdapAdmin from "./admin/LdapAdmin";
 import GeneralAdmin from "./admin/GeneralAdmin";
 import CatalogAdmin from "./admin/CatalogAdmin";
+import VdbAdmin from "./admin/VdbAdmin";
 import UpdatesAdmin from "./admin/UpdatesAdmin";
 import { AuditAdmin, JournalAdmin } from "./admin/JournalAdmin";
 import SystemAdmin from "./admin/SystemAdmin";
@@ -17,6 +18,7 @@ const LEDE: Record<string, string> = {
   ldap: "Вход доменных пользователей: подключения LDAPS, доверенные сертификаты, правила доступа по группам Active Directory.",
   general: "Какие компьютеры показывать в рабочих разделах, сроки хранения и ограничения отчётов.",
   catalog: "Как записи реестра KSC объединяются в продукты и ветки: состояние каталога, ручные исправления, правила для опытных.",
+  vdb: "Источники сведений об уязвимостях (NVD, CISA KEV, OSV, БДУ ФСТЭК): включение, расписание обновления, состояние загрузок и решения по сопоставлению продуктов.",
   updates: "Версия KAV Checker, релизы GitHub, обновление, откат и резервные копии.",
   journal: "Входы, проверки и запросы к источникам, формирование отчётов, ошибки.",
   audit: "Кто, что и когда сделал в KAV Checker.",
@@ -37,6 +39,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "ldap" && <LdapAdmin sources={ctx.sources} />}
       {tab === "general" && <GeneralAdmin />}
       {tab === "catalog" && <CatalogAdmin />}
+      {tab === "vdb" && <VdbAdmin />}
       {tab === "updates" && <UpdatesAdmin />}
       {tab === "journal" && <JournalAdmin />}
       {tab === "audit" && <AuditAdmin />}

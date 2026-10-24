@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from starlette.datastructures import MutableHeaders
 
-from .api import admin, admin_ldap, admin_updates, auth, auth_totp, catalog, dashboard, events, health, hosts, protection, quick, reports, software, vulns
+from .api import admin, admin_ldap, admin_updates, auth, auth_totp, catalog, dashboard, events, health, hosts, protection, quick, reports, software, vdb as vdb_api, vulns
 from .auth.deps import client_ip
 from .auth.service import AuthService
 from .auth.sessions import SessionStore
@@ -119,6 +119,11 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
             await seed_builtin_rules(session_maker)
             async with session_maker() as db:
                 await app.state.ldap.migrate_legacy(db)
+            async with session_maker() as db:
+                from .vdb.store import ensure_sources  # noqa: PLC0415
+
+                await ensure_sources(db)
+                await db.commit()
         except Exception as exc:  # noqa: BLE001 — до миграций таблиц нет
             log.warning("Начальные данные не загружены (%s): при первом запуске до миграций это нормально", type(exc).__name__)
 
@@ -164,7 +169,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
 
     prefix = "/api/v1"
     for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, admin.router,
-              admin_updates.router, health.router):
+              admin_updates.router, vdb_api.router, health.router):
         app.include_router(r, prefix=prefix)
     return app
 

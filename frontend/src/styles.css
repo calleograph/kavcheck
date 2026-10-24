@@ -952,3 +952,34 @@ pre.notes-pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
 .qr-sections { border: 0; padding: 0; margin: 0; display: grid; gap: 4px; } .qr-sections legend { font-size: var(--fs-sm); color: var(--muted); padding: 0 0 4px; }
 .qr-notes ul { margin: 0; padding-left: 16px; display: grid; gap: 4px; } .qr-notes .alert-body { font-size: var(--fs-sm); }
 .modal.side .modal-foot:has(.qr-actions) { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); margin: 8px -4px 0; padding: 10px 4px; z-index: 1; }
+
+/* База уязвимостей */
+.badge.kev { background: var(--danger); color: #fff; font-weight: 600; letter-spacing: .01em; }
+.chip.tiny { font-size: var(--fs-xs); padding: 0 6px; margin-right: 4px; }
+.sev .score { margin-left: 6px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.vdb-title { max-width: 520px; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.new-dot { margin-left: 6px; }
+.vdb-card { display: flex; flex-direction: column; gap: 12px; }
+.vdb-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.vdb-dates { margin: 0; overflow-wrap: anywhere; }
+.vdb-desc { margin: 0; line-height: 1.5; max-width: 72ch; }
+.vdb-h { font-size: var(--fs-md); margin: 6px 0 -4px; }
+.vdb-src > summary { padding: 8px 0; }
+.vdb-src-body { display: flex; flex-direction: column; gap: 8px; padding: 4px 0 10px 14px; border-left: 2px solid var(--line); }
+.vdb-refs { display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.vdb-state { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 18px; margin: 8px 0; }
+.vdb-state .l { display: block; font-size: var(--fs-xs); color: var(--muted); }
+.vdb-state b { font-weight: 500; font-size: var(--fs-sm); }
+.vdb-source .form { margin-top: 10px; }
+.vdb-map-form { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.toolbar-more { flex-basis: 100%; }
+.toolbar-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; padding: 8px 0 2px; }
+.seen-btn { position: fixed; z-index: var(--z-dock); right: 24px; bottom: 76px; box-shadow: var(--sh-2, 0 4px 16px rgba(0,0,0,.2)); }
+.nav-badge { margin-left: auto; min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--danger); color: #fff; font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.vdb-count { display: inline-flex; gap: 4px; align-items: center; text-decoration: none; }
+.table td .vdb-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 560px; white-space: normal; line-height: 1.35; }
+.table.virt td:nth-child(2):has(.vdb-title) { min-width: 340px; }
+.table td .strong-link.mono { white-space: nowrap; }
+.nav-badge { min-width: 16px; padding: 0 5px; font-size: 10px; line-height: 16px; flex-shrink: 0; }
+.sev-row.wrap, .table td .sev + .badge.kev { margin-left: 2px; }
+.chip.tiny { white-space: nowrap; display: inline-block; margin-bottom: 2px; }

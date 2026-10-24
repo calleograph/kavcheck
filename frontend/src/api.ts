@@ -44,7 +44,7 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events";
+export type QuickKind = "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns";
 export interface QuickCol { key: string; title: string; type: string }
 export interface QuickMetric { key: string; label: string; value: number | string; hint: string; tone: string }
 /** Документ быстрого отчёта без строк: один источник правды для просмотра, XLSX, HTML и CSV. */
@@ -53,6 +53,23 @@ export interface QuickDoc { kind?: string; title: string; subtitle: string; cond
 export interface QuickPreview { doc: QuickDoc | null; items: Record<string, string | number | null>[]; total: number; columns: QuickCol[]; fetched_at?: string; preview_rows?: number; html_row_limit?: number; unsupported?: string[] }
 export interface VulnDescr { descr_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label?: string; cve: string[]; kb: string[]; products: string[]; hosts: number; total: number; patchable: number; last_detected: string | null; url?: string }
 export interface VulnListSummary { vulns: number; critical: number; high: number; warning: number; patchable: number; activity_days: number; fetched_at: string }
+export type VdbStatus = "confirmed" | "potential" | "clarify" | "fixed" | "insufficient";
+export interface VdbFinding { status: VdbStatus; status_ru: string; installs: number; hosts_max: number; new: boolean; first_seen_at: string | null; products: { key: string; name: string; versions: string[]; installs: number; hosts: number }[] }
+export interface VdbVulnRow { key: string; title: string; severity: string; severity_ru: string; sev_rank: number; score: number | null; exploited: boolean; has_fix: boolean | null; published: string | null; modified: string | null;
+  sources: string[]; ids: string[]; products: string[]; description: string; finding?: VdbFinding }
+export interface VdbRunRow { started_at: string | null; finished_at: string | null; trigger: string; status: string; fetched: number; changed: number; duration_ms: number | null; error: string | null }
+export interface VdbSourceInfo { key: string; title: string; url: string; terms: string; mode: "full" | "incremental"; enabled: boolean; interval_hours: number; settings: Record<string, unknown>; secret_set: boolean;
+  status: "never" | "running" | "ok" | "error"; progress: string | null; last_started_at: string | null; last_ok_at: string | null; last_duration_ms: number | null; last_error: string | null; records: number;
+  requested: boolean; can_restore: boolean; upload: boolean; runs: VdbRunRow[] }
+export interface VdbAffectedRow { vendor: string; product: string; ecosystem: string; cpe: string; purl: string; platform: string; exact: string; from: string; from_incl: boolean; to: string; to_incl: boolean; fixed: string;
+  all_versions: boolean; version_text: string; conditional: boolean }
+export interface VdbRecordOut { source: string; title: string; ext_id: string; aliases: string[]; severity: string; severity_ru: string; score: number | null; vector: string; published: string | null; modified: string | null;
+  exploited: boolean; fix_available: boolean | null; fix_text: string; status: string; title_text: string; description: string; refs: { url: string; tags: string[] }[]; extra: Record<string, unknown>;
+  affected: VdbAffectedRow[]; affected_total: number }
+export interface VdbMatchOut { product_key: string; product: string; version: string; status: VdbStatus; status_ru: string; basis: string; confidence: string; hosts: number; installs: number; claims: { source: string; status_ru: string; basis: string }[] }
+export interface VdbCard extends VdbVulnRow { records: VdbRecordOut[]; differences: { field: string; values: Record<string, string | number> }[]; infrastructure: { catalog: boolean; matches: VdbMatchOut[] } | null }
+export interface VdbMapping { id: string; vendor_key: string; product_key: string; catalog_key: string; action: "map" | "exclude"; note: string | null; created_by: string | null; created_at: string }
+export interface VdbCounts { total: number; new: number; new_exploited: number; new_critical: number; new_serious: number }
 export interface Template { id: string; name: string; kind: Job["kind"]; params: ReportParams & Partial<AuditParams>; shared: boolean; owner_id: string | null; created_at: string }
 export interface AdminUser { id: string; username: string; display_name: string; email: string | null; auth_source: string; role: User["role"]; is_active: boolean; all_sources: boolean; source_ids: string[]; must_change_password: boolean; last_login_at: string | null; created_at: string; totp_enabled?: boolean; totp_enabled_at?: string | null }
 export interface Rule { id?: string; key: string; name: string; name_like: string; name_regex: string; branch_regex: string | null; branch_parts: number; exclude_regex: string | null; description: string | null; builtin?: boolean; enabled: boolean }
@@ -167,6 +184,29 @@ export const api = {
   hosts: {
     list: (p: Record<string, string | number | boolean | undefined>) => req<Page<Host> & { hidden: number; activity_days: number; fetched_at: string }>("GET", `/hosts${qs(p)}`),
     one: (id: number) => req<{ host: Host; activity_days: number; fetched_at: string; software: { install_id: number; product_id: number; name: string; version: string; publisher: string; install_date: string | null }[]; kaspersky: { product_code: string; product: string; build: string; state: string; av_bases_date: string | null; is_av: boolean; has_rtp: boolean }[] }>("GET", `/hosts/${id}`),
+  },
+  vdb: {
+    sources: () => req<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[] }>("GET", "/vdb/sources"),
+    updateSource: (key: string, body: { enabled?: boolean; interval_hours?: number; settings?: Record<string, unknown>; api_key?: string }) => req<VdbSourceInfo>("PUT", `/vdb/sources/${key}`, body),
+    sync: (key: string) => req<{ requested: boolean }>("POST", `/vdb/sources/${key}/sync`),
+    restore: (key: string) => req<VdbSourceInfo>("POST", `/vdb/sources/${key}/restore`),
+    upload: async (file: File) => {
+      const r = await fetch("/api/v1/vdb/sources/bdu/upload", { method: "POST", headers: { "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream" }, body: file, credentials: "same-origin" });
+      if (!r.ok) { let m = `Ошибка ${r.status}`; try { const d = await r.json(); if (typeof d.detail === "string") m = d.detail; } catch { /* текст по умолчанию */ } throw new ApiError(r.status, m); }
+      return r.json() as Promise<{ requested: boolean; bytes: number }>;
+    },
+    list: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VdbVulnRow>>("GET", `/vdb/vulns${qs(p)}`),
+    card: (key: string) => req<VdbCard>("GET", `/vdb/vulns/${encodeURIComponent(key)}`),
+    findings: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VdbVulnRow> & { summary: VdbCounts }>("GET", `/vdb/findings${qs(p)}`),
+    summary: () => req<VdbCounts>("GET", "/vdb/findings/summary"),
+    seen: (keys: string[], all = false) => req<VdbCounts>("POST", "/vdb/findings/seen", { keys, all }),
+    counts: (keys: string[]) => req<{ items: Record<string, { total: number; kev: number; critical: number; confirmed: number }> }>("GET", `/vdb/catalog-counts${qs({ keys: keys.join(",") })}`),
+    product: (key: string) => req<{ items: (VdbVulnRow & { versions: string[] })[]; total: number }>("GET", `/vdb/products/${encodeURIComponent(key).replace(/%2F/g, "/")}`),
+    host: (id: number) => req<{ items: { key: string; title: string; severity_ru: string; sev_rank: number; exploited: boolean; product: string; version: string; status: VdbStatus; status_ru: string; basis: string }[]; total?: number; catalog: boolean }>("GET", `/vdb/hosts/${id}`),
+    mappings: () => req<{ items: VdbMapping[] }>("GET", "/vdb/mappings"),
+    addMapping: (b: { vendor_key?: string; product: string; catalog_key: string; action: "map" | "exclude"; note?: string }) => req<{ id: string }>("POST", "/vdb/mappings", b),
+    removeMapping: (id: string) => req<void>("DELETE", `/vdb/mappings/${id}`),
+    suggest: (q: string) => req<{ items: { key: string; name: string; publisher: string }[] }>("GET", `/vdb/suggest-products${qs({ q })}`),
   },
   quick: {
     preview: (kind: QuickKind | "version_audit", params: object, refresh = false, sourceIds: string[] = []) => req<QuickPreview>("POST", "/quick/preview", { kind, params, refresh, source_ids: sourceIds }),
