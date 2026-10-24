@@ -110,3 +110,7 @@
 - Основные файлы: `backend/app/ksc/{events,queries,vulns}.py`, `backend/app/reports/{quick,quick_export}.py`, `backend/app/api/quick.py`, `frontend/src/components/QuickReport.tsx`, `frontend/src/pages/EventsPage.tsx`, `tests/ksc_synthetic/schema.sql`, `backend/tests/{test_quick_reports,test_ksc_live}.py`.
 - Результат: см. запись о публикации.
 - Известные проблемы: на реальных KSC и AD не проверено; имя удалённого устройства на момент события в публичном представлении KSC не используется (внутренний `ev_event.host_display_name` не читается).
+
+## 2026-10-24 — выпуск 0.3.0 опубликован
+
+- Результат: коммит релиза `eb2827d`, тег `v0.3.0`; на GitHub прошли CI (master и тег) и Release; релиз https://github.com/calleograph/kavcheck/releases/tag/v0.3.0, образы `ghcr.io/calleograph/kavcheck-{backend,web}:v0.3.0` доступны без входа. 122 теста backend (из них на синтетическом SQL Server — все), сборка интерфейса и проверка частных данных без ошибок; обновление базы с 0.1.0 до 0.3.0 проверено на чистом PostgreSQL. Рабочие серверы не обновлялись.
