@@ -10,7 +10,7 @@
 
 ## Версия
 
-`VERSION` = 0.2.0, `frontend/package.json` = 0.2.0. Выпуск 0.2.0 опубликован 24.10.2026: тег `v0.2.0`, релиз GitHub с описанием из CHANGELOG, образы `ghcr.io/calleograph/kavcheck-backend:v0.2.0` и `ghcr.io/calleograph/kavcheck-web:v0.2.0` (скачиваются без входа). Это первый тег репозитория: v0.1.0 не публиковался. Изменения после выпуска копятся в разделе `[Unreleased]` CHANGELOG (сейчас там переработка интерфейса по итогам аудита); следующий выпуск — `scripts/release.sh patch|minor` и push тега, только после подтверждения владельца.
+`VERSION` = 0.2.1, `frontend/package.json` = 0.2.1. Выпуски: 0.2.0 и 0.2.1 (24.10.2026) — теги `v0.2.0`, `v0.2.1`, релизы GitHub с описанием из CHANGELOG, образы `ghcr.io/calleograph/kavcheck-backend:<тег>` и `ghcr.io/calleograph/kavcheck-web:<тег>` (скачиваются без входа). v0.1.0 тегом не отмечен. 0.2.1 — интерфейс по итогам аудита, без изменений backend и миграций. Изменения после выпуска копятся в разделе `[Unreleased]` CHANGELOG; следующий выпуск — после подтверждения владельца (`release.sh patch|minor` или ручная правка VERSION, package.json, package-lock.json и CHANGELOG, затем тег и push).
 
 ## Архитектура
 
