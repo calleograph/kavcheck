@@ -31,7 +31,7 @@ export default function SystemAdmin({ onOpen }: { onOpen: (tab: string) => void 
   const r = s.resources, st = s.storage;
   return (
     <div className="stack">
-      {!s.master_key_ok && <div className="alert error"><Icon name="alert" /><div className="alert-body">APP_MASTER_KEY не задан или некорректен: пароли источников KSC и LDAP, второй фактор недоступны. Задайте ключ в .env и перезапустите сервисы.</div></div>}
+      {!s.master_key_ok && <div className="alert error"><Icon name="alert" /><div className="alert-body">APP_MASTER_KEY не задан или некорректен: пароли источников KSC и LDAPS, второй фактор недоступны. Задайте ключ в .env и перезапустите сервисы.</div></div>}
       {!s.security.https && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Приложение открывается по HTTP ({s.public_url}): cookie сессии передаётся без флага Secure. После перехода на HTTPS укажите адрес https:// в APP_PUBLIC_URL — защищённый режим включится сам (COOKIE_SECURE=auto).</div></div>}
       <div className="meters">
         <div className="meter"><span className="l">Версия</span><span className="v text">{versionLabel(s.version, s.commit)}</span><span className="t">сборка {s.built_at}</span></div>

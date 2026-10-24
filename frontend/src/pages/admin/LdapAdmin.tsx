@@ -10,17 +10,18 @@ import { fmt, fmtDate } from "../../util";
 type Tab = "connections" | "certs" | "rules" | "check";
 const ROLE: Record<string, string> = { admin: "Администратор", analyst: "Аналитик", viewer: "Просмотр" };
 
-/** Вход через каталог: подключения LDAPS (несколько доменов), доверенные сертификаты CA, правила доступа по группам, проверка доступа пользователя. */
+/** Вход доменных пользователей по LDAPS: подключения (несколько доменов), доверенные сертификаты CA, правила доступа по группам,
+ *  проверка входа пользователя тем же путём, что и настоящий вход. */
 export default function LdapAdmin({ sources }: { sources: SourceRef[] }) {
   const [tab, setTab] = useState<Tab>("connections");
   return (
     <div className="stack">
-      <Tabs label="Разделы LDAP" value={tab} onChange={setTab} items={[{ id: "connections", label: "Подключения" }, { id: "certs", label: "Сертификаты CA" },
-        { id: "rules", label: "Правила доступа" }, { id: "check", label: "Проверка пользователя" }]} />
-      {tab === "connections" && <Connections />}
+      <Tabs label="Разделы LDAPS" value={tab} onChange={setTab} items={[{ id: "connections", label: "Подключения" }, { id: "certs", label: "Сертификаты CA" },
+        { id: "rules", label: "Правила доступа" }, { id: "check", label: "Проверка входа" }]} />
+      {tab === "connections" && <Connections onCheckLogin={() => setTab("check")} />}
       {tab === "certs" && <Certs />}
       {tab === "rules" && <Rules sources={sources} />}
-      {tab === "check" && <CheckUser />}
+      {tab === "check" && <CheckLogin />}
     </div>
   );
 }
@@ -29,7 +30,7 @@ export default function LdapAdmin({ sources }: { sources: SourceRef[] }) {
 const EMPTY: Partial<LdapConn> & { url: string; bind_password: string } = { name: "", url: "", enabled: true, is_primary: false, ldap_version: 3, timeout_s: 5, base_dn: "", domain_dns: "", netbios: "",
   bind_dn: "", bind_password: "", login_attribute: "sAMAccountName", display_name_attribute: "displayName", email_attribute: "mail", user_filter: "(&(objectCategory=person)(objectClass=user))", nested_groups: true };
 
-function Connections() {
+function Connections({ onCheckLogin }: { onCheckLogin: () => void }) {
   const [items, setItems] = useState<LdapConn[] | null>(null);
   const [edit, setEdit] = useState<(typeof EMPTY & { id?: string; bind_password_set?: boolean }) | null>(null);
   const [test, setTest] = useState<LdapConn | null>(null);
@@ -39,7 +40,7 @@ function Connections() {
   useEffect(() => { void load(); }, [load]);
   return (
     <>
-      <div className="row"><p className="muted small grow">Каждое подключение — домен Active Directory. При входе учётные записи вида DOMAIN\логин и логин@домен ищутся в подходящем домене, остальные — сначала в основном. Сертификат сервера проверяется всегда.</p>
+      <div className="row"><p className="muted small grow">Каждое подключение — домен Active Directory по LDAPS. Пользователи входят по имени учётной записи без домена (например, ivan.petrov): оно ищется во всех включённых доменах; если имя есть в нескольких, на странице входа выбирается домен. Шифрование и проверка сертификата сервера обязательны.</p>
         <button className="btn primary" onClick={() => setEdit({ ...EMPTY, is_primary: !items?.length })}><Icon name="plus" />Добавить подключение</button></div>
       {!items ? <div className="card"><SkelRows rows={2} cols={4} /></div> : !items.length ? (
         <div className="card"><Empty icon="key" title="Подключений нет" action={<button className="btn primary" onClick={() => setEdit({ ...EMPTY, is_primary: true })}><Icon name="plus" />Добавить подключение</button>}>
@@ -62,7 +63,7 @@ function Connections() {
           </dl>
         </div>))}
       {edit && <ConnDialog value={edit} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); void load(); show("Подключение сохранено"); }} />}
-      {test && <TestDialog conn={test} onClose={() => { setTest(null); void load(); }} />}
+      {test && <TestDialog conn={test} onClose={() => { setTest(null); void load(); }} onCheckLogin={() => { setTest(null); onCheckLogin(); }} />}
       {del && <ConfirmDialog title="Удалить подключение?" confirmLabel="Удалить" body={<p>Подключение «{del.name}» и его правила доступа будут удалены. Пользователи этого домена не смогут войти.</p>} onClose={() => setDel(null)} onConfirm={async () => { await api.admin.ldap.remove(del.id); void load(); }} />}
       {delSecret && <ConfirmDialog title="Удалить учётные данные?" confirmLabel="Удалить учётные данные" body={<p>Пароль сервисной учётной записи «{delSecret.bind_dn}» будет удалён, подключение выключится. Чтобы снова включить вход, задайте новый пароль.</p>}
         onClose={() => setDelSecret(null)} onConfirm={async () => { await api.admin.ldap.removeSecret(delSecret.id); void load(); }} />}
@@ -81,7 +82,7 @@ function ConnDialog({ value, onClose, onSaved }: { value: typeof EMPTY & { id?: 
     try { if (v.id) await api.admin.ldap.update(v.id, body); else await api.admin.ldap.create({ ...body, bind_password: v.bind_password }); onSaved(); } catch (x) { setErr((x as ApiError).message); setBusy(false); }
   };
   return (
-    <Modal title={v.id ? `Подключение «${value.name}»` : "Новое подключение к каталогу"} onClose={onClose} wide>
+    <Modal title={v.id ? `Подключение LDAPS «${value.name}»` : "Новое подключение LDAPS"} onClose={onClose} wide>
       <form onSubmit={submit}>
         <div className="cols">
           <label>Отображаемое название<input value={v.name} onChange={(e) => set("name", e.target.value)} required maxLength={120} autoFocus placeholder="Основной домен" /></label>
@@ -96,8 +97,8 @@ function ConnDialog({ value, onClose, onSaved }: { value: typeof EMPTY & { id?: 
         <fieldset className="group"><legend>Домен</legend>
           <div className="cols three">
             <label>Base DN<input className="mono" value={v.base_dn} onChange={(e) => set("base_dn", e.target.value)} required placeholder="DC=example,DC=local" /></label>
-            <label>DNS-имя домена<input className="mono" value={v.domain_dns} onChange={(e) => set("domain_dns", e.target.value)} placeholder="example.local" /><span className="help">для входа логин@домен</span></label>
-            <label>NetBIOS-имя<input className="mono" value={v.netbios} onChange={(e) => set("netbios", e.target.value.toUpperCase())} placeholder="EXAMPLE" maxLength={15} /><span className="help">для входа DOMAIN\логин</span></label>
+            <label>DNS-имя домена<input className="mono" value={v.domain_dns} onChange={(e) => set("domain_dns", e.target.value)} placeholder="example.local" /><span className="help">домен в именах вида логин@домен; в журналах</span></label>
+            <label>NetBIOS-имя<input className="mono" value={v.netbios} onChange={(e) => set("netbios", e.target.value.toUpperCase())} placeholder="EXAMPLE" maxLength={15} /><span className="help">для имён вида DOMAIN\логин (необязательно)</span></label>
           </div>
         </fieldset>
         <fieldset className="group"><legend>Сервисная учётная запись (поиск пользователей и групп, только чтение)</legend>
@@ -124,26 +125,21 @@ function ConnDialog({ value, onClose, onSaved }: { value: typeof EMPTY & { id?: 
   );
 }
 
-function TestDialog({ conn, onClose }: { conn: LdapConn; onClose: () => void }) {
-  const [login, setLogin] = useState(""); const [pw, setPw] = useState("");
+function TestDialog({ conn, onClose, onCheckLogin }: { conn: LdapConn; onClose: () => void; onCheckLogin: () => void }) {
   const [r, setR] = useState<LdapDiag | null>(null); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
-  const run = async (e?: FormEvent) => { e?.preventDefault(); setBusy(true); setErr(""); setR(null); try { setR(await api.admin.ldap.test(conn.id, login.trim(), pw)); } catch (x) { setErr((x as ApiError).message); } finally { setBusy(false); setPw(""); } };
+  const run = async () => { setBusy(true); setErr(""); setR(null); try { setR(await api.admin.ldap.test(conn.id)); } catch (x) { setErr((x as ApiError).message); } finally { setBusy(false); } };
+  useEffect(() => { void run(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <Modal title={`Проверка «${conn.name}»`} onClose={onClose} wide>
-      <form onSubmit={run}>
-        <p className="muted small mb">DNS → TCP → TLS и цепочка сертификатов → вход сервисной записи → Base DN. Укажите пользователя, чтобы проверить поиск, группы и роль; пароль — чтобы проверить вход (не сохраняется).</p>
-        <div className="cols">
-          <label>Пользователь (необязательно)<input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="ivanov, EXAMPLE\ivanov или ivanov@example.local" autoComplete="off" /></label>
-          <label>Пароль пользователя (необязательно)<input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" /></label>
-        </div>
-        <div className="row"><button className="btn primary" aria-busy={busy}><Icon name="plug" size={15} /><span>Проверить</span></button></div>
-      </form>
-      {err && <div className="alert error mt-sm" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      {r && <div className="mt-sm"><StageList result={r} />
+    <Modal title={`Проверка подключения «${conn.name}»`} onClose={onClose} wide>
+      <p className="muted small">Контроллер домена: DNS → TCP → TLS и цепочка сертификатов → вход сервисной учётной записи → чтение Base DN. Вход конкретного пользователя (поиск, пароль, группы, роль) —
+        во вкладке <button type="button" className="link-btn" onClick={onCheckLogin}>«Проверка входа»</button>.</p>
+      {busy && <div className="row"><span className="spin accent" /><span className="muted small">Проверка…</span></div>}
+      {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
+      {r && <div><StageList result={r} okText="Подключение LDAPS работает" />
         {r.server_certificate && <dl className="kv compact mt-sm"><div><dt>Сертификат сервера</dt><dd className="mono small">{r.server_certificate.subject}</dd></div><div><dt>Издатель</dt><dd className="mono small">{r.server_certificate.issuer}</dd></div>
           <div><dt>Имена (SAN)</dt><dd className="mono small">{r.server_certificate.san.join(", ") || "—"}</dd></div><div><dt>Действует до</dt><dd>{r.server_certificate.not_after}</dd></div></dl>}
-        {r.test_user && <details className="disclosure mt-sm"><summary>Группы пользователя ({r.test_user.groups.length})</summary><ul className="mono small group-list">{r.test_user.groups.map((g) => <li key={g}>{g}</li>)}</ul></details>}
       </div>}
+      <div className="modal-foot"><button className="btn" onClick={() => void run()} aria-busy={busy} disabled={busy}><Icon name="refresh" size={15} /><span>Проверить снова</span></button></div>
     </Modal>
   );
 }
@@ -286,27 +282,36 @@ function RuleDialog({ value, conns, sources, onClose, onSaved }: { value: Partia
   );
 }
 
-function CheckUser() {
-  const [login, setLogin] = useState(""); const [r, setR] = useState<Awaited<ReturnType<typeof api.admin.ldap.checkUser>> | null>(null);
+function CheckLogin() {
+  const [login, setLogin] = useState(""); const [pw, setPw] = useState(""); const [domain, setDomain] = useState("");
+  const [conns, setConns] = useState<LdapConn[]>([]);
+  const [r, setR] = useState<Awaited<ReturnType<typeof api.admin.ldap.checkUser>> | null>(null);
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
-  const run = async (e: FormEvent) => { e.preventDefault(); setBusy(true); setErr(""); setR(null); try { setR(await api.admin.ldap.checkUser(login)); } catch (x) { setErr((x as ApiError).message); } finally { setBusy(false); } };
+  useEffect(() => { api.admin.ldap.connections().then((x) => setConns(x.items.filter((c) => c.enabled))).catch(() => undefined); }, []);
+  const run = async (e: FormEvent) => { e.preventDefault(); setBusy(true); setErr(""); setR(null); try { setR(await api.admin.ldap.checkUser(login.trim(), pw, domain)); } catch (x) { setErr((x as ApiError).message); } finally { setBusy(false); setPw(""); } };
   return (
     <div className="card narrow">
       <form onSubmit={run}>
-        <p className="muted small lead-in">Что получит пользователь при входе: найден ли он в каталоге, в каких группах состоит, какие правила подходят, какая роль и какие источники. Пароль не нужен.</p>
-        <div className="row"><input className="grow" value={login} onChange={(e) => setLogin(e.target.value)} placeholder="ivanov, EXAMPLE\ivanov или ivanov@example.local" aria-label="Логин" required />
-          <button className="btn primary" aria-busy={busy}><Icon name="search" size={15} /><span>Проверить</span></button></div>
+        <p className="muted small lead-in">Тот же путь, что при входе, но без открытия сессии: поиск имени в доменах, пароль (если указан), группы, правила доступа и второй фактор. На каждом шаге — причина ошибки. Пароль не сохраняется и не пишется в журналы.</p>
+        <div className="cols">
+          <label>Имя пользователя<input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="ivan.petrov" autoComplete="off" spellCheck={false} required /></label>
+          <label>Пароль (необязательно)<input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" /></label>
+        </div>
+        {conns.length > 1 && <label>Домен<select value={domain} onChange={(e) => setDomain(e.target.value)}><option value="">Определить автоматически, как при входе</option>{conns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>}
+        <div className="row"><button className="btn primary" aria-busy={busy}><Icon name="key" size={15} /><span>Проверить вход</span></button></div>
       </form>
       {err && <div className="alert error mt-sm" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      {r && (!r.found ? <div className="alert warn mt-sm"><Icon name="alert" /><div className="alert-body">{r.message}</div></div> : (
-        <dl className="kv mt-sm">
-          <div><dt>Пользователь</dt><dd>{r.display_name} ({r.username}){r.disabled && <span className="badge err">отключён в каталоге</span>}</dd></div>
-          <div><dt>Подключение</dt><dd>{r.connection}</dd></div>
-          <div><dt>Роль в KAV Checker</dt><dd>{r.role ? <b>{ROLE[r.role]}</b> : <span className="bad-text">нет — вход будет отклонён</span>}</dd></div>
-          <div><dt>Источники KSC</dt><dd>{r.all_sources ? "все" : r.sources?.join(", ") || "—"}</dd></div>
-          <div><dt>Подходящие правила</dt><dd className="mono small">{r.rules?.join("; ") || "—"}</dd></div>
-          <div><dt>Групп</dt><dd><details className="disclosure"><summary>{r.groups?.length ?? 0}</summary><ul className="mono small group-list">{r.groups?.map((g) => <li key={g}>{g}</li>)}</ul></details></dd></div>
-        </dl>))}
+      {r && <div className="mt-sm"><StageList result={r} okText={r.stages.some((s) => s.stage === "auth" && s.ok) ? "Вход будет выполнен" : "Пользователь найден, доступ определён"} />
+        {r.found && (
+          <dl className="kv mt-sm">
+            <div><dt>Пользователь</dt><dd>{r.display_name} ({r.username}){r.disabled && <span className="badge err">отключён в каталоге</span>}</dd></div>
+            <div><dt>Подключение</dt><dd>{r.connection}</dd></div>
+            <div><dt>Роль в KAV Checker</dt><dd>{r.role ? <b>{ROLE[r.role]}</b> : <span className="bad-text">нет — вход будет отклонён</span>}</dd></div>
+            <div><dt>Источники KSC</dt><dd>{r.all_sources ? "все" : r.sources?.join(", ") || "—"}</dd></div>
+            <div><dt>Подходящие правила</dt><dd className="mono small">{r.rules?.join("; ") || "—"}</dd></div>
+            <div><dt>Групп</dt><dd><details className="disclosure"><summary>{r.groups?.length ?? 0}</summary><ul className="mono small group-list">{r.groups?.map((g) => <li key={g}>{g}</li>)}</ul></details></dd></div>
+          </dl>)}
+      </div>}
     </div>
   );
 }

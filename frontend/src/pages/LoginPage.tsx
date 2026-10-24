@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api, ApiError, type Me } from "../api";
 import { Icon, Mark } from "../components/Icons";
 
@@ -15,13 +15,22 @@ export default function LoginPage({ onLogin }: { onLogin: (m: Me) => void }) {
   const [challenge, setChallenge] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [backup, setBackup] = useState(false);
+  // домены (подключения LDAPS) — только если их несколько: одинаковое имя в двух доменах требует явного выбора
+  const [domains, setDomains] = useState<{ id: string; name: string }[]>([]);
+  const [domain, setDomain] = useState("");
+  const domainRef = useRef<HTMLSelectElement>(null);
+  useEffect(() => { api.loginOptions().then((r) => setDomains(r.domains)).catch(() => undefined); }, []);
   const fail = (err: unknown) => { const ae = err as ApiError; setError(ae.status === 429 && ae.retryAfter ? `Слишком много неудачных попыток. Повторите через ${Math.max(1, Math.ceil(ae.retryAfter / 60))} мин.` : ae.message); };
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      const r = await api.login(login.trim(), password);
+      const r = await api.login(login.trim(), password, domain);
       if ("totp_required" in r) { setChallenge(r.challenge); setCode(""); setPassword(""); } else onLogin(r);
-    } catch (err) { fail(err); setPassword(""); } finally { setBusy(false); }
+    } catch (err) {
+      fail(err);
+      if ((err as ApiError).code === "choose_domain") { if (!domains.length) api.loginOptions().then((o) => setDomains(o.domains)).catch(() => undefined); window.requestAnimationFrame(() => domainRef.current?.focus()); }
+      else setPassword("");
+    } finally { setBusy(false); }
   };
   const submitCode = async (e: FormEvent) => {
     e.preventDefault(); if (!challenge) return; setBusy(true); setError("");
@@ -59,8 +68,10 @@ export default function LoginPage({ onLogin }: { onLogin: (m: Me) => void }) {
         ) : (
         <form className="login-card" onSubmit={submit} aria-label="Вход">
           <h2>Вход</h2>
-          <p className="lede">Учётная запись домена или локальная учётная запись KAV Checker.</p>
-          <label>Логин<input value={login} onChange={(e) => setLogin(e.target.value)} autoComplete="username" autoFocus required maxLength={256} autoCapitalize="none" spellCheck={false} /></label>
+          <p className="lede">Имя учётной записи домена — без домена, например <span className="mono">ivan.petrov</span>, — или локальная учётная запись KAV Checker.</p>
+          <label>Имя пользователя<input value={login} onChange={(e) => setLogin(e.target.value)} autoComplete="username" autoFocus required maxLength={256} autoCapitalize="none" spellCheck={false} placeholder="ivan.petrov" /></label>
+          {domains.length > 1 && <label>Домен<select ref={domainRef} value={domain} onChange={(e) => setDomain(e.target.value)}>
+            <option value="">Определить автоматически</option>{domains.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>}
           <label>Пароль
             <span className="pw">
               <input type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} onKeyUp={checkCaps} onKeyDown={checkCaps} autoComplete="current-password" required maxLength={512} />
@@ -70,7 +81,7 @@ export default function LoginPage({ onLogin }: { onLogin: (m: Me) => void }) {
           </label>
           {error && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{error}</div></div>}
           <button className="btn primary lg" aria-busy={busy} disabled={!login || !password}><span>Войти</span></button>
-          <p className="foot">Доменная учётная запись: логин, DOMAIN\\логин или логин@домен. Пароли не записываются в журналы; после серии неверных попыток вход временно блокируется.</p>
+          <p className="foot">Домен указывать не нужно: учётная запись ищется в доменах, настроенных администратором. Пароли не записываются в журналы; после серии неверных попыток вход временно блокируется.</p>
         </form>)}
       </div>
     </div>

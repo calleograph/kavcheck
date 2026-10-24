@@ -185,7 +185,7 @@ async def test_directory_login_with_rules(client, app, monkeypatch):
     class FakeDir:
         configs = [object()]
 
-        def authenticate(self, login, password):
+        def authenticate(self, login, password, domain=""):
             if password != "User-Test-Pass-1":
                 raise L.LdapError("invalid_credentials")
             return ident

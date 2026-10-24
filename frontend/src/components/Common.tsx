@@ -3,13 +3,14 @@ import type { DiagResult } from "../api";
 import { fmt, num } from "../util";
 import { Icon } from "./Icons";
 
-const STAGE_TITLE: Record<string, string> = { dns: "DNS", tcp: "TCP", tls: "TLS и сертификат", bind: "Вход сервисной записи", user: "Поиск пользователя", groups: "Группы", access: "Доступ в KAV Checker", connect: "Подключение", server: "SQL Server", objects: "Объекты KSC", rights: "Права учётной записи", ksc: "Версия KSC", read: "Пробное чтение", base_dn: "Чтение Base DN", auth: "Тестовый вход", error: "Ошибка", config: "Настройка" };
+const STAGE_TITLE: Record<string, string> = { dns: "DNS", tcp: "TCP", tls: "TLS и сертификат", bind: "Вход сервисной записи", user: "Поиск пользователя", groups: "Группы", access: "Доступ в KAV Checker",
+  parse: "Имя пользователя", search: "Поиск", choose: "Выбор домена", session: "Вход в KAV Checker", connect: "Подключение", server: "SQL Server", objects: "Объекты KSC", rights: "Права учётной записи", ksc: "Версия KSC", read: "Пробное чтение", base_dn: "Чтение Base DN", auth: "Проверка пароля", error: "Ошибка", config: "Настройка" };
 
-/** Результат пошаговой проверки подключения (SQL Server, LDAP): каждый этап отдельной строкой. */
-export function StageList({ result }: { result: DiagResult }) {
+/** Результат пошаговой проверки (SQL Server, LDAPS, вход пользователя): каждый этап отдельной строкой. */
+export function StageList({ result, okText = "Проверка пройдена" }: { result: DiagResult; okText?: string }) {
   return (
     <div className="diag" role="status">
-      <div className={`diag-head ${result.ok ? "ok" : "bad"}`}><Icon name={result.ok ? "checkCircle" : "xCircle"} />{result.ok ? "Проверка пройдена" : "Проверка не пройдена"}</div>
+      <div className={`diag-head ${result.ok ? "ok" : "bad"}`}><Icon name={result.ok ? "checkCircle" : "xCircle"} />{result.ok ? okText : "Проверка не пройдена"}</div>
       <ul className="stage-list">
         {result.stages.map((s, i) => (
           <li key={i} className={s.ok === false ? "bad" : s.ok === null ? "skip" : "ok"}>

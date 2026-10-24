@@ -32,7 +32,18 @@ sn: Петрова
 mail: petrova@example.local
 userPassword: User-Test-Pass-2
 
+# имя с точкой и дефисом — вход по короткому имени учётной записи
+dn: uid=ivan.petrov-test,ou=People,dc=example,dc=local
+objectClass: inetOrgPerson
+uid: ivan.petrov-test
+cn: Иван Петров
+displayName: Иван Петров (тест)
+sn: Петров
+mail: ivan.petrov-test@example.local
+userPassword: User-Test-Pass-3
+
 dn: cn=KAV-Analysts,ou=Groups,dc=example,dc=local
 objectClass: groupOfUniqueNames
 cn: KAV-Analysts
 uniqueMember: uid=ivanov,ou=People,dc=example,dc=local
+uniqueMember: uid=ivan.petrov-test,ou=People,dc=example,dc=local

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import ldap as L
 from ..auth.deps import SessionUser, get_db, require_admin
+from ..auth.service import totp_required
 from ..models import AccessRule, CaCertificate, KscSource, LdapConnection, utcnow
 from ..security import certs
 from ..services.audit import write_audit
@@ -228,20 +229,36 @@ async def delete_rule(rule_id: uuid.UUID, su: SessionUser = Depends(require_admi
 
 @router.post("/check-user")
 async def check_user(request: Request, body: dict[str, Any] = Body(...), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    """Что получит пользователь при входе: найден ли в каталоге, его группы, подходящие правила, роль и источники. Пароль не нужен."""
+    """Проверка входа пользователя тем же путём, что и настоящий вход (без создания сессии): имя → поиск в каждом подключении → выбор домена →
+    пароль (если указан) → группы → правила доступа → второй фактор. Каждый шаг — с причиной. Пароль не сохраняется и не пишется в журналы."""
     login = str(body.get("login") or "").strip()[:256]
+    password = str(body.get("password") or "")[:512]
+    domain = str(body.get("domain") or "").strip()[:64]
     if not login:
-        raise HTTPException(status_code=422, detail="Укажите логин")
+        raise HTTPException(status_code=422, detail="Укажите имя пользователя")
     st = store(request)
     d = await st.directory(db)
     if not d.configs:
-        raise HTTPException(status_code=409, detail="Нет включённых подключений к каталогу")
-    try:
-        ident = await asyncio.to_thread(d.lookup, login)
-    except L.LdapError as exc:
-        return {"found": False, "message": exc.message}
-    dec = st.decide(await st.rules(db), ident)
-    names = await st.source_names(db)
-    return {"found": True, "display_name": ident.display_name, "username": ident.username, "email": ident.email, "connection": ident.connection, "disabled": ident.disabled,
-            "groups": sorted(ident.groups)[:200], "role": dec.role, "all_sources": dec.all_sources, "sources": [names.get(s, s) for s in dec.source_ids],
-            "rules": [r.group_dn for r in dec.rules]}
+        raise HTTPException(status_code=409, detail="Нет включённых подключений LDAPS")
+    started = utcnow()
+    stages, ident = await asyncio.to_thread(d.diagnose_login, login, password, domain)
+    out: dict[str, Any] = {"ok": False, "stages": stages, "found": ident is not None}
+    if ident is not None:
+        dec = st.decide(await st.rules(db), ident)
+        names = await st.source_names(db)
+        srcs = "все" if dec.all_sources else ", ".join(names.get(s, s) for s in dec.source_ids) or "нет"
+        stages.append({"stage": "access", "ok": dec.role is not None, "ms": 0, "message": f"Роль в KAV Checker: {ROLE_RU.get(dec.role, dec.role)}; источники: {srcs}." if dec.role
+                       else "Ни одна группа пользователя не разрешена правилами доступа — вход будет отклонён (нет разрешённой группы)."})
+        if dec.role is not None:
+            cfg = await request.app.state.auth.totp_cfg(db)
+            need = totp_required(cfg, role=dec.role, groups=ident.groups) and cfg.totp_policy != "off"
+            stages.append({"stage": "session", "ok": True if password else None, "ms": 0,
+                           "message": ("Вход будет выполнен" if password else "После проверки пароля вход будет выполнен") + (", затем — код второго фактора." if need else ".")})
+        out.update(display_name=ident.display_name, username=ident.username, email=ident.email, connection=ident.connection, disabled=ident.disabled,
+                   groups=sorted(ident.groups)[:200], role=dec.role, all_sources=dec.all_sources, sources=[names.get(s, s) for s in dec.source_ids], rules=[r.group_dn for r in dec.rules])
+    out["ok"] = all(s["ok"] is not False for s in stages) and ident is not None
+    out["message"] = next((s["message"] for s in stages if s["ok"] is False), "")
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="ldap.check_login", target_type="ldap", target_id=login[:80], result="success" if out["ok"] else "failure",
+                details={"login": login[:80], "with_password": bool(password), "domain": domain or None}, duration_ms=int((utcnow() - started).total_seconds() * 1000))
+    await db.commit()
+    return out

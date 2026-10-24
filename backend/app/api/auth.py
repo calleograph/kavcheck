@@ -40,6 +40,13 @@ def _fail(exc: AuthError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message}, headers={"Retry-After": str(exc.retry_after)} if exc.retry_after else None)
 
 
+@router.get("/login-options")
+async def login_options(request: Request, db: AsyncSession = Depends(get_db)):
+    """Для страницы входа: список доменов (названия подключений LDAPS) — только если их несколько, чтобы пользователь мог выбрать домен."""
+    conns = [c for c in await request.app.state.ldap.connections(db) if c.enabled and c.host]
+    return {"domains": [{"id": str(c.id), "name": c.name} for c in conns] if len(conns) > 1 else []}
+
+
 @router.post("/login")
 async def login(body: LoginIn, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     """Первый шаг входа. Ответ — сведения о пользователе и cookie сессии либо {totp_required, challenge}, если нужен код второго фактора."""
@@ -47,11 +54,13 @@ async def login(body: LoginIn, request: Request, response: Response, db: AsyncSe
     ip = client_ip(request)
     journal = request.app.state.journal
     try:
-        result = await request.app.state.auth.login(db, body.login, body.password)
+        result = await request.app.state.auth.login(db, body.login, body.password, body.domain)
     except AuthError as exc:
+        # пользователю — общее сообщение; администратору в журналах — точная причина (пользователь не найден, ошибка поиска, пароль отклонён, нет группы…)
+        why = {"code": exc.code, "reason": exc.reason, **({"detail": exc.detail[:500]} if exc.detail else {})}
         await audit_now(request.app.state.session_maker, actor_user_id=None, actor=body.login[:80], action="auth.login_failed", target_type="user", target_id=body.login[:80],
-                        result="denied" if exc.code in ("throttled", "no_role", "account_disabled", "account_locked") else "failure", details={"code": exc.code})
-        await journal.emit("auth", "login_failed", level="warn", user=body.login[:80], ip=ip, message=exc.message, data={"code": exc.code})
+                        result="denied" if exc.code in ("throttled", "no_role", "account_disabled", "account_locked") else "failure", details=why)
+        await journal.emit("auth", "login_failed", level="warn", user=body.login[:80], ip=ip, message=f"{exc.message} Причина: {exc.detail or exc.reason}", data=why)
         raise _fail(exc) from None
     if result.challenge:
         await journal.emit("auth", "login_password_ok", user=result.user.username, ip=ip, message="Пароль принят, ожидается код второго фактора")

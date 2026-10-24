@@ -14,7 +14,7 @@ const RIGHTS: [string, boolean, boolean, boolean][] = [
   ["Проверка версий: предварительный просмотр", true, true, true],
   ["Формирование отчётов, сохранение и запуск проверок", false, true, true],
   ["Исправления каталога программ", false, true, true],
-  ["Источники KSC, пользователи, LDAP, настройки, обновления, журналы", false, false, true],
+  ["Источники KSC, пользователи, LDAPS, настройки, обновления, журналы", false, false, true],
 ];
 type Policy = "off" | "optional" | "admins" | "all" | "groups";
 
@@ -33,7 +33,7 @@ function RolesAndPolicy() {
           <thead><tr><th>Что доступно</th><th className="ta-c">Просмотр</th><th className="ta-c">Аналитик</th><th className="ta-c">Администратор</th></tr></thead>
           <tbody>{RIGHTS.map(([t, v, a, ad]) => <tr key={t}><td>{t}</td>{[v, a, ad].map((x, i) => <td key={i} className="ta-c">{x ? <Icon name="check" size={16} className="ok-text" /> : <span className="faint">—</span>}</td>)}</tr>)}</tbody>
         </table></div>
-        <p className="muted small pad">Доменным пользователям роль и источники назначают правила групп (Администрирование → LDAP → Правила доступа) при каждом входе. Локальные учётные записи — резервный способ входа.</p>
+        <p className="muted small pad">Доменным пользователям роль и источники назначают правила групп (Администрирование → LDAPS → Правила доступа) при каждом входе. Локальные учётные записи — резервный способ входа.</p>
       </div>
       <div className="card">
         <h2>Двухфакторная аутентификация</h2>
@@ -88,7 +88,7 @@ export default function UsersAdmin({ ctx }: { ctx: Ctx }) {
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя или логин" aria-label="Поиск пользователя" /></div>
         <button className="btn primary" onClick={() => { setErr(""); setEdit({ isNew: true, username: "", display_name: "", role: "viewer", is_active: true, all_sources: true, source_ids: [], must_change_password: true }); }}><Icon name="plus" />Локальный пользователь</button>
-        <p className="note">Доменные пользователи появляются после первого входа; их роль и источники задают правила групп в разделе LDAP. Права ролей и политика второго фактора — ниже.</p>
+        <p className="note">Доменные пользователи появляются после первого входа; их роль и источники задают правила групп в разделе LDAPS. Права ролей и политика второго фактора — ниже.</p>
       </div>
       {err && !edit && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       <div className="table-scroll">
@@ -96,7 +96,7 @@ export default function UsersAdmin({ ctx }: { ctx: Ctx }) {
           <table className="table">
             <thead><tr><th>Пользователь</th><th>Вход</th><th>Роль</th><th>Источники</th><th>2FA</th><th>Последний вход</th><th>Статус</th><th><span className="sr-only">Действия</span></th></tr></thead>
             <tbody>{items.map((u) => { const [rl, rc] = ROLE[u.role]; return (
-              <tr key={u.id}><td><b>{u.display_name}</b><span className="sub mono">{u.username}{u.email ? `, ${u.email}` : ""}</span></td><td>{u.auth_source === "local" ? "Локальный" : "LDAP"}</td><td><span className={`badge ${rc}`}>{rl}</span></td>
+              <tr key={u.id}><td><b>{u.display_name}</b><span className="sub mono">{u.username}{u.email ? `, ${u.email}` : ""}</span></td><td>{u.auth_source === "local" ? "Локальный" : "Домен (LDAPS)"}</td><td><span className={`badge ${rc}`}>{rl}</span></td>
                 <td className="small">{u.role === "admin" || u.all_sources ? "Все" : u.source_ids.map((id) => ctx.sources.find((s) => s.id === id)?.name ?? "удалённый").join(", ") || <span className="warn-text">нет доступа</span>}</td>
                 <td>{u.totp_enabled ? <span className="badge ok">включена</span> : <span className="faint small">нет</span>}</td><td className="nowrap">{fmt(u.last_login_at)}</td>
                 <td>{u.is_active ? <span className="badge ok"><span className="dot" />активен</span> : <span className="badge warn">отключён</span>}{u.must_change_password && <span className="sub">сменит пароль при входе</span>}</td>

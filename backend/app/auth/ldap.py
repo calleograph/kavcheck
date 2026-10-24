@@ -1,7 +1,10 @@
-"""Каталог LDAP/LDAPS (ldap3): несколько подключений, проверка сертификата обязательна, пароль пользователя проверяется bind'ом и нигде не сохраняется.
+"""Каталог по LDAPS (ldap3): несколько подключений, шифрование и проверка сертификата обязательны, пароль пользователя проверяется bind'ом и нигде не сохраняется.
 
-* Сертификат сервера проверяется по загруженным доверенным CA (раздел «LDAP → Сертификаты»), а если их нет — по системному хранилищу;
-  имя узла сверяется с сертификатом. Отключить проверку нельзя.
+* Соединение — только LDAPS (636) или STARTTLS (389): пароль без TLS не передаётся. Сертификат сервера проверяется по загруженным доверенным CA
+  (раздел «LDAPS → Сертификаты CA»), а если их нет — по системному хранилищу; имя узла сверяется с сертификатом. Отключить проверку нельзя.
+* Переходы по ссылкам (referrals) выключены: ldap3 по умолчанию идёт по ним к любому узлу с теми же учётными данными, в том числе без TLS.
+* Пользователь вводит имя учётной записи (sAMAccountName) без домена; оно ищется во всех включённых подключениях. Найдено в нескольких — нужен
+  выбор домена (вход в «чужой» домен исключён). DOMAIN\\user и user@domain по-прежнему принимаются и сразу выбирают подключение.
 * Группы — с учётом вложенности (LDAP_MATCHING_RULE_IN_CHAIN, Active Directory); для других каталогов — memberOf.
 * Коды ошибок AD (data 52e/530/531/532/533/701/773/775) переводятся в понятные причины.
 Решения по доступу (роль, источники) принимает auth/service.py по правилам групп."""
@@ -21,7 +24,8 @@ MESSAGES = {
     "not_configured": "Вход доменной учётной записью не настроен.",
     "user_not_found": "Пользователь не найден в каталоге.",
     "ambiguous_user": "Под логин подходит несколько записей каталога — уточните фильтр пользователей.",
-    "invalid_credentials": "Неверный логин или пароль.",
+    "invalid_credentials": "Контроллер домена отклонил пароль.",
+    "bad_login": "Имя пользователя содержит недопустимые символы.",
     "account_disabled": "Учётная запись отключена в каталоге.",
     "account_locked": "Учётная запись заблокирована в каталоге (слишком много неудачных попыток).",
     "password_expired": "Срок действия пароля истёк — смените пароль в домене.",
@@ -30,15 +34,18 @@ MESSAGES = {
     "server_unavailable": "Контроллер домена не отвечает.",
     "tls_error": "Защищённое соединение не установлено: сертификат сервера не прошёл проверку.",
     "service_account_error": "Сервисная учётная запись не может войти: проверьте DN или логин и пароль.",
+    "search_error": "Ошибка поиска в каталоге.",
+    "choose_domain": "Учётная запись с таким именем есть в нескольких доменах — выберите домен.",
+    "unknown_domain": "Выбранный домен не настроен или выключен.",
     "config_error": "Подключение настроено неполностью.",
     "unknown": "Ошибка каталога.",
 }
 
 
 class LdapError(Exception):
-    def __init__(self, code: str, detail: str = ""):
+    def __init__(self, code: str, detail: str = "", connection: str = ""):
         super().__init__(code)
-        self.code, self.detail = code, detail
+        self.code, self.detail, self.connection = code, detail, connection   # connection — название подключения, где возникла ошибка (для журнала)
 
     @property
     def message(self) -> str:
@@ -57,6 +64,7 @@ class LdapIdentity:
     connection_id: str = ""
     connection: str = ""
     disabled: bool = False
+    domain: str = ""                # DNS-имя или NetBIOS домена подключения — различает одинаковые имена в разных доменах
 
 
 @dataclass
@@ -96,11 +104,11 @@ def parse_login(raw: str) -> tuple[str, bool, str]:
     if "\\" in login:
         netbios, login = login.split("\\", 1)
         if not _LOGIN_PART.match(netbios):
-            raise LdapError("invalid_credentials")
+            raise LdapError("bad_login")
     is_upn = "@" in login
     name, _, dom = login.partition("@")
     if login.count("@") > 1 or len(login) > 256 or not _LOGIN_PART.match(name) or (is_upn and not _UPN_DOMAIN.match(dom)):
-        raise LdapError("invalid_credentials")
+        raise LdapError("bad_login")
     return login, is_upn, netbios
 
 
@@ -145,10 +153,10 @@ def _connection(cfg: LdapConfig, user: str, password: str):
     if not cfg.host:
         raise LdapError("config_error", "адрес контроллера домена не задан")
     if not password:
-        raise LdapError("invalid_credentials")             # пустой пароль = анонимный bind: не допускаем
+        raise LdapError("invalid_credentials", "пустой пароль не допускается")             # пустой пароль = анонимный bind
     server = Server(cfg.host, port=cfg.port, use_ssl=cfg.protocol == "ldaps", tls=_tls(cfg), connect_timeout=cfg.timeout_s, get_info="NO_INFO")
     conn = Connection(server, user=user, password=password, authentication=SIMPLE, version=cfg.ldap_version, auto_bind=False, raise_exceptions=False,
-                      read_only=True, receive_timeout=cfg.timeout_s)
+                      read_only=True, receive_timeout=cfg.timeout_s, auto_referrals=False)
     try:
         if cfg.protocol == "starttls":
             conn.open()
@@ -181,25 +189,50 @@ def _guid(raw) -> str:
     return ""
 
 
-def _find(svc, cfg: LdapConfig, login: str) -> dict:
-    from ldap3 import SUBTREE  # noqa: PLC0415
-
+def user_filter(cfg: LdapConfig, login: str) -> str:
+    """Фильтр поиска пользователя. Короткое имя ищется по атрибуту логина (sAMAccountName); user@домен этого подключения — также по нему.
+    Фильтр в стиле 0.1.0 с подстановкой {login} поддерживается: имя подставляется в сам фильтр."""
     value, is_upn, _nb = parse_login(login)
+    local, _, suffix = value.partition("@")
+    base = cfg.user_filter or "(objectClass=user)"
+    if "{login}" in base:
+        return base.replace("{login}", escape_filter(local))
     if is_upn:
-        local, _, suffix = value.partition("@")
         cond = f"(userPrincipalName={escape_filter(value)})"
         if cfg.domain_dns and suffix.lower() == cfg.domain_dns.lower():      # логин@домен этого подключения — также по атрибуту логина
             cond = f"(|{cond}({cfg.login_attribute}={escape_filter(local)}))"
     else:
         cond = f"({cfg.login_attribute}={escape_filter(value)})"
-    flt = f"(&{cfg.user_filter or '(objectClass=user)'}{cond})"
+    return f"(&{base}{cond})"
+
+
+def _find(svc, cfg: LdapConfig, login: str) -> dict:
+    """Запись пользователя. Код результата поиска проверяется: «не найден» и «поиск не выполнен» — разные причины."""
+    from ldap3 import SUBTREE  # noqa: PLC0415
+    from ldap3.core.exceptions import LDAPException  # noqa: PLC0415
+
+    flt = user_filter(cfg, login)
     attrs = ["objectGUID", "sAMAccountName", "userPrincipalName", cfg.display_name_attribute, cfg.email_attribute, "userAccountControl", "memberOf"]
-    svc.search(cfg.base_dn, flt, search_scope=SUBTREE, attributes=attrs, size_limit=2)
+    try:
+        svc.search(cfg.base_dn, flt, search_scope=SUBTREE, attributes=attrs, size_limit=2)
+    except LDAPException as exc:
+        raise _transport_error(exc) from None
+    res = svc.result or {}
+    code = res.get("result", 0)
     entries = [e for e in (svc.response or []) if e.get("type") == "searchResEntry"]
+    if code not in (0, 4) and not entries:                 # 4 — sizeLimitExceeded: записей больше одной
+        if code == 10:
+            refs = ", ".join(res.get("referrals") or []) or "другой сервер"
+            raise LdapError("search_error", f"Base DN «{cfg.base_dn}» обслуживает другой сервер ({refs}): укажите контроллер этого домена или Base DN его раздела")
+        if code == 32:
+            raise LdapError("search_error", f"Base DN «{cfg.base_dn}» не найден в каталоге")
+        if code == 50:
+            raise LdapError("search_error", "у сервисной учётной записи нет прав на поиск")
+        raise LdapError("search_error", str(res.get("description") or f"код {code}"))
     if not entries:
-        raise LdapError("user_not_found")
-    if len(entries) > 1:
-        raise LdapError("ambiguous_user")
+        raise LdapError("user_not_found", f"фильтр {flt}, Base DN {cfg.base_dn}")
+    if len(entries) > 1 or code == 4:
+        raise LdapError("ambiguous_user", f"фильтр {flt}")
     return entries[0]
 
 
@@ -231,7 +264,30 @@ def _identity(cfg: LdapConfig, entry: dict, groups: frozenset[str], login: str) 
     guid = _guid((raw.get("objectGUID") or [b""])[0]) or str(entry["dn"]).lower()
     return LdapIdentity(guid=guid, dn=str(entry["dn"]), username=sam, upn=first("userPrincipalName"), display_name=first(cfg.display_name_attribute) or sam,
                         email=first(cfg.email_attribute), groups=groups, connection_id=cfg.id, connection=cfg.name,
-                        disabled=bool(isinstance(uac, int) and uac & _UAC_DISABLED))
+                        disabled=bool(isinstance(uac, int) and uac & _UAC_DISABLED), domain=(cfg.domain_dns or cfg.netbios or cfg.name).lower())
+
+
+def _close(conn) -> None:
+    try:
+        conn.unbind()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _verify(cfg: LdapConfig, svc, entry: dict, login: str, password: str) -> LdapIdentity:
+    """Пароль — bind от имени найденного DN (простой bind по защищённому соединению); затем группы с учётом вложенности."""
+    if not password:
+        raise LdapError("invalid_credentials", "пароль не указан")
+    ident = _identity(cfg, entry, frozenset(), login)
+    if ident.disabled:
+        raise LdapError("account_disabled")
+    try:
+        _close(_connection(cfg, str(entry["dn"]), password))
+    except LdapError as exc:
+        exc.detail = exc.detail or f"учётная запись {entry['dn']}"
+        raise
+    groups = _groups(svc, cfg, str(entry["dn"]), list(entry.get("attributes", {}).get("memberOf") or []))
+    return LdapIdentity(**{**ident.__dict__, "groups": groups})
 
 
 def lookup(cfg: LdapConfig, login: str) -> LdapIdentity:
@@ -239,38 +295,34 @@ def lookup(cfg: LdapConfig, login: str) -> LdapIdentity:
     svc = _service(cfg)
     try:
         e = _find(svc, cfg, login)
-        vals = e.get("attributes", {})
-        return _identity(cfg, e, _groups(svc, cfg, str(e["dn"]), list(vals.get("memberOf") or [])), login)
+        return _identity(cfg, e, _groups(svc, cfg, str(e["dn"]), list(e.get("attributes", {}).get("memberOf") or [])), login)
     finally:
-        svc.unbind()
+        _close(svc)
 
 
 def authenticate(cfg: LdapConfig, login: str, password: str) -> LdapIdentity:
     if not password:
-        raise LdapError("invalid_credentials")
+        raise LdapError("invalid_credentials", "пароль не указан")
     svc = _service(cfg)
     try:
-        e = _find(svc, cfg, login)
-        ident = _identity(cfg, e, frozenset(), login)
-        if ident.disabled:
-            raise LdapError("account_disabled")
-        _connection(cfg, str(e["dn"]), password).unbind()      # проверка пароля: bind от имени пользователя
-        groups = _groups(svc, cfg, str(e["dn"]), list(e.get("attributes", {}).get("memberOf") or []))
-        return LdapIdentity(**{**ident.__dict__, "groups": groups})
+        return _verify(cfg, svc, _find(svc, cfg, login), login, password)
     finally:
-        try:
-            svc.unbind()
-        except Exception:  # noqa: BLE001
-            pass
+        _close(svc)
+
+
+_UNAVAILABLE = ("server_unavailable", "tls_error", "service_account_error", "config_error", "search_error")
 
 
 class Directory:
-    """Несколько подключений: сначала подходящие по домену из логина (DOMAIN\\user, user@domain), затем основное, затем остальные."""
+    """Несколько подключений. DOMAIN\\user и user@domain выбирают подключение по NetBIOS и DNS-имени; выбранный на странице входа домен — только его.
+    Короткое имя ищется во всех включённых подключениях: найдено в одном — вход в нём, в нескольких — нужен выбор домена."""
 
     def __init__(self, configs: list[LdapConfig]):
         self.configs = [c for c in configs if c.enabled and c.host]
 
-    def candidates(self, login: str) -> list[LdapConfig]:
+    def candidates(self, login: str, domain: str = "") -> list[LdapConfig]:
+        if domain:
+            return [c for c in self.configs if c.id == domain]
         _v, is_upn, nb = parse_login(login)
         suffix = login.rsplit("@", 1)[1].lower() if is_upn else ""
         if nb:
@@ -283,28 +335,129 @@ class Directory:
                 return m
         return list(self.configs)
 
-    def _each(self, login: str, fn):
-        cands = self.candidates(login)
+    def locate(self, login: str, domain: str = "", trace: list | None = None) -> tuple[LdapConfig, object, dict]:
+        """(подключение, открытое соединение сервисной записи, запись пользователя); соединение закрывает вызывающий.
+        trace — для диагностики: (подключение, найденная запись или LdapError) по каждому подключению."""
+        cands = self.candidates(login, domain)
         if not cands:
-            raise LdapError("not_configured")
-        unavailable: LdapError | None = None
+            raise LdapError("unknown_domain" if domain else "not_configured")
+        found: list[tuple[LdapConfig, object, dict]] = []
+        failure: LdapError | None = None
         for c in cands:
             try:
-                return fn(c)
+                svc = _service(c)
+                try:
+                    found.append((c, svc, _find(svc, c, login)))
+                    if trace is not None:
+                        trace.append((c, found[-1][2]))
+                    continue
+                except LdapError:
+                    _close(svc)
+                    raise
             except LdapError as exc:
-                if exc.code == "user_not_found":
-                    continue
-                if exc.code in ("server_unavailable", "tls_error", "service_account_error", "config_error"):
-                    unavailable = exc
-                    continue
-                raise
-        raise unavailable or LdapError("user_not_found")
+                exc.connection = exc.connection or c.name
+                if trace is not None:
+                    trace.append((c, exc))
+                if exc.code == "ambiguous_user":                 # неоднозначно в самом домене — вход в другом домене не выполняем
+                    for _c, s, _e in found:
+                        _close(s)
+                    raise
+                if exc.code != "user_not_found" and failure is None:
+                    failure = exc
+        if len(found) > 1:
+            for _c, s, _e in found:
+                _close(s)
+            raise LdapError("choose_domain", ", ".join(c.name for c, _s, _e in found))
+        if found:
+            return found[0]
+        if failure is not None:
+            raise failure
+        raise LdapError("user_not_found", "ни в одном подключении", ", ".join(c.name for c in cands))
 
-    def authenticate(self, login: str, password: str) -> LdapIdentity:
-        return self._each(login, lambda c: authenticate(c, login, password))
+    def authenticate(self, login: str, password: str, domain: str = "") -> LdapIdentity:
+        cfg, svc, entry = self.locate(login, domain)
+        try:
+            return _verify(cfg, svc, entry, login, password)
+        except LdapError as exc:
+            exc.connection = exc.connection or cfg.name
+            raise
+        finally:
+            _close(svc)
 
-    def lookup(self, login: str) -> LdapIdentity:
-        return self._each(login, lambda c: lookup(c, login))
+    def lookup(self, login: str, domain: str = "") -> LdapIdentity:
+        cfg, svc, entry = self.locate(login, domain)
+        try:
+            return _identity(cfg, entry, _groups(svc, cfg, str(entry["dn"]), list(entry.get("attributes", {}).get("memberOf") or [])), login)
+        finally:
+            _close(svc)
+
+    def diagnose_login(self, login: str, password: str = "", domain: str = "") -> tuple[list[dict], LdapIdentity | None]:
+        """Тот же путь, что при входе, по шагам и с причинами: имя → поиск в каждом подключении → выбор домена → пароль → группы.
+        Пароль не сохраняется и в ответ не попадает."""
+        stages: list[dict] = []
+
+        def add(name: str, ok: bool | None, message: str, t0: float | None = None) -> None:
+            stages.append({"stage": name, "ok": ok, "message": message, "ms": int((time.perf_counter() - t0) * 1000) if t0 else 0})
+
+        try:
+            value, is_upn, nb = parse_login(login)
+        except LdapError:
+            add("parse", False, "Имя содержит недопустимые символы. Используйте имя учётной записи, например ivan.petrov.")
+            return stages, None
+        cands = self.candidates(login, domain)
+        if not cands:
+            add("parse", False, "Выбранный домен не настроен или выключен." if domain else "Нет включённых подключений LDAPS.")
+            return stages, None
+        if domain:
+            how = f"выбран домен «{cands[0].name}»"
+        elif len(cands) == 1:
+            how = f"домен «{cands[0].name}»"
+        else:
+            how = "поиск во всех доменах: " + ", ".join(f"«{c.name}»" for c in cands)
+        add("parse", True, f"Ищется «{value.partition('@')[0] if is_upn else value}»; {how}.")
+        trace: list = []
+        t = time.perf_counter()
+
+        def report(ok_missing: bool | None) -> None:
+            # найден — успех; «не найден» в одном из нескольких доменов — нейтрально; ошибки — сбой
+            for c, r in trace:
+                if isinstance(r, dict):
+                    add("search", True, f"«{c.name}»: найден {r['dn']}.", t)
+                else:
+                    add("search", ok_missing if r.code == "user_not_found" else False, f"«{c.name}»: {r.message}", t)
+
+        try:
+            cfg, svc, entry = self.locate(login, domain, trace)
+        except LdapError as exc:
+            report(None if exc.code == "choose_domain" else False)
+            if exc.code == "choose_domain":
+                add("choose", False, f"Имя есть в нескольких доменах ({exc.detail}). На странице входа пользователь выбирает домен; без выбора вход не выполняется.")
+            elif not trace:
+                add("search", False, exc.message, t)
+            return stages, None
+        report(None)
+        try:
+            ident = _identity(cfg, entry, frozenset(), login)
+            if not password:
+                add("auth", None, "Пароль не указан — проверены только поиск, группы и доступ.")
+            else:
+                t = time.perf_counter()
+                try:
+                    ident = _verify(cfg, svc, entry, login, password)
+                    add("auth", True, f"Пароль принят контроллером домена «{cfg.name}».", t)
+                except LdapError as exc:
+                    add("auth", False, {"invalid_credentials": "Контроллер домена отклонил пароль (неверный пароль или учётная запись не может войти).",
+                                        "account_disabled": "Учётная запись отключена в каталоге."}.get(exc.code, exc.message), t)
+                    return stages, None
+            if not ident.groups:
+                t = time.perf_counter()
+                ident = LdapIdentity(**{**ident.__dict__, "groups": _groups(svc, cfg, str(entry["dn"]), list(entry.get("attributes", {}).get("memberOf") or []))})
+                add("groups", True, f"Групп с учётом вложенности: {len(ident.groups)}.", t)
+            else:
+                add("groups", True, f"Групп с учётом вложенности: {len(ident.groups)}.")
+            return stages, ident
+        finally:
+            _close(svc)
 
 
 # ------------------------------------------------------------------------------------------------ диагностика
@@ -337,7 +490,7 @@ def diagnose(cfg: LdapConfig, test_login: str = "", test_password: str = "") -> 
     if not cfg.bind_password:
         add("config", False, "Пароль сервисной учётной записи не задан (или удалён). Без него поиск пользователей и групп невозможен.")
         return out
-    add("config", True, f"{cfg.url}, LDAP v{cfg.ldap_version}, тайм-аут {cfg.timeout_s} с; доверенные сертификаты: {'загруженные CA' if cfg.ca_pem.strip() else 'системное хранилище'}.")
+    add("config", True, f"{cfg.url}, протокол LDAP v{cfg.ldap_version} по {'LDAPS' if cfg.protocol == 'ldaps' else 'STARTTLS'}, тайм-аут {cfg.timeout_s} с; доверенные сертификаты: {'загруженные CA' if cfg.ca_pem.strip() else 'системное хранилище'}.")
     t = time.perf_counter()
     try:
         infos = socket.getaddrinfo(cfg.host, cfg.port, type=socket.SOCK_STREAM)

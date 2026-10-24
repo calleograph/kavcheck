@@ -97,7 +97,8 @@ async function req<T>(method: string, path: string, body?: unknown, opts: { raw?
 const qs = (o: Record<string, string | number | boolean | undefined | null>) => { const p = new URLSearchParams(); for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== null && v !== "") p.set(k, String(v)); const s = p.toString(); return s ? `?${s}` : ""; };
 
 export const api = {
-  login: (login: string, password: string) => req<Me | { totp_required: true; challenge: string }>("POST", "/auth/login", { login, password }),
+  login: (login: string, password: string, domain = "") => req<Me | { totp_required: true; challenge: string }>("POST", "/auth/login", { login, password, domain }),
+  loginOptions: () => req<{ domains: { id: string; name: string }[] }>("GET", "/auth/login-options"),
   loginTotp: (challenge: string, code: string) => req<Me>("POST", "/auth/login/totp", { challenge, code }),
   totp: {
     status: () => req<TotpStatus>("GET", "/auth/totp/status"),
@@ -198,7 +199,7 @@ export const api = {
       createRule: (body: { connection_id: string | null; group_dn: string; role: string; all_sources: boolean; source_ids: string[]; note?: string | null }) => req<AccessRuleT>("POST", "/admin/ldap/rules", body),
       updateRule: (id: string, body: { connection_id: string | null; group_dn: string; role: string; all_sources: boolean; source_ids: string[]; note?: string | null }) => req<AccessRuleT>("PUT", `/admin/ldap/rules/${id}`, body),
       deleteRule: (id: string) => req<void>("DELETE", `/admin/ldap/rules/${id}`),
-      checkUser: (login: string) => req<{ found: boolean; message?: string; display_name?: string; username?: string; email?: string | null; connection?: string; disabled?: boolean; groups?: string[]; role?: string | null; all_sources?: boolean; sources?: string[]; rules?: string[] }>("POST", "/admin/ldap/check-user", { login }),
+      checkUser: (login: string, password = "", domain = "") => req<DiagResult & { found: boolean; message?: string; display_name?: string; username?: string; email?: string | null; connection?: string; disabled?: boolean; groups?: string[]; role?: string | null; all_sources?: boolean; sources?: string[]; rules?: string[] }>("POST", "/admin/ldap/check-user", { login, password, domain }),
     },
     resetTotp: (userId: string, password: string) => req<void>("POST", `/admin/users/${userId}/totp/reset`, { password }),
     catalog: () => req<{ items: (CatalogState & { source_id: string; source: string; is_active: boolean })[] }>("GET", "/admin/catalog"),

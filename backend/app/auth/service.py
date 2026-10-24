@@ -40,17 +40,26 @@ MESSAGES = {
     "not_configured": ("Вход доменной учётной записью не настроен. Войдите локальной учётной записью.", 503),
     "directory_unavailable": ("Каталог недоступен. Повторите позже или войдите локальной учётной записью.", 503),
     "no_role": ("Нет доступа: вашей учётной записи не назначена роль в KAV Checker. Обратитесь к администратору.", 403),
+    "choose_domain": ("Учётная запись с таким именем есть в нескольких доменах. Выберите домен и войдите снова.", 409),
     "totp_expired": ("Время подтверждения истекло. Войдите заново.", 401),
     "invalid_code": ("Неверный код. Проверьте время на телефоне или введите резервный код.", 401),
 }
 
 
 class AuthError(Exception):
-    def __init__(self, code: str, retry_after: int | None = None):
+    """code и message — для пользователя (общие формулировки); reason и detail — точная причина для журнала администратора."""
+
+    def __init__(self, code: str, retry_after: int | None = None, reason: str = "", detail: str = ""):
         super().__init__(code)
         self.code = code
         self.message, self.status = MESSAGES.get(code, MESSAGES["invalid_credentials"])
         self.retry_after = retry_after
+        self.reason, self.detail = reason or code, detail
+
+    @classmethod
+    def from_ldap(cls, code: str, exc: ldapmod.LdapError) -> "AuthError":
+        where = f" (подключение «{exc.connection}»)" if exc.connection else ""
+        return cls(code, reason=exc.code, detail=exc.message + where)
 
 
 @dataclass
@@ -106,14 +115,15 @@ class AuthService:
             await db.commit()
 
     # ------------------------------------------------------------------------------ вход
-    async def login(self, db: AsyncSession, login: str, password: str) -> LoginResult:
-        login = (login or "").strip()
+    async def login(self, db: AsyncSession, login: str, password: str, domain: str = "") -> LoginResult:
+        """Пользователь вводит короткое имя: сначала локальная учётная запись KAV Checker (если домен не выбран явно), затем каталог LDAPS."""
+        login, domain = (login or "").strip(), (domain or "").strip()
         if not _LOGIN.match(login) or not password or len(password) > 512:
-            raise AuthError("invalid_credentials")
+            raise AuthError("invalid_credentials", reason="bad_login_format")
         await self._check_throttle(db, login)
         norm = login.split("\\")[-1].split("@")[0].lower()
         local = (await db.execute(select(User).where(User.auth_source == "local", func.lower(User.username) == norm))).scalar_one_or_none()
-        if local is not None and local.password_hash and "\\" not in login and "@" not in login:
+        if local is not None and local.password_hash and "\\" not in login and "@" not in login and not domain:
             if verify_password(local.password_hash, password):
                 if not local.is_active:
                     raise AuthError("account_disabled")
@@ -124,37 +134,55 @@ class AuthService:
         directory = await self._ldap.directory(db)
         if not directory.configs:
             await self._record_failure(db, login)
-            raise AuthError("invalid_credentials" if local is None else "not_configured")
+            raise AuthError("invalid_credentials" if local is None else "not_configured", reason="ldap_not_configured")
         try:
-            ident = await asyncio.to_thread(directory.authenticate, login, password)
+            ident = await asyncio.to_thread(directory.authenticate, login, password, domain)
         except ldapmod.LdapError as exc:
-            if exc.code in ("invalid_credentials", "user_not_found", "ambiguous_user"):
+            if exc.code in ("invalid_credentials", "user_not_found", "ambiguous_user", "bad_login"):
                 await self._record_failure(db, login)
-                raise AuthError("invalid_credentials") from None
+                raise AuthError.from_ldap("invalid_credentials", exc) from None
+            if exc.code in ("choose_domain", "unknown_domain"):
+                raise AuthError.from_ldap("choose_domain", exc) from None
             if exc.code in ("account_disabled", "account_locked", "password_expired", "password_must_change", "account_restriction", "not_configured"):
-                raise AuthError(exc.code) from None
+                raise AuthError.from_ldap(exc.code, exc) from None
             log.error("Ошибка каталога при входе", extra={"ldap_code": exc.code})
-            raise AuthError("directory_unavailable") from None
+            raise AuthError.from_ldap("directory_unavailable", exc) from None
         decision = self._ldap.decide(await self._ldap.rules(db), ident)
         await self._record_success(db, login)          # пароль верен — это не перебор, даже если доступа нет
         if decision.role is None:
-            raise AuthError("no_role")
+            raise AuthError("no_role", reason="no_access_rule", detail=f"ни одна группа пользователя не разрешена правилами доступа (подключение «{ident.connection}»)")
+        conn_id = uuid.UUID(ident.connection_id) if ident.connection_id else None
         user = (await db.execute(select(User).where(User.ldap_guid == ident.guid))).scalar_one_or_none()
+        if user is None:   # запись без GUID (созданная до 0.2.0) — только из того же подключения: одинаковое имя в другом домене — другой человек
+            user = (await db.execute(select(User).where(User.auth_source == "ldap", func.lower(User.username) == ident.username.lower(),
+                                                        User.ldap_connection_id.is_(None) | (User.ldap_connection_id == conn_id)))).scalar_one_or_none()
+        username = await self._username(db, ident, user)
         if user is None:
-            user = (await db.execute(select(User).where(User.auth_source == "ldap", func.lower(User.username) == ident.username.lower()))).scalar_one_or_none()
-        if user is None:
-            user = User(username=ident.username.lower(), display_name=ident.display_name, auth_source="ldap", ldap_guid=ident.guid, role=decision.role, is_active=True)
+            user = User(username=username, display_name=ident.display_name, auth_source="ldap", ldap_guid=ident.guid, role=decision.role, is_active=True)
             db.add(user)
         if user.is_active is False:                         # отключён администратором в KAV Checker (независимо от каталога)
             await db.commit()
-            raise AuthError("account_disabled")
-        user.username, user.display_name, user.email, user.ldap_guid, user.role = ident.username.lower(), ident.display_name, ident.email, ident.guid, decision.role
+            raise AuthError("account_disabled", reason="disabled_in_kavchecker")
+        user.username, user.display_name, user.email, user.ldap_guid, user.role = username, ident.display_name, ident.email, ident.guid, decision.role
         user.all_sources, user.source_ids = decision.all_sources, sorted(decision.source_ids)
-        user.ldap_connection_id = uuid.UUID(ident.connection_id) if ident.connection_id else None
+        user.ldap_connection_id = conn_id
         user.ldap_groups = sorted(ident.groups)[:1000]
         await db.commit()
         await db.refresh(user)
         return await self.second_factor(db, user, groups=list(ident.groups))
+
+    @staticmethod
+    async def _username(db: AsyncSession, ident: "ldapmod.LdapIdentity", current: User | None) -> str:
+        """Имя записи пользователя: имя учётной записи; если оно занято (локальный пользователь или тот же логин в другом домене) — имя@домен."""
+        plain = ident.username.lower()
+        qualified = f"{plain}@{ident.domain}" if ident.domain else f"{plain}@{(ident.connection_id or 'ldap')[:8]}"
+        if current is not None and current.username in (plain, qualified):
+            return current.username
+        for cand in (plain, qualified):
+            taken = (await db.execute(select(User.id).where(func.lower(User.username) == cand))).scalar_one_or_none()
+            if taken is None or (current is not None and taken == current.id):
+                return cand
+        return f"{plain}@{(ident.connection_id or 'ldap')[:8]}"
 
     async def totp_cfg(self, db: AsyncSession):
         return await self._svc.get(db, "auth_security")
@@ -233,7 +261,9 @@ class AuthService:
             ok = bool(user.password_hash and verify_password(user.password_hash, password))
         else:
             try:
-                ident = await asyncio.to_thread((await self._ldap.directory(db)).authenticate, user.username, password)
+                d = await self._ldap.directory(db)
+                dom = str(user.ldap_connection_id) if user.ldap_connection_id and any(c.id == str(user.ldap_connection_id) for c in d.configs) else ""
+                ident = await asyncio.to_thread(d.authenticate, user.username.split("@")[0], password, dom)
                 ok = ident.guid == user.ldap_guid
             except ldapmod.LdapError:
                 ok = False

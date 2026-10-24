@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class LoginIn(BaseModel):
     login: str = Field(min_length=1, max_length=256)
     password: str = Field(min_length=1, max_length=512)
+    domain: str = Field(default="", max_length=64)        # подключение LDAPS, выбранное на странице входа; пусто — определить по имени
 
 
 class TotpLoginIn(BaseModel):

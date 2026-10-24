@@ -31,7 +31,7 @@ const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/reports", label: "Отчёты", icon: "file" },
 ];
 export const ADMIN_TABS: { id: string; label: string }[] = [
-  { id: "system", label: "Состояние системы" }, { id: "sources", label: "Источники KSC" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAP" },
+  { id: "system", label: "Состояние системы" }, { id: "sources", label: "Источники KSC" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" },
   { id: "general", label: "Общие настройки" }, { id: "catalog", label: "Каталог программ" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
 ];
 
