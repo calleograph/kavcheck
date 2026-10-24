@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { DiagResult } from "../api";
-import { ago, fmt, num } from "../util";
+import { ago, fmt } from "../util";
 import { Icon } from "./Icons";
 
 const STAGE_TITLE: Record<string, string> = { dns: "DNS", tcp: "TCP", tls: "TLS и сертификат", bind: "Вход сервисной записи", user: "Поиск пользователя", groups: "Группы", access: "Доступ в KAV Checker",
@@ -42,23 +42,6 @@ export function SecretInput({ label, isSet, value, onChange, help, disabled }: {
   );
 }
 export const secretToSend = (v: string): string | undefined => (v === "" || v === " " ? undefined : v);
-
-export function Pager({ total, offset, limit, onPage, approximate }: { total: number; offset: number; limit: number; onPage: (o: number) => void; approximate?: boolean }) {
-  if (!total) return null;
-  const page = Math.floor(offset / limit) + 1, pages = Math.max(1, Math.ceil(total / limit));
-  return (
-    <nav className="pager" aria-label="Страницы">
-      <span className="info">{num(offset + 1)}–{num(Math.min(offset + limit, total))} из {approximate ? "≈" : ""}{num(total)}</span>
-      <div className="spacer" />
-      {pages > 1 && <>
-        <button className="btn mini icon" disabled={offset === 0} onClick={() => onPage(0)} aria-label="Первая страница"><Icon name="chevronsL" size={16} /></button>
-        <button className="btn mini icon" disabled={offset === 0} onClick={() => onPage(Math.max(0, offset - limit))} aria-label="Предыдущая страница"><Icon name="chevronL" size={16} /></button>
-        <span className="page">{page} / {pages}</span>
-        <button className="btn mini icon" disabled={offset + limit >= total} onClick={() => onPage(offset + limit)} aria-label="Следующая страница"><Icon name="chevronR" size={16} /></button>
-      </>}
-    </nav>
-  );
-}
 
 export function Fetched({ at, prefix = "Данные получены" }: { at: string | null | undefined; prefix?: string }) {
   return <span className="stamp" title="Время получения данных из базы KSC"><Icon name="clock" size={14} />{prefix} {fmt(at)}</span>;

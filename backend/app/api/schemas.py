@@ -113,6 +113,7 @@ class AuditItem(BaseModel):
     """Пункт проверки версий: программа (ключ каталога) или, в дополнительных настройках, шаблон названия / правило группировки."""
     kind: Literal["product", "pattern", "rule"] = "product"
     product_key: str | None = Field(default=None, max_length=160)
+    product_keys: list[str] = Field(default_factory=list, max_length=100)    # несколько продуктов каталога (семейство, компоненты) с одним условием
     product_name: str | None = Field(default=None, max_length=300)
     op: Literal["lt", "le", "eq", "ge", "gt", "range", "any"] = "lt"
     value: str | None = Field(default=None, max_length=100)
@@ -175,7 +176,7 @@ class ReportIn(BaseModel):
 class PreviewIn(BaseModel):
     params: AuditParams
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
-    limit: int = Field(default=300, ge=1, le=1000)
+    limit: int = Field(default=300, ge=1, le=20_000)     # интерфейс запрашивает все строки (в пределах max_rows) и показывает их непрерывным списком
 
 
 class SavedCheckIn(BaseModel):

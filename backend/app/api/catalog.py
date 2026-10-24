@@ -38,10 +38,12 @@ async def _state(db: AsyncSession, source_id: uuid.UUID) -> dict:
 @router.get("/catalog")
 async def catalog(q: str = Query("", max_length=200), publisher: str = Query("", max_length=160), platform: str = Query("", pattern=r"^(windows|linux)?$"),
                   sort: str = Query("hosts", pattern=r"^(hosts|name|publisher|versions|first_seen)$"), desc: bool = True, all_hosts: bool = False, components: bool = False,
-                  offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source),
-                  db: AsyncSession = Depends(get_db)):
-    """Продукты источника: название, производитель, версии, ветки, компьютеры (только активные — если не запрошен показ всех)."""
-    out = await svc.query(db, src.id, q=q, publisher_key=publisher, platform=platform, sort=sort, desc=desc, all_hosts=all_hosts, components=components, offset=offset, limit=limit)
+                  offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), roots: bool = False, family: str = Query("", max_length=160),
+                  su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+    """Продукты источника: название, производитель, версии, ветки, компьютеры (только активные — если не запрошен показ всех).
+    roots — только основные продукты семейств; family — компоненты одного семейства."""
+    out = await svc.query(db, src.id, q=q, publisher_key=publisher, platform=platform, sort=sort, desc=desc, all_hosts=all_hosts, components=components, offset=offset,
+                          limit=limit, roots=roots, family=family)
     out["state"] = await _state(db, src.id)
     return out
 
@@ -98,13 +100,18 @@ async def product_hosts(key: str, request: Request, version: str = Query("", max
         item = {**item, "op": "any", "product_ids": ids}
     else:
         item["product_ids"] = sorted({pid for v in p.versions for pid in v["product_ids"]})
-    rows, summ = await run_one(request, db, src, [item], all_hosts=all_hosts, max_rows=20_000)
-    by_host: dict[int, dict] = {}
-    for r in rows:
-        h = by_host.setdefault(r["host_id"], {**{k: r[k] for k in ("host_id", "name", "fqdn", "ip", "os", "group", "last_connected", "days_since_connection", "activity", "linux_release")},
-                                               "versions": []})
-        h["versions"].append({"app_name": r["app_name"], "app_version": r["app_version"], "compared_version": r["compared_version"], "branch": r["branch"]})
-    items = sorted(by_host.values(), key=lambda h: h["name"].lower())
+    async def make() -> tuple[list[dict], dict]:
+        rows, summ = await run_one(request, db, src, [item], all_hosts=all_hosts, max_rows=20_000)
+        by_host: dict[int, dict] = {}
+        for r in rows:
+            h = by_host.setdefault(r["host_id"], {**{k: r.get(k) for k in ("host_id", "name", "fqdn", "ip", "os", "group", "last_connected", "days_since_connection", "activity",
+                                                                           "linux_release", "online")}, "versions": []})
+            h["versions"].append({"app_name": r["app_name"], "app_version": r["app_version"], "compared_version": r["compared_version"], "branch": r["branch"]})
+        return sorted(by_host.values(), key=lambda h: h["name"].lower()), summ
+
+    # список собирается одним запросом к KSC и кэшируется: порции бесконечной прокрутки берутся из кэша, а не повторяют запрос
+    (items, summ), _at = await request.app.state.cache.get((str(src.id), "product_hosts", key, version, branch, all_hosts, p.built_at.isoformat() if p.built_at else ""),
+                                                           request.app.state.settings.cache_ttl_seconds, make)
     return {"items": items[offset:offset + limit], "total": len(items), "offset": offset, "limit": limit, "hidden_hosts": summ["hidden_inactive_hosts"],
             "fetched_at": summ["fetched_at"]}
 

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type AuditParams, type Job, type ReportParams, type SavedCheck, type VersionOp } from "../api";
 import { NoSource, type Ctx } from "../App";
-import { Fetched, Pager } from "../components/Common";
+import { Fetched } from "../components/Common";
+import { ListFoot, VirtualRows, useInfinite, type Chunk } from "../components/Infinite";
 import { ConfirmDialog } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
 import { useToast } from "../components/Toast";
@@ -10,6 +11,7 @@ import { Empty, PageHead, SkelRows, SortTh, Spectrum } from "../components/ui";
 import { fmt, num } from "../util";
 import { AuditBuilder, AuditResult, draftFromItem, emptyDraft, itemSummary, type Draft, type PreviewState } from "./AuditBuilder";
 import { JOB_STATUS } from "./DashboardPage";
+import { getSelection, selLabel } from "../selection";
 
 /** Описание условий отчёта одной строкой (проверка версий и отчёты прежнего вида 0.1.0). */
 export function describe(p: Record<string, unknown>): string {
@@ -33,7 +35,12 @@ export default function ReportsPage({ ctx }: { ctx: Ctx }) {
 
 type Initial = { items: Draft[]; sources?: string[]; name?: string; params?: Partial<AuditParams> } | null;
 
-function initialFromUrl(sp: URLSearchParams): Initial {
+function initialFromUrl(sp: URLSearchParams, source: string): Initial {
+  if (sp.get("sel")) {   // выбранные в каталоге программы: семейство — один пункт из нескольких продуктов
+    const sel = getSelection(source);
+    if (sel.length) return { items: sel.map((e) => emptyDraft({ product: { key: e.key, name: e.name, latest_version: e.latest_version }, family: e.family && e.family.length > 1 ? e.family : [] })),
+      name: `Проверка: ${sel.map(selLabel).join(", ")}`.slice(0, 200) };
+  }
   const key = sp.get("product");
   if (!key) return null;
   const op = (sp.get("op") as VersionOp) || "lt";
@@ -47,7 +54,7 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [editing, setEditing] = useState<SavedCheck | null>(null);
   const [builderKey, setBuilderKey] = useState(0);
-  const [initial, setInitial] = useState<Initial>(() => initialFromUrl(sp));
+  const [initial, setInitial] = useState<Initial>(() => initialFromUrl(sp, ctx.current?.id ?? ""));
   const [delJob, setDelJob] = useState<Job | null>(null);
   const [delCheck, setDelCheck] = useState<SavedCheck | null>(null);
   const [allSources, setAllSources] = useState(false);
@@ -148,15 +155,13 @@ function JobsTable({ jobs, canEdit, onChanged, onDelete, show }: { jobs: Job[] |
   );
 }
 
-const AUDIT_COLS: [string, string, string?][] = [["source", "Источник"], ["program", "Программа"], ["app_version", "Установлена", "mono nowrap"], ["target_version", "Нужна", "mono nowrap"], ["name", "Компьютер"],
+const AUDIT_COLS: [string, string, string?][] = [["source", "Источник"], ["program", "Программа"], ["product", "Продукт"], ["app_version", "Установлена", "mono nowrap"], ["target_version", "Нужна", "mono nowrap"], ["name", "Компьютер"],
   ["ip", "IP-адрес", "mono"], ["os", "ОС"], ["last_connected", "Подключение к KSC"], ["group", "Группа"]];
 const SOFT_COLS: [string, string, string?][] = [["name", "Компьютер"], ["ip", "IP-адрес", "mono"], ["os", "ОС"], ["app_name", "Программа"], ["app_version", "Версия", "mono"], ["branch", "Ветка", "mono"], ["group", "Группа"], ["last_connected", "Подключение к KSC"], ["activity", "Связь"]];
 const HOST_COLS: [string, string, string?][] = [["name", "Компьютер"], ["ip", "IP-адрес", "mono"], ["os", "ОС"], ["group", "Группа"], ["last_connected", "Подключение к KSC"], ["days_since_connection", "Суток без связи"], ["activity", "Связь"]];
 
 function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
   const [j, setJ] = useState<Job | null>(null);
-  const [rows, setRows] = useState<{ items: Record<string, unknown>[]; total: number } | null>(null);
-  const [offset, setOffset] = useState(0);
   const [q, setQ] = useState(""); const [applied, setApplied] = useState("");
   const [source, setSource] = useState(""); const [program, setProgram] = useState("");
   const [sort, setSort] = useState(""); const [desc, setDesc] = useState(false);
@@ -170,22 +175,22 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
     if (t) { show(t); navigate(location.pathname, { replace: true, state: null }); }
   }, [location.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const load = useCallback(() => api.reports.get(jobId).then(setJ).catch((e) => setErr((e as ApiError).message)), [jobId]);
-  useEffect(() => { setJ(null); setRows(null); void load(); }, [load]);
+  useEffect(() => { setJ(null); void load(); }, [load]);
   useEffect(() => { if (!j || (j.status !== "queued" && j.status !== "running")) return; const t = window.setInterval(load, 2000); return () => window.clearInterval(t); }, [j, load]);
-  useEffect(() => { const t = window.setTimeout(() => { setApplied(q); setOffset(0); }, 300); return () => window.clearTimeout(t); }, [q]);
-  useEffect(() => {
-    if (j?.status !== "done") return;
-    api.reports.rows(jobId, { offset, limit: 100, q: applied, source, program, sort, desc }).then((r) => setRows(r as unknown as { items: Record<string, unknown>[]; total: number })).catch((e) => setErr((e as ApiError).message));
-  }, [j?.status, jobId, offset, applied, source, program, sort, desc]);
+  useEffect(() => { const t = window.setTimeout(() => setApplied(q), 300); return () => window.clearTimeout(t); }, [q]);
+  const done = j?.status === "done";
+  const rows = useInfinite<Record<string, unknown>>(`job:${jobId}`, [jobId, done, applied, source, program, sort, desc],
+    (offset, limit) => (done ? api.reports.rows(jobId, { offset, limit, q: applied, source, program, sort, desc }) as unknown as Promise<Chunk<Record<string, unknown>>> : Promise.resolve({ items: [], total: 0 })), 200);
   const back = <Link className="back-link" to="/reports"><Icon name="arrowL" size={15} />Отчёты</Link>;
   if (err) return <section><PageHead title="Отчёт" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>{toast}</section>;
   if (!j) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="table-scroll"><SkelRows /></div>{toast}</section>;
   const [l, c] = JOB_STATUS[j.status] ?? [j.status, ""];
   const audit = j.kind === "version_audit";
   const multi = (j.source_ids?.length ?? 1) > 1;
-  const cols = (audit ? AUDIT_COLS.filter(([k]) => multi || k !== "source") : j.kind === "software_hosts" ? SOFT_COLS : HOST_COLS);
+  const fam = (j.params.items ?? []).some((it) => (it.product_keys?.length ?? 0) > 1);   // пункт из нескольких продуктов — нужен столбец «Продукт»
+  const cols = (audit ? AUDIT_COLS.filter(([k]) => (multi || k !== "source") && (fam || k !== "product")) : j.kind === "software_hosts" ? SOFT_COLS : HOST_COLS);
   const s = j.summary;
-  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } setOffset(0); };
+  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } };
   const canEdit = ctx.me.user.role !== "viewer";
   const filtered = !!(applied || source || program);
   return (
@@ -213,7 +218,7 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
           <table className="table">
             <thead><tr><th>Программа</th><th>Условие</th><th>Требуемая версия</th>{multi && s.sources?.map((x) => <th key={x.source} className="num">{x.source}</th>)}<th className="num">Компьютеров</th></tr></thead>
             <tbody>{s.programs.map((p) => (
-              <tr key={p.program} className={`clickable ${program === p.program ? "sel" : ""}`} onClick={() => { setProgram(program === p.program ? "" : p.program); setOffset(0); }}>
+              <tr key={p.program} className={`clickable ${program === p.program ? "sel" : ""}`} onClick={() => { setProgram(program === p.program ? "" : p.program); window.requestAnimationFrame(() => document.getElementById("job-rows")?.scrollIntoView({ behavior: "smooth", block: "start" })); }}>
                 <td><b>{p.program}</b></td><td className="small">{p.condition}</td><td className="mono small">{p.target_version || "—"}</td>
                 {multi && p.by_source.map((b) => <td key={b.source} className="num">{num(b.hosts)}</td>)}<td className="num"><b>{num(p.hosts)}</b></td></tr>))}
             </tbody>
@@ -230,22 +235,22 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
         </div>
       )}
       {j.status === "done" && (<>
-        <div className="section-head"><h2>{program ? `Компьютеры: ${program}` : "Данные"}</h2><span className="count">{num(rows?.total)}</span><div className="spacer" />
-          {multi && <select className="w-auto" value={source} onChange={(e) => { setSource(e.target.value); setOffset(0); }} aria-label="Источник"><option value="">Все источники</option>{s?.sources?.map((x) => <option key={x.source} value={x.source}>{x.source}</option>)}</select>}
-          {audit && (s?.programs?.length ?? 0) > 1 && <select className="w-auto" value={program} onChange={(e) => { setProgram(e.target.value); setOffset(0); }} aria-label="Программа"><option value="">Все программы</option>{s?.programs?.map((p) => <option key={p.program} value={p.program}>{p.program}</option>)}</select>}
+        <div className="section-head" id="job-rows"><h2>{program ? `Компьютеры: ${program}` : "Данные"}</h2>{!rows.initial && <span className="count">{num(rows.total)}</span>}<div className="spacer" />
+          {multi && <select className="w-auto" value={source} onChange={(e) => setSource(e.target.value)} aria-label="Источник"><option value="">Все источники</option>{s?.sources?.map((x) => <option key={x.source} value={x.source}>{x.source}</option>)}</select>}
+          {audit && (s?.programs?.length ?? 0) > 1 && <select className="w-auto" value={program} onChange={(e) => setProgram(e.target.value)} aria-label="Программа"><option value="">Все программы</option>{s?.programs?.map((p) => <option key={p.program} value={p.program}>{p.program}</option>)}</select>}
           <div className="input-icon w-search"><Icon name="filter" size={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер, IP, ОС, версия" aria-label="Фильтр строк" /></div></div>
-        <div className="table-scroll">
-          {!rows ? <SkelRows cols={7} /> : (
-            <table className="table compact">
+        <div className={`table-scroll ${rows.refreshing && !rows.initial ? "is-busy" : ""}`}>
+          {rows.initial ? <SkelRows cols={7} /> : (
+            <table className="table compact virt">
               <thead><tr>{cols.map(([k, t]) => <SortTh key={k} k={k} label={t} sort={sort} desc={desc} onSort={onSort} />)}</tr></thead>
-              <tbody>{rows.items.map((r, i) => <tr key={i}>{cols.map(([k, , cls]) => <td key={k} className={`${cls ?? ""} ${k === "last_connected" || k === "ip" ? "nowrap" : ""}`}>
-                {k === "name" && !multi ? <Link to={`/hosts/${String(r.host_id)}`}>{String(r[k] ?? "")}</Link> : k === "last_connected" ? fmt(r[k] as string) : k === "program" ? <>{String(r[k] ?? "")}{r.app_name !== r.program && <span className="sub">{String(r.app_name ?? "")}</span>}</> : String(r[k] ?? "")}</td>)}</tr>)}
-                {!rows.items.length && <tr><td colSpan={cols.length}><Empty icon={filtered ? "search" : "checkCircle"} title={filtered ? "Ничего не найдено" : audit ? "Устаревших версий не найдено" : "В отчёте нет строк"}>
+              <tbody><VirtualRows list={rows} colSpan={cols.length} estimate={36} row={(r) => <tr>{cols.map(([k, , cls]) => <td key={k} className={`${cls ?? ""} ${k === "last_connected" || k === "ip" ? "nowrap" : ""}`}>
+                {k === "name" && !multi ? <Link to={`/hosts/${String(r.host_id)}`}>{String(r[k] ?? "")}</Link> : k === "last_connected" ? fmt(r[k] as string) : k === "program" ? <>{String(r[k] ?? "")}{r.app_name !== r.program && <span className="sub">{String(r.app_name ?? "")}</span>}</> : String(r[k] ?? "")}</td>)}</tr>} />
+                {!rows.items.length && !rows.loading && <tr><td colSpan={cols.length}><Empty icon={filtered ? "search" : "checkCircle"} title={filtered ? "Ничего не найдено" : audit ? "Устаревших версий не найдено" : "В отчёте нет строк"}>
                   {filtered ? "Измените фильтр." : audit ? "На учтённых компьютерах версий, подходящих под условие, нет." : "По заданным условиям данных не нашлось."}</Empty></td></tr>}
               </tbody>
             </table>)}
         </div>
-        {rows && <Pager total={rows.total} offset={offset} limit={100} onPage={setOffset} />}
+        <ListFoot list={rows} />
         {audit && <p className="muted small mt-sm">Результат — соответствие заданному условию версии, а не подтверждённая уязвимость. Уязвимости, найденные KSC, — в разделе «Уязвимости».</p>}
       </>)}
       {toast}

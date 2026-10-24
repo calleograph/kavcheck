@@ -45,6 +45,16 @@ FAMILIES = [
     ("sudo", "Debian Sudo Maintainers <team@example.org>", 2, ["1.9.15p5-3ubuntu5", "1.9.5p2-3+deb11u1"], 99, None),
     ("xz-utils", "Debian XZ Maintainers <team@example.org>", 2, ["5.6.1+really5.4.5-1", "5.4.1-0.2", "5.2.5-2.1~deb11u1"], 99, None),
     ("base-files", "Debian Base <team@example.org>", 2, ["13ubuntu10.1", "12.4+deb12u7", "11.1+deb11u10"], 100, None),
+    # связанные пакеты и компоненты (семейства каталога): метапакеты PHP и расширения, компоненты 1С и Office, второй продукт производителя
+    ("php-xml", "Debian PHP Maintainers <team@example.org>", 2, ["2:8.3+93ubuntu2", "2:8.1+92ubuntu1", "2:7.4+76"], 20, None),
+    ("php-gd", "Debian PHP Maintainers <team@example.org>", 2, ["2:8.3+93ubuntu2", "2:8.1+92ubuntu1"], 12, None),
+    ("php-mbstring", "Debian PHP Maintainers <team@example.org>", 2, ["2:8.3+93ubuntu2", "2:8.1+92ubuntu1", "2:7.4+76"], 18, None),
+    ("php-ldap", "Debian PHP Maintainers <team@example.org>", 2, ["2:8.3+93ubuntu2", "2:7.4+76"], 8, None),
+    ("php-pear", "Debian PHP Maintainers <team@example.org>", 2, ["1:1.10.13+submodules+notgz+2190109172-2", "1:1.10.12+submodules+notgz+20210212-1"], 10, None),
+    ("php8.3-xml", "Ubuntu Developers <team@example.org>", 2, ["8.3.6-0ubuntu0.24.04.3", "8.3.6-0ubuntu0.24.04.1"], 18, None),
+    ("1С:Предприятие 8 Тонкий клиент ({v})", "1С-Софт", 1, ["8.3.25.1374", "8.3.24.1691"], 20, None),
+    ("Microsoft Office Proofing Tools 2016 - Русский", "Microsoft Corporation", 1, ["16.0.4266.1001"], 25, None),
+    ("TrueConf Client", "TrueConf LLC", 1, ["8.5.1.2345", "8.4.2.1234", "8.3.0.1000"], 15, None),
 ]
 VAPM_VERSIONS_VULNS = 8          # уязвимостей на каждую позицию версии от новейшей (новейшая — без уязвимостей)
 

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type ApiError, type AuditItem, type AuditParams, type AuditResultRow, type AuditSummary, type SavedCheck, type VersionOp } from "../api";
 import type { Ctx } from "../App";
@@ -7,20 +7,22 @@ import { Icon } from "../components/Icons";
 import { ProductPicker, type PickedProduct } from "../components/ProductPicker";
 import { useToast } from "../components/Toast";
 import { Empty, TagInput } from "../components/ui";
+import { VirtualRows, useStaticList } from "../components/Infinite";
 import { fmt, num } from "../util";
 
 export const OP_LABEL: Record<VersionOp, string> = { lt: "ниже", le: "ниже или равна", eq: "равна", ge: "не ниже", gt: "выше", range: "в диапазоне", any: "любая" };
 
 export interface Draft {
-  id: number; kind: "product" | "pattern" | "rule"; product: PickedProduct | null; op: VersionOp; value: string; min: string; max: string; target: string;
+  id: number; kind: "product" | "pattern" | "rule"; product: PickedProduct | null; family: PickedProduct[]; op: VersionOp; value: string; min: string; max: string; target: string;
   exclude: string[]; branches: string[]; platform: "" | "windows" | "linux"; name_like: string; name_regex: string; publisher_like: string; rule: string; label: string; open: boolean;
 }
 let seq = 1;
-export const emptyDraft = (over: Partial<Draft> = {}): Draft => ({ id: seq++, kind: "product", product: null, op: "lt", value: "", min: "", max: "", target: "", exclude: [], branches: [], platform: "",
+export const emptyDraft = (over: Partial<Draft> = {}): Draft => ({ id: seq++, kind: "product", product: null, family: [], op: "lt", value: "", min: "", max: "", target: "", exclude: [], branches: [], platform: "",
   name_like: "", name_regex: "", publisher_like: "", rule: "", label: "", open: false, ...over });
 
 export function draftFromItem(it: AuditItem): Draft {
-  return emptyDraft({ kind: it.kind ?? "product", product: it.product_key ? { key: it.product_key, name: it.product_name ?? it.product_key } : null, op: it.op, value: it.value ?? "",
+  return emptyDraft({ kind: it.kind ?? "product", product: it.product_key ? { key: it.product_key, name: it.product_name ?? it.product_key } : null,
+    family: (it.product_keys?.length ?? 0) > 1 ? it.product_keys!.map((k) => ({ key: k, name: k })) : [], op: it.op, value: it.value ?? "",
     min: it.min ?? "", max: it.max ?? "", target: it.target_version ?? "", exclude: it.exclude ?? [], branches: it.branches ?? [], platform: (it.platform as Draft["platform"]) ?? "",
     name_like: it.name_like ?? "", name_regex: it.name_regex ?? "", publisher_like: it.publisher_like ?? "", rule: it.rule ?? "", label: it.kind !== "product" ? it.product_name ?? "" : "",
     open: it.op !== "lt" || !!(it.exclude?.length || it.branches?.length || it.platform || it.target_version || it.kind !== "product") });
@@ -29,7 +31,11 @@ export function draftFromItem(it: AuditItem): Draft {
 function toItem(d: Draft): AuditItem {
   const base: AuditItem = { kind: d.kind, op: d.op, value: d.value.trim() || null, min: d.min.trim() || null, max: d.max.trim() || null, target_version: d.target.trim() || null,
     exclude: d.exclude, branches: d.branches, platform: d.platform || null };
-  if (d.kind === "product") return { ...base, product_key: d.product?.key ?? null, product_name: d.product?.name ?? null };
+  if (d.kind === "product") {
+    const fam = d.family.length > 1;   // семейство или несколько компонентов — один пункт с одним условием, у строк отчёта — точный пакет
+    return { ...base, product_key: d.product?.key ?? null, product_keys: fam ? d.family.map((p) => p.key) : [],
+      product_name: fam ? (d.label || `${d.product?.name ?? ""} и компоненты`) : d.product?.name ?? null };
+  }
   if (d.kind === "rule") return { ...base, rule: d.rule || null, product_name: d.label || null };
   return { ...base, name_like: d.name_like.trim() || null, name_regex: d.name_regex.trim() || null, publisher_like: d.publisher_like.trim() || null, product_name: d.label.trim() || null };
 }
@@ -74,7 +80,7 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
   const ready = problems.every((p) => !p) && sources.length > 0;
   const preview = async (e?: FormEvent) => {
     e?.preventDefault(); if (!ready) return; setBusy("preview"); setErr("");
-    try { onResult({ result: await api.audit.preview(params(), sources, 300), multi: sources.length > 1, xlsx: canEdit ? xlsx : undefined }); window.requestAnimationFrame(() => document.getElementById("audit-result")?.scrollIntoView({ behavior: "smooth", block: "start" })); }
+    try { onResult({ result: await api.audit.preview(params(), sources, 20000), multi: sources.length > 1, xlsx: canEdit ? xlsx : undefined }); window.requestAnimationFrame(() => document.getElementById("audit-result")?.scrollIntoView({ behavior: "smooth", block: "start" })); }
     catch (x) { setErr((x as ApiError).message); } finally { setBusy(""); }
   };
   const xlsx = async () => {
@@ -91,7 +97,12 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
         {items.map((d, n) => (
           <li key={d.id} className="item">
             <div className="item-head"><span className="item-n">{n + 1}</span>
-              <div className="item-prog"><span className="cap" aria-hidden>Программа</span>{d.kind === "product"
+              <div className="item-prog"><span className="cap" aria-hidden>{d.family.length > 1 ? "Программа и компоненты" : "Программа"}</span>{d.kind === "product" && d.family.length > 1
+                ? <div className="picked fam"><span className="picked-name"><b>{d.product?.name}</b><span className="muted"> и {d.family.length - 1} компонент.</span></span>
+                    <span className="fam-chips">{d.family.map((p) => <span key={p.key} className="tag">{p.name}<button type="button" aria-label={`Убрать ${p.name}`} disabled={d.family.length <= 1}
+                      onClick={() => set(d.id, { family: d.family.filter((x) => x.key !== p.key) })}><Icon name="close" size={12} /></button></span>)}</span>
+                    <button type="button" className="btn mini ghost" onClick={() => set(d.id, { family: [] })}>Только основной</button></div>
+                : d.kind === "product"
                 ? <ProductPicker value={d.product} onChange={(p) => set(d.id, { product: p, branches: [], exclude: [] })} sourceIds={sources} autoFocus={n > 0 && !d.product} label={`Программа ${n + 1}`} />
                 : <div className="picked"><span className="picked-name"><b>{d.kind === "rule" ? "Правило группировки" : "Отбор по шаблону названия"}</b><span className="muted"> · дополнительные настройки ниже</span></span>
                   <button type="button" className="btn mini ghost" onClick={() => set(d.id, { kind: "product" })}>Выбрать из каталога</button></div>}</div>
@@ -191,11 +202,16 @@ function BranchPicker({ productKey, value, onChange }: { productKey: string; val
   );
 }
 
-/** Результат быстрой проверки: итог по программам и источникам и первые строки «что обновить и где». */
+/** Результат быстрой проверки: итог по программам и источникам, найденные пакеты и версии (подходят ли под условие) и все строки «что обновить и где»
+ *  одним непрерывным списком (виртуализация строк). */
 export function AuditResult({ id, result, multi, onXlsx }: { id?: string; result: { summary: AuditSummary; items: AuditResultRow[]; total: number }; multi: boolean; onXlsx?: () => void }) {
   const s = result.summary;
   const [program, setProgram] = useState<string | null>(null);
+  const [found, setFound] = useState<string | null>(null);
   const rows = useMemo(() => (program ? result.items.filter((r) => r.program === program) : result.items), [program, result.items]);
+  const list = useStaticList(`audit:${program ?? ""}:${result.total}:${s.fetched_at}`, rows);
+  const byProduct = result.items.some((r) => r.product && r.product !== r.program);
+  const pick = (p: string) => { setProgram(program === p ? null : p); window.requestAnimationFrame(() => document.getElementById("audit-rows")?.scrollIntoView({ behavior: "smooth", block: "start" })); };
   return (
     <div className="audit-result" id={id} aria-live="polite">
       <div className="meters">
@@ -208,29 +224,40 @@ export function AuditResult({ id, result, multi, onXlsx }: { id?: string; result
       {s.notes?.map((n) => <div key={n} className="alert warn"><Icon name="info" /><div className="alert-body">{n}</div></div>)}
       <div className="table-scroll">
         <table className="table">
-          <thead><tr><th>Программа</th><th>Условие</th><th>Требуемая версия</th>{multi && s.sources.map((x) => <th key={x.source} className="num">{x.source}</th>)}<th className="num">Компьютеров</th></tr></thead>
-          <tbody>{s.programs.map((p) => (
-            <tr key={p.program} className={`clickable ${program === p.program ? "sel" : ""}`} onClick={() => setProgram(program === p.program ? null : p.program)}>
-              <td><b>{p.program}</b></td><td className="small">{p.condition}</td><td className="mono small">{p.target_version || "—"}</td>
-              {multi && p.by_source.map((b) => <td key={b.source} className="num">{num(b.hosts)}</td>)}
-              <td className="num"><b className={p.hosts ? "bad-text" : "ok-text"}>{num(p.hosts)}</b></td></tr>))}
-          </tbody>
+          <thead><tr><th>Программа</th><th>Условие</th><th>Требуемая версия</th><th>Найдено записей реестра</th>{multi && s.sources.map((x) => <th key={x.source} className="num">{x.source}</th>)}<th className="num">Компьютеров</th></tr></thead>
+          <tbody>{s.programs.map((p) => {
+            const f = p.found ?? []; const ok = f.filter((x) => x.matched).length;
+            return (<Fragment key={p.program}>
+              <tr className={`clickable ${program === p.program ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("button")) pick(p.program); }}>
+                <td><b>{p.program}</b></td><td className="small">{p.condition}</td><td className="mono small">{p.target_version || "—"}</td>
+                <td className="small">{f.length ? <button type="button" className="link-btn" aria-expanded={found === p.program} onClick={() => setFound(found === p.program ? null : p.program)}>
+                  {num(f.length)}, подходят {num(ok)}</button> : <span className="muted">—</span>}</td>
+                {multi && p.by_source.map((b) => <td key={b.source} className="num">{num(b.hosts)}</td>)}
+                <td className="num"><b className={p.hosts ? "bad-text" : "ok-text"}>{num(p.hosts)}</b></td></tr>
+              {found === p.program && <tr className="detail"><td colSpan={multi ? 5 + s.sources.length : 5}>
+                <ul className="found-list">{f.map((x) => <li key={`${x.name}|${x.version}`} className={x.matched ? "hit" : ""} title={x.matched ? "подходит под условие" : "не подходит под условие"}>
+                  <Icon name={x.matched ? "alert" : "check"} size={13} /><span>{x.name}</span><span className="mono">{x.version}</span>{x.product && x.product !== p.program && <span className="muted">{x.product}</span>}</li>)}</ul>
+              </td></tr>}
+            </Fragment>);
+          })}</tbody>
         </table>
       </div>
-      <div className="section-head"><h2>{program ? `Компьютеры: ${program}` : "Компьютеры, где нужно обновление"}</h2><span className="count">{num(program ? rows.length : result.total)}</span>
+      <div className="section-head" id="audit-rows"><h2>{program ? `Компьютеры: ${program}` : "Компьютеры, где нужно обновление"}</h2><span className="count">{num(program ? rows.length : result.total)}</span>
         {program && <button type="button" className="link-btn" onClick={() => setProgram(null)}>все программы</button>}<div className="spacer" />
-        {result.total > result.items.length && <span className="muted small">Показаны первые {num(result.items.length)} из {num(result.total)}</span>}
-        {onXlsx && <button type="button" className="btn mini" onClick={onXlsx}><Icon name="download" size={15} />Полный список в XLSX</button>}</div>
+        {result.total > result.items.length && <span className="muted small">Показаны первые {num(result.items.length)} из {num(result.total)} — полный список в XLSX</span>}
+        {onXlsx && <button type="button" className="btn mini" onClick={onXlsx}><Icon name="download" size={15} />Сформировать XLSX</button>}</div>
       <p className="muted small">Компьютеры, где версия соответствует условию проверки, — это не подтверждённые уязвимости; уязвимости, найденные KSC, — в разделе «Уязвимости».</p>
       <div className="table-scroll">
-        <table className="table compact">
-          <thead><tr>{multi && <th>Источник</th>}<th>Программа</th><th>Установлена</th><th>Нужна</th><th>Компьютер</th><th>IP-адрес</th><th>ОС</th><th>Подключение к KSC</th></tr></thead>
-          <tbody>{rows.map((r, i) => (
-            <tr key={`${r.source}-${r.host_id}-${r.product_id}-${i}`}>{multi && <td className="small">{r.source}</td>}<td>{r.program}{r.app_name !== r.program && <span className="sub">{r.app_name}</span>}</td>
-              <td className="mono nowrap"><b>{r.app_version}</b>{r.compared_version && r.compared_version !== r.app_version && <span className="sub mono">{r.compared_version}</span>}</td>
-              <td className="mono small nowrap">{r.target_version || "—"}</td>
-              <td>{multi ? r.name : <Link to={`/hosts/${r.host_id}`}>{r.name}</Link>}</td><td className="mono nowrap">{r.ip || "—"}</td><td className="small">{r.os}</td><td className="nowrap">{fmt(r.last_connected)}</td></tr>))}
-            {!rows.length && <tr><td colSpan={multi ? 8 : 7}><Empty icon="checkCircle" title="Устаревших версий не найдено">На {s.include_inactive ? "компьютерах" : "активных компьютерах"} выбранных источников версий, подходящих под условие, нет.</Empty></td></tr>}
+        <table className="table compact virt">
+          <thead><tr>{multi && <th>Источник</th>}<th>Программа</th>{byProduct && <th>Продукт</th>}<th>Установлена</th><th>Нужна</th><th>Компьютер</th><th>IP-адрес</th><th className="hide-sm">ОС</th><th>Подключение к KSC</th></tr></thead>
+          <tbody>
+            <VirtualRows list={list} colSpan={8 + (multi ? 1 : 0) + (byProduct ? 1 : 0)} estimate={40} row={(r) => (
+              <tr>{multi && <td className="small">{r.source}</td>}<td>{r.program}{r.app_name !== r.program && <span className="sub">{r.app_name}</span>}</td>
+                {byProduct && <td className="small">{r.product !== r.program ? r.product : ""}</td>}
+                <td className="mono nowrap"><b>{r.app_version}</b>{r.compared_version && r.compared_version !== r.app_version && <span className="sub mono">{r.compared_version}</span>}</td>
+                <td className="mono small nowrap">{r.target_version || "—"}</td>
+                <td>{multi ? r.name : <Link to={`/hosts/${r.host_id}`}>{r.name}</Link>}</td><td className="mono nowrap">{r.ip || "—"}</td><td className="small hide-sm">{r.os}</td><td className="nowrap">{fmt(r.last_connected)}</td></tr>)} />
+            {!rows.length && <tr><td colSpan={9}><Empty icon="checkCircle" title="Устаревших версий не найдено">На {s.include_inactive ? "компьютерах" : "активных компьютерах"} выбранных источников версий, подходящих под условие, нет.</Empty></td></tr>}
           </tbody>
         </table>
       </div>

@@ -14,6 +14,8 @@ cd ../frontend && npm install && npm run dev        # http://localhost:5173, п�
 
 Стили — только `frontend/src/styles.css`: сначала токены (цвета обеих тем, радиусы, тени, движение), затем компоненты. Новые цвета и отступы берите из токенов, тёмную тему задавайте в обоих блоках (`[data-theme=dark]` и `prefers-color-scheme`). Общие элементы страниц — `components/ui.tsx` (заголовок страницы, пустое состояние, скелет, сегменты, вкладки, спектр, плавающая панель), пиктограммы — `components/Icons.tsx`. Моноширинный шрифт (`.mono`) — только для версий, адресов, CVE и команд. Анимации — через `transform`/`opacity`, с правилом в блоке `prefers-reduced-motion`. Правила экранов (одно основное действие, технические параметры в «Дополнительно», состояния загрузки, таблицы, движение, адаптивность) и итоги аудита интерфейса — [docs/UI.md](UI.md). Встроенные стили (`style={{…}}`) — только для вычисляемых значений (ширины полос, положения подложек).
 
+Списки: `components/Infinite.tsx` — `useInfinite` (порции с сервера, фильтры в `deps`, память списка и места прокрутки на сеанс), `VirtualRows` (виртуализация строк таблицы, `@tanstack/react-virtual`; `scrollEl` — для боковой панели), `ListFoot` (подвал), `useKept` (фильтры на сеанс), `staticList`/`useStaticList` (уже загруженный массив). Постраничных кнопок нет. Списки по щелчку на числе или версии — `components/HostsDrawer.tsx` (боковая панель; её состояние — в параметрах адреса, чтобы «Назад» из карточки возвращал к ней). Выбор программ каталога — `selection.ts` (localStorage по источнику). Тяжёлые наборы (компьютеры продукта, выбранных записей реестра, защиты, уязвимостей) строятся одним запросом к KSC и кэшируются, порции берутся из кэша.
+
 Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=… COOKIE_SECURE=false APP_PUBLIC_URL=http://localhost:5173 .venv/bin/uvicorn app.main:app_factory --factory --reload`.
 
 Полная среда в Docker: `cp .env.example .env`, заполнить, `./scripts/install.sh --build`.
@@ -63,7 +65,7 @@ Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=
 cd backend && .venv/bin/alembic revision -m "описание"    # заполнить upgrade/downgrade вручную
 ```
 
-Только внутренняя база. Перед миграцией `update.sh` создаёт резервную копию; `rollback.sh` проверяет совместимость ревизии.
+Только внутренняя база. Перед миграцией `update.sh` создаёт резервную копию; `rollback.sh` проверяет совместимость ревизии. Миграции выполняет отдельная команда (`./scripts/ctl.sh migrate`, `install.sh`, `update.sh`), не сервер при запуске. `0004_catalog_families` — семейства каталога (`family_key`, `family_size`) и запрос на перестроение каталогов.
 
 ## Выпуск
 

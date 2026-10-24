@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -88,9 +89,14 @@ async def hosts_for_selection(request: Request, body: ReportParams, offset: int 
         with Session(request.app.state.sources.params(src)) as conn:
             return builder.build_software(conn, params, rule, max_rows=min(settings.ksc_max_rows, 20_000), exclude_slaves=rcfg.exclude_slave_servers, progress=lambda _t: None, cancelled=lambda: False)
 
-    try:
+    async def make():
         async with client._sem:  # noqa: SLF001 — один слот источника на всё построение
-            rows, summary = await asyncio.to_thread(work)
+            return await asyncio.to_thread(work)
+
+    # набор строится один раз и кэшируется: порции бесконечной прокрутки берутся из кэша
+    key = (str(src.id), "software_hosts", json.dumps(params, sort_keys=True, default=str), rcfg.exclude_slave_servers)
+    try:
+        (rows, summary), _at = await request.app.state.cache.get(key, settings.cache_ttl_seconds, make)
     except KscError as exc:
         raise _ksc(exc) from None
     page = rows[offset:offset + limit]

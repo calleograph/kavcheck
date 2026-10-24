@@ -291,7 +291,7 @@ async def catalog_rebuild(source_id: uuid.UUID, su: SessionUser = Depends(requir
 @router.get("/audit")
 async def audit(q: str = Query("", max_length=200), action: str = Query("", max_length=80), since: datetime | None = None, until: datetime | None = None,
                 offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    stmt = select(AuditLog).order_by(AuditLog.id.desc()).offset(offset).limit(limit)
+    stmt = select(AuditLog)
     if q.strip():
         like = f"%{q.strip().lower()}%"
         stmt = stmt.where(func.lower(AuditLog.actor).like(like) | func.lower(AuditLog.action).like(like) | func.lower(AuditLog.target_id).like(like))
@@ -301,8 +301,9 @@ async def audit(q: str = Query("", max_length=200), action: str = Query("", max_
         stmt = stmt.where(AuditLog.at >= since)
     if until:
         stmt = stmt.where(AuditLog.at <= until)
-    rows = (await db.execute(stmt)).scalars().all()
-    return {"items": [{"id": r.id, "at": r.at, "actor": r.actor, "action": r.action, "target_type": r.target_type, "target_id": r.target_id, "source_id": str(r.source_id) if r.source_id else None,
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await db.execute(stmt.order_by(AuditLog.id.desc()).offset(offset).limit(limit))).scalars().all()
+    return {"total": total, "items": [{"id": r.id, "at": r.at, "actor": r.actor, "action": r.action, "target_type": r.target_type, "target_id": r.target_id, "source_id": str(r.source_id) if r.source_id else None,
                        "details": r.details, "result": r.result, "ip": r.ip, "duration_ms": r.duration_ms} for r in rows]}
 
 
@@ -311,7 +312,7 @@ async def journal(q: str = Query("", max_length=200), level: str = Query("", pat
                   since: datetime | None = None, until: datetime | None = None,
                   offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     """Журнал событий с фильтрами: период (готовый или произвольный since/until), уровень, компонент (category), текст."""
-    stmt = select(EventLog).order_by(EventLog.id.desc()).offset(offset).limit(limit)
+    stmt = select(EventLog)
     if q.strip():
         like = f"%{q.strip().lower()}%"
         stmt = stmt.where(func.lower(func.coalesce(EventLog.message, "")).like(like) | func.lower(func.coalesce(EventLog.user, "")).like(like) | func.lower(EventLog.event).like(like) | func.lower(func.coalesce(EventLog.source, "")).like(like))
@@ -329,10 +330,11 @@ async def journal(q: str = Query("", max_length=200), level: str = Query("", pat
             stmt = stmt.where(EventLog.at <= until)
     elif span:
         stmt = stmt.where(EventLog.at >= utcnow() - timedelta(hours=span))
-    rows = (await db.execute(stmt)).scalars().all()
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await db.execute(stmt.order_by(EventLog.id.desc()).offset(offset).limit(limit))).scalars().all()
     errors24 = (await db.execute(select(func.count()).select_from(EventLog).where(EventLog.level == "error", EventLog.at >= utcnow() - timedelta(hours=24)))).scalar_one()
     return {"items": [{"id": r.id, "at": r.at, "level": r.level, "category": r.category, "event": r.event, "user": r.user, "source": r.source, "message": r.message, "data": r.data,
-                       "duration_ms": r.duration_ms, "ip": r.ip, "request_id": r.request_id} for r in rows], "errors_24h": errors24}
+                       "duration_ms": r.duration_ms, "ip": r.ip, "request_id": r.request_id} for r in rows], "total": total, "errors_24h": errors24}
 
 
 @router.get("/journal/export.csv")

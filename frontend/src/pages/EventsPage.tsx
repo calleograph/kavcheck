@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type EvGroup, type EvSummary, type SecEvent } from "../api";
 import { NoSource, type Ctx } from "../App";
-import { Fetched, Pager } from "../components/Common";
+import { Fetched } from "../components/Common";
 import { Icon } from "../components/Icons";
 import { Empty, PageHead, Segmented, SkelRows } from "../components/ui";
 import { fmt, num } from "../util";
@@ -32,11 +33,13 @@ export default function EventsPage({ ctx }: { ctx: Ctx }) {
   }, [ctx.current, days, tick]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const set = (kv: Record<string, string>) => setSp((p) => { for (const [k, v] of Object.entries(kv)) { if (v) p.set(k, v); else p.delete(k); } return p; });
+  // фильтр из показателя или списка угроз — к журналу, где виден результат
+  const setShow = (kv: Record<string, string>) => { set(kv); if (Object.values(kv).some(Boolean)) window.requestAnimationFrame(() => document.getElementById("ev-journal")?.scrollIntoView({ behavior: "smooth", block: "start" })); };
   const per = days === 1 ? "за сутки" : `за ${days} суток`;
   const meter = (g: EvGroup, label: string, tone: string, foot: (n: number) => string) => {
     const n = s?.totals[g] ?? 0; const on = group === g;
     return (
-      <button type="button" className={`meter meter-btn ${on ? "on" : ""}`} aria-pressed={on} onClick={() => set({ type: on ? "" : g })}>
+      <button type="button" className={`meter meter-btn ${on ? "on" : ""}`} aria-pressed={on} onClick={() => setShow({ type: on ? "" : g })}>
         <span className="l">{label}</span><span className={`v ${n ? tone : ""}`}>{s ? num(n) : "…"}</span><span className="t">{s ? foot(s.hosts[g]) : ""}</span>
       </button>);
   };
@@ -93,37 +96,27 @@ export default function EventsPage({ ctx }: { ctx: Ctx }) {
           {!s ? <div className="pad"><SkelRows rows={5} cols={2} /></div> : !s.top_threats.length ? <p className="muted small pad">Угроз {per} не обнаружено.</p> : (
             <ul className="rows pad-x">{s.top_threats.map((t) => (
               <li key={t.kind + t.name}>
-                <div className="r-main"><button type="button" className={`link-btn threat-name ${threat === t.name ? "on" : ""}`} aria-pressed={threat === t.name} onClick={() => set({ threat: threat === t.name ? "" : t.name })}>{t.name}</button>
+                <div className="r-main"><button type="button" className={`link-btn threat-name ${threat === t.name ? "on" : ""}`} aria-pressed={threat === t.name} onClick={() => setShow({ threat: threat === t.name ? "" : t.name })}>{t.name}</button>
                   <span className="r-sub">{t.kind === "attack" ? "сетевая атака" : "угроза"} · {num(t.n)} событ. · последнее {fmt(t.last)}</span></div>
                 <span className="num nowrap"><b>{num(t.hosts)}</b> <span className="muted small">комп.</span></span>
               </li>))}</ul>)}
         </div>
       </div>
 
-      <div className="section-head"><h2>Журнал обнаружений {per}</h2></div>
+      <div className="section-head" id="ev-journal"><h2>Журнал обнаружений {per}</h2></div>
       <EventList days={days} group={group} threat={threat} onGroup={(g) => set({ type: g })} onThreat={(t) => set({ threat: t })} />
     </section>
   );
 }
 
-/** Постраничный список событий обнаружения с поиском и фильтром по результату; используется в разделе и в карточке компьютера. */
+/** Журнал событий обнаружения — непрерывный список с поиском и фильтром по результату; используется в разделе и в карточке компьютера. */
 export function EventList({ days, hostId, group, threat, onGroup, onThreat }: { days: number; hostId?: number; group: EvFilter; threat: string; onGroup: (g: EvFilter) => void; onThreat: (t: string) => void }) {
-  const [q, setQ] = useState(""); const [applied, setApplied] = useState("");
-  const [offset, setOffset] = useState(0);
-  const [data, setData] = useState<{ items: SecEvent[]; total: number; unsupported?: string[] } | null>(null);
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [q, setQ] = useKept(`events.q:${hostId ?? ""}`, ""); const [applied, setApplied] = useState(q);
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 350); return () => window.clearTimeout(t); }, [q]);
-  const fk = `${days}|${hostId}|${group}|${threat}|${applied}`;
-  const [prevFk, setPrevFk] = useState(fk);
-  if (fk !== prevFk) { setPrevFk(fk); setOffset(0); }   // новый фильтр — с первой страницы, без лишнего запроса
-  useEffect(() => {
-    let alive = true;
-    setBusy(true);
-    api.events.list({ days, host_id: hostId, type: GROUP_TYPES[group], q: applied, threat, offset, limit: 50 })
-      .then((r) => { if (alive) { setData(r); setErr(""); } }).catch((e) => { if (alive) setErr((e as ApiError).message); }).finally(() => { if (alive) setBusy(false); });
-    return () => { alive = false; };
-  }, [days, hostId, group, threat, applied, offset]);
-  if (data?.unsupported) return <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет журнала событий KSC ({data.unsupported.join(", ")}).</div></div>;
+  const list = useInfinite<SecEvent>(`events:${hostId ?? "all"}`, [days, hostId, group, threat, applied],
+    (offset, limit) => api.events.list({ days, host_id: hostId, type: GROUP_TYPES[group], q: applied, threat, offset, limit }) as unknown as Promise<Chunk<SecEvent>>);
+  const unsupported = (list.extra as { unsupported?: string[] } | null)?.unsupported;
+  if (unsupported) return <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет журнала событий KSC ({unsupported.join(", ")}).</div></div>;
   return (
     <>
       <div className="toolbar">
@@ -131,26 +124,26 @@ export function EventList({ days, hostId, group, threat, onGroup, onThreat }: { 
         <Segmented<EvFilter> label="Результат" value={group} onChange={onGroup} options={GROUP_OPTS} />
         {threat && <div className="toolbar-foot"><span className="chip">Угроза: <b className="mono">{threat}</b><button type="button" className="link-btn" onClick={() => onThreat("")}>сбросить</button></span></div>}
       </div>
-      {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
-        {!data && busy ? <SkelRows cols={5} /> : (
-          <table className="table">
+      {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
+      <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
+        {list.initial ? <SkelRows cols={5} /> : (
+          <table className="table virt">
             <thead><tr><th>Время</th>{!hostId && <th>Компьютер</th>}<th>Событие</th><th>Угроза или атака</th><th>Объект</th><th className="hide-sm">Пользователь</th></tr></thead>
             <tbody>
-              {(data?.items ?? []).map((e) => (
-                <tr key={e.event_id}>
+              <VirtualRows list={list} colSpan={hostId ? 5 : 6} estimate={48} row={(e) => (
+                <tr>
                   <td className="nowrap small">{fmt(e.at)}</td>
                   {!hostId && <td>{e.host_id && e.host ? <Link to={`/hosts/${e.host_id}?tab=events`}>{e.host}</Link> : <span className="muted">удалённое устройство</span>}{e.ip && <span className="sub mono">{e.ip}</span>}</td>}
                   <td><span className={`badge ${TYPE_TONE[e.type] ?? ""}`}>{e.type_title}</span></td>
                   <td>{e.threat ? <button type="button" className="link-btn mono threat-name" onClick={() => onThreat(e.threat)} title="Показать события этой угрозы">{e.threat}</button> : <span className="muted">—</span>}{e.threat_kind && <span className="sub">{e.threat_kind}</span>}</td>
                   <td className="small obj">{e.type === "attack" ? <span className="mono">{e.attacker || "?"}{e.port ? ` → порт ${e.port}` : ""}{e.protocol ? ` (${e.protocol})` : ""}</span> : e.object ? <span className="mono" title={e.object}>{e.object}</span> : <span className="muted">—</span>}</td>
                   <td className="small hide-sm">{e.user || <span className="muted">—</span>}</td>
-                </tr>))}
-              {data && !data.items.length && <tr><td colSpan={hostId ? 5 : 6}><Empty icon="checkCircle" title={applied || group || threat ? "Ничего не найдено" : "Событий нет"}>{applied || group || threat ? "Измените поиск или фильтр." : `Kaspersky не сообщал об обнаружениях ${days === 1 ? "за сутки" : `за ${days} суток`}.`}</Empty></td></tr>}
+                </tr>)} />
+              {!list.items.length && !list.loading && <tr><td colSpan={hostId ? 5 : 6}><Empty icon="checkCircle" title={applied || group || threat ? "Ничего не найдено" : "Событий нет"}>{applied || group || threat ? "Измените поиск или фильтр." : `Kaspersky не сообщал об обнаружениях ${days === 1 ? "за сутки" : `за ${days} суток`}.`}</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
-      {data && <Pager total={data.total} offset={offset} limit={50} onPage={setOffset} />}
+      <ListFoot list={list} />
     </>
   );
 }

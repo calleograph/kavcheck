@@ -78,7 +78,7 @@ def _autosize(ws, columns: list[tuple[str, str]], rows: list[dict]) -> None:
 
 
 def _write_audit(path: Path, rows: list[dict], summary: dict, meta: dict) -> None:
-    """Проверка версий: «Итог» (программа × источник), «Компьютеры» (что обновить и где), «Версии», «Параметры»."""
+    """Проверка версий: «Итог» (программа × источник), «Компьютеры» (что обновить и где), «Версии», «Найденные пакеты» (что найдено и что подходит под условие), «Параметры»."""
     from openpyxl import Workbook  # noqa: PLC0415
     from openpyxl.styles import Font  # noqa: PLC0415
 
@@ -121,6 +121,18 @@ def _write_audit(path: Path, rows: list[dict], summary: dict, meta: dict) -> Non
     vs.auto_filter.ref = vs.dimensions
     for col, w in zip("ABCD", (30, 40, 30, 12)):
         vs.column_dimensions[col].width = w
+    fs = wb.create_sheet("Найденные пакеты")
+    fs.append(["Источник KSC", "Программа", "Продукт каталога", "Запись реестра KSC", "Производитель", "Версия", "Сравниваемая версия", "Подходит под условие"])
+    for c in fs[1]:
+        c.font = Font(bold=True)
+    for s in summary.get("sources", []):
+        for i in s.get("items", []):
+            for f in i.get("found", []):
+                fs.append([s["source"], i["program"], f.get("product") or "", f["name"], f.get("publisher") or "", f["version"], f.get("compared_version") or "", "да" if f["matched"] else "нет"])
+    fs.freeze_panes = "A2"
+    fs.auto_filter.ref = fs.dimensions
+    for col, w in zip("ABCDEFGH", (24, 30, 26, 40, 24, 22, 20, 12)):
+        fs.column_dimensions[col].width = w
     m = wb.create_sheet("Параметры")
     for k, v in meta.items():
         m.append([k, _text(v) if not isinstance(v, (int, float)) else v])

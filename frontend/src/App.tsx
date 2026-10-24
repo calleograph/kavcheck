@@ -8,13 +8,16 @@ import LoginPage from "./pages/LoginPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
 import SecurityPage from "./pages/SecurityPage";
 import DashboardPage from "./pages/DashboardPage";
-import SoftwarePage from "./pages/SoftwarePage";
-import HostsPage, { HostPage } from "./pages/HostsPage";
-import VulnsPage, { VulnHostPage } from "./pages/VulnsPage";
-import ProductPage from "./pages/ProductPage";
-import EventsPage from "./pages/EventsPage";
-import ProtectionPage from "./pages/ProtectionPage";
-import ReportsPage from "./pages/ReportsPage";
+// разделы загружаются по первому обращению: стартовая загрузка — оболочка, вход и главная
+const SoftwarePage = lazy(() => import("./pages/SoftwarePage"));
+const HostsPage = lazy(() => import("./pages/HostsPage"));
+const HostPage = lazy(() => import("./pages/HostsPage").then((m) => ({ default: m.HostPage })));
+const VulnsPage = lazy(() => import("./pages/VulnsPage"));
+const VulnHostPage = lazy(() => import("./pages/VulnsPage").then((m) => ({ default: m.VulnHostPage })));
+const ProductPage = lazy(() => import("./pages/ProductPage"));
+const EventsPage = lazy(() => import("./pages/EventsPage"));
+const ProtectionPage = lazy(() => import("./pages/ProtectionPage"));
+const ReportsPage = lazy(() => import("./pages/ReportsPage"));
 import { fmt, versionLabel } from "./util";
 
 const AdminPage = lazy(() => import("./pages/AdminPage"));
@@ -140,6 +143,7 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
   const [open, setOpen] = useState(false);
   const { pathname, search } = useLocation();
   useEffect(() => setOpen(false), [pathname, search]);
+  useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [pathname]);   // новая страница — с начала; списки при возврате восстанавливают своё место сами
   useEffect(() => { if (!open) return; const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); document.querySelector<HTMLElement>(".topbar .burger")?.focus(); } }; document.addEventListener("keydown", esc); return () => document.removeEventListener("keydown", esc); }, [open]);
   const inAdmin = pathname.startsWith("/admin");
   const tab = new URLSearchParams(search).get("tab") ?? "system";

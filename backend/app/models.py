@@ -253,6 +253,8 @@ class CatalogProduct(Base):
     publisher_key: Mapped[str] = mapped_column(String(160), nullable=False, default="", index=True)
     origin: Mapped[str] = mapped_column(String(10), nullable=False, default="auto")        # builtin | auto | manual
     component: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    family_key: Mapped[str] = mapped_column(String(160), nullable=False, default="", server_default="")   # основной продукт семейства; свой ключ — сам основной
+    family_size: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")    # у основного — число продуктов семейства вместе с ним
     platforms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     note: Mapped[str | None] = mapped_column(Text)
     names: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)

@@ -6,6 +6,7 @@
 «Активные» — подключавшиеся к KSC за activity_days суток; остальные учитываются отдельно (показ всех устройств)."""
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -70,6 +71,55 @@ def _keyset(s: Session, sql: str, key: str, page: int, cancelled: CancelCheck):
         if len(rows) < page:
             return
         last = int(rows[-1][key])
+
+
+_ARCH = {"x64", "x86", "amd64", "arm64", "i386", "i686", "win64", "win32", "64bit", "32bit", "bit"}
+
+
+def name_tokens(text: str) -> tuple[str, ...]:
+    """Слова названия без номеров версий и архитектуры: «php8.3-xml» → (php, xml); «Microsoft Office Proofing Tools 2016 (x64)» → (microsoft, office, proofing, tools)."""
+    out = []
+    for w in re.split(r"[^0-9a-zа-яё+#]+", text.lower()):
+        if w in _ARCH:
+            continue
+        w = re.sub(r"(?<=[a-zа-яё])\d[\d.]*$", "", w)          # php8 → php, python3 → python
+        if w and not (out and re.fullmatch(r"[\d.]+", w)):     # числа — версии; в начале названия («7-Zip») — часть имени
+            out.append(w)
+    return tuple(out)
+
+
+def families(products: list[dict]) -> None:
+    """Семейства: продукт — компонент другого, если начало его названия совпадает с названием или ключом того продукта
+    (php-xml → PHP, Microsoft Office Proofing Tools → Microsoft Office, Java Auto Updater → Java). Универсально, без правил под конкретные программы:
+    выбирается самое длинное совпадение; основной продукт семейства — тот, что не является компонентом. Ставит family_key и family_size."""
+    # ключ разбирается так же, как название (без номеров): иначе «Программа 106» по ключу совпала бы с «Программой 1» по названию
+    toks_of = {p["key"]: {name_tokens(p["name"]), name_tokens(p["key"].replace("-", " "))} - {()} for p in products}
+    by_tokens: dict[tuple[str, ...], str] = {}
+    for p in products:
+        for toks in toks_of[p["key"]]:
+            by_tokens.setdefault(toks, p["key"])
+    parent: dict[str, str] = {}
+    for p in products:
+        best: tuple[str, ...] = ()
+        for toks in toks_of[p["key"]]:
+            for n in range(len(toks) - 1, 0, -1):           # только собственный префикс: продукт не родитель сам себе
+                k = by_tokens.get(toks[:n])
+                if k and k != p["key"] and n > len(best):
+                    best = toks[:n]
+                    parent[p["key"]] = k
+                    break
+    def root(k: str) -> str:
+        seen = set()
+        while k in parent and k not in seen:
+            seen.add(k)
+            k = parent[k]
+        return k
+    size: Counter = Counter()
+    for p in products:
+        p["family_key"] = root(p["key"])
+        size[p["family_key"]] += 1
+    for p in products:
+        p["family_size"] = size[p["key"]] if p["family_key"] == p["key"] else 1
 
 
 def build(s: Session, *, activity_days: int, overrides: Overrides | None = None, exclude_slaves: bool = True,
@@ -195,6 +245,7 @@ def build(s: Session, *, activity_days: int, overrides: Overrides | None = None,
                     "installs_all": f["installs"], "installs_active": f["installs_active"], "first_seen": f["first_seen"],
                     "scheme": Counter(v["scheme"] for v in vs).most_common(1)[0][0] if vs else "numeric",
                     "transform": d.transform if d else None})
+    families(out)
     stats = {"hosts": len(hosts), "hosts_active": sum(1 for a in hosts.values() if a), "slaves": len(slaves), "records": len(recs), "installs": n_inst,
              "installs_skipped": skipped, "products": len(out), "activity_days": activity_days, "built_at": now.isoformat(timespec="seconds")}
     progress(f"готово: продуктов {len(out)}")

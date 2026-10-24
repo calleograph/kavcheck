@@ -22,7 +22,7 @@ from .builder import Cancelled, _hosts, _installs
 Progress = Callable[[str], None]
 CancelCheck = Callable[[], bool]
 
-AUDIT_COLUMNS = [("source", "Источник KSC"), ("program", "Программа"), ("app_version", "Установленная версия"), ("target_version", "Требуемая версия"),
+AUDIT_COLUMNS = [("source", "Источник KSC"), ("program", "Программа"), ("product", "Продукт каталога"), ("app_version", "Установленная версия"), ("target_version", "Требуемая версия"),
                  ("name", "Компьютер"), ("ip", "IP-адрес"), ("os", "ОС"), ("last_connected", "Последнее подключение (UTC)"), ("days_since_connection", "Суток без связи"),
                  ("condition", "Условие проверки"), ("app_name", "Запись реестра KSC"), ("compared_version", "Сравниваемая версия"), ("branch", "Ветка"),
                  ("publisher", "Производитель"), ("fqdn", "FQDN"), ("group", "Группа администрирования"), ("linux_release", "Дистрибутив Linux"), ("activity", "Активность"),
@@ -61,7 +61,8 @@ def item_condition(item: dict) -> str:
 
 
 def _record_def(item: dict, name: str, mask: int, rule: Rule | None) -> C.ProductDef | None:
-    if item.get("kind") == "product":
+    # пункт из нескольких продуктов (семейство, компоненты): каждая запись — по своему описанию и схеме версий
+    if item.get("kind") == "product" and not item.get("product_keys"):
         d = C.BUILTIN_BY_KEY.get(item.get("product_key") or "")
         if d:
             return d
@@ -146,14 +147,20 @@ def build_source(s: Session, *, source_name: str, items: list[dict], rules: dict
             raise KscError("params", f"Правило группировки «{item.get('rule')}» не найдено или выключено")
         cands = _candidates(s, item, rule, cancelled)
         hit = 0
+        found: dict[tuple[str, str], dict] = {}      # какие пакеты и версии найдены и подходят ли под условие
         for r in cands:
             ok, cv, br = record_matches(item, r, rule)
+            f = found.setdefault((r.get("name") or "", r.get("version") or ""), {"name": r.get("name") or "", "version": r.get("version") or "", "compared_version": cv,
+                                                                                "publisher": C.clean_publisher(r.get("publisher") or ""), "matched": False,
+                                                                                "product": (item.get("pid_product") or {}).get(int(r["product_id"]), "")})
             if ok:
+                f["matched"] = True
                 pid = int(r["product_id"])
                 records[pid] = r
                 matched.setdefault(pid, []).append((n, cv, br))
                 hit += 1
-        per_item.append({"records_checked": len(cands), "records_matched": hit})
+        per_item.append({"records_checked": len(cands), "records_matched": hit,
+                         "found": sorted(found.values(), key=lambda x: (not x["matched"], x["name"].lower(), versions.sort_key(x["compared_version"] or "0")))[:300]})
         progress(f"{source_name}: «{item_title(item)}» — подходящих записей реестра {hit} из {len(cands)}")
     installs = _installs(s, list(matched), max_rows, progress, cancelled) if matched else []
     host_ids = sorted({int(i["host_id"]) for i in installs})
@@ -178,10 +185,11 @@ def build_source(s: Session, *, source_name: str, items: list[dict], rules: dict
         rec = records[int(i["product_id"])]
         for n, cv, br in matched[int(i["product_id"])]:
             item = items[n]
-            rows.append({"source": source_name, "program": item_title(item), "item": n, "app_name": rec.get("name") or "", "app_version": rec.get("version") or "",
+            rows.append({"source": source_name, "program": item_title(item), "product": (item.get("pid_product") or {}).get(int(rec["product_id"]), ""), "item": n,
+                         "app_name": rec.get("name") or "", "app_version": rec.get("version") or "",
                          "compared_version": cv, "branch": br, "condition": item_condition(item), "target_version": target_text(item),
                          "publisher": C.clean_publisher(rec.get("publisher") or ""), "install_date": i.get("install_date"),
-                         **{k: hr[k] for k in ("name", "fqdn", "ip", "os", "linux_release", "group", "last_connected", "days_since_connection", "activity", "host_id")},
+                         **{k: hr[k] for k in ("name", "fqdn", "ip", "os", "linux_release", "group", "last_connected", "days_since_connection", "activity", "host_id", "online")},
                          "product_id": int(rec["product_id"])})
     rows.sort(key=lambda r: (r["program"].lower(), r["name"].lower(), versions.sort_key(r["compared_version"] or "0")))
     for n, item in enumerate(items):
@@ -198,8 +206,14 @@ def merge_summaries(per_source: list[dict], items: list[dict], *, active_days: i
     progs = []
     for n, item in enumerate(items):
         rs = [r for r in rows if r["item"] == n]
+        found: dict[tuple[str, str], dict] = {}
+        for s in per_source:
+            for f in s["items"][n].get("found", []):
+                cur = found.setdefault((f["name"], f["version"]), dict(f))
+                cur["matched"] = cur["matched"] or f["matched"]
         progs.append({"program": item_title(item), "condition": item_condition(item), "target_version": target_text(item), "hosts": len({(r["source"], r["host_id"]) for r in rs}),
-                      "installs": len(rs), "by_source": [{"source": s["source"], "hosts": s["items"][n]["hosts"]} for s in per_source]})
+                      "installs": len(rs), "by_source": [{"source": s["source"], "hosts": s["items"][n]["hosts"]} for s in per_source],
+                      "found": sorted(found.values(), key=lambda x: (not x["matched"], x["name"].lower()))[:300]})
     return {"rows": len(rows), "hosts": len({(r["source"], r["host_id"]) for r in rows}), "sources": per_source, "programs": progs,
             "hidden_inactive_hosts": sum(s["hidden_inactive_hosts"] for s in per_source), "active_days": active_days, "include_inactive": include_inactive,
             "fetched_at": max((s["fetched_at"] for s in per_source), default=datetime.now(timezone.utc).isoformat(timespec="seconds"))}

@@ -74,7 +74,7 @@ async def store(db: AsyncSession, source_id: uuid.UUID, families: list[dict], bu
     for f in families:
         search = " ".join([f["name"], f["publisher"], f["key"], *[n for n, _ in f["names"][:15]]]).lower()[:4000]
         batch.append(CatalogProduct(source_id=source_id, key=f["key"][:160], name=f["name"], publisher=f["publisher"], publisher_key=f["publisher_key"][:160], origin=f["origin"],
-                                    component=f["component"], platforms=f["platforms"], note=f["note"] or None, names=f["names"], versions=f["versions"], branches=f["branches"],
+                                    component=f["component"], family_key=(f.get("family_key") or f["key"])[:160], family_size=int(f.get("family_size") or 1), platforms=f["platforms"], note=f["note"] or None, names=f["names"], versions=f["versions"], branches=f["branches"],
                                     versions_count=f["versions_count"], latest_version=(f["latest_version"] or "")[:200], scheme=f["scheme"], transform=f["transform"],
                                     hosts_all=f["hosts_all"], hosts_active=f["hosts_active"], installs_all=f["installs_all"], installs_active=f["installs_active"],
                                     first_seen=f["first_seen"], search=search, built_at=built_at))
@@ -239,6 +239,7 @@ def product_out(p: CatalogProduct, *, all_hosts: bool, full: bool = False) -> di
     vs = [v for v in p.versions if all_hosts or v.get("hosts_active")]
     defined = [v for v in vs if v.get("branch")]
     out = {"key": p.key, "name": p.name, "publisher": p.publisher, "publisher_key": p.publisher_key, "origin": p.origin, "component": p.component,
+           "family_key": p.family_key or p.key, "family_size": p.family_size or 1,
            "platforms": [x for b, x in ((1, "Windows"), (2, "Linux")) if p.platforms & b], "hosts": hosts, "hosts_all": p.hosts_all, "hosts_active": p.hosts_active,
            "hidden_hosts": p.hosts_all - p.hosts_active, "installs": p.installs_all if all_hosts else p.installs_active, "versions_count": len(vs),
            "latest_version": defined[0]["version"] if defined else (vs[0]["version"] if vs else p.latest_version),
@@ -255,9 +256,14 @@ def product_out(p: CatalogProduct, *, all_hosts: bool, full: bool = False) -> di
 
 
 async def query(db: AsyncSession, source_id: uuid.UUID, *, q: str = "", publisher_key: str = "", platform: str = "", sort: str = "hosts", desc: bool = True,
-                all_hosts: bool = False, components: bool = False, offset: int = 0, limit: int = 50) -> dict:
+                all_hosts: bool = False, components: bool = False, offset: int = 0, limit: int = 50, roots: bool = False, family: str = "") -> dict:
+    """roots — только основные продукты семейств (компоненты раскрываются запросом family); family — продукты одного семейства без основного."""
     hosts_col = CatalogProduct.hosts_all if all_hosts else CatalogProduct.hosts_active
     conds = [CatalogProduct.source_id == source_id, hosts_col > 0]
+    if family:
+        conds += [CatalogProduct.family_key == family, CatalogProduct.key != family]
+    elif roots:
+        conds.append(or_(CatalogProduct.family_key == CatalogProduct.key, CatalogProduct.family_key == ""))
     if q.strip():
         for word in q.strip().lower().split()[:5]:
             conds.append(CatalogProduct.search.like(f"%{word}%"))
@@ -271,7 +277,14 @@ async def query(db: AsyncSession, source_id: uuid.UUID, *, q: str = "", publishe
     order = [col.desc() if desc else col.asc(), CatalogProduct.name]
     total = (await db.execute(select(func.count()).select_from(CatalogProduct).where(*conds))).scalar_one()
     rows = (await db.execute(select(CatalogProduct).where(*conds).order_by(*order).offset(offset).limit(limit))).scalars().all()
-    return {"items": [product_out(p, all_hosts=all_hosts) for p in rows], "total": total, "offset": offset, "limit": limit}
+    items = [product_out(p, all_hosts=all_hosts) for p in rows]
+    fam = {i["family_key"] for i in items if i["family_key"] != i["key"]}
+    if fam:                                                   # компоненты в результатах поиска — с названием семейства
+        names = dict((await db.execute(select(CatalogProduct.key, CatalogProduct.name).where(CatalogProduct.source_id == source_id, CatalogProduct.key.in_(fam)))).all())
+        for i in items:
+            if i["family_key"] != i["key"]:
+                i["family_name"] = names.get(i["family_key"], "")
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
 async def publishers(db: AsyncSession, source_id: uuid.UUID, *, q: str = "", all_hosts: bool = False, offset: int = 0, limit: int = 50) -> dict:
@@ -307,17 +320,21 @@ async def search_keys(db: AsyncSession, source_ids: list[uuid.UUID], q: str, lim
 
 
 async def resolve_items(db: AsyncSession, source_id: uuid.UUID, items: list[dict]) -> tuple[list[dict], list[str]]:
-    """Пункты проверки для источника: ключ каталога → идентификаторы записей реестра этого источника. Возвращает также программы, которых в источнике нет."""
+    """Пункты проверки для источника: ключи каталога → идентификаторы записей реестра этого источника. Пункт может охватывать несколько продуктов
+    (product_keys: семейство или выбранные компоненты) — с одним условием; у каждой записи остаётся её продукт (pid_product) для строк отчёта.
+    Возвращает также программы, которых в источнике нет."""
     out, missing = [], []
     for it in items:
         it = dict(it)
         if (it.get("kind") or "product") == "product":
-            row = await db.get(CatalogProduct, (source_id, it.get("product_key") or ""))
-            it["product_ids"] = sorted({int(pid) for v in (row.versions if row else []) for pid in v.get("product_ids", [])})
-            if row is None:
+            keys = list(dict.fromkeys([k for k in [it.get("product_key"), *(it.get("product_keys") or [])] if k]))
+            rows = [r for r in [await db.get(CatalogProduct, (source_id, k)) for k in keys] if r is not None]
+            it["pid_product"] = {int(pid): r.name for r in rows for v in r.versions for pid in v.get("product_ids", [])}
+            it["product_ids"] = sorted(it["pid_product"])
+            if not rows:
                 missing.append(it.get("product_name") or it.get("product_key") or "?")
             elif not it.get("product_name"):
-                it["product_name"] = row.name
+                it["product_name"] = rows[0].name if len(rows) == 1 else f"{rows[0].name} и ещё {len(rows) - 1}"
         out.append(it)
     return out, missing
 

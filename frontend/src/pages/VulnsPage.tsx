@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type HostVuln, type SavedCheck, type VulnHost, type VulnProduct, type VulnSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
-import { Fetched, Pager } from "../components/Common";
+import { Fetched } from "../components/Common";
+import { ListFoot, VirtualRows, useInfinite, useKept, useStaticList, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { useToast } from "../components/Toast";
 import { Empty, HiddenNote, PageHead, Segmented, SevCounts, SkelRows, SortTh, Tabs } from "../components/ui";
@@ -35,26 +36,23 @@ function Unsupported({ missing }: { missing: string[] }) {
 function HostsView({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
   const navigate = useNavigate();
+  const sid = ctx.current?.id ?? "";
   const productId = sp.get("product_id"); const productName = sp.get("product_name"); const productTitle = sp.get("product_title");
-  const [q, setQ] = useState(""); const [group, setGroup] = useState(""); const [product, setProduct] = useState(""); const [cve, setCve] = useState("");
-  const [applied, setApplied] = useState({ q: "", group: "", product: "", cve: "" });
-  const [severity, setSeverity] = useState<Sev>(""); const [patchable, setPatchable] = useState(false);
-  const [all, setAll] = useState(false);
-  const [sort, setSort] = useState("risk"); const [desc, setDesc] = useState(true);
-  const [offset, setOffset] = useState(0);
-  const [data, setData] = useState<{ items: VulnHost[]; total: number; summary: VulnSummary | null; unsupported?: string[] } | null>(null);
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false); const [refresh, setRefresh] = useState(0);
-  const force = useRef(false);   // «Обновить» перечитывает данные KSC один раз, а не при каждой следующей странице
-  useEffect(() => { const t = window.setTimeout(() => { setApplied({ q, group, product, cve }); setOffset(0); }, 350); return () => window.clearTimeout(t); }, [q, group, product, cve]);
-  useEffect(() => {
-    const forced = force.current || undefined; force.current = false;
-    setBusy(true);
-    api.vulns.hosts({ ...applied, product_id: productId, product_name: productName, severity, patchable, all_hosts: all, sort, desc, offset, limit: 50, refresh: forced })
-      .then((r) => { setData(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)).finally(() => setBusy(false));
-  }, [applied, productId, productName, severity, patchable, all, sort, desc, offset, refresh]);
-  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } setOffset(0); };
-  const s = data?.summary;
-  if (data?.unsupported) return <Unsupported missing={data.unsupported} />;
+  const [q, setQ] = useKept("vulns.q", ""); const [group, setGroup] = useKept("vulns.group", ""); const [product, setProduct] = useKept("vulns.product", ""); const [cve, setCve] = useKept("vulns.cve", "");
+  const [applied, setApplied] = useState({ q, group, product, cve });
+  const [severity, setSeverity] = useKept<Sev>("vulns.severity", ""); const [patchable, setPatchable] = useKept("vulns.patchable", false);
+  const [all, setAll] = useKept("vulns.all", false);
+  const [sort, setSort] = useKept("vulns.sort", "risk"); const [desc, setDesc] = useKept("vulns.desc", true);
+  const force = useRef(false);   // «Обновить» перечитывает данные KSC один раз, а не при каждой следующей порции
+  useEffect(() => { const t = window.setTimeout(() => setApplied({ q, group, product, cve }), 350); return () => window.clearTimeout(t); }, [q, group, product, cve]);
+  const list = useInfinite<VulnHost>(`vulns-hosts:${sid}`, [applied, productId, productName, severity, patchable, all, sort, desc], (offset, limit) => {
+    const refresh = (force.current && offset === 0) || undefined; force.current = false;
+    return api.vulns.hosts({ ...applied, product_id: productId, product_name: productName, severity, patchable, all_hosts: all, sort, desc, offset, limit, refresh }) as unknown as Promise<Chunk<VulnHost>>;
+  });
+  const extra = list.extra as { summary?: VulnSummary | null; unsupported?: string[] } | null;
+  const s = extra?.summary ?? null;
+  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } };
+  if (extra?.unsupported) return <Unsupported missing={extra.unsupported} />;
   return (
     <>
       <div className="meters">
@@ -68,33 +66,33 @@ function HostsView({ ctx }: { ctx: Ctx }) {
         <input className="w-md" value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Программа" aria-label="Программа" />
         <input className="w-md mono-ph" value={cve} onChange={(e) => setCve(e.target.value)} placeholder="CVE-2024-…" aria-label="CVE" />
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа" aria-label="Группа администрирования" />
-        <Segmented<Sev> label="Уровень опасности" value={severity} onChange={(v) => { setSeverity(v); setOffset(0); }} options={SEV_OPTS} />
-        <label className="check inline-check"><input type="checkbox" className="switch" checked={patchable} onChange={(e) => { setPatchable(e.target.checked); setOffset(0); }} />Есть исправление</label>
+        <Segmented<Sev> label="Уровень опасности" value={severity} onChange={setSeverity} options={SEV_OPTS} />
+        <label className="check inline-check"><input type="checkbox" className="switch" checked={patchable} onChange={(e) => setPatchable(e.target.checked)} />Есть исправление</label>
         <div className="toolbar-foot">
           {(productId || productName) && <span className="chip">Программа: <b>{productTitle ?? productName ?? productId}</b><button type="button" className="link-btn" onClick={() => setSp((p) => { p.delete("product_id"); p.delete("product_name"); p.delete("product_title"); return p; })}>сбросить</button></span>}
-          {s && <Fetched at={s.fetched_at} />}<button type="button" className="link-btn" onClick={() => { force.current = true; setRefresh((x) => x + 1); }} disabled={busy}>Обновить</button>
+          {s && <Fetched at={s.fetched_at} />}<button type="button" className="link-btn" onClick={() => { force.current = true; list.reload(); }} disabled={list.loading}>Обновить</button>
         </div>
       </div>
-      {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
-        {!data && busy ? <SkelRows cols={6} /> : (
-          <table className="table">
+      {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
+      <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
+        {list.initial ? <SkelRows cols={6} /> : (
+          <table className="table virt">
             <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">ОС</th><th className="hide-sm">Группа</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="risk" label="Уязвимости" sort={sort} desc={desc} onSort={onSort} /><SortTh k="total" label="Всего" sort={sort} desc={desc} onSort={onSort} className="num" /><SortTh k="patchable" label="С исправлением" sort={sort} desc={desc} onSort={onSort} className="num hide-sm" /></tr></thead>
             <tbody>
-              {(data?.items ?? []).map((h) => (
-                <tr key={h.host_id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/vulnerabilities/hosts/${h.host_id}`); }}>
+              <VirtualRows list={list} colSpan={7} estimate={46} row={(h) => (
+                <tr className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/vulnerabilities/hosts/${h.host_id}`); }}>
                   <td><Link to={`/vulnerabilities/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span></td>
                   <td className="small hide-sm">{h.os}</td><td className="small hide-sm">{h.group}</td><td className="nowrap small hide-sm">{fmt(h.last_connected)}</td>
                   <td><SevCounts critical={h.critical} high={h.high} warning={h.warning} compact /></td>
                   <td className="num"><b>{num(h.total)}</b><span className="sub">{num(h.products)} прогр.</span></td><td className="num hide-sm">{num(h.patchable)}</td>
-                </tr>))}
-              {data && !data.items.length && <tr><td colSpan={7}><Empty icon="checkCircle" title="Компьютеров с уязвимостями нет">{applied.q || applied.product || applied.cve || applied.group || severity || patchable ? "По этим условиям ничего не найдено." : "KSC не нашёл неисправленных уязвимостей на учтённых компьютерах."}</Empty></td></tr>}
+                </tr>)} />
+              {!list.items.length && !list.loading && <tr><td colSpan={7}><Empty icon="checkCircle" title="Компьютеров с уязвимостями нет">{applied.q || applied.product || applied.cve || applied.group || severity || patchable ? "По этим условиям ничего не найдено." : "KSC не нашёл неисправленных уязвимостей на учтённых компьютерах."}</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
-      {data && <Pager total={data.total} offset={offset} limit={50} onPage={setOffset} />}
-      {s && <HiddenNote hidden={s.hidden_hosts} days={s.activity_days} all={all} onToggle={() => { setAll(!all); setOffset(0); }} />}
+      <ListFoot list={list} />
+      {s && <HiddenNote hidden={s.hidden_hosts} days={s.activity_days} all={all} onToggle={() => setAll(!all)} />}
       <p className="muted small mt-sm">Действующие обнаружения: не исправлены и не игнорируются. KSC оценивает только программы из своего справочника; пакеты Linux и, например, PHP он не проверяет — для них используйте проверку версий.</p>
     </>
   );
@@ -102,43 +100,44 @@ function HostsView({ ctx }: { ctx: Ctx }) {
 
 function ProductsView({ ctx }: { ctx: Ctx }) {
   const [, setSp] = useSearchParams();
-  const [q, setQ] = useState(""); const [cve, setCve] = useState(""); const [applied, setApplied] = useState({ q: "", cve: "" });
-  const [severity, setSeverity] = useState<Sev>(""); const [all, setAll] = useState(false);
-  const [sort, setSort] = useState("risk"); const [desc, setDesc] = useState(true); const [offset, setOffset] = useState(0);
-  const [data, setData] = useState<Awaited<ReturnType<typeof api.vulns.products>> | null>(null);
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
-  useEffect(() => { const t = window.setTimeout(() => { setApplied({ q, cve }); setOffset(0); }, 350); return () => window.clearTimeout(t); }, [q, cve]);
-  useEffect(() => { setBusy(true); api.vulns.products({ ...applied, severity, all_hosts: all, sort, desc, offset, limit: 50 }).then((r) => { setData(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)).finally(() => setBusy(false)); }, [applied, severity, all, sort, desc, offset]);
-  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } setOffset(0); };
-  const open = (p: VulnProduct) => setSp((x) => { x.set("tab", "hosts"); if (p.product_id) x.set("product_id", String(p.product_id)); else x.set("product_name", p.name); x.set("product_title", p.name); return x; });
-  if (data?.unsupported) return <Unsupported missing={data.unsupported} />;
+  const [q, setQ] = useKept("vprod.q", ""); const [cve, setCve] = useKept("vprod.cve", ""); const [applied, setApplied] = useState({ q, cve });
+  const [severity, setSeverity] = useKept<Sev>("vprod.severity", ""); const [all, setAll] = useKept("vprod.all", false);
+  const [sort, setSort] = useKept("vprod.sort", "risk"); const [desc, setDesc] = useKept("vprod.desc", true);
+  useEffect(() => { const t = window.setTimeout(() => setApplied({ q, cve }), 350); return () => window.clearTimeout(t); }, [q, cve]);
+  const list = useInfinite<VulnProduct>(`vulns-products:${ctx.current?.id}`, [applied, severity, all, sort, desc],
+    (offset, limit) => api.vulns.products({ ...applied, severity, all_hosts: all, sort, desc, offset, limit }) as unknown as Promise<Chunk<VulnProduct>>);
+  const extra = list.extra as { fetched_at?: string; unsupported?: string[] } | null;
+  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } };
+  // результат — список компьютеров на вкладке «Компьютеры»: открываем её сверху, где он виден сразу
+  const open = (p: VulnProduct) => { setSp((x) => { x.set("tab", "hosts"); if (p.product_id) x.set("product_id", String(p.product_id)); else x.set("product_name", p.name); x.set("product_title", p.name); return x; }); window.scrollTo({ top: 0, behavior: "instant" }); };
+  if (extra?.unsupported) return <Unsupported missing={extra.unsupported} />;
   return (
     <>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Программа, например Google Chrome" aria-label="Программа" /></div>
         <input className="w-md" value={cve} onChange={(e) => setCve(e.target.value)} placeholder="CVE-2024-…" aria-label="CVE" />
-        <Segmented<Sev> label="Уровень опасности" value={severity} onChange={(v) => { setSeverity(v); setOffset(0); }} options={SEV_OPTS} />
-        <label className="check inline-check"><input type="checkbox" className="switch" checked={all} onChange={(e) => { setAll(e.target.checked); setOffset(0); }} />Все устройства</label>
-        <div className="toolbar-foot">{data?.fetched_at && <Fetched at={data.fetched_at} />}<span className="muted small">{all ? "Учтены все устройства." : `Учтены компьютеры, активные за ${ctx.me.activity_days} сут.`}</span></div>
+        <Segmented<Sev> label="Уровень опасности" value={severity} onChange={setSeverity} options={SEV_OPTS} />
+        <label className="check inline-check"><input type="checkbox" className="switch" checked={all} onChange={(e) => setAll(e.target.checked)} />Все устройства</label>
+        <div className="toolbar-foot">{extra?.fetched_at && <Fetched at={extra.fetched_at} />}<span className="muted small">{all ? "Учтены все устройства." : `Учтены компьютеры, активные за ${ctx.me.activity_days} сут.`}</span></div>
       </div>
-      {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
-        {!data && busy ? <SkelRows cols={5} /> : (
-          <table className="table">
+      {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
+      <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
+        {list.initial ? <SkelRows cols={5} /> : (
+          <table className="table virt">
             <thead><tr><SortTh k="name" label="Программа" sort={sort} desc={desc} onSort={onSort} /><SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" />
               <SortTh k="risk" label="Уровни опасности" sort={sort} desc={desc} onSort={onSort} /><th className="num">Уязвимостей</th><SortTh k="total" label="Обнаружений" sort={sort} desc={desc} onSort={onSort} className="num" /><th className="num">С исправлением</th><th><span className="sr-only">Действия</span></th></tr></thead>
             <tbody>
-              {(data?.items ?? []).map((p) => (
-                <tr key={`${p.product_id}-${p.name}`} className="clickable" onClick={() => open(p)}>
+              <VirtualRows list={list} colSpan={7} estimate={40} row={(p) => (
+                <tr className="clickable" onClick={() => open(p)}>
                   <td><button type="button" className="link-btn strong-link" onClick={() => open(p)}>{p.name}</button></td><td className="num"><b>{num(p.hosts)}</b></td>
                   <td><SevCounts critical={p.critical} high={p.high} warning={p.warning} compact /></td><td className="num">{num(p.vulns)}</td><td className="num">{num(p.total)}</td><td className="num">{num(p.patchable)}</td>
                   <td className="actions"><button type="button" className="btn mini ghost row-act" onClick={(e) => { e.stopPropagation(); open(p); }}><Icon name="monitor" size={15} />Компьютеры</button></td>
-                </tr>))}
-              {data && !data.items.length && <tr><td colSpan={7}><Empty icon="checkCircle" title="Уязвимых программ нет">По этим условиям KSC не нашёл неисправленных уязвимостей.</Empty></td></tr>}
+                </tr>)} />
+              {!list.items.length && !list.loading && <tr><td colSpan={7}><Empty icon="checkCircle" title="Уязвимых программ нет">По этим условиям KSC не нашёл неисправленных уязвимостей.</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
-      {data && <Pager total={data.total} offset={offset} limit={50} onPage={setOffset} />}
+      <ListFoot list={list} />
     </>
   );
 }
@@ -208,6 +207,7 @@ export function VulnHostPage({ ctx }: { ctx: Ctx }) {
 export function HostVulns({ items: all }: { items: HostVuln[] }) {
   const [q, setQ] = useState(""); const [severity, setSeverity] = useState<Sev>("");
   const items = useMemo(() => all.filter((v) => (!severity || v.severity === severity) && (!q || `${v.kla_id} ${v.cve.join(" ")} ${v.product} ${v.app_name} ${v.kb.join(" ")}`.toLowerCase().includes(q.toLowerCase()))), [all, q, severity]);
+  const list = useStaticList(`host-vulns:${q}:${severity}:${all.length}`, items);
   return (
     <>
       <div className="toolbar">
@@ -215,18 +215,18 @@ export function HostVulns({ items: all }: { items: HostVuln[] }) {
         <Segmented<Sev> label="Уровень опасности" value={severity} onChange={setSeverity} options={SEV_OPTS} />
       </div>
       <div className="table-scroll">
-        <table className="table">
+        <table className="table virt">
           <thead><tr><th>Опасность</th><th>Уязвимость</th><th>Программа и версия</th><th className="hide-sm">CVE</th><th className="hide-sm">Обнаружена</th><th>Исправление</th></tr></thead>
           <tbody>
-            {items.map((v) => (
-              <tr key={v.occurrence_id}>
+            <VirtualRows list={list} colSpan={6} estimate={56} row={(v) => (
+              <tr>
                 <td><span className={`sev ${v.severity === "critical" ? "crit" : v.severity === "high" ? "high" : "warn"}`}>{v.severity_label}</span></td>
                 <td>{v.url ? <a href={v.url} target="_blank" rel="noopener noreferrer" className="mono">{v.kla_id}<Icon name="external" size={13} className="ext" /></a> : <span className="mono">{v.kla_id}</span>}</td>
                 <td>{v.product || v.app_name}<span className="sub mono">{v.product_version || v.app_version}</span>{v.app_name && v.app_name !== v.product && <span className="sub">{v.app_name} {v.app_version}</span>}</td>
                 <td className="mono small hide-sm">{v.cve.length ? v.cve.map((c) => <span key={c} className="nowrap block">{c}</span>) : <span className="muted">—</span>}</td>
                 <td className="nowrap small hide-sm">{fmtDate(v.detected)}</td>
                 <td>{v.patches_available ? <span className="badge ok">доступно</span> : <span className="muted small">нет</span>}{[...v.kb, ...v.mssb].length > 0 && <span className="sub mono">{[...v.kb, ...v.mssb].join(", ")}</span>}</td>
-              </tr>))}
+              </tr>)} />
             {!items.length && <tr><td colSpan={6}><Empty icon="checkCircle" title={all.length ? "Ничего не найдено" : "Уязвимостей нет"}>{all.length ? "Измените поиск или уровень опасности." : "KSC не нашёл на этом компьютере неисправленных уязвимостей."}</Empty></td></tr>}
           </tbody>
         </table>

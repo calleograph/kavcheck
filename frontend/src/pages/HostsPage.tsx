@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type Host, type HostVuln } from "../api";
 import { NoSource, type Ctx } from "../App";
-import { ActivityBadge, Fetched, OnlineBadge, Pager } from "../components/Common";
+import { ActivityBadge, Fetched, OnlineBadge } from "../components/Common";
+import { ListFoot, VirtualRows, staticList, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import { EventList, type EvFilter } from "./EventsPage";
@@ -15,64 +16,59 @@ type Activity = "all" | "active" | "inactive";
 
 export default function HostsPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
-  const [q, setQ] = useState(sp.get("q") ?? ""); const [group, setGroup] = useState(""); const [os, setOs] = useState("");
+  const [q, setQ] = useKept("hosts.q", sp.get("q") ?? ""); const [group, setGroup] = useKept("hosts.group", ""); const [os, setOs] = useKept("hosts.os", "");
   const [activity, setActivity] = useState<Activity>((sp.get("activity") as Activity) || "active");
-  const [days, setDays] = useState<string>("");
-  const [customDays, setCustomDays] = useState("");
-  const [sort, setSort] = useState("name"); const [desc, setDesc] = useState(false);
+  const [days, setDays] = useKept<string>("hosts.days", "");
+  const [customDays, setCustomDays] = useKept("hosts.customDays", "");
+  const [sort, setSort] = useKept("hosts.sort", "name"); const [desc, setDesc] = useKept("hosts.desc", false);
   const [applied, setApplied] = useState({ q, group, os });
-  const [offset, setOffset] = useState(0);
-  const [data, setData] = useState<{ items: Host[]; total: number; hidden: number; activity_days: number; fetched_at: string } | null>(null);
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
-  useEffect(() => { const t = window.setTimeout(() => { setApplied({ q, group, os }); setOffset(0); }, 350); return () => window.clearTimeout(t); }, [q, group, os]);
+  useEffect(() => { const t = window.setTimeout(() => setApplied({ q, group, os }), 350); return () => window.clearTimeout(t); }, [q, group, os]);
   const threshold = days === "custom" ? (Number(customDays) || undefined) : days ? Number(days) : undefined;
-  useEffect(() => {
-    if (!ctx.current) return;
-    setBusy(true);
-    api.hosts.list({ ...applied, activity, days: threshold, sort, desc, offset, limit: 50 }).then((r) => { setData(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)).finally(() => setBusy(false));
-  }, [ctx.current, applied, activity, threshold, sort, desc, offset]);
+  const list = useInfinite<Host>(`hosts:${ctx.current?.id}`, [applied, activity, threshold, sort, desc],
+    (offset, limit) => api.hosts.list({ ...applied, activity, days: threshold, sort, desc, offset, limit }) as unknown as Promise<Chunk<Host>>);
+  const extra = list.extra as { hidden?: number; activity_days?: number; fetched_at?: string } | null;
   useEffect(() => { setSp((p) => { if (activity === "active") p.delete("activity"); else p.set("activity", activity); return p; }, { replace: true }); }, [activity, setSp]);
   // переход из поиска в верхней панели на уже открытую страницу: запрос и активность берутся из адреса
   const urlQ = sp.get("q"), urlActivity = sp.get("activity") as Activity | null;
-  useEffect(() => { if (urlQ !== null) setQ(urlQ); }, [urlQ]);
+  useEffect(() => { if (urlQ !== null) setQ(urlQ); }, [urlQ]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (urlActivity) setActivity(urlActivity); }, [urlActivity]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
-  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } setOffset(0); };
-  const eff = threshold || data?.activity_days || 7;
+  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } };
+  const eff = threshold || extra?.activity_days || 7;
   return (
     <section>
-      <PageHead title="Компьютеры" lede={<>Управляемые устройства источника <b>{ctx.current.name}</b>. Связь — давность последнего подключения Агента администрирования к KSC, а не доступность компьютера прямо сейчас.</>}>
-        {data && <Fetched at={data.fetched_at} />}
+      <PageHead title="Компьютеры" lede={<>Управляемые устройства источника <b>{ctx.current.name}</b>. «Связь» — давность подключения Агента к KSC, «Онлайн» — видит ли KSC устройство в сети сейчас.</>}>
+        {extra?.fetched_at && <Fetched at={extra.fetched_at} />}
       </PageHead>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя компьютера или DNS-имя" aria-label="Поиск" /></div>
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа администрирования" aria-label="Группа" />
         <input className="w-md" value={os} onChange={(e) => setOs(e.target.value)} placeholder="ОС содержит" aria-label="ОС" />
-        <Segmented<Activity> label="Связь с KSC" value={activity} onChange={(v) => { setActivity(v); setOffset(0); }} options={[["active", "Активные"], ["inactive", "Без связи"], ["all", "Все"]]} />
+        <Segmented<Activity> label="Связь с KSC" value={activity} onChange={setActivity} options={[["active", "Активные"], ["inactive", "Без связи"], ["all", "Все"]]} />
         <label className="inline">Порог
-          <select value={days} onChange={(e) => { setDays(e.target.value); setOffset(0); }}>
-            <option value="">{data?.activity_days ?? "…"} сут (по настройке)</option>{DAYS.map((d) => <option key={d} value={d}>{d} сут</option>)}<option value="custom">другой…</option>
+          <select value={days} onChange={(e) => setDays(e.target.value)}>
+            <option value="">{extra?.activity_days ?? "…"} сут (по настройке)</option>{DAYS.map((d) => <option key={d} value={d}>{d} сут</option>)}<option value="custom">другой…</option>
           </select>
         </label>
         {days === "custom" && <input type="number" min={1} max={3650} value={customDays} onChange={(e) => setCustomDays(e.target.value)} placeholder="суток" className="w-num" aria-label="Произвольный порог в сутках" autoFocus />}
       </div>
-      {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
-        {!data && busy ? <SkelRows cols={6} /> : (
-          <table className="table">
+      {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
+      <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
+        {list.initial ? <SkelRows cols={6} /> : (
+          <table className="table virt">
             <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="group" label="Группа" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Связь</th><th>Онлайн</th></tr></thead>
             <tbody>
-              {(data?.items ?? []).map((h) => (
-                <tr key={h.host_id}><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}</td><td className="mono nowrap">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
-                  <td className="nowrap">{fmt(h.last_connected)}</td><td><ActivityBadge days={h.days_since_connection} activityDays={eff} /></td><td><OnlineBadge online={h.online} seen={h.last_visible} /></td></tr>))}
-              {data && !data.items.length && <tr><td colSpan={7}><Empty icon="monitor" title="Компьютеров не найдено">Измените поиск или фильтр связи с KSC.</Empty></td></tr>}
+              <VirtualRows list={list} colSpan={7} estimate={46} row={(h) => (
+                <tr><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}</td><td className="mono nowrap">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
+                  <td className="nowrap">{fmt(h.last_connected)}</td><td><ActivityBadge days={h.days_since_connection} activityDays={eff} /></td><td><OnlineBadge online={h.online} seen={h.last_visible} /></td></tr>)} />
+              {!list.items.length && !list.loading && <tr><td colSpan={7}><Empty icon="monitor" title="Компьютеров не найдено">Измените поиск или фильтр связи с KSC.</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
-      {data && <Pager total={data.total} offset={offset} limit={50} onPage={setOffset} />}
-      {data && (activity === "active" || activity === "all") && <HiddenNote hidden={data.hidden} days={eff} all={activity === "all"} onToggle={() => { setActivity(activity === "all" ? "active" : "all"); setOffset(0); }} />}
-      <p className="muted small mt-sm">Всего по условиям: {num(data?.total)}. Записи кластеров и подчинённых серверов не считаются компьютерами.</p>
+      <ListFoot list={list} />
+      {extra && (activity === "active" || activity === "all") && <HiddenNote hidden={extra.hidden ?? 0} days={eff} all={activity === "all"} onToggle={() => setActivity(activity === "all" ? "active" : "all")} />}
+      <p className="muted small mt-sm">Записи кластеров и подчинённых серверов не считаются компьютерами.</p>
     </section>
   );
 }
@@ -98,6 +94,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   if (!d) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="split even"><div className="card"><SkelRows rows={6} cols={2} /></div><div className="card"><SkelRows rows={3} cols={3} /></div></div></section>;
   const h = d.host;
   const sw = d.software.filter((s) => !filter || `${s.name} ${s.version} ${s.publisher}`.toLowerCase().includes(filter.toLowerCase()));
+  const swList = staticList(`host-sw:${h.host_id}:${filter}`, sw);
   const facts: [string, React.ReactNode][] = [["FQDN", h.fqdn || "—"], ["IP-адрес", <span className="mono">{h.ip || "—"}</span>], ["Операционная система", `${h.os} ${h.os_version}`.trim() || "—"], ["Дистрибутив Linux", h.linux_release ? <span className="mono">{h.linux_release}</span> : "—"],
     ["Группа администрирования", h.group || "—"], ["Подключение к KSC", fmt(h.last_connected)], ["Последняя видимость", fmt(h.last_visible)], ["Обновление антивирусных баз", fmt(h.last_av_update)],
     ["Полная проверка", fmt(h.last_full_scan)], ["Постоянная защита", h.rtp_state_label || "—"], ["Идентификатор в KSC", <span className="mono">{h.host_id}</span>]];
@@ -132,14 +129,13 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
         <div className="section-head"><span className="muted small">Программ: {num(d.software.length)}</span><div className="spacer" />
           <div className="input-icon w-search"><Icon name="search" size={16} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, версия или производитель" aria-label="Фильтр программ" /></div></div>
         <div className="table-scroll">
-          <table className="table compact">
+          <table className="table compact virt">
             <thead><tr><th>Программа</th><th>Версия</th><th>Производитель</th><th>Установлена</th></tr></thead>
-            <tbody>{sw.slice(0, 1000).map((s) => <tr key={s.install_id}><td><Link to={`/software?q=${encodeURIComponent(s.name)}`}>{s.name}</Link></td><td className="mono">{s.version}</td><td className="small">{s.publisher || "—"}</td><td className="nowrap">{fmtDate(s.install_date)}</td></tr>)}
+            <tbody><VirtualRows list={swList} colSpan={4} estimate={32} row={(s) => <tr><td><Link to={`/software?q=${encodeURIComponent(s.name)}`}>{s.name}</Link></td><td className="mono">{s.version}</td><td className="small">{s.publisher || "—"}</td><td className="nowrap">{fmtDate(s.install_date)}</td></tr>} />
               {!sw.length && <tr><td colSpan={4}><Empty icon="search" title={filter ? "Ничего не найдено" : "Программ нет"}>{filter ? "Измените текст фильтра." : "KSC не передавал сведений о программах этого компьютера."}</Empty></td></tr>}
             </tbody>
           </table>
         </div>
-        {sw.length > 1000 && <p className="muted small mt-sm">Показаны первые 1000 записей — уточните фильтр.</p>}
       </>}
       {tab === "vulns" && (vErr ? <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{vErr}</div></div>
         : !vulns ? <div className="card"><SkelRows rows={4} cols={5} /></div>

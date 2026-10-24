@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type ProblemKey, type ProtHost, type ProtSummary } from "../api";
+import { api, type ProblemKey, type ProtHost, type ProtSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
-import { Fetched, OnlineBadge, Pager } from "../components/Common";
+import { Fetched, OnlineBadge } from "../components/Common";
+import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
@@ -24,23 +25,28 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   const navigate = useNavigate();
   const problem = sp.get("problem") ?? ""; const product = sp.get("product") ?? ""; const build = sp.get("build") ?? "";
   const onlineOnly = sp.get("online") !== "0";   // по умолчанию — только устройства, которые KSC сейчас видит в сети
-  const [basesDays, setBasesDays] = useState("3"); const [scanDays, setScanDays] = useState("30");
-  const [q, setQ] = useState(""); const [group, setGroup] = useState(""); const [applied, setApplied] = useState({ q: "", group: "" });
-  const [all, setAll] = useState(false); const [sort, setSort] = useState("risk"); const [desc, setDesc] = useState(true); const [offset, setOffset] = useState(0);
-  const [data, setData] = useState<{ items: ProtHost[]; total: number; summary: ProtSummary | null; unsupported?: string[] } | null>(null);
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false); const [tick, setTick] = useState(0);
+  const [basesDays, setBasesDays] = useKept("prot.bases", "3"); const [scanDays, setScanDays] = useKept("prot.scan", "30");
+  const [q, setQ] = useKept("prot.q", ""); const [group, setGroup] = useKept("prot.group", ""); const [applied, setApplied] = useState({ q, group });
+  const [all, setAll] = useKept("prot.all", false); const [sort, setSort] = useKept("prot.sort", "risk"); const [desc, setDesc] = useKept("prot.desc", true);
   const force = useRef(false);
-  useEffect(() => { const t = window.setTimeout(() => { setApplied({ q, group }); setOffset(0); }, 350); return () => window.clearTimeout(t); }, [q, group]);
-  useEffect(() => {
-    if (!ctx.current) return;
-    const refresh = force.current || undefined; force.current = false;
-    setBusy(true);
-    api.protection({ problem, product, build, bases_days: basesDays, scan_days: scanDays, ...applied, all_hosts: all, online: onlineOnly, sort, desc, offset, limit: 50, refresh })
-      .then((r) => { setData(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)).finally(() => setBusy(false));
-  }, [ctx.current, problem, product, build, basesDays, scanDays, applied, all, onlineOnly, sort, desc, offset, tick]);
+  useEffect(() => { const t = window.setTimeout(() => setApplied({ q, group }), 350); return () => window.clearTimeout(t); }, [q, group]);
+  const list = useInfinite<ProtHost>(`protection:${ctx.current?.id}`, [problem, product, build, basesDays, scanDays, applied, all, onlineOnly, sort, desc], (offset, limit) => {
+    const refresh = (force.current && offset === 0) || undefined; force.current = false;
+    return api.protection({ problem, product, build, bases_days: basesDays, scan_days: scanDays, ...applied, all_hosts: all, online: onlineOnly, sort, desc, offset, limit, refresh }) as unknown as Promise<Chunk<ProtHost>>;
+  });
+  const data = list.extra as { summary?: ProtSummary | null; unsupported?: string[] } | null;
+  const busy = list.loading;
+  // результат щелчка — список компьютеров ниже сводки: прокручиваем к нему, чтобы изменение было видно сразу
+  const reveal = () => window.requestAnimationFrame(() => document.getElementById("prot-hosts")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  const revealed = useRef(false);
+  useEffect(() => {   // пришли с главной с фильтром (например, «Без антивируса») — сразу к списку; при возврате из карточки место восстанавливает список
+    if (revealed.current || list.initial || list.restoreY != null) return;
+    revealed.current = true;
+    if (problem || product) reveal();
+  }, [list.initial]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!ctx.current) return <NoSource ctx={ctx} />;
-  const setParams = (kv: Record<string, string>) => { setSp((p) => { for (const [k, v] of Object.entries(kv)) { if (v) p.set(k, v); else p.delete(k); } return p; }); setOffset(0); };
-  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } setOffset(0); };
+  const setParams = (kv: Record<string, string>, show = false) => { setSp((p) => { for (const [k, v] of Object.entries(kv)) { if (v) p.set(k, v); else p.delete(k); } return p; }); if (show) reveal(); };
+  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } };
   const s = data?.summary;
   const count = (k: ProblemKey) => s?.problems.find((p) => p.key === k)?.hosts ?? 0;
   const pct = (n: number) => (s?.hosts ? Math.round((n / s.hosts) * 100) : 0);
@@ -54,9 +60,9 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
         <label className="check inline-check" title={s && !s.online_data ? "KSC не передаёт сведения о присутствии устройств в сети" : "Только устройства, которые KSC сейчас видит в сети"}>
           <input type="checkbox" className="switch" checked={onlineOnly && s?.online_data !== false} disabled={s?.online_data === false} onChange={(e) => setParams({ online: e.target.checked ? "" : "0" })} />Только онлайн</label>
         {s && <Fetched at={s.fetched_at} />}
-        <button className="btn" onClick={() => { force.current = true; setTick((x) => x + 1); }} aria-busy={busy && !!data}><Icon name="refresh" /><span>Обновить</span></button>
+        <button className="btn" onClick={() => { force.current = true; list.reload(); }} aria-busy={busy && !!data}><Icon name="refresh" /><span>Обновить</span></button>
       </PageHead>
-      {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
+      {list.error && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       {s && <p className="scope-line">{s.online_only
         ? <><span className="dot ok" aria-hidden />Устройства в сети сейчас: <b>{num(s.hosts)}</b>. Ещё {num(s.offline_hosts)} {plural(s.offline_hosts, "активное устройство", "активных устройства", "активных устройств")} не в сети — их сведения о защите могут быть устаревшими. <button type="button" className="link-btn" onClick={() => setParams({ online: "0" })}>Показать все</button></>
         : s.online_data ? <><span className="dot off" aria-hidden />Все устройства, подключавшиеся к KSC за {s.activity_days} сут: <b>{num(s.hosts)}</b>; у тех, что не в сети, сведения — на время последнего подключения. <button type="button" className="link-btn" onClick={() => setParams({ online: "" })}>Только онлайн</button></>
@@ -64,7 +70,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
       <div className="meters">
         <div className="meter"><span className="l">Защищены</span><span className={`v ${s && pct(s.protected) < 90 ? "warn-text" : ""}`}>{s ? `${pct(s.protected)}%` : "…"}</span><span className="t">{s ? `${num(s.protected)} из ${num(s.hosts)}${s.online_only ? " в сети" : ""}: антивирус работает, базы свежее ${s.bases_days} сут` : ""}</span></div>
         {([["no_av", "Без антивируса", "нет продукта Kaspersky"], ["rtp_off", "Защита не работает", "остановлена, в сбое или не запущена"], ["bases_old", "Устаревшие базы", `старше ${s?.bases_days ?? "…"} сут`]] as [ProblemKey, string, string][]).map(([k, l, t]) => (
-          <button key={k} type="button" className={`meter meter-btn ${problem === k ? "on" : ""}`} aria-pressed={problem === k} onClick={() => setParams({ problem: problem === k ? "" : k })}>
+          <button key={k} type="button" className={`meter meter-btn ${problem === k ? "on" : ""}`} aria-pressed={problem === k} onClick={() => setParams({ problem: problem === k ? "" : k }, problem !== k)}>
             <span className="l">{l}</span><span className={`v ${s && count(k) ? (PROBLEM_TONE[k] === "err" ? "bad-text" : "warn-text") : ""}`}>{s ? num(count(k)) : "…"}</span><span className="t">{t}</span>
           </button>))}
       </div>
@@ -78,7 +84,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                 const on = problem === p.key; const tone = p.hosts ? (PROBLEM_TONE[p.key] === "err" ? "bad" : "warn") : "ok";
                 const hint = p.key === "bases_old" ? `базы старше ${s.bases_days} сут` : p.key === "scan_old" ? `полная проверка старше ${s.scan_days} сут или не выполнялась` : p.hint;
                 return (
-                  <li key={p.key}><button type="button" className={`ledger-row ${on ? "on" : ""}`} aria-pressed={on} onClick={() => setParams({ problem: on ? "" : p.key })}>
+                  <li key={p.key}><button type="button" className={`ledger-row ${on ? "on" : ""}`} aria-pressed={on} onClick={() => setParams({ problem: on ? "" : p.key }, !on)}>
                     <span className={`dot ${tone}`} aria-hidden /><span className="lg-main"><b>{p.title}</b><span className="lg-sub">{hint}</span></span>
                     <span className="lg-bar" aria-hidden><i className={tone} style={{ width: `${p.hosts ? Math.max(2, pct(p.hosts)) : 0}%` }} /></span>
                     <span className="lg-n">{num(p.hosts)}<span className="lg-pct">{p.hosts ? `${pct(p.hosts)}%` : ""}</span></span>
@@ -87,8 +93,8 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
             </ul>)}
           <div className="card-foot">
             <span className="muted small">Пороги:</span>
-            <span className="row tight"><span className="small">базы старше</span><Segmented label="Порог актуальности баз, суток" value={basesDays} onChange={(v) => { setBasesDays(v); setOffset(0); }} options={[["1", "1"], ["3", "3"], ["7", "7"]]} /><span className="small">сут</span></span>
-            <span className="row tight"><span className="small">проверка старше</span><Segmented label="Порог полной проверки, суток" value={scanDays} onChange={(v) => { setScanDays(v); setOffset(0); }} options={[["7", "7"], ["30", "30"], ["90", "90"]]} /><span className="small">сут</span></span>
+            <span className="row tight"><span className="small">базы старше</span><Segmented label="Порог актуальности баз, суток" value={basesDays} onChange={setBasesDays} options={[["1", "1"], ["3", "3"], ["7", "7"]]} /><span className="small">сут</span></span>
+            <span className="row tight"><span className="small">проверка старше</span><Segmented label="Порог полной проверки, суток" value={scanDays} onChange={setScanDays} options={[["7", "7"], ["30", "30"], ["90", "90"]]} /><span className="small">сут</span></span>
           </div>
           {s && s.reasons.length > 0 && (
             <details className="disclosure pad-x">
@@ -104,13 +110,13 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                 <div key={v.code} className="ver-block">
                   <div className="ver-head"><b>{shortProduct(v.product)}</b><span className="muted small">{v.versions.length > 1 ? `${num(v.on_latest)} из ${num(v.hosts)} на новейшей ${v.latest}` : `все ${num(v.hosts)} на ${v.latest}`}</span></div>
                   <Spectrum label={`Версии: ${v.product}`} unit=" комп." segs={v.versions.map((x) => ({ key: x.build, label: x.build, value: x.hosts }))}
-                    selected={product === v.code ? new Set([build]) : undefined} onToggle={(b) => setParams(product === v.code && build === b ? { product: "", build: "" } : { product: v.code, build: b })} />
+                    selected={product === v.code ? new Set([build]) : undefined} onToggle={(b) => setParams(product === v.code && build === b ? { product: "", build: "" } : { product: v.code, build: b }, !(product === v.code && build === b))} />
                 </div>))}
             </div>)}
         </div>
       </div>
 
-      <div className="section-head"><h2>Компьютеры</h2>{data && <span className="count">{num(data.total)}</span>}</div>
+      <div className="section-head" id="prot-hosts"><h2>Компьютеры</h2>{!list.initial && <span className="count">{num(list.total)}</span>}</div>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер или IP-адрес" aria-label="Компьютер" /></div>
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа" aria-label="Группа администрирования" />
@@ -122,17 +128,17 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
             {product && <span className="chip">Версия: <b>{vTitle}</b><button type="button" className="link-btn" onClick={() => setParams({ product: "", build: "" })}>сбросить</button></span>}
           </div>)}
       </div>
-      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
-        {!data && busy ? <SkelRows cols={6} /> : (
-          <table className="table">
+      <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
+        {list.initial ? <SkelRows cols={6} /> : (
+          <table className="table virt">
             <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th>Онлайн</th><th>Защитный продукт</th><th className="hide-sm">Постоянная защита</th>
               <SortTh k="bases" label="Базы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="scan" label="Полная проверка" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="risk" label="Проблемы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /></tr></thead>
             <tbody>
-              {(data?.items ?? []).map((h) => {
+              <VirtualRows list={list} colSpan={8} estimate={52} row={(h) => {
                 const b = daysAgo(h.av?.bases ?? null); const old = h.problems.includes("bases_old");
                 return (
-                  <tr key={h.host_id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/hosts/${h.host_id}`); }}>
+                  <tr className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/hosts/${h.host_id}`); }}>
                     <td><Link to={`/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span></td>
                     <td className="nowrap"><OnlineBadge online={h.online} seen={h.last_visible} />{h.online === false && h.last_info_update && <span className="sub">сведения от {fmtDate(h.last_info_update)}</span>}</td>
                     <td>{h.av ? <>{shortProduct(h.av.product)}<span className="sub mono">{h.av.build}</span></> : <span className="bad-text">нет</span>}{h.agent_build && <span className="sub nowrap">Агент <span className="mono">{h.agent_build}</span></span>}</td>
@@ -142,13 +148,13 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                     <td><ProblemBadges problems={h.problems} /></td>
                     <td className="nowrap small hide-sm">{fmt(h.last_connected)}</td>
                   </tr>);
-              })}
-              {data && !data.items.length && <tr><td colSpan={8}><Empty icon="checkCircle" title={filtered ? "Ничего не найдено" : "Компьютеров нет"}>{filtered ? "По выбранным условиям компьютеров нет." : s?.online_only ? "Сейчас KSC не видит в сети ни одного устройства. Выключите «Только онлайн», чтобы увидеть все." : "В источнике нет компьютеров, подключавшихся к KSC за порог активности."}</Empty></td></tr>}
+              }} />
+              {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="checkCircle" title={filtered ? "Ничего не найдено" : "Компьютеров нет"}>{filtered ? "По выбранным условиям компьютеров нет." : s?.online_only ? "Сейчас KSC не видит в сети ни одного устройства. Выключите «Только онлайн», чтобы увидеть все." : "В источнике нет компьютеров, подключавшихся к KSC за порог активности."}</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
-      {data && <Pager total={data.total} offset={offset} limit={50} onPage={setOffset} />}
-      {s && <HiddenNote hidden={s.hidden_hosts} days={s.activity_days} all={all} onToggle={() => { setAll(!all); setOffset(0); }} />}
+      <ListFoot list={list} />
+      {s && <HiddenNote hidden={s.hidden_hosts} days={s.activity_days} all={all} onToggle={() => setAll(!all)} />}
       <p className="muted small mt-sm">Сведения — из последних отчётов Агентов администрирования в KSC; время — UTC, показано в вашем часовом поясе. «Нет антивируса» означает, что KSC не получал от Агента сведений о защитном продукте Kaspersky.</p>
     </section>
   );
