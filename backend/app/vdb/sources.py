@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
-import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -14,7 +12,7 @@ from typing import Awaitable, Callable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..models import VdbAffected, VdbRecord, VdbSource
+from ..models import VdbRecord, VdbSource
 from . import parsers, store
 from .fetch import FetchError, Http
 from .normalize import Rec
@@ -241,4 +239,3 @@ async def run_osv(ctx: RunCtx) -> None:
 
 
 SOURCES: dict[str, Callable[[RunCtx], Awaitable[None]]] = {"kev": run_kev, "bdu": run_bdu, "nvd": run_nvd, "osv": run_osv}
-_ = (VdbAffected, io, re)

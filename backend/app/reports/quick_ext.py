@@ -29,13 +29,26 @@ def _level(rank: int) -> str:
 
 
 async def resolve_keys(db, ids: list[str]) -> tuple[list[str], list[str]]:
-    """Общие ключи уязвимостей по введённым идентификаторам (CVE, BDU:…, OSV/GHSA…): любой идентификатор записи подходит. Возвращает (найденные, не найденные)."""
+    """Общие ключи уязвимостей по введённым идентификаторам (CVE, BDU:…, OSV/GHSA…): любой идентификатор записи подходит. Возвращает (найденные, не найденные).
+    Сначала одним запросом по точному ключу; поиск по псевдонимам (медленный, по тексту) — только для не найденных."""
+    want = list(dict.fromkeys(i.strip().upper() for i in ids if i and i.strip()))
+    have: set[str] = set()
+    for i in range(0, len(want), 400):
+        have |= set((await db.execute(select(VdbVuln.vuln_key).where(VdbVuln.vuln_key.in_(want[i:i + 400])))).scalars().all())
     found, missing = [], []
-    for raw in dict.fromkeys(i.strip().upper() for i in ids if i and i.strip()):
-        row = (await db.execute(select(VdbVuln.vuln_key).where((VdbVuln.vuln_key == raw) | VdbVuln.ids_text.like(f"% {raw.lower()} %") | VdbVuln.ids_text.like(f"{raw.lower()} %")
-                                                              | VdbVuln.ids_text.like(f"% {raw.lower()}") | (VdbVuln.ids_text == raw.lower())).limit(1))).scalar_one_or_none()
+    for raw in want:
+        if raw in have:
+            found.append(raw)
+            continue
+        t = like_escape(raw.lower())
+        row = (await db.execute(select(VdbVuln.vuln_key).where(VdbVuln.ids_text.like(f"% {t} %", escape="\\") | VdbVuln.ids_text.like(f"{t} %", escape="\\")
+                                                              | VdbVuln.ids_text.like(f"% {t}", escape="\\") | (VdbVuln.ids_text == raw.lower())).limit(1))).scalar_one_or_none()
         (found if row else missing).append(row or raw)
     return found, missing
+
+
+def like_escape(t: str) -> str:
+    return t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:

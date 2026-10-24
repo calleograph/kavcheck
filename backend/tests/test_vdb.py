@@ -9,6 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from sqlalchemy import func, select
+
 from app.models import CatalogProduct, CatalogState, VdbFinding, VdbMapping, VdbRecord, VdbSource, VdbVuln, utcnow
 from app.vdb import match as M
 from app.vdb import parsers, store
@@ -175,7 +177,8 @@ async def test_store_idempotent_merge_and_swap(app):
         await store.ensure_sources(db)
         n, keys = await store.save_batch(db, 1, [rec("nvd", "CVE-1", severity="high", score=8.1, title="t")])
         n2, _ = await store.save_batch(db, 1, [rec("nvd", "CVE-1", severity="high", score=8.1, title="t")])
-        assert (n, n2) == (1, 0) or n2 == 1                                      # без даты изменения запись считается новой: повторная загрузка допустима, но дублей быть не должно
+        assert n == 1 and n2 == 1                                                # даты изменения нет — запись обновляется, но дубля не появляется
+        assert int((await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.ext_id == "CVE-1"))).scalar_one()) == 1
         await store.save_batch(db, 1, [rec("kev", "CVE-1", exploited=True), rec("bdu", "BDU:1", "CVE-1", severity="critical", score=9.8, fix_available=True)])
         await store.refresh_vulns(db, {"CVE-1"})
         await db.commit()
@@ -242,7 +245,6 @@ async def test_sync_all_sources_merge_one_card(app, client):
     for key in ("kev", "nvd", "osv", "bdu"):
         assert await sync.run_source(key, "manual"), key
     async with app.state.session_maker() as db:
-        rows = {r.key: r for r in (await db.execute(VdbSource.__table__.select())).all()}
         srcs = {s.key: s for s in (await db.execute(__import__("sqlalchemy").select(VdbSource))).scalars().all()}
         assert all(s.status == "ok" and s.last_ok_at for s in srcs.values()) and srcs["kev"].records == 4 and srcs["bdu"].records == 2 and srcs["nvd"].records == 3
         v = await db.get(VdbVuln, "CVE-2023-4863")

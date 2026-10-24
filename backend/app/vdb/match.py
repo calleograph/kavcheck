@@ -26,6 +26,7 @@ from .store import active
 STATUS_RU = {"confirmed": "Подтверждено источником", "potential": "Потенциально затронуто", "clarify": "Требуется уточнение", "fixed": "Исправлено", "insufficient": "Данных недостаточно"}
 STATUS_RANK = {"confirmed": 5, "potential": 4, "clarify": 3, "insufficient": 2, "fixed": 1}
 AFFECTED = ("confirmed", "potential", "clarify", "insufficient")      # статусы, при которых компьютеры попадают в результат проверки
+GENERIC = {"agent", "server", "client", "service", "services", "manager", "tools", "tool", "desktop", "core", "base", "data", "system", "security", "studio", "enterprise", "platform", "suite", "free", "standard"}
 _SAFE_VER = re.compile(r"^[0-9]+([.\-_+~:][0-9a-z]+)*$", re.I)
 _JAVA_U = re.compile(r"^\d+u\d+$", re.I)
 
@@ -292,7 +293,7 @@ def candidate_product_keys(prods: list[M.CatProd]) -> set[str]:
     for p in prods:
         keys |= p.sigs | set(rev.get(p.key, []))
         toks = sorted(p.tokens)
-        keys |= set(toks)
+        keys |= {t for t in toks if len(t) >= 4 and t not in GENERIC}      # общие слова («server», «agent») дали бы тысячи посторонних записей
         words = [t for t in tokens(p.name)]
         for i in range(len(words)):
             for j in range(i + 1, min(len(words), i + 3) + 1):

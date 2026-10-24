@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, current_source, get_db, require_admin, require_analyst, require_user
@@ -18,6 +18,7 @@ from ..vdb import match as M
 from ..vdb import sources as S
 from ..vdb import store
 from ..vdb.normalize import SEV_RANK, SEV_RU, norm
+from ..reports.quick_ext import like_escape
 from ..vdb.sync import analyze, upload_path
 
 router = APIRouter(prefix="/vdb", tags=["vdb"])
@@ -185,10 +186,10 @@ async def vulns(q: str = Query("", max_length=200), min_severity: str = Query(""
                 su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     """Поиск по CVE, идентификатору БДУ/OSV, названию и производителю программы, версии и тексту описания; по умолчанию — подтверждённая эксплуатация и самые опасные сверху."""
     sid = su.current_source_id
-    stmt = select(VdbVuln, VdbFinding).outerjoin(VdbFinding, (VdbFinding.vuln_key == VdbVuln.vuln_key) & (VdbFinding.source_id == sid)) if sid else select(VdbVuln, VdbFinding.vuln_key).outerjoin(VdbFinding, VdbFinding.vuln_key == "")
+    stmt = select(VdbVuln, VdbFinding).outerjoin(VdbFinding, (VdbFinding.vuln_key == VdbVuln.vuln_key) & (VdbFinding.source_id == sid))     # sid=None: соединение пусто
     for term in q.lower().split()[:6]:
-        like = f"%{term}%"
-        stmt = stmt.where(or_(VdbVuln.ids_text.like(like), func.lower(VdbVuln.title).like(like), VdbVuln.products_text.like(like), func.lower(VdbVuln.description).like(like)))
+        like = "%" + like_escape(term) + "%"
+        stmt = stmt.where(or_(VdbVuln.ids_text.like(like, escape="\\"), func.lower(VdbVuln.title).like(like, escape="\\"), VdbVuln.products_text.like(like, escape="\\"), func.lower(VdbVuln.description).like(like, escape="\\")))
     if min_severity:
         stmt = stmt.where(VdbVuln.sev_rank >= SEV_RANK[min_severity])
     if exploited:
@@ -281,9 +282,11 @@ async def findings(new_only: bool = False, min_severity: str = Query("", pattern
 
 
 async def finding_counts(db: AsyncSession, source_id: uuid.UUID) -> dict:
-    rows = (await db.execute(select(VdbFinding.seen_at, VdbFinding.exploited, VdbFinding.sev_rank).where(VdbFinding.source_id == source_id))).all()
-    new = [r for r in rows if r[0] is None]
-    return {"total": len(rows), "new": len(new), "new_exploited": sum(1 for r in new if r[1]), "new_critical": sum(1 for r in new if r[2] >= 4), "new_serious": sum(1 for r in new if r[1] or r[2] >= 3)}
+    new = VdbFinding.seen_at.is_(None)
+    c = lambda cond: func.coalesce(func.sum(case((cond, 1), else_=0)), 0)  # noqa: E731
+    r = (await db.execute(select(func.count(), c(new), c(new & VdbFinding.exploited.is_(True)), c(new & (VdbFinding.sev_rank >= 4)),
+                                 c(new & (VdbFinding.exploited.is_(True) | (VdbFinding.sev_rank >= 3)))).where(VdbFinding.source_id == source_id))).one()
+    return dict(zip(("total", "new", "new_exploited", "new_critical", "new_serious"), (int(x) for x in r)))
 
 
 @router.get("/findings/summary")
