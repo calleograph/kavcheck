@@ -115,13 +115,13 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
             {product && <span className="chip">Версия: <b>{vTitle}</b><button type="button" className="link-btn" onClick={() => setParams({ product: "", build: "" })}>сбросить</button></span>}
           </div>)}
       </div>
-      <div className="table-scroll">
+      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
         {!data && busy ? <SkelRows cols={6} /> : (
           <table className="table">
             <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th>Защитный продукт</th><th className="hide-sm">Постоянная защита</th>
               <SortTh k="bases" label="Базы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="scan" label="Полная проверка" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="risk" label="Проблемы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /></tr></thead>
-            <tbody style={{ opacity: busy ? .55 : 1 }}>
+            <tbody>
               {(data?.items ?? []).map((h) => {
                 const b = daysAgo(h.av?.bases ?? null); const old = h.problems.includes("bases_old");
                 return (

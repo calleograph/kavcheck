@@ -25,7 +25,7 @@ export default function SecurityPage({ me, forced, onEnrolled, onLogout }: { me:
         <div className="card-head"><h2>Двухфакторная аутентификация</h2>{st && <span className={`badge ${st.enabled ? "ok" : st.required ? "warn" : ""}`}>{st.enabled ? "включена" : "выключена"}</span>}</div>
         {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
         {!st ? <SkelRows rows={2} cols={2} /> : (<>
-          <p className="muted small intro">После пароля вход подтверждается шестизначным кодом из приложения-аутентификатора (Яндекс Ключ, Google или Microsoft Authenticator, FreeOTP, Aegis). Политика: {POLICY[st.policy] ?? st.policy}.</p>
+          <p className="muted small lead-in">После пароля вход подтверждается шестизначным кодом из приложения-аутентификатора (Яндекс Ключ, Google или Microsoft Authenticator, FreeOTP, Aegis). Политика: {POLICY[st.policy] ?? st.policy}.</p>
           {st.enabled ? (<>
             <dl className="kv"><div><dt>Включена</dt><dd>{fmt(st.enabled_at)}</dd></div><div><dt>Резервных кодов осталось</dt><dd className={st.backup_left <= 2 ? "warn-text" : ""}>{st.backup_left} из 10</dd></div></dl>
             <div className="form-actions"><button className="btn" onClick={() => setDialog("codes")}><Icon name="refresh" />Новые резервные коды</button>

@@ -30,10 +30,10 @@ export default function SourcesAdmin({ ctx }: { ctx: Ctx }) {
     catch (err) { setError((err as ApiError).message); }
     setBusy(false);
   };
-  const submit = (e: FormEvent) => { e.preventDefault(); void save(false); };
+  const submit = (e: FormEvent) => { e.preventDefault(); void save(true); };
   return (
     <>
-      <div className="row" style={{ marginBottom: 14 }}>
+      <div className="row mb">
         <span className="muted small">Пароль хранится зашифрованным ключом APP_MASTER_KEY и после сохранения не показывается.</span><div className="spacer" />
         <button className="btn primary" onClick={() => { setForm({ ...empty }); setError(""); }}><Icon name="plus" />Добавить источник</button>
       </div>
@@ -59,25 +59,15 @@ export default function SourcesAdmin({ ctx }: { ctx: Ctx }) {
         </div>); })}
       {form && (
         <Modal title={form.id ? `Источник «${form.name}»` : "Новый источник KSC"} onClose={() => setForm(null)}
-          footer={<><button type="button" className="btn ghost" onClick={() => setForm(null)}>Отмена</button><button type="button" className="btn" disabled={busy} onClick={() => void save(true)}>Сохранить и проверить</button><button type="submit" form="src-form" className="btn primary" aria-busy={busy}><span>Сохранить</span></button></>}>
+          footer={<><button type="button" className="btn ghost" onClick={() => setForm(null)}>Отмена</button><button type="button" className="btn" disabled={busy} onClick={() => void save(false)}>Сохранить</button>
+            <button type="submit" form="src-form" className="btn primary" aria-busy={busy}><Icon name="plug" size={16} /><span>Сохранить и проверить</span></button></>}>
           <form id="src-form" onSubmit={submit} noValidate>
-            <div className="cols">
-              <label>Название<input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Kaspersky 01" maxLength={120} required autoFocus /><span className="help">Так источник называется в переключателе</span></label>
-              <label className="check" style={{ alignSelf: "center" }}><input type="checkbox" className="switch" checked={form.is_active} onChange={(e) => set("is_active", e.target.checked)} />Источник активен</label>
-            </div>
-            <fieldset className="group"><legend>SQL Server</legend>
+            <label>Название<input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Kaspersky 01" maxLength={120} required autoFocus /><span className="help">Так источник называется в переключателе в верхней панели</span></label>
+            <fieldset className="group"><legend>База Сервера администрирования</legend>
               <div className="cols">
-                <label>Сервер<input className="mono" value={form.host} onChange={(e) => set("host", e.target.value)} placeholder="sql01.example.local" spellCheck={false} required /><span className="help">Имя или IP-адрес</span></label>
-                <label>Порт<input type="number" min={1} max={65535} value={form.port} onChange={(e) => set("port", Number(e.target.value))} /></label>
+                <label>SQL Server<input className="mono" value={form.host} onChange={(e) => set("host", e.target.value)} placeholder="sql01.example.local" spellCheck={false} required /><span className="help">Имя или IP-адрес</span></label>
+                <label>Порт<input type="number" min={1} max={65535} value={form.port} onChange={(e) => set("port", Number(e.target.value))} /><span className="help">Именованный экземпляр — по его TCP-порту</span></label>
                 <label>База данных<input className="mono" value={form.database} onChange={(e) => set("database", e.target.value)} spellCheck={false} required /><span className="help">По умолчанию KAV</span></label>
-              </div>
-              <div className="cols">
-                <label>Шифрование<select value={form.tls_mode} onChange={(e) => set("tls_mode", e.target.value)}><option value="require">Обязательно</option><option value="request">По возможности</option><option value="off">Выключено</option></select></label>
-                <label className="check" style={{ alignSelf: "center" }}><input type="checkbox" className="switch" checked={form.trust_server_cert} onChange={(e) => set("trust_server_cert", e.target.checked)} /><span className="check-body">Доверять сертификату сервера<span className="help">Нужно для самоподписанного сертификата SQL Server</span></span></label>
-              </div>
-              <div className="cols">
-                <label>Тайм-аут подключения, с<input type="number" min={1} max={120} value={form.connect_timeout_s} onChange={(e) => set("connect_timeout_s", Number(e.target.value))} /></label>
-                <label>Тайм-аут запроса, с<input type="number" min={5} max={3600} value={form.query_timeout_s} onChange={(e) => set("query_timeout_s", Number(e.target.value))} /></label>
               </div>
             </fieldset>
             <fieldset className="group"><legend>Учётная запись только для чтения</legend>
@@ -87,6 +77,20 @@ export default function SourcesAdmin({ ctx }: { ctx: Ctx }) {
               </div>
               <SecretInput label="Пароль" isSet={form.password_set} value={form.password} onChange={(v) => set("password", v)} help="Хранится зашифрованным, через API не возвращается и в журналы не попадает." />
             </fieldset>
+            <details className="disclosure">
+              <summary>Дополнительно: шифрование, тайм-ауты, выключение{(form.tls_mode !== empty.tls_mode || form.trust_server_cert !== empty.trust_server_cert || form.connect_timeout_s !== empty.connect_timeout_s || form.query_timeout_s !== empty.query_timeout_s) && <span className="badge accent">изменено</span>}{!form.is_active && <span className="badge warn">выключен</span>}</summary>
+              <div className="adv">
+                <div className="cols">
+                  <label>Шифрование<select value={form.tls_mode} onChange={(e) => set("tls_mode", e.target.value)}><option value="require">Обязательно</option><option value="request">По возможности</option><option value="off">Выключено</option></select></label>
+                  <label className="check align-center"><input type="checkbox" className="switch" checked={form.trust_server_cert} onChange={(e) => set("trust_server_cert", e.target.checked)} /><span className="check-body">Доверять сертификату сервера<span className="help">Нужно для самоподписанного сертификата SQL Server</span></span></label>
+                </div>
+                <div className="cols">
+                  <label>Тайм-аут подключения, с<input type="number" min={1} max={120} value={form.connect_timeout_s} onChange={(e) => set("connect_timeout_s", Number(e.target.value))} /></label>
+                  <label>Тайм-аут запроса, с<input type="number" min={5} max={3600} value={form.query_timeout_s} onChange={(e) => set("query_timeout_s", Number(e.target.value))} /><span className="help">Увеличьте для больших баз</span></label>
+                </div>
+                <label className="check"><input type="checkbox" className="switch" checked={form.is_active} onChange={(e) => set("is_active", e.target.checked)} /><span className="check-body">Источник включён<span className="help">Выключенный источник не опрашивается и не виден пользователям; настройки и отчёты сохраняются</span></span></label>
+              </div>
+            </details>
             {error && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{error}</div></div>}
           </form>
         </Modal>

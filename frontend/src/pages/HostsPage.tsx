@@ -32,6 +32,10 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
     api.hosts.list({ ...applied, activity, days: threshold, sort, desc, offset, limit: 50 }).then((r) => { setData(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)).finally(() => setBusy(false));
   }, [ctx.current, applied, activity, threshold, sort, desc, offset]);
   useEffect(() => { setSp((p) => { if (activity === "active") p.delete("activity"); else p.set("activity", activity); return p; }, { replace: true }); }, [activity, setSp]);
+  // переход из поиска в верхней панели на уже открытую страницу: запрос и активность берутся из адреса
+  const urlQ = sp.get("q"), urlActivity = sp.get("activity") as Activity | null;
+  useEffect(() => { if (urlQ !== null) setQ(urlQ); }, [urlQ]);
+  useEffect(() => { if (urlActivity) setActivity(urlActivity); }, [urlActivity]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } setOffset(0); };
   const eff = threshold || data?.activity_days || 7;
@@ -42,25 +46,25 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
       </PageHead>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя компьютера или DNS-имя" aria-label="Поиск" /></div>
-        <input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа администрирования" aria-label="Группа" style={{ width: 220 }} />
-        <input value={os} onChange={(e) => setOs(e.target.value)} placeholder="ОС содержит" aria-label="ОС" style={{ width: 170 }} />
+        <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа администрирования" aria-label="Группа" />
+        <input className="w-md" value={os} onChange={(e) => setOs(e.target.value)} placeholder="ОС содержит" aria-label="ОС" />
         <Segmented<Activity> label="Связь с KSC" value={activity} onChange={(v) => { setActivity(v); setOffset(0); }} options={[["active", "Активные"], ["inactive", "Без связи"], ["all", "Все"]]} />
         <label className="inline">Порог
           <select value={days} onChange={(e) => { setDays(e.target.value); setOffset(0); }}>
             <option value="">{data?.activity_days ?? "…"} сут (по настройке)</option>{DAYS.map((d) => <option key={d} value={d}>{d} сут</option>)}<option value="custom">другой…</option>
           </select>
         </label>
-        {days === "custom" && <input type="number" min={1} max={3650} value={customDays} onChange={(e) => setCustomDays(e.target.value)} placeholder="суток" style={{ width: 96 }} aria-label="Произвольный порог в сутках" autoFocus />}
+        {days === "custom" && <input type="number" min={1} max={3650} value={customDays} onChange={(e) => setCustomDays(e.target.value)} placeholder="суток" className="w-num" aria-label="Произвольный порог в сутках" autoFocus />}
       </div>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className="table-scroll">
+      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
         {!data && busy ? <SkelRows cols={6} /> : (
           <table className="table">
-            <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} />
-              <SortTh k="group" label="Группа" sort={sort} desc={desc} onSort={onSort} /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Связь</th></tr></thead>
-            <tbody style={{ opacity: busy ? .55 : 1, transition: "opacity .15s" }}>
+            <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
+              <SortTh k="group" label="Группа" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Связь</th></tr></thead>
+            <tbody>
               {(data?.items ?? []).map((h) => (
-                <tr key={h.host_id}><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}</td><td className="mono nowrap">{h.ip || "—"}</td><td>{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small">{h.group}</td>
+                <tr key={h.host_id}><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}</td><td className="mono nowrap">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
                   <td className="nowrap">{fmt(h.last_connected)}</td><td><ActivityBadge days={h.days_since_connection} activityDays={eff} /></td></tr>))}
               {data && !data.items.length && <tr><td colSpan={6}><Empty icon="monitor" title="Компьютеров не найдено">Измените поиск или фильтр связи с KSC.</Empty></td></tr>}
             </tbody>
@@ -91,7 +95,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const back = <Link className="back-link" to="/hosts"><Icon name="arrowL" size={15} />Компьютеры</Link>;
   if (err) return <section><PageHead title="Компьютер" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div></section>;
-  if (!d) return <section><PageHead title={<span className="skel" style={{ width: 260, height: 28 }} />} back={back} /><div className="split even"><div className="card"><SkelRows rows={6} cols={2} /></div><div className="card"><SkelRows rows={3} cols={3} /></div></div></section>;
+  if (!d) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="split even"><div className="card"><SkelRows rows={6} cols={2} /></div><div className="card"><SkelRows rows={3} cols={3} /></div></div></section>;
   const h = d.host;
   const sw = d.software.filter((s) => !filter || `${s.name} ${s.version} ${s.publisher}`.toLowerCase().includes(filter.toLowerCase()));
   const facts: [string, React.ReactNode][] = [["FQDN", h.fqdn || "—"], ["IP-адрес", <span className="mono">{h.ip || "—"}</span>], ["Операционная система", `${h.os} ${h.os_version}`.trim() || "—"], ["Дистрибутив Linux", h.linux_release ? <span className="mono">{h.linux_release}</span> : "—"],
@@ -100,7 +104,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   const st = h.ksc_status;
   return (
     <section>
-      <PageHead title={h.name} back={back} lede={<span className="row tight" style={{ flexWrap: "wrap" }}><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}<span className="muted small">Время — UTC</span></span>}>
+      <PageHead title={h.name} back={back} lede={<span className="row tight wrap"><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}</span>}>
         <Fetched at={d.fetched_at} />
       </PageHead>
       <div className="split even">
@@ -110,8 +114,8 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
         </div>
         <div className="stack">
           {st && st.reasons.length > 0 && (
-            <div className={`alert ${st.status === "критический" ? "error" : "warn"}`} style={{ margin: 0 }}><Icon name="alert" />
-              <div className="alert-body"><b>Причины статуса «{st.status}»</b><ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>{st.reasons.map((r) => <li key={r}>{r}</li>)}</ul></div></div>)}
+            <div className={`alert flat ${st.status === "критический" ? "error" : "warn"}`}><Icon name="alert" />
+              <div className="alert-body"><b>Причины статуса «{st.status}»</b><ul className="reasons">{st.reasons.map((r) => <li key={r}>{r}</li>)}</ul></div></div>)}
           <div className="card flush">
             <div className="card-head"><h2>Продукты Kaspersky</h2></div>
             {!d.kaspersky.length ? <Empty icon="shieldPulse" title="Нет сведений о продуктах">Агент не передавал данные о защитных продуктах, или объект v_akpub_hst_prdstate недоступен.</Empty> : (
@@ -126,7 +130,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       </div>
       {tab === "software" && <>
         <div className="section-head"><span className="muted small">Программ: {num(d.software.length)}</span><div className="spacer" />
-          <div className="input-icon" style={{ width: 340, maxWidth: "100%" }}><Icon name="search" size={16} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, версия или производитель" aria-label="Фильтр программ" /></div></div>
+          <div className="input-icon w-search"><Icon name="search" size={16} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, версия или производитель" aria-label="Фильтр программ" /></div></div>
         <div className="table-scroll">
           <table className="table compact">
             <thead><tr><th>Программа</th><th>Версия</th><th>Производитель</th><th>Установлена</th></tr></thead>
@@ -135,7 +139,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
             </tbody>
           </table>
         </div>
-        {sw.length > 1000 && <p className="muted small" style={{ marginTop: 8 }}>Показаны первые 1000 записей — уточните фильтр.</p>}
+        {sw.length > 1000 && <p className="muted small mt-sm">Показаны первые 1000 записей — уточните фильтр.</p>}
       </>}
       {tab === "vulns" && (vErr ? <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{vErr}</div></div>
         : !vulns ? <div className="card"><SkelRows rows={4} cols={5} /></div>

@@ -60,7 +60,7 @@ export default function EventsPage({ ctx }: { ctx: Ctx }) {
       <div className="card mt">
         <div className="card-head"><h2>Динамика {per}</h2><div className="spacer" />
           <span className="tr-legend">{BAR.map(([g, l]) => <span key={g}><i className={`sw tr-${g}`} aria-hidden />{l}</span>)}</span>{s && <Fetched at={s.fetched_at} />}</div>
-        {!s ? <span className="skel" style={{ display: "block", height: 120 }} /> : (
+        {!s ? <span className="skel skel-chart" /> : (
           <>
             <div className="trend" role="img" aria-label={`Динамика событий ${per}: обнаружений ${s.totals.detections}, не вылечено ${s.totals.notcured}, атак ${s.totals.attacks}${peak ? `; наибольшее число — ${bucketLabel(peak.at, s.unit)}` : ""}`}>
               {s.trend.map((b) => {
@@ -132,11 +132,11 @@ export function EventList({ days, hostId, group, threat, onGroup, onThreat }: { 
         {threat && <div className="toolbar-foot"><span className="chip">Угроза: <b className="mono">{threat}</b><button type="button" className="link-btn" onClick={() => onThreat("")}>сбросить</button></span></div>}
       </div>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className="table-scroll">
+      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
         {!data && busy ? <SkelRows cols={5} /> : (
           <table className="table">
             <thead><tr><th>Время</th>{!hostId && <th>Компьютер</th>}<th>Событие</th><th>Угроза или атака</th><th>Объект</th><th className="hide-sm">Пользователь</th></tr></thead>
-            <tbody style={{ opacity: busy ? .55 : 1 }}>
+            <tbody>
               {(data?.items ?? []).map((e) => (
                 <tr key={e.event_id}>
                   <td className="nowrap small">{fmt(e.at)}</td>

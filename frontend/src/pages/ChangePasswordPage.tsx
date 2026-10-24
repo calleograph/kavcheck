@@ -15,7 +15,7 @@ export default function ChangePasswordPage({ onDone, onLogout, inline = false, e
   };
   const form = (
     <form className={inline ? "card form narrow-form" : "login-card"} onSubmit={submit}>
-      {embedded && <><h2>Смена пароля</h2><p className="muted small intro">После смены пароля другие сеансы этой учётной записи завершатся.</p></>}
+      {embedded && <><h2>Смена пароля</h2><p className="muted small lead-in">После смены пароля другие сеансы этой учётной записи завершатся.</p></>}
       {!inline && <><h2>Задайте свой пароль</h2><p className="lede">Вы вошли с первичным или сброшенным паролем. Новый пароль — не короче 12 символов, минимум два вида символов.</p></>}
       <label>Текущий пароль<input type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" required autoFocus /></label>
       <label>Новый пароль<input type="password" value={n1} onChange={(e) => setN1(e.target.value)} autoComplete="new-password" required minLength={12} />

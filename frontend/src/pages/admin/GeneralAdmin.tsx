@@ -15,7 +15,7 @@ function Group({ group, title, intro, children }: { group: string; title: string
   const save = async (e: FormEvent) => { e.preventDefault(); setErr(""); setBusy(true); try { const x = await api.admin.saveSettings(group, v); setV(x); setBase(JSON.stringify(x)); show("Настройки сохранены"); } catch (y) { setErr((y as ApiError).message); } finally { setBusy(false); } };
   return (
     <form className="card form" onSubmit={save}>
-      <h2>{title}</h2><p className="muted small intro">{intro}</p>
+      <h2>{title}</h2><p className="muted small lead-in">{intro}</p>
       {children(v, (k, val) => setV({ ...v, [k]: val }))}
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       <div className="form-actions"><button className="btn primary" aria-busy={busy} disabled={!dirty}><span>Сохранить</span></button>

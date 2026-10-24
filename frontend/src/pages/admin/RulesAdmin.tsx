@@ -20,7 +20,7 @@ export default function RulesAdmin() {
   return (
     <>
       <div className="toolbar">
-        <p className="muted small" style={{ flex: "1 1 420px", maxWidth: "80ch" }}><b>Шаблон LIKE</b> отбирает записи в базе KSC, <b>регулярное выражение</b> уточняет отбор, <b>ветка из имени</b> извлекает major.minor из имени пакета. Если версия пакета не начинается с ветки из имени, используется ветка: версия расширения не выдаётся за версию продукта.</p>
+        <p className="muted small prose-note grow"><b>Шаблон LIKE</b> отбирает записи в базе KSC, <b>регулярное выражение</b> уточняет отбор, <b>ветка из имени</b> извлекает major.minor из имени пакета. Если версия пакета не начинается с ветки из имени, используется ветка: версия расширения не выдаётся за версию продукта.</p>
         <button className="btn ghost" onClick={async () => { await api.admin.resetBuiltin(); await load(); show("Встроенные правила восстановлены"); }}><Icon name="history" />Восстановить встроенные</button>
         <button className="btn primary" onClick={() => { setErr(""); setEdit({ ...empty }); setIsNew(true); }}><Icon name="plus" />Новое правило</button>
       </div>

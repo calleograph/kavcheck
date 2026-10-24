@@ -76,12 +76,12 @@ function HostsView({ ctx }: { ctx: Ctx }) {
         </div>
       </div>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className="table-scroll">
+      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
         {!data && busy ? <SkelRows cols={6} /> : (
           <table className="table">
             <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">ОС</th><th className="hide-sm">Группа</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="risk" label="Уязвимости" sort={sort} desc={desc} onSort={onSort} /><SortTh k="total" label="Всего" sort={sort} desc={desc} onSort={onSort} className="num" /><SortTh k="patchable" label="С исправлением" sort={sort} desc={desc} onSort={onSort} className="num hide-sm" /></tr></thead>
-            <tbody style={{ opacity: busy ? .55 : 1 }}>
+            <tbody>
               {(data?.items ?? []).map((h) => (
                 <tr key={h.host_id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/vulnerabilities/hosts/${h.host_id}`); }}>
                   <td><Link to={`/vulnerabilities/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span></td>
@@ -122,12 +122,12 @@ function ProductsView({ ctx }: { ctx: Ctx }) {
         <div className="toolbar-foot">{data?.fetched_at && <Fetched at={data.fetched_at} />}<span className="muted small">{all ? "Учтены все устройства." : `Учтены компьютеры, активные за ${ctx.me.activity_days} сут.`}</span></div>
       </div>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className="table-scroll">
+      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
         {!data && busy ? <SkelRows cols={5} /> : (
           <table className="table">
             <thead><tr><SortTh k="name" label="Программа" sort={sort} desc={desc} onSort={onSort} /><SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" />
               <SortTh k="risk" label="Уровни опасности" sort={sort} desc={desc} onSort={onSort} /><th className="num">Уязвимостей</th><SortTh k="total" label="Обнаружений" sort={sort} desc={desc} onSort={onSort} className="num" /><th className="num">С исправлением</th><th><span className="sr-only">Действия</span></th></tr></thead>
-            <tbody style={{ opacity: busy ? .55 : 1 }}>
+            <tbody>
               {(data?.items ?? []).map((p) => (
                 <tr key={`${p.product_id}-${p.name}`} className="clickable" onClick={() => open(p)}>
                   <td><button type="button" className="link-btn strong-link" onClick={() => open(p)}>{p.name}</button></td><td className="num"><b>{num(p.hosts)}</b></td>
@@ -184,7 +184,7 @@ export function VulnHostPage({ ctx }: { ctx: Ctx }) {
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const back = <Link className="back-link" to="/vulnerabilities"><Icon name="arrowL" size={15} />Уязвимости</Link>;
   if (err) return <section><PageHead title="Компьютер" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div></section>;
-  if (!d) return <section><PageHead title={<span className="skel" style={{ width: 240, height: 28 }} />} back={back} /><div className="card"><SkelRows rows={5} cols={5} /></div></section>;
+  if (!d) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="card"><SkelRows rows={5} cols={5} /></div></section>;
   if (d.unsupported) return <section><PageHead title="Компьютер" back={back} /><Unsupported missing={d.unsupported} /></section>;
   const h = d.host;
   const programs = new Set(d.items.map((v) => v.product || v.app_name)).size;

@@ -17,7 +17,7 @@ export function CatalogStateLine({ state, canRebuild, onRebuilt }: { state: Cata
   const building = state.status === "building" || (state.requested_at && (!state.started_at || state.requested_at > state.started_at));
   return (
     <span className="stamp catalog-state" role="status">
-      {building ? <><span className="spin" aria-hidden />Каталог обновляется{state.progress ? `: ${state.progress}` : "…"}</>
+      {building ? <><span className="spin" aria-hidden />Каталог обновляется{state.status === "building" && state.progress ? `: ${state.progress}` : "…"}</>
         : state.built_at ? <><Icon name="clock" size={14} />Каталог построен {fmt(state.built_at)}</> : <><Icon name="clock" size={14} />Каталог ещё не построен</>}
       {state.error && <span className="err-text" title={state.error}> · {state.error.length > 80 ? state.error.slice(0, 80) + "…" : state.error}</span>}
       {canRebuild && !building && <button type="button" className="link-btn" onClick={rebuild} aria-busy={busy} disabled={busy}>Обновить</button>}
@@ -43,6 +43,8 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const [tick, setTick] = useState(0);
   useEffect(() => { const t = window.setTimeout(() => { setApplied(q); setOffset(0); }, 300); return () => window.clearTimeout(t); }, [q]);
+  const urlQ = sp.get("q");   // переход из поиска в верхней панели на уже открытый каталог
+  useEffect(() => { if (urlQ !== null) setQ(urlQ); }, [urlQ]);
   useEffect(() => {
     setBusy(true);
     api.catalog.list({ q: applied, publisher, platform, components, all_hosts: all, sort, desc, offset, limit: 50 }).then((r) => { setData(r); setErr(""); })
@@ -52,7 +54,6 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
   const building = data?.state.status === "building" || data?.state.status === "empty";
   useEffect(() => { if (!building) return; const t = window.setInterval(() => setTick((x) => x + 1), 5000); return () => window.clearInterval(t); }, [building]);
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k === "hosts" || k === "versions"); } setOffset(0); };
-  const hidden = (data?.items ?? []).reduce((a, i) => a + i.hidden_hosts, 0);
   const canEdit = ctx.me.user.role !== "viewer";
   return (
     <>
@@ -73,7 +74,7 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
         </Empty></div>
       )}
       {(data?.items.length || busy || data?.state.status === "ready") ? (
-        <div className="table-scroll">
+        <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
           {!data && busy ? <SkelRows cols={5} /> : (
             <table className="table">
               <thead><tr>
@@ -84,7 +85,7 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
                 <th className="hide-sm">Новейшая · старейшая</th>
                 <SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" />
                 <th><span className="sr-only">Действия</span></th></tr></thead>
-              <tbody style={{ opacity: busy ? .55 : 1 }}>
+              <tbody>
                 {(data?.items ?? []).map((p) => (
                   <tr key={p.key} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a,button")) navigate(`/software/p/${encodeURIComponent(p.key)}`); }}>
                     <td><Link to={`/software/p/${encodeURIComponent(p.key)}`} className="strong-link">{p.name}</Link>
@@ -94,14 +95,14 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
                     <td className="num">{num(p.versions_count)}</td>
                     <td className="mono small nowrap hide-sm">{p.latest_version}{p.oldest_version && p.oldest_version !== p.latest_version ? <span className="muted"> · {p.oldest_version}</span> : null}</td>
                     <td className="num"><b>{num(p.hosts)}</b>{all && p.hidden_hosts > 0 && <span className="sub">{num(p.hidden_hosts)} неакт.</span>}</td>
-                    <td className="actions">{canEdit && <Link className="btn mini" to={`/reports?product=${encodeURIComponent(p.key)}&name=${encodeURIComponent(p.name)}`}><Icon name="target" size={15} />Проверить версии</Link>}</td>
+                    <td className="actions">{canEdit && <Link className="btn mini ghost row-act" to={`/reports?product=${encodeURIComponent(p.key)}&name=${encodeURIComponent(p.name)}${p.latest_version ? `&latest=${encodeURIComponent(p.latest_version)}` : ""}`} title={`Найти устаревшие версии: ${p.name}`}><Icon name="target" size={15} />Проверить</Link>}</td>
                   </tr>))}
                 {data && !data.items.length && data.state.status === "ready" && <tr><td colSpan={7}><Empty icon="search" title="Ничего не найдено">Измените запрос или включите служебные компоненты и показ всех устройств.</Empty></td></tr>}
               </tbody>
             </table>)}
         </div>) : null}
       {data && <Pager total={data.total} offset={offset} limit={50} onPage={setOffset} />}
-      <HiddenNote hidden={hidden} days={ctx.me.activity_days} all={all} onToggle={() => { setAll(!all); setOffset(0); }} />
+      {data && <HiddenNote hidden={null} days={ctx.me.activity_days} all={all} onToggle={() => { setAll(!all); setOffset(0); }} />}
     </>
   );
 }

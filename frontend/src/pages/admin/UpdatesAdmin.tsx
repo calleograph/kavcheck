@@ -43,16 +43,16 @@ export default function UpdatesAdmin() {
           <div><div className="l">Помощник обновлений</div><div className="v"><span className="row tight"><span className={`dot ${u?.available ? "ok" : "warn"}`} />{u?.available ? "работает" : "не запущен"}</span></div><div className="l">{u?.heartbeat_age_s != null ? `пульс ${ago(u.heartbeat_age_s)}` : "нет сведений"}</div></div>
         </div>
         {!u?.available && (
-          <div className="alert warn" style={{ marginTop: 16 }}><Icon name="alert" /><div className="alert-body"><b>Помощник обновлений не запущен.</b> Он нужен для обновления, отката и резервных копий из браузера. Установите его один раз на сервере — служба выполняет только эти действия:
+          <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Помощник обновлений не запущен.</b> Он нужен для обновления, отката и резервных копий из браузера. Установите его один раз на сервере — служба выполняет только эти действия:
             <pre className="cmd">{ov.commands.install}</pre>Без помощника обновляйте на сервере командой <code>{ov.commands.manual}</code>.</div></div>
         )}
-        {rem && !rem.ok && <div className="alert error" style={{ marginTop: 16 }}><Icon name="alert" /><div className="alert-body">Не удалось проверить релизы: {rem.error || "нет данных"}. Если у сервера нет доступа к GitHub, обновляйте его из заранее скопированного репозитория.</div></div>}
-        {rem?.ok && !rem.behind && <div className="alert ok" style={{ marginTop: 16 }}><Icon name="checkCircle" /><div className="alert-body">Установлена последняя версия.</div></div>}
+        {rem && !rem.ok && <div className="alert error mt"><Icon name="alert" /><div className="alert-body">Не удалось проверить релизы: {rem.error || "нет данных"}. Если у сервера нет доступа к GitHub, обновляйте его из заранее скопированного репозитория.</div></div>}
+        {rem?.ok && !rem.behind && <div className="alert ok mt"><Icon name="checkCircle" /><div className="alert-body">Установлена последняя версия.</div></div>}
         {rem?.ok && rem.behind && (
-          <div className="alert info" style={{ marginTop: 16 }}><Icon name="upload" /><div className="alert-body"><b>Доступна версия {rem.latest_version}</b> (установлена {rem.current_version}).
-            {rem.notes && <details className="disclosure"><summary>Что изменилось</summary><pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", margin: "6px 0 0" }}>{rem.notes}</pre></details>}</div></div>
+          <div className="alert info mt"><Icon name="upload" /><div className="alert-body"><b>Доступна версия {rem.latest_version}</b> (установлена {rem.current_version}).
+            {rem.notes && <details className="disclosure"><summary>Что изменилось</summary><pre className="notes-pre">{rem.notes}</pre></details>}</div></div>
         )}
-        <p className="muted small" style={{ margin: "16px 0 12px", maxWidth: "80ch" }}>Обновление выполняет <code>scripts/update.sh</code>: резервная копия внутренней базы и .env, новые образы, миграции, перезапуск и проверка; при ошибке — откат. Сервис недоступен 1–3 минуты. Отчёты, настройки и подключения сохраняются.</p>
+        <p className="muted small prose-note">Обновление выполняет <code>scripts/update.sh</code>: резервная копия внутренней базы и .env, новые образы, миграции, перезапуск и проверка; при ошибке — откат. Сервис недоступен 1–3 минуты. Отчёты, настройки и подключения сохраняются.</p>
         <div className="preflight">
           <div className="row"><h3>Проверки перед обновлением</h3>{ov.preflight && <span className={`badge ${ov.preflight.ok ? "ok" : "err"}`}>{ov.preflight.ok ? "пройдены" : "есть препятствия"}</span>}
             {ov.preflight && <span className="muted small">{ago(ov.preflight.age_s)}</span>}<div className="spacer" />
@@ -67,19 +67,19 @@ export default function UpdatesAdmin() {
           <div className="spacer" />
           <button className="btn ghost danger" disabled={!ov.can_act || !!busy} onClick={() => setConfirm("rollback")}><Icon name="history" />Откатить версию</button>
         </div>
-        {!ov.can_act && ov.reasons.length > 0 && <p className="help" style={{ marginTop: 10 }}>{ov.reasons.join(" ")}</p>}
+        {!ov.can_act && ov.reasons.length > 0 && <p className="help mt-sm">{ov.reasons.join(" ")}</p>}
       </div>
       {(running || ranHere) && (
         <div className="card">
           <div className="card-head"><h2>{ACTION[u?.action ?? ""] ?? "Выполнение"}</h2>
-            {running && <span className="badge accent"><span className="spin" style={{ width: 10, height: 10, borderWidth: 1.5 }} />выполняется</span>}
+            {running && <span className="badge accent"><span className="spin sm" />выполняется</span>}
             {finished && u?.result === "ok" && <span className="badge ok">завершено</span>}{finished && u?.result === "failed" && <span className="badge err">остановлено, код {u.exit_code}</span>}
             {u?.by && <span className="muted small">запустил {u.by}</span>}<div className="spacer" />
-            <label className="check small" style={{ margin: 0 }}><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />Следить за концом</label></div>
-          {u && (running || (u.step_no ?? 0) > 0) && <div style={{ marginBottom: 10 }}><div className="bar"><i style={{ width: `${running ? Math.max(pct, 3) : finished && u.result === "ok" ? 100 : pct}%` }} /></div><div className="small muted" style={{ marginTop: 6 }}>{u.step_no ? `Этап ${u.step_no} из ${u.step_total}: ${u.step_name}` : "Запуск…"}</div></div>}
+            <label className="check inline-check"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />Следить за концом</label></div>
+          {u && (running || (u.step_no ?? 0) > 0) && <div className="mb"><div className="bar"><i style={{ width: `${running ? Math.max(pct, 3) : finished && u.result === "ok" ? 100 : pct}%` }} /></div><div className="small muted" style={{ marginTop: 6 }}>{u.step_no ? `Этап ${u.step_no} из ${u.step_total}: ${u.step_name}` : "Запуск…"}</div></div>}
           <pre className="term" ref={term} tabIndex={0} aria-label="Журнал выполнения" onScroll={(e) => { const t = e.currentTarget; setFollow(t.scrollHeight - t.scrollTop - t.clientHeight < 40); }}>{log || "Ожидание вывода…"}</pre>
-          {finished && u?.result === "ok" && u.action === "update" && <div className="alert ok" style={{ marginTop: 12 }}><Icon name="checkCircle" /><div className="alert-body">Обновление выполнено. Обновите страницу, чтобы загрузить новую версию интерфейса.</div><button className="btn mini primary" onClick={() => window.location.reload()}>Обновить страницу</button></div>}
-          {finished && u?.result === "failed" && <div className="alert error" style={{ marginTop: 12 }}><Icon name="alert" /><div className="alert-body">Действие остановилось. Данные и настройки не затронуты; причина — в последних строках журнала. Повтор безопасен.</div></div>}
+          {finished && u?.result === "ok" && u.action === "update" && <div className="alert ok mt-sm"><Icon name="checkCircle" /><div className="alert-body">Обновление выполнено. Обновите страницу, чтобы загрузить новую версию интерфейса.</div><button className="btn mini primary" onClick={() => window.location.reload()}>Обновить страницу</button></div>}
+          {finished && u?.result === "failed" && <div className="alert error mt-sm"><Icon name="alert" /><div className="alert-body">Действие остановилось. Данные и настройки не затронуты; причина — в последних строках журнала. Повтор безопасен.</div></div>}
         </div>
       )}
       {ov.report && (

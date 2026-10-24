@@ -23,7 +23,7 @@ export function draftFromItem(it: AuditItem): Draft {
   return emptyDraft({ kind: it.kind ?? "product", product: it.product_key ? { key: it.product_key, name: it.product_name ?? it.product_key } : null, op: it.op, value: it.value ?? "",
     min: it.min ?? "", max: it.max ?? "", target: it.target_version ?? "", exclude: it.exclude ?? [], branches: it.branches ?? [], platform: (it.platform as Draft["platform"]) ?? "",
     name_like: it.name_like ?? "", name_regex: it.name_regex ?? "", publisher_like: it.publisher_like ?? "", rule: it.rule ?? "", label: it.kind !== "product" ? it.product_name ?? "" : "",
-    open: it.op !== "lt" || !!(it.exclude?.length || it.branches?.length || it.platform || it.kind !== "product") });
+    open: it.op !== "lt" || !!(it.exclude?.length || it.branches?.length || it.platform || it.target_version || it.kind !== "product") });
 }
 
 function toItem(d: Draft): AuditItem {
@@ -64,6 +64,7 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
   const [busy, setBusy] = useState<"" | "preview" | "xlsx">("");
   const [err, setErr] = useState("");
   const [save, setSave] = useState(false);
+  const [scopeOpen, setScopeOpen] = useState(!!(initial?.params?.include_inactive || initial?.params?.active_days || initial?.params?.group_contains));
   const [toast, show] = useToast();
   const canEdit = ctx.me.user.role !== "viewer";
   useEffect(() => { api.software.rules().then((r) => setRules(r.items)).catch(() => undefined); }, []);
@@ -86,7 +87,7 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
     <form className="card builder" onSubmit={preview} noValidate>
       <div className="card-head"><h2>{editing ? `Проверка «${editing.name}»` : "Проверка версий"}</h2>
         {editing && <span className="badge accent">изменение сохранённой проверки</span>}</div>
-      <p className="muted small builder-lede">Укажите программу и версию, ниже которой она считается устаревшей. Найдём компьютеры с такими версиями; результат — соответствие условию, а не подтверждённая уязвимость.</p>
+      <p className="muted small builder-lede">Выберите программу и версию, ниже которой она устарела. Результат — компьютеры с такими версиями, а не подтверждённые уязвимости.</p>
       <ol className="items">
         {items.map((d, n) => (
           <li key={d.id} className="item">
@@ -102,15 +103,18 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
                 <label>Версия от<input className="mono" value={d.min} onChange={(e) => set(d.id, { min: e.target.value })} placeholder="100" /></label>
                 <label>до (включительно)<input className="mono" value={d.max} onChange={(e) => set(d.id, { max: e.target.value })} placeholder="129.99" /></label>
               </>) : d.op === "any" ? <p className="muted small any-note">Все версии программы</p> : (
-                <label>{d.op === "lt" ? "Устаревшие версии: ниже" : `Версия ${OP_LABEL[d.op]}`}<input className="mono" value={d.value} onChange={(e) => set(d.id, { value: e.target.value })} placeholder={d.product?.latest_version ? d.product.latest_version.split(".")[0] : "130"} aria-invalid={!!problems[n] && problems[n] === "укажите версию"} /></label>)}
-              <label>Целевая версия<input className="mono" value={d.target} onChange={(e) => set(d.id, { target: e.target.value })} placeholder={d.op === "lt" && d.value ? `${d.value} или выше` : "до какой обновить"} /></label>
+                <label>{d.op === "lt" ? "Устаревшие версии: ниже" : `Версия ${OP_LABEL[d.op]}`}<input className="mono" value={d.value} onChange={(e) => set(d.id, { value: e.target.value })} placeholder={d.product?.latest_version ? d.product.latest_version.split(".")[0] : "130"} aria-invalid={!!problems[n] && problems[n] === "укажите версию"} />
+                  {d.product?.latest_version && d.value !== d.product.latest_version && <span className="help">Новейшая в каталоге: <button type="button" className="link-btn mono" onClick={() => set(d.id, { value: d.product!.latest_version! })} title="Устаревшими считать все версии ниже новейшей">{d.product.latest_version}</button></span>}</label>)}
             </div>
             <details className="disclosure" open={d.open} onToggle={(e) => set(d.id, { open: (e.target as HTMLDetailsElement).open })}>
-              <summary>Дополнительные условия{(d.op !== "lt" || d.exclude.length || d.branches.length || d.platform || d.kind !== "product") ? <span className="badge accent">заданы</span> : null}</summary>
+              <summary>Дополнительные условия{(d.op !== "lt" || d.exclude.length || d.branches.length || d.platform || d.target || d.kind !== "product") ? <span className="badge accent">заданы</span> : null}</summary>
               <div className="adv">
                 <div className="cols">
+                  <label>Целевая версия<input className="mono" value={d.target} onChange={(e) => set(d.id, { target: e.target.value })} placeholder={d.op === "lt" && d.value ? `${d.value} или выше` : "до какой обновить"} /><span className="help">Попадёт в отчёт в столбец «Нужна»</span></label>
                   <label>Условие сравнения<select value={d.op} onChange={(e) => set(d.id, { op: e.target.value as VersionOp })}>
                     {(Object.keys(OP_LABEL) as VersionOp[]).map((o) => <option key={o} value={o}>Версия {OP_LABEL[o]}</option>)}</select></label>
+                </div>
+                <div className="cols">
                   <label>Платформа<select value={d.platform} onChange={(e) => set(d.id, { platform: e.target.value as Draft["platform"] })}><option value="">Любая</option><option value="windows">Windows</option><option value="linux">Linux</option></select></label>
                 </div>
                 <label>Исключить версии или ветки<TagInput value={d.exclude} onChange={(v) => set(d.id, { exclude: v })} label="Исключённые версии" placeholder="115, 7.4.33 — Enter после каждой" />
@@ -140,22 +144,25 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
       </ol>
       <button type="button" className="btn ghost add-item" onClick={() => setItems((xs) => [...xs, emptyDraft()])} disabled={items.length >= 50}><Icon name="plus" />Добавить программу</button>
 
-      <fieldset className="group"><legend>Где искать</legend>
-        {many ? (
+      {many && <fieldset className="group"><legend>Где искать</legend>
+        {(
           <div className="source-checks" role="group" aria-label="Источники KSC">
             {ctx.sources.map((s) => <label key={s.id} className="check"><input type="checkbox" checked={sources.includes(s.id)} onChange={() => setSources((x) => (x.includes(s.id) ? x.filter((y) => y !== s.id) : [...x, s.id]))} />
               <span className="check-body">{s.name}<span className="help">{s.database} · KSC {s.ksc_version ?? "?"}</span></span></label>)}
             <span className="help">Одна и та же проверка выполняется в каждом источнике; компьютеры разных источников не объединяются.</span>
-          </div>) : <p className="small">Источник KSC: <b>{ctx.current?.name}</b></p>}
-        <label className="check"><input type="checkbox" className="switch" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
-          <span className="check-body">Включать давно не подключавшиеся компьютеры<span className="help">{includeInactive ? "Учитываются все устройства." : `Учитываются компьютеры, подключавшиеся к KSC за ${days || ctx.me.activity_days} сут (общая настройка).`}</span></span></label>
-        <details className="disclosure"><summary>Другие параметры</summary>
-          <div className="cols adv">
-            <label>Свой порог активности, сут<input type="number" min={1} max={3650} value={days} onChange={(e) => setDays(e.target.value)} placeholder={String(ctx.me.activity_days)} /></label>
+          </div>)}
+      </fieldset>}
+      <details className="disclosure scope" open={scopeOpen} onToggle={(e) => setScopeOpen((e.target as HTMLDetailsElement).open)}>
+        <summary>Какие компьютеры учитывать: <span className="scope-now">{includeInactive ? "все, включая без связи с KSC" : `активные за ${days || ctx.me.activity_days} сут`}{group.trim() ? `, группа «${group.trim()}»` : ""}</span>{!many && <span className="muted"> · {ctx.current?.name}</span>}</summary>
+        <div className="adv">
+          <label className="check"><input type="checkbox" className="switch" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
+            <span className="check-body">Включать давно не подключавшиеся компьютеры<span className="help">{includeInactive ? "Учитываются все устройства." : `Учитываются компьютеры, подключавшиеся к KSC за ${days || ctx.me.activity_days} сут.`}</span></span></label>
+          <div className="cols">
+            <label>Свой порог активности, сут<input type="number" min={1} max={3650} value={days} onChange={(e) => setDays(e.target.value)} placeholder={String(ctx.me.activity_days)} disabled={includeInactive} /></label>
             <label>Группа администрирования содержит<input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Серверы" /></label>
           </div>
-        </details>
-      </fieldset>
+        </div>
+      </details>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       <div className="form-actions">
         <button className="btn primary" aria-busy={busy === "preview"} disabled={!ready || !!busy}><Icon name="search" size={15} /><span>Найти устаревшие версии</span></button>

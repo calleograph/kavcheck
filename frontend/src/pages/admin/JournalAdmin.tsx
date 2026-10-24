@@ -34,11 +34,11 @@ export function JournalAdmin() {
     <>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Сообщение, событие, пользователь, источник" aria-label="Поиск по журналу" /></div>
-        <select value={range} onChange={(e) => { setRange(e.target.value); setOffset(0); }} aria-label="Период" style={{ width: "auto" }}>{RANGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}<option value="custom">свой период…</option></select>
+        <select value={range} onChange={(e) => { setRange(e.target.value); setOffset(0); }} aria-label="Период" className="w-auto">{RANGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}<option value="custom">свой период…</option></select>
         {range === "custom" && <><input type="datetime-local" className="w-auto" value={since} onChange={(e) => { setSince(e.target.value); setOffset(0); }} aria-label="С" />
           <input type="datetime-local" className="w-auto" value={until} onChange={(e) => { setUntil(e.target.value); setOffset(0); }} aria-label="По" /></>}
-        <select value={level} onChange={(e) => { setLevel(e.target.value); setOffset(0); }} aria-label="Уровень" style={{ width: "auto" }}><option value="">Все уровни</option><option value="warn">Предупреждения и ошибки</option><option value="error">Только ошибки</option><option value="info">Сведения</option></select>
-        <select value={category} onChange={(e) => { setCategory(e.target.value); setOffset(0); }} aria-label="Компонент" style={{ width: "auto" }}><option value="">Все компоненты</option>{Object.entries(CATEGORY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+        <select value={level} onChange={(e) => { setLevel(e.target.value); setOffset(0); }} aria-label="Уровень" className="w-auto"><option value="">Все уровни</option><option value="warn">Предупреждения и ошибки</option><option value="error">Только ошибки</option><option value="info">Сведения</option></select>
+        <select value={category} onChange={(e) => { setCategory(e.target.value); setOffset(0); }} aria-label="Компонент" className="w-auto"><option value="">Все компоненты</option>{Object.entries(CATEGORY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
         <a className="btn" href={api.admin.journalExportUrl(range === "custom" ? "30d" : range || "30d")} download><Icon name="download" />CSV</a>
         <button className="btn ghost" onClick={() => setPurge(true)}>Применить срок хранения</button>
       </div>
@@ -51,7 +51,7 @@ export function JournalAdmin() {
             <thead><tr><th>Время</th><th>Уровень</th><th>Категория</th><th>Событие</th><th>Пользователь</th><th>Источник</th><th>Сообщение</th><th className="num">мс</th></tr></thead>
             <tbody>{data.items.map((r) => { const [l, c] = LEVEL[r.level] ?? [r.level, ""]; return (
               <Fragment key={r.id}>
-                <tr onClick={() => setOpen(open === r.id ? null : r.id)} style={{ cursor: "pointer" }} aria-expanded={open === r.id}><td className="nowrap">{fmt(r.at)}</td><td><span className={`badge ${c}`}>{l}</span></td><td>{CATEGORY[r.category] ?? r.category}</td><td className="mono">{r.event}</td><td>{r.user ?? "—"}</td><td>{r.source ?? "—"}</td><td>{r.message ?? ""}</td><td className="num">{r.duration_ms ?? ""}</td></tr>
+                <tr onClick={() => setOpen(open === r.id ? null : r.id)} className="clickable" aria-expanded={open === r.id}><td className="nowrap">{fmt(r.at)}</td><td><span className={`badge ${c}`}>{l}</span></td><td>{CATEGORY[r.category] ?? r.category}</td><td className="mono">{r.event}</td><td>{r.user ?? "—"}</td><td>{r.source ?? "—"}</td><td>{r.message ?? ""}</td><td className="num">{r.duration_ms ?? ""}</td></tr>
                 {open === r.id && <tr className="detail"><td colSpan={8}><div className="small muted">Запись {r.id}{r.ip ? `, IP ${r.ip}` : ""}{r.request_id ? `, запрос ${r.request_id}` : ""}</div>{r.data ? <pre className="debug">{JSON.stringify(r.data, null, 2)}</pre> : null}</td></tr>}
               </Fragment>); })}
               {!data.items.length && <tr><td colSpan={8}><Empty icon="journal" title="Записей нет">За выбранный период по этим условиям событий не было.</Empty></td></tr>}
@@ -75,7 +75,7 @@ export function AuditAdmin() {
     <>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Кто, что или объект" aria-label="Поиск" /></div>
-        <input className="mono" value={action} onChange={(e) => setAction(e.target.value)} placeholder="report." aria-label="Действие начинается с" style={{ width: 200 }} />
+        <input className="mono w-md" value={action} onChange={(e) => setAction(e.target.value)} placeholder="report." aria-label="Действие начинается с" />
         <p className="note">Хранится отдельно от журнала событий. Пароли и секреты не записываются; у проверок подключения указана длительность.</p>
       </div>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}

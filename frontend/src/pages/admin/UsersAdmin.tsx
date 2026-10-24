@@ -37,7 +37,7 @@ function RolesAndPolicy() {
       </div>
       <div className="card">
         <h2>Двухфакторная аутентификация</h2>
-        <p className="muted small intro">Вход подтверждается кодом из приложения-аутентификатора. При обязательной политике пользователь без 2FA после пароля попадает на страницу её настройки.</p>
+        <p className="muted small lead-in">Вход подтверждается кодом из приложения-аутентификатора. При обязательной политике пользователь без 2FA после пароля попадает на страницу её настройки.</p>
         {!p ? <SkelRows rows={2} cols={2} /> : (<>
           <label>Политика<Segmented<Policy> label="Политика второго фактора" value={p.totp_policy} onChange={(x) => setP({ ...p, totp_policy: x })}
             options={[["off", "Отключена"], ["optional", "По желанию"], ["admins", "Администраторам"], ["all", "Всем"], ["groups", "Группам"]]} /></label>

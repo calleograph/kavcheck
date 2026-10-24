@@ -56,6 +56,7 @@ const PATHS: Record<string, ReactNode> = {
   external: <><path d="M14 4.5h5.5V10M19.5 4.5 11 13M17 14v4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 5 18V8.5A1.5 1.5 0 0 1 6.5 7h4" /></>,
   filter: <><path d="M4 5.5h16l-6 7.2v5.8l-4 1.5v-7.3Z" /></>,
   activity: <><path d="M3.5 12h3.5l2.5-6 4 12 2.5-6h4.5" /></>,
+  package: <><path d="M12 3.5 19.5 7.7v8.6L12 20.5l-7.5-4.2V7.7Z" /><path d="M4.5 7.7 12 12l7.5-4.3M12 12v8.5M8.2 5.6l7.5 4.3" /></>,
 };
 export type IconName = keyof typeof PATHS;
 

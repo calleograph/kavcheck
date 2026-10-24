@@ -60,14 +60,14 @@ function Registry({ ctx }: { ctx: Ctx }) {
     <>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Название или часть названия" aria-label="Поиск по названию" /></div>
-        <input value={publisher} onChange={(e) => setPublisher(e.target.value)} placeholder="Производитель" aria-label="Производитель" style={{ width: 200 }} />
-        <input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Версия начинается с" aria-label="Версия" style={{ width: 180 }} />
-        <select value={platform} onChange={(e) => { setPlatform(e.target.value); setOffset(0); }} aria-label="Платформа" style={{ width: "auto" }}><option value="">Все платформы</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
-        <label className="check" style={{ margin: 0 }}><input type="checkbox" className="switch" checked={installedOnly} onChange={(e) => { setInstalledOnly(e.target.checked); setOffset(0); }} />Только установленные</label>
+        <input value={publisher} onChange={(e) => setPublisher(e.target.value)} placeholder="Производитель" aria-label="Производитель" className="w-md" />
+        <input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Версия начинается с" aria-label="Версия" className="w-md" />
+        <select value={platform} onChange={(e) => { setPlatform(e.target.value); setOffset(0); }} aria-label="Платформа" className="w-auto"><option value="">Все платформы</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
+        <label className="check inline-check"><input type="checkbox" className="switch" checked={installedOnly} onChange={(e) => { setInstalledOnly(e.target.checked); setOffset(0); }} />Только установленные</label>
         <p className="note">Одна строка — запись реестра KSC как есть (название, версия, производитель). «Установок» и «Компьютеров» — на компьютерах, {all ? "включая давно не подключавшиеся" : `активных за ${ctx.me.activity_days} сут`}. Отметьте версии, чтобы найти компьютеры.</p>
       </div>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className="table-scroll">
+      <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
         {!data && busy ? <SkelRows cols={6} /> : (
           <table className="table">
             <thead><tr>
@@ -78,7 +78,7 @@ function Registry({ ctx }: { ctx: Ctx }) {
               <th className="num">Установок</th><th className="num">Компьютеров</th>
               <SortTh k="first_seen" label="Впервые в сети" sort={sort} desc={desc} onSort={onSort} />
               <th><span className="sr-only">Действия</span></th></tr></thead>
-            <tbody style={{ opacity: busy ? .55 : 1, transition: "opacity .15s" }}>
+            <tbody>
               {(data?.items ?? []).map((p) => (
                 <tr key={p.product_id} className={selected.has(p.product_id) ? "sel" : ""}>
                   <td className="check"><input type="checkbox" checked={selected.has(p.product_id)} onChange={() => toggle(p)} aria-label={`Выбрать ${p.name} ${p.version}`} disabled={!p.installs} /></td>
@@ -152,7 +152,7 @@ function HostsPreview({ ctx, params, title, onClose }: { ctx: Ctx; params: Repor
       <div className="row">
         <label className="inline">Связь с KSC за
           <select value={days ?? ""} onChange={(e) => { setDays(e.target.value ? Number(e.target.value) : null); setOffset(0); }}><option value="">{s?.active_days ?? "…"} сут (по настройке)</option>{DAYS.map((d) => <option key={d} value={d}>{d} сут</option>)}</select></label>
-        <label className="check" style={{ margin: 0 }}><input type="checkbox" className="switch" checked={includeInactive} onChange={(e) => { setIncludeInactive(e.target.checked); setOffset(0); }} />Включать компьютеры без связи</label>
+        <label className="check inline-check"><input type="checkbox" className="switch" checked={includeInactive} onChange={(e) => { setIncludeInactive(e.target.checked); setOffset(0); }} />Включать компьютеры без связи</label>
         <div className="spacer" />
         {canEdit && <button className="btn primary" onClick={() => navigate(reportHref(full, title))}><Icon name="file" />Сформировать отчёт</button>}
       </div>

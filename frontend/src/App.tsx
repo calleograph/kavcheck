@@ -3,6 +3,7 @@ import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from
 import { api, setCsrf, setSourceId, setUnauthorizedHandler, type Me, type SourceRef } from "./api";
 import { Icon, Mark, type IconName } from "./components/Icons";
 import { Empty, Segmented } from "./components/ui";
+import { GlobalSearch } from "./components/GlobalSearch";
 import LoginPage from "./pages/LoginPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
 import SecurityPage from "./pages/SecurityPage";
@@ -142,6 +143,10 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
   useEffect(() => { if (!open) return; const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); document.querySelector<HTMLElement>(".topbar .burger")?.focus(); } }; document.addEventListener("keydown", esc); return () => document.removeEventListener("keydown", esc); }, [open]);
   const inAdmin = pathname.startsWith("/admin");
   const tab = new URLSearchParams(search).get("tab") ?? "system";
+  // группа администрирования сворачивается (запоминается в браузере) и раскрывается сама при входе в раздел
+  const [adminOpen, setAdminOpen] = useState(() => { try { return localStorage.getItem("kc:nav-admin") !== "0"; } catch { return true; } });
+  useEffect(() => { if (inAdmin) setAdminOpen(true); }, [inAdmin]);
+  const toggleAdmin = () => setAdminOpen((o) => { try { localStorage.setItem("kc:nav-admin", o ? "0" : "1"); } catch { /* не запомнится */ } return !o; });
   return (
     <div className="shell">
       <a className="skip-link" href="#main">Перейти к содержимому</a>
@@ -149,15 +154,15 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
         <Link to="/" className="side-brand"><Mark size={28} /><span className="site-name">{me.site_name || "KAV Checker"}</span></Link>
         <div className="side-scroll">
           <div className="nav-list">
-            <NavIndicator deps={[pathname, search]} />
+            <NavIndicator deps={[pathname, search, adminOpen]} />
             <div className="nav-label">Аудит</div>
             {NAV.map((n) => <NavLink key={n.to} to={n.to} end={n.end}><Icon name={n.icon} />{n.label}</NavLink>)}
             {me.user.is_admin && <>
-              <div className="nav-label">Администрирование</div>
-              {ADMIN_TABS.map((t) => {
+              <button type="button" className="nav-label nav-toggle" aria-expanded={adminOpen} onClick={toggleAdmin}>Администрирование<Icon name="chevronD" size={14} /></button>
+              {adminOpen && ADMIN_TABS.map((t) => {
                 const active = inAdmin && tab === t.id;
                 return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>
-                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", catalog: "layers", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
+                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", catalog: "package", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
               })}
             </>}
           </div>
@@ -169,6 +174,7 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
         <header className="topbar">
           <button type="button" className="btn ghost icon burger" aria-label="Открыть меню разделов" aria-expanded={open} onClick={() => setOpen(true)}><Icon name="menu" size={20} /></button>
           <SourceSwitcher sources={sources} current={current} onPick={onPick} isAdmin={me.user.is_admin} />
+          <GlobalSearch sourceId={current?.id ?? null} />
           <div className="spacer" />
           <UserMenu me={me} version={version} onLogout={onLogout} />
         </header>

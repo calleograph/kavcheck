@@ -37,7 +37,7 @@ function initialFromUrl(sp: URLSearchParams): Initial {
   const key = sp.get("product");
   if (!key) return null;
   const op = (sp.get("op") as VersionOp) || "lt";
-  return { items: [emptyDraft({ product: { key, name: sp.get("name") ?? key }, op, value: sp.get("value") ?? "", open: op !== "lt" })], name: sp.get("name") ? `${sp.get("name")}: проверка версий` : undefined };
+  return { items: [emptyDraft({ product: { key, name: sp.get("name") ?? key, latest_version: sp.get("latest") ?? undefined }, op, value: sp.get("value") ?? "", open: op !== "lt" })], name: sp.get("name") ? `${sp.get("name")}: проверка версий` : undefined };
 }
 
 function ReportsHome({ ctx }: { ctx: Ctx }) {
@@ -173,7 +173,7 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
   }, [j?.status, jobId, offset, applied, source, program, sort, desc]);
   const back = <Link className="back-link" to="/reports"><Icon name="arrowL" size={15} />Отчёты</Link>;
   if (err) return <section><PageHead title="Отчёт" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div></section>;
-  if (!j) return <section><PageHead title={<span className="skel" style={{ width: 320, height: 28 }} />} back={back} /><div className="table-scroll"><SkelRows /></div></section>;
+  if (!j) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="table-scroll"><SkelRows /></div></section>;
   const [l, c] = JOB_STATUS[j.status] ?? [j.status, ""];
   const audit = j.kind === "version_audit";
   const multi = (j.source_ids?.length ?? 1) > 1;

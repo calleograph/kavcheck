@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { num } from "../util";
+import { num, plural } from "../util";
 import { Icon, type IconName } from "./Icons";
 
 /** Заголовок сортируемого столбца: щелчок или Enter меняет порядок. */
@@ -138,14 +138,16 @@ export function Dock({ children, label }: { children: ReactNode; label: string }
   return <div className="dock" role="toolbar" aria-label={label}>{children}</div>;
 }
 
-/** Строка о скрытых устройствах: глобальный фильтр активности прячет давно не подключавшиеся к KSC компьютеры. */
-export function HiddenNote({ hidden, days, all, onToggle }: { hidden: number; days: number | null | undefined; all: boolean; onToggle: () => void }) {
-  if (!all && !hidden) return null;
+/** Строка о скрытых устройствах: глобальный фильтр активности прячет давно не подключавшиеся к KSC компьютеры.
+ *  hidden = null — число уникальных скрытых компьютеров неизвестно (например, в каталоге счётчики по каждой программе). */
+export function HiddenNote({ hidden, days, all, onToggle }: { hidden: number | null; days: number | null | undefined; all: boolean; onToggle: () => void }) {
+  if (!all && hidden === 0) return null;
   return (
     <p className="hidden-note">
       <Icon name={all ? "eye" : "eyeOff"} size={15} />
       {all ? <span>Показаны все компьютеры, включая не подключавшиеся к KSC дольше {days ?? "…"} сут.</span>
-        : <span>Скрыто {num(hidden)} {hidden % 10 === 1 && hidden % 100 !== 11 ? "компьютер" : "компьютеров"} без связи с KSC дольше {days ?? "…"} сут.</span>}
+        : hidden === null ? <span>Компьютеры без связи с KSC дольше {days ?? "…"} сут не учитываются.</span>
+        : <span>Скрыто {num(hidden)} {plural(hidden, "компьютер", "компьютера", "компьютеров")} без связи с KSC дольше {days ?? "…"} сут.</span>}
       <button type="button" className="link-btn" onClick={onToggle}>{all ? "Скрыть неактивные" : "Показать все"}</button>
     </p>
   );

@@ -293,7 +293,7 @@ function CheckUser() {
   return (
     <div className="card narrow">
       <form onSubmit={run}>
-        <p className="muted small intro">Что получит пользователь при входе: найден ли он в каталоге, в каких группах состоит, какие правила подходят, какая роль и какие источники. Пароль не нужен.</p>
+        <p className="muted small lead-in">Что получит пользователь при входе: найден ли он в каталоге, в каких группах состоит, какие правила подходят, какая роль и какие источники. Пароль не нужен.</p>
         <div className="row"><input className="grow" value={login} onChange={(e) => setLogin(e.target.value)} placeholder="ivanov, EXAMPLE\ivanov или ivanov@example.local" aria-label="Логин" required />
           <button className="btn primary" aria-busy={busy}><Icon name="search" size={15} /><span>Проверить</span></button></div>
       </form>

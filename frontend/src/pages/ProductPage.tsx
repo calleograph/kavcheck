@@ -32,9 +32,9 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const back = <Link className="back-link" to="/software"><Icon name="arrowL" size={15} />Программы</Link>;
   if (err) return <section><PageHead title="Продукт" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div></section>;
-  if (!p) return <section><PageHead title={<span className="skel" style={{ width: 260, height: 28 }} />} back={back} /><div className="card"><SkelRows rows={5} cols={4} /></div></section>;
+  if (!p) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="card"><SkelRows rows={5} cols={4} /></div></section>;
   const canEdit = ctx.me.user.role !== "viewer";
-  const checkHref = (extra = "") => `/reports?product=${encodeURIComponent(p.key)}&name=${encodeURIComponent(p.name)}${extra}`;
+  const checkHref = (extra = "") => `/reports?product=${encodeURIComponent(p.key)}&name=${encodeURIComponent(p.name)}${p.latest_version ? `&latest=${encodeURIComponent(p.latest_version)}` : ""}${extra}`;
   const hiddenTotal = p.hosts_all - p.hosts_active;
   const segs = p.branches.map((b) => ({ key: b.branch || "∅", label: b.branch || "не определена", value: b.hosts_shown, undef: !b.branch, note: `${num(b.versions.length)} верс.` })).filter((s) => s.value > 0);
   return (
@@ -72,10 +72,10 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
                   <td className="mono">{v.branch || <span className="muted">—</span>}</td>
                   <td className="small">{v.platform.join(", ")}</td>
                   <td className="small">{v.names.slice(0, 2).join("; ")}{v.names.length > 2 ? "…" : ""}</td>
-                  <td className="num">{num(v.hosts)}{all && v.hosts_all !== v.hosts ? "" : ""}</td>
+                  <td className="num">{num(v.hosts)}</td>
                   <td className="actions">
                     <button className={`btn mini ${on ? "primary" : ""}`} onClick={() => setSel(on ? null : { version: v.version })} aria-pressed={on}><Icon name="monitor" size={15} />Компьютеры</button>
-                    {canEdit && <Link className="btn mini ghost" to={checkHref(`&value=${encodeURIComponent(v.version)}&op=le`)} title="Проверить эту и более ранние версии">≤ этой</Link>}
+                    {canEdit && <Link className="btn mini ghost row-act" to={checkHref(`&value=${encodeURIComponent(v.version)}&op=le`)} title={`Найти компьютеры с версией ${v.version} и ниже`}><Icon name="target" size={15} />Эта и ниже</Link>}
                   </td>
                 </tr>);
             })}
