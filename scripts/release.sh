@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # release.sh — выпуск версии: check | patch | minor | notes
 #   check — VERSION, CHANGELOG.md и frontend/package.json согласованы; patch|minor — поднять версию, добавить раздел в CHANGELOG, закоммитить и создать тег vX.Y.Z
-#   (push тега выполняется вручную: git push origin main --tags — после него CI соберёт и опубликует образы); notes — раздел CHANGELOG текущей версии (для описания релиза).
+#   (push тега выполняется вручную: git push origin HEAD --tags — после него CI соберёт и опубликует образы); notes — раздел CHANGELOG текущей версии (для описания релиза).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 V="$(tr -d '[:space:]' < "$ROOT/VERSION")"
