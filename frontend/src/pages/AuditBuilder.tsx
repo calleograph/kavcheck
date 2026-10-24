@@ -79,7 +79,7 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
   };
   const xlsx = async () => {
     if (!ready) return; setBusy("xlsx"); setErr("");
-    try { const j = await api.reports.create("version_audit", editing?.name ?? initial?.name ?? "", params(), sources); navigate(`/reports/${j.id}`); }
+    try { const j = await api.reports.create("version_audit", editing?.name ?? initial?.name ?? "", params(), sources); navigate(`/reports/${j.id}`, { state: { toast: "Отчёт XLSX поставлен в очередь" } }); }
     catch (x) { setErr((x as ApiError).message); setBusy(""); }
   };
   const many = ctx.sources.length > 1;

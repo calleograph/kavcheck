@@ -162,7 +162,7 @@ function ChecksView({ ctx }: { ctx: Ctx }) {
                 <tr key={c.id}><td><b>{c.name}</b>{c.description && <span className="sub">{c.description}</span>}</td>
                   <td className="small">{c.kind === "legacy" ? "сценарий 0.1.0" : (c.params?.items ?? []).map(itemSummary).join("; ")}</td>
                   <td className="small">{c.source_names.join(", ")}</td><td className="small nowrap">{c.last_run_at ? fmt(c.last_run_at) : "—"}</td>
-                  <td className="actions">{canEdit && <button className="btn mini primary" onClick={async () => { try { const j = await api.checks.run(c.id); navigate(`/reports/${j.id}`); } catch (e) { show((e as ApiError).message, "error"); } }}><Icon name="play" size={14} />Запустить</button>}
+                  <td className="actions">{canEdit && <button className="btn mini primary" onClick={async () => { try { const j = await api.checks.run(c.id); navigate(`/reports/${j.id}`, { state: { toast: `Проверка «${c.name}» запущена` } }); } catch (e) { show((e as ApiError).message, "error"); } }}><Icon name="play" size={14} />Запустить</button>}
                     {c.last_job_id && <Link className="btn mini ghost" to={`/reports/${c.last_job_id}`}>Результат</Link>}
                     {canEdit && c.kind !== "legacy" && <Link className="btn mini ghost icon" to={`/reports?check=${c.id}`} aria-label={`Изменить проверку ${c.name}`}><Icon name="edit" size={15} /></Link>}</td></tr>))}
               {!checks.length && <tr><td colSpan={5}><Empty icon="target" title="Сохранённых проверок нет" action={canEdit ? <Link className="btn" to="/reports">Проверить версии программы</Link> : undefined}>

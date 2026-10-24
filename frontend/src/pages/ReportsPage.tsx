@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type AuditParams, type Job, type ReportParams, type SavedCheck, type VersionOp } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched, Pager } from "../components/Common";
@@ -67,10 +67,10 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
   }, [checkId, checks, editing?.id]);
   // отчёт по выбранным записям реестра (раздел «Программы → Реестр KSC»)
   const legacy = useMemo<ReportParams | null>(() => { try { return sp.get("kind") === "software_hosts" && sp.get("params") ? JSON.parse(sp.get("params") as string) as ReportParams : null; } catch { return null; } }, [sp]);
-  const runCheck = async (c: SavedCheck) => { try { const j = await api.checks.run(c.id); show(`Проверка «${c.name}» запущена`); navigate(`/reports/${j.id}`); } catch (e) { show((e as ApiError).message, "error"); } };
+  const runCheck = async (c: SavedCheck) => { try { const j = await api.checks.run(c.id); navigate(`/reports/${j.id}`, { state: { toast: `Проверка «${c.name}» запущена` } }); } catch (e) { show((e as ApiError).message, "error"); } };
   const editCheck = (c: SavedCheck) => { setSp((p) => { p.set("check", c.id); p.delete("product"); return p; }); window.scrollTo({ top: 0, behavior: "smooth" }); };
   const newCheck = () => { setPreview(null); setEditing(null); setInitial(null); setSp(new URLSearchParams()); setBuilderKey((k) => k + 1); };
-  const quick = async (params: ReportParams, title: string) => { try { const j = await api.reports.create("hosts", title, params); navigate(`/reports/${j.id}`); } catch (e) { show((e as ApiError).message, "error"); } };
+  const quick = async (params: ReportParams, title: string) => { try { const j = await api.reports.create("hosts", title, params); navigate(`/reports/${j.id}`, { state: { toast: `Отчёт «${title}» поставлен в очередь` } }); } catch (e) { show((e as ApiError).message, "error"); } };
   return (
     <section>
       <PageHead title="Отчёты" lede="Выберите программу и границу устаревших версий — получите список компьютеров и отчёт XLSX. Проверку можно сохранить и повторять одним щелчком.">
@@ -78,7 +78,7 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
       </PageHead>
       {legacy && (
         <div className="alert info"><Icon name="info" /><div className="alert-body">Выбрано записей реестра KSC: <b>{legacy.product_ids?.length ?? 0}</b>. Сформировать отчёт «Компьютеры с программами» по ним?</div>
-          <button className="btn mini primary" disabled={!canEdit} onClick={async () => { try { const j = await api.reports.create("software_hosts", sp.get("title") ?? "", legacy); navigate(`/reports/${j.id}`); } catch (e) { show((e as ApiError).message, "error"); } }}>Сформировать</button>
+          <button className="btn mini primary" disabled={!canEdit} onClick={async () => { try { const j = await api.reports.create("software_hosts", sp.get("title") ?? "", legacy); navigate(`/reports/${j.id}`, { state: { toast: "Отчёт поставлен в очередь" } }); } catch (e) { show((e as ApiError).message, "error"); } }}>Сформировать</button>
           <button className="btn mini ghost" onClick={() => setSp(new URLSearchParams())}>Отмена</button></div>)}
       <div className="split">
         <AuditBuilder key={builderKey} ctx={ctx} initial={initial} editing={editing} onSaved={(c) => { loadChecks(); setEditing(c); }} onResult={setPreview} />
@@ -163,6 +163,12 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
   const [err, setErr] = useState("");
   const [toast, show] = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
+  // уведомление о запуске приходит вместе с переходом: страница, где нажали кнопку, к этому моменту уже закрыта
+  useEffect(() => {
+    const t = (location.state as { toast?: string } | null)?.toast;
+    if (t) { show(t); navigate(location.pathname, { replace: true, state: null }); }
+  }, [location.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const load = useCallback(() => api.reports.get(jobId).then(setJ).catch((e) => setErr((e as ApiError).message)), [jobId]);
   useEffect(() => { setJ(null); setRows(null); void load(); }, [load]);
   useEffect(() => { if (!j || (j.status !== "queued" && j.status !== "running")) return; const t = window.setInterval(load, 2000); return () => window.clearInterval(t); }, [j, load]);
@@ -172,8 +178,8 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
     api.reports.rows(jobId, { offset, limit: 100, q: applied, source, program, sort, desc }).then((r) => setRows(r as unknown as { items: Record<string, unknown>[]; total: number })).catch((e) => setErr((e as ApiError).message));
   }, [j?.status, jobId, offset, applied, source, program, sort, desc]);
   const back = <Link className="back-link" to="/reports"><Icon name="arrowL" size={15} />Отчёты</Link>;
-  if (err) return <section><PageHead title="Отчёт" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div></section>;
-  if (!j) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="table-scroll"><SkelRows /></div></section>;
+  if (err) return <section><PageHead title="Отчёт" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>{toast}</section>;
+  if (!j) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="table-scroll"><SkelRows /></div>{toast}</section>;
   const [l, c] = JOB_STATUS[j.status] ?? [j.status, ""];
   const audit = j.kind === "version_audit";
   const multi = (j.source_ids?.length ?? 1) > 1;
@@ -188,7 +194,7 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
         <span className={`badge ${c}`}>{l}</span>
         {j.data_fetched_at && <Fetched at={j.data_fetched_at} />}
         {j.status === "done" && <><a className="btn primary" href={api.reports.downloadUrl(j.id, "xlsx")}><Icon name="download" />Скачать XLSX</a><a className="btn" href={api.reports.downloadUrl(j.id, "csv")}>CSV</a></>}
-        {canEdit && j.status !== "running" && j.status !== "queued" && <button className="btn ghost" onClick={async () => { const n = await api.reports.rerun(j.id); show("Отчёт поставлен в очередь"); navigate(`/reports/${n.id}`); }}><Icon name="refresh" />Повторить</button>}
+        {canEdit && j.status !== "running" && j.status !== "queued" && <button className="btn ghost" onClick={async () => { const n = await api.reports.rerun(j.id); navigate(`/reports/${n.id}`, { state: { toast: "Отчёт поставлен в очередь" } }); }}><Icon name="refresh" />Повторить</button>}
       </PageHead>
       {(j.status === "running" || j.status === "queued") && (
         <div className="alert info" role="status"><span className="spin accent" />
