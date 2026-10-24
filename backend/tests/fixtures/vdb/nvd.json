@@ -6,7 +6,7 @@
   {
    "cve": {
     "id": "CVE-2023-4863",
-    "sourceIdentifier": "chrome-cve-admin@google.com",
+    "sourceIdentifier": "source@example.org",
     "published": "2023-09-12T15:15:24.327",
     "lastModified": "2026-06-17T06:38:46.547",
     "vulnStatus": "Analyzed",
@@ -19,7 +19,7 @@
     ],
     "affected": [
      {
-      "source": "chrome-cve-admin@google.com",
+      "source": "source@example.org",
       "affectedData": [
        {
         "vendor": "Google",
@@ -51,7 +51,7 @@
     "metrics": {
      "cvssMetricV31": [
       {
-       "source": "nvd@nist.gov",
+       "source": "source@example.org",
        "type": "Primary",
        "cvssData": {
         "version": "3.1",
@@ -120,7 +120,7 @@
     "cisaVulnerabilityName": "Google Chromium WebP Heap-Based Buffer Overflow Vulnerability",
     "weaknesses": [
      {
-      "source": "nvd@nist.gov",
+      "source": "source@example.org",
       "type": "Primary",
       "description": [
        {
@@ -208,56 +208,13 @@
       ]
      }
     ],
-    "references": [
-     {
-      "url": "http://www.openwall.com/lists/oss-security/2023/09/21/4",
-      "source": "chrome-cve-admin@google.com",
-      "tags": [
-       "Mailing List"
-      ]
-     },
-     {
-      "url": "http://www.openwall.com/lists/oss-security/2023/09/22/1",
-      "source": "chrome-cve-admin@google.com",
-      "tags": [
-       "Mailing List"
-      ]
-     },
-     {
-      "url": "http://www.openwall.com/lists/oss-security/2023/09/22/3",
-      "source": "chrome-cve-admin@google.com",
-      "tags": [
-       "Mailing List"
-      ]
-     },
-     {
-      "url": "http://www.openwall.com/lists/oss-security/2023/09/22/4",
-      "source": "chrome-cve-admin@google.com",
-      "tags": [
-       "Mailing List"
-      ]
-     },
-     {
-      "url": "http://www.openwall.com/lists/oss-security/2023/09/22/5",
-      "source": "chrome-cve-admin@google.com",
-      "tags": [
-       "Mailing List"
-      ]
-     },
-     {
-      "url": "http://www.openwall.com/lists/oss-security/2023/09/22/6",
-      "source": "chrome-cve-admin@google.com",
-      "tags": [
-       "Mailing List"
-      ]
-     }
-    ]
+    "references": []
    }
   },
   {
    "cve": {
     "id": "CVE-2024-3094",
-    "sourceIdentifier": "secalert@redhat.com",
+    "sourceIdentifier": "source@example.org",
     "published": "2024-03-29T17:15:21.150",
     "lastModified": "2026-06-17T07:43:17.830",
     "vulnStatus": "Modified",
@@ -270,11 +227,11 @@
     ],
     "affected": [
      {
-      "source": "secalert@redhat.com",
+      "source": "source@example.org",
       "affectedData": [
        {
         "defaultStatus": "unaffected",
-        "collectionURL": "https://github.com/tukaani-project/xz",
+        "collectionURL": "https://example.org/ref",
         "packageName": "xz",
         "versions": [
          {
@@ -291,7 +248,7 @@
         "vendor": "Red Hat",
         "product": "Red Hat Enterprise Linux 10",
         "defaultStatus": "unaffected",
-        "collectionURL": "https://access.redhat.com/downloads/content/package-browser/",
+        "collectionURL": "https://example.org/ref",
         "packageName": "xz",
         "cpes": [
          "cpe:/o:redhat:enterprise_linux:10"
@@ -301,7 +258,7 @@
         "vendor": "Red Hat",
         "product": "Red Hat Enterprise Linux 6",
         "defaultStatus": "unaffected",
-        "collectionURL": "https://access.redhat.com/downloads/content/package-browser/",
+        "collectionURL": "https://example.org/ref",
         "packageName": "xz",
         "cpes": [
          "cpe:/o:redhat:enterprise_linux:6"
@@ -311,7 +268,7 @@
         "vendor": "Red Hat",
         "product": "Red Hat Enterprise Linux 7",
         "defaultStatus": "unaffected",
-        "collectionURL": "https://access.redhat.com/downloads/content/package-browser/",
+        "collectionURL": "https://example.org/ref",
         "packageName": "xz",
         "cpes": [
          "cpe:/o:redhat:enterprise_linux:7"
@@ -321,7 +278,7 @@
         "vendor": "Red Hat",
         "product": "Red Hat Enterprise Linux 8",
         "defaultStatus": "unaffected",
-        "collectionURL": "https://access.redhat.com/downloads/content/package-browser/",
+        "collectionURL": "https://example.org/ref",
         "packageName": "xz",
         "cpes": [
          "cpe:/o:redhat:enterprise_linux:8"
@@ -331,7 +288,7 @@
         "vendor": "Red Hat",
         "product": "Red Hat Enterprise Linux 9",
         "defaultStatus": "unaffected",
-        "collectionURL": "https://access.redhat.com/downloads/content/package-browser/",
+        "collectionURL": "https://example.org/ref",
         "packageName": "xz",
         "cpes": [
          "cpe:/o:redhat:enterprise_linux:9"
@@ -341,7 +298,7 @@
         "vendor": "Red Hat",
         "product": "Red Hat JBoss Enterprise Application Platform 8",
         "defaultStatus": "unaffected",
-        "collectionURL": "https://access.redhat.com/jbossnetwork/restricted/listSoftware.html",
+        "collectionURL": "https://example.org/ref",
         "packageName": "xz",
         "cpes": [
          "cpe:/a:redhat:jboss_enterprise_application_platform:8"
@@ -353,7 +310,7 @@
     "metrics": {
      "cvssMetricV31": [
       {
-       "source": "secalert@redhat.com",
+       "source": "source@example.org",
        "type": "Secondary",
        "cvssData": {
         "version": "3.1",
@@ -373,7 +330,7 @@
        "impactScore": 6.0
       },
       {
-       "source": "nvd@nist.gov",
+       "source": "source@example.org",
        "type": "Primary",
        "cvssData": {
         "version": "3.1",
@@ -418,7 +375,7 @@
     },
     "weaknesses": [
      {
-      "source": "secalert@redhat.com",
+      "source": "source@example.org",
       "type": "Secondary",
       "description": [
        {
@@ -450,51 +407,13 @@
       ]
      }
     ],
-    "references": [
-     {
-      "url": "https://access.redhat.com/security/cve/CVE-2024-3094",
-      "source": "secalert@redhat.com",
-      "tags": [
-       "Vendor Advisory"
-      ]
-     },
-     {
-      "url": "https://bugzilla.redhat.com/show_bug.cgi?id=2272210",
-      "source": "secalert@redhat.com",
-      "tags": [
-       "Issue Tracking",
-       "Vendor Advisory"
-      ]
-     },
-     {
-      "url": "https://www.openwall.com/lists/oss-security/2024/03/29/4",
-      "source": "secalert@redhat.com",
-      "tags": [
-       "Mailing List"
-      ]
-     },
-     {
-      "url": "https://www.redhat.com/en/blog/urgent-security-alert-fedora-41-and-rawhide-users",
-      "source": "secalert@redhat.com",
-      "tags": [
-       "Vendor Advisory"
-      ]
-     },
-     {
-      "url": "http://www.openwall.com/lists/oss-security/2024/03/29/10",
-      "source": "af854a3a-2127-422b-91ae-364da2661108"
-     },
-     {
-      "url": "http://www.openwall.com/lists/oss-security/2024/03/29/12",
-      "source": "af854a3a-2127-422b-91ae-364da2661108"
-     }
-    ]
+    "references": []
    }
   },
   {
    "cve": {
     "id": "CVE-2021-44228",
-    "sourceIdentifier": "security@apache.org",
+    "sourceIdentifier": "source@example.org",
     "published": "2021-12-10T10:15:09.143",
     "lastModified": "2026-08-11T19:33:44.513",
     "vulnStatus": "Analyzed",
@@ -507,7 +426,7 @@
     ],
     "affected": [
      {
-      "source": "security@apache.org",
+      "source": "source@example.org",
       "affectedData": [
        {
         "vendor": "Apache Software Foundation",
@@ -549,7 +468,7 @@
     "metrics": {
      "cvssMetricV31": [
       {
-       "source": "nvd@nist.gov",
+       "source": "source@example.org",
        "type": "Primary",
        "cvssData": {
         "version": "3.1",
@@ -591,7 +510,7 @@
      ],
      "cvssMetricV2": [
       {
-       "source": "nvd@nist.gov",
+       "source": "source@example.org",
        "type": "Primary",
        "cvssData": {
         "version": "2.0",
@@ -639,11 +558,11 @@
     },
     "cisaExploitAdd": "2021-12-10",
     "cisaActionDue": "2021-12-24",
-    "cisaRequiredAction": "For all affected software assets for which updates exist, the only acceptable remediation actions are: 1) Apply updates; OR 2) remove affected assets from agency networks. Temporary mitigations using one of the measures provided at https://www.cisa.gov/uscert/ed-22-02-apache-log4j-recommended-mitigation-measures are only acceptable until updates are available.",
+    "cisaRequiredAction": "For all affected software assets for which updates exist, the only acceptable remediation actions are: 1) Apply updates; OR 2) remove affected assets from agency networks. Temporary mitigations using one of the measures provided at https://example.org/ref are only acceptable until updates are available.",
     "cisaVulnerabilityName": "Apache Log4j2 Remote Code Execution Vulnerability",
     "weaknesses": [
      {
-      "source": "security@apache.org",
+      "source": "source@example.org",
       "type": "Secondary",
       "description": [
        {
@@ -661,7 +580,7 @@
       ]
      },
      {
-      "source": "nvd@nist.gov",
+      "source": "source@example.org",
       "type": "Secondary",
       "description": [
        {
@@ -757,58 +676,7 @@
       ]
      }
     ],
-    "references": [
-     {
-      "url": "http://packetstormsecurity.com/files/165225/Apache-Log4j2-2.14.1-Remote-Code-Execution.html",
-      "source": "security@apache.org",
-      "tags": [
-       "Third Party Advisory",
-       "VDB Entry"
-      ]
-     },
-     {
-      "url": "http://packetstormsecurity.com/files/165260/VMware-Security-Advisory-2021-0028.html",
-      "source": "security@apache.org",
-      "tags": [
-       "Third Party Advisory",
-       "VDB Entry"
-      ]
-     },
-     {
-      "url": "http://packetstormsecurity.com/files/165261/Apache-Log4j2-2.14.1-Information-Disclosure.html",
-      "source": "security@apache.org",
-      "tags": [
-       "Exploit",
-       "Third Party Advisory",
-       "VDB Entry"
-      ]
-     },
-     {
-      "url": "http://packetstormsecurity.com/files/165270/Apache-Log4j2-2.14.1-Remote-Code-Execution.html",
-      "source": "security@apache.org",
-      "tags": [
-       "Exploit",
-       "Third Party Advisory",
-       "VDB Entry"
-      ]
-     },
-     {
-      "url": "http://packetstormsecurity.com/files/165281/Log4j2-Log4Shell-Regexes.html",
-      "source": "security@apache.org",
-      "tags": [
-       "Third Party Advisory",
-       "VDB Entry"
-      ]
-     },
-     {
-      "url": "http://packetstormsecurity.com/files/165282/Log4j-Payload-Generator.html",
-      "source": "security@apache.org",
-      "tags": [
-       "Third Party Advisory",
-       "VDB Entry"
-      ]
-     }
-    ]
+    "references": []
    }
   }
  ]
