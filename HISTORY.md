@@ -44,3 +44,10 @@
 - Основные файлы: `backend/app/ksc/{protection,events,queries}.py`, `backend/app/api/{protection,events,hosts}.py`, `backend/tests/test_protection.py`, `backend/tests/test_ksc_live.py`, `frontend/src/pages/{ProtectionPage,EventsPage,HostsPage,DashboardPage,VulnsPage}.tsx`, `frontend/src/styles.css`, `scripts/release.sh`, `.github/workflows/ci.yml`, `docs/*`.
 - Результат: 59 тестов backend проходят (11 на синтетическом SQL Server), сборка frontend и проверка частных данных — без ошибок; на KAVBIG сводка защиты без кэша — 4,8 с, из кэша — 0,3 с, сводка событий — 0,4–2,6 с, страница журнала — до 0,9 с; страницы проверены в браузере на 1440 и 390 пикселях (фильтры по проблеме, версии и угрозе, вкладки карточки).
 - Известные проблемы: модули не проверены на реальной базе KSC; пороги защиты не сохраняются между посещениями.
+
+## 2026-10-24 — выпуск 0.2.0
+
+- Сделано: раздел `[Unreleased]` CHANGELOG закрыт как `[0.2.0] — 2026-10-24` (пункты об оформлении интерфейса перенесены из подраздела «Обновление с 0.1.0» в общий список, добавлен пустой `[Unreleased]` для следующих изменений); CI исправлен — запускался только на ветке `main`, а ветка репозитория `master`; создан и отправлен тег `v0.2.0`.
+- Основные файлы: `CHANGELOG.md`, `.github/workflows/ci.yml`, `scripts/release.sh` (подсказка про push), `PROJECT.md`.
+- Результат: перед тегом 59 тестов backend, сборка frontend, проверка частных данных и синтаксиса скриптов — без ошибок; на GitHub впервые прошли CI (на `master` и на теге) и Release; опубликован релиз «KAV Checker 0.2.0» и образы backend и web `v0.2.0` в GHCR, доступные без входа; коммит `5c5e89d`.
+- Известные проблемы: v0.1.0 тегом не отмечен; установки 0.1.0 обновляются сразу до `v0.2.0`.
