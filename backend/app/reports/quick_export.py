@@ -118,6 +118,7 @@ CSS = """
 :root { --ink:#14181d; --ink2:#39424c; --muted:#59636e; --line:#dee2e7; --bg:#f3f5f7; --card:#fff; --accent:#0f6a8b; --crit:#b3261e; --high:#b45309; --warn:#6b5f1a; --ok:#1b6e46; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.cutwarn { margin: 14px 0 0; padding: 12px 16px; border: 1px solid #e3c36b; background: #fbf3d9; color: #5c4300; border-radius: 10px; }
 .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 24px 60px; }
 header.doc { background: #121820; color: #e4e9ee; border-radius: 12px; padding: 22px 26px; }
 header.doc h1 { margin: 0 0 4px; font-size: 24px; line-height: 1.25; color: #fff; letter-spacing: -.01em; }
@@ -183,6 +184,11 @@ def render_html(doc: dict) -> str:
     out = [f'<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(doc["title"])}</title><style>{CSS}</style></head><body><div class="wrap">']
     out.append(f'<header class="doc"><h1>{esc(doc["title"])}</h1><p>{esc(doc.get("subtitle") or "")}</p><div class="meta"><span>Сформирован: {esc(_fmt(doc.get("generated_at"), "date").replace("T", " "))} UTC</span>'
                f'<span>Источник KSC: {esc(doc.get("source") or "")}</span><span>KAV Checker</span></div></header>')
+    cuts = [(t["title"], len(t["rows"])) for t in doc["tables"] if len(t["rows"]) > HTML_ROW_LIMIT]
+    if cuts:
+        out.append('<div class="cutwarn" role="note"><b>В этом HTML — сокращённая выборка.</b> '
+                   + "; ".join(f"таблица «{esc(n)}»: первые {HTML_ROW_LIMIT} из {total} строк" for n, total in cuts)
+                   + ". Полный результат — в файле Excel (и CSV). Показатели ниже подсчитаны по <b>полному</b> результату отчёта, а не по показанным строкам.</div>")
     out.append('<div class="cards">' + "".join(f'<div class="card {esc(m.get("tone") or "")}"><div class="l">{esc(m["label"])}</div><div class="v">{esc(str(m["value"]))}</div>'
                                               + (f'<div class="h">{esc(m["hint"])}</div>' if m.get("hint") else "") + "</div>" for m in doc["metrics"]) + "</div>")
     if doc.get("severity"):
@@ -196,13 +202,13 @@ def render_html(doc: dict) -> str:
         out.append('<h2>Достоверность и ограничения</h2><div class="panel"><ul class="notes">' + "".join(f"<li>{esc(n)}</li>" for n in doc["notes"]) + "</ul></div>")
     for i, t in enumerate(doc["tables"]):
         rows = t["rows"]
-        cut = i == 0 and len(rows) > HTML_ROW_LIMIT
+        cut = len(rows) > HTML_ROW_LIMIT
         shown = rows[:HTML_ROW_LIMIT] if cut else rows
         out.append(f'<h2>{esc(t["title"])} <span style="color:#59636e;font-weight:400">· {len(rows)}</span></h2>')
         if t.get("note"):
             out.append(f'<p class="tnote">{esc(t["note"])}</p>')
         if cut:
-            out.append(f'<p class="tnote">Показаны первые {HTML_ROW_LIMIT} строк из {len(rows)}; полный список — в файле Excel.</p>')
+            out.append(f'<p class="tnote">Показаны первые {HTML_ROW_LIMIT} строк из {len(rows)} — сокращённая выборка; полный список — в файле Excel.</p>')
         if not rows:
             out.append('<div class="panel">Нет данных.</div>')
             continue

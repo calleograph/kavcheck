@@ -32,11 +32,19 @@ def _attacker(v) -> str:
     return ip_str(int(s)) if s.isdigit() and 0 < int(s) < 2**32 else s
 
 
+def host_label(host_id, name) -> str:
+    """Имя компьютера в событии. Если устройства уже нет в KSC (имя на момент события в публичном представлении недоступно), показываем идентификатор и прямо говорим, что данных нет."""
+    if name:
+        return str(name)
+    return f"Удалённое устройство (ID {host_id}, имя неизвестно)" if host_id else "Устройство не указано в событии"
+
+
 def event_row(r: dict) -> dict:
     """Событие с понятными полями: угроза или атака, объект, пользователь, тип опасности — по таблице параметров KSC."""
     key = BY_TYPE.get(r.get("type") or "", "")
     out = {"event_id": int(r["event_id"]), "at": _utc(r.get("at")), "type": key, "type_title": TYPES[key][1] if key else (r.get("type_name") or r.get("type") or ""),
-           "severity": r.get("severity"), "host_id": r.get("host_id"), "host": r.get("host") or "", "ip": ip_str(r.get("ip_int")), "product": r.get("product") or "",
+           "severity": r.get("severity"), "host_id": r.get("host_id"), "host": host_label(r.get("host_id"), r.get("host")), "host_known": bool(r.get("host")),
+           "ip": ip_str(r.get("ip_int")), "product": r.get("product") or "",
            "threat": "", "object": "", "user": "", "threat_kind": "", "attacker": "", "protocol": "", "port": ""}
     if key == "attack":
         out.update(threat=r.get("par1") or "", protocol=r.get("par2") or "", attacker=_attacker(r.get("par3")), port=r.get("par4") or "")
@@ -106,3 +114,11 @@ async def page(client: SourceClient, *, days: int, types: list[str], host_id: in
     rows = await client.run(q.EVENTS_PAGE.format(where=w), {**params, "offset": offset, "limit": limit}, max_rows=limit)
     cnt = await client.run(q.EVENTS_COUNT.format(where=w), params, max_rows=1)
     return {"items": [event_row(r) for r in rows], "total": int(cnt[0]["n"]) if cnt else 0, "offset": offset, "limit": limit, "days": days}
+
+
+async def all_rows(client: SourceClient, *, days: int, types: list[str], host_id: int | None = None, qtext: str = "", threat: str = "", event_ids: list[int] | None = None,
+                   max_rows: int) -> list[dict]:
+    """Все события выборки одним запросом (для отчётов). Больше max_rows — ошибка «слишком много строк», как у остальных отчётов."""
+    w, params = where(days=days, types=types, host_id=host_id, qtext=qtext, threat=threat, event_ids=event_ids)
+    rows = await client.run(q.EVENTS_ALL.format(where=w), {**params, "cap": max_rows + 1}, max_rows=max_rows)
+    return [event_row(r) for r in rows]

@@ -378,27 +378,23 @@ async def build_protection(client: SourceClient, p: dict, ctx: Ctx) -> dict:
 async def build_events(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     days = int(p.get("days") or 7)
     types = [t for t in EV.GROUP_TYPES.get(p.get("group") or "", []) + list(p.get("types") or [])]
-    rows_raw: list[dict] = []
-    offset, total = 0, 0
     event_ids = [int(i) for i in p.get("event_ids") or []]
-    while True:
-        if ctx.cancelled():
-            raise RuntimeError("cancelled")
-        pg = await EV.page(client, days=days, types=types, host_id=p.get("host_id") or None, qtext=p.get("q") or "", threat=p.get("threat") or "", event_ids=event_ids, offset=offset, limit=1000)
-        rows_raw += pg["items"]
-        total = pg["total"]
-        ctx.progress(f"событий прочитано: {len(rows_raw)} из {total}")
-        if len(rows_raw) > ctx.max_rows:
-            raise KscError("too_many_rows", f"Событий больше предела отчёта ({ctx.max_rows}): сузьте период или фильтр")
-        if len(pg["items"]) < 1000 or len(rows_raw) >= total:
-            break
-        offset += 1000
-    rows = [{**r, "at": r["at"], "type_ru": r["type_title"], "target": (f"{r['attacker'] or '?'} → порт {r['port']} ({r['protocol']})" if r["type"] == "attack" else r["object"])} for r in rows_raw]
+    ctx.progress("чтение событий")
+    try:
+        rows_raw = await EV.all_rows(client, days=days, types=types, host_id=p.get("host_id") or None, qtext=p.get("q") or "", threat=p.get("threat") or "", event_ids=event_ids, max_rows=ctx.max_rows)
+    except KscError as exc:
+        if exc.code != "too_many_rows":
+            raise
+        raise KscError("too_many_rows", f"Событий больше предела отчёта ({ctx.max_rows}): сузьте период или фильтр") from None
+    ctx.progress(f"событий прочитано: {len(rows_raw)}")
+    rows = [{**r, "at": r["at"], "type_ru": r["type_title"], "ip": r["ip"] or "нет данных", "target": (f"{r['attacker'] or '?'} → порт {r['port']} ({r['protocol']})" if r["type"] == "attack" else r["object"])} for r in rows_raw]
     hosts_u = {r["host_id"] or r["host"] for r in rows}
+    n_deleted = len({r["host_id"] or r["host"] for r in rows if not r["host_known"]})
+    ev_deleted = sum(1 for r in rows if not r["host_known"])
     threats = Counter(r["threat"] for r in rows if r["threat"])
     by_type = Counter(r["type_title"] for r in rows)
     notcured = sum(1 for r in rows if r["type"] == "notcured")
-    metrics = [metric("rows", "Событий в отчёте", len(rows)), metric("hosts", "Затронуто компьютеров (уникальных)", len(hosts_u), "события удалённых устройств учитываются как «удалённое устройство»"),
+    metrics = [metric("rows", "Событий в отчёте", len(rows)), metric("hosts", "Затронуто компьютеров (уникальных)", len(hosts_u), f"из них устройств, которых уже нет в KSC: {n_deleted}" if n_deleted else ""),
                metric("threats", "Различных угроз и атак", len(threats)), metric("notcured", "Событий «не вылечен»", notcured, "", "danger" if notcured else "ok")]
     conds = [{"label": "Период", "text": "последние сутки" if days == 1 else f"последние {days} сут"}, {"label": "Источник KSC", "text": ctx.source_name}]
     if p.get("group"):
@@ -412,11 +408,12 @@ async def build_events(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     top_h: dict = {}
     for r in rows:
         k = r["host_id"] or r["host"]
-        g = top_h.setdefault(k, {"name": r["host"] or "удалённое устройство", "ip": r["ip"], "n": 0, "notcured": 0, "last": r["at"]})
+        g = top_h.setdefault(k, {"name": r["host"], "ip": r["ip"], "n": 0, "notcured": 0, "last": r["at"]})
         g["n"] += 1
         g["notcured"] += 1 if r["type"] == "notcured" else 0
     return {"title": "События безопасности" + (f": {p['threat']}" if p.get("threat") else ""), "subtitle": "Обнаружения угроз и сетевые атаки из журнала событий KSC", "conditions": conds, "metrics": metrics,
-            "severity": None, "notes": ["Время события задаёт устройство; в отчёте — UTC.", "События — из журнала KSC за указанный период; удалённые из KSC устройства сохраняются в журнале без имени."]
+            "severity": None, "notes": ["Время события задаёт устройство; в отчёте — UTC.", "События — из журнала KSC за указанный период."]
+            + ([f"События устройств, которых уже нет в KSC: {ev_deleted} (устройств: {n_deleted}). Имя и IP-адрес на момент события в публичном представлении KSC недоступны — указан идентификатор устройства, в столбце IP-адрес — «нет данных»."] if ev_deleted else [])
             + ([] if rows else ["По выбранным условиям событий не найдено."]), "tables": [
                 {"id": "rows", "title": "События", "columns": [col("at", "Время (UTC)", "date"), col("host", "Компьютер"), col("ip", "IP-адрес", "mono"), col("type_ru", "Событие"), col("threat", "Угроза или атака", "mono"),
                                                               col("threat_kind", "Вид"), col("target", "Объект / источник атаки"), col("user", "Пользователь")], "rows": rows},

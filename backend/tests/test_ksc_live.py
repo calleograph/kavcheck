@@ -202,11 +202,16 @@ def test_protection_and_events():
     assert vers["1103"]["latest"] == "15.1.0.22239" and vers["KES"]["versions"][0]["build"] == "12.6.0.438"
     s = asyncio.run(events.summary(client, days=7))
     t = {x["key"]: x["n"] for x in s["types"]}
-    assert (t["detected"], t["notcured"], t["attack"], t["deleted"]) == (2, 1, 1, 1)   # события старше периода и служебные не учитываются
-    assert s["hosts"]["notcured"] == 1 and any(x["name"] == "EICAR-Test-File" for x in s["top_threats"]) and sum(b["detections"] for b in s["trend"]) == 2
+    assert (t["detected"], t["notcured"], t["attack"], t["deleted"]) == (3, 1, 1, 1)   # события старше периода и служебные не учитываются
+    assert s["hosts"]["notcured"] == 1 and any(x["name"] == "EICAR-Test-File" for x in s["top_threats"]) and sum(b["detections"] for b in s["trend"]) == 3
     page = asyncio.run(events.page(client, days=7, types=["attack"], offset=0, limit=10))
     assert page["total"] == 1 and page["items"][0]["attacker"] == "198.51.100.120" and page["items"][0]["port"] == "22"
     assert asyncio.run(events.page(client, days=30, types=[], qtext="sample.bin", offset=0, limit=10))["total"] == 2
+    # устройство, которого нет в KSC (событие 8): идентификатор вместо имени и явная пометка, что данных нет
+    gone = [e for e in asyncio.run(events.page(client, days=7, types=["detected"], offset=0, limit=10))["items"] if e["host_id"] == 9901][0]
+    assert gone["host_known"] is False and "9901" in gone["host"] and "имя неизвестно" in gone["host"] and gone["ip"] == ""
+    full = asyncio.run(events.all_rows(client, days=7, types=[], max_rows=100))                 # одним запросом, те же строки, что постранично
+    assert len(full) == asyncio.run(events.page(client, days=7, types=[], offset=0, limit=100))["total"] == 6
 
 
 # --------------------------------------------------------------------------------------------- условия версий: сквозная проверка

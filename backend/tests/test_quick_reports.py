@@ -140,3 +140,26 @@ async def test_events_report_matches_page(client, app):
     await _run(app, runner, job["id"])
     d = (await client.get(f"/api/v1/reports/{job['id']}")).json()
     assert d["status"] == "done" and d["rows"] == 1
+
+
+async def test_events_deleted_device_is_labelled(client, app):
+    await _setup(client, app)
+    pv = await preview(client, "quick_events", {"days": 7})
+    gone = [r for r in pv["items"] if r["host_id"] == 9901]
+    assert len(gone) == 1 and "ID 9901" in gone[0]["host"] and "имя неизвестно" in gone[0]["host"] and gone[0]["ip"] == "нет данных"
+    assert any("которых уже нет в KSC: 1" in n for n in pv["doc"]["notes"]) and "из них устройств, которых уже нет в KSC: 1" in next(m["hint"] for m in pv["doc"]["metrics"] if m["key"] == "hosts")
+
+
+async def test_html_truncation_is_announced_and_summary_is_full(client, app, monkeypatch):
+    monkeypatch.setattr("app.reports.quick_export.HTML_ROW_LIMIT", 2)
+    sid, runner = await _setup(client, app)
+    params = {"descr_ids": [5001, 5903]}                    # 5 обнаружений, 4 компьютера
+    job = (await client.post("/api/v1/reports", json={"kind": "quick_vulns", "title": "", "params": params, "source_ids": [sid]})).json()
+    await _run(app, runner, job["id"])
+    d = job_dir(app.state.settings, uuid.UUID(job["id"]))
+    html = (d / "report.html").read_text(encoding="utf-8")
+    assert "сокращённая выборка" in html and "первые 2 из 5 строк" in html and "полному</b> результату" in html
+    assert html.count('class="mono">KLA') + html.count('KLA10001</td>') >= 1 and html.index("сокращённая выборка") < html.index("Затронуто компьютеров")
+    assert any(x["value"] == 4 for x in (await client.get(f"/api/v1/reports/{job['id']}")).json()["summary"]["metrics"])      # показатели — по полному результату
+    wb = load_workbook(d / "report.xlsx", read_only=True)
+    assert len(list(wb["Обнаружения"].iter_rows(values_only=True))) - 1 == 5               # в Excel — все строки

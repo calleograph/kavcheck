@@ -16,7 +16,7 @@ from ..auth.deps import SessionUser, current_source, get_db, require_user
 from ..ksc import protection as P
 from ..ksc.driver import KscError
 from ..models import KscSource
-from ..reports import quick
+from ..reports import quick, quick_export
 from .catalog import audit_preview
 from .schemas import QUICK_PARAMS, AuditParams
 from .vulns import _ksc, groups_cached, unsupported
@@ -78,7 +78,7 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         raise _ksc(exc) from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    return {**data, "fetched_at": data["at"], "preview_rows": PREVIEW_ROWS}
+    return {**data, "fetched_at": data["at"], "preview_rows": PREVIEW_ROWS, "html_row_limit": quick_export.HTML_ROW_LIMIT}
 
 
 async def _load_protection(request: Request, src: KscSource, exclude_slaves: bool) -> list[dict]:
@@ -93,4 +93,5 @@ async def _cached_protection(request: Request, src: KscSource, exclude_slaves: b
 
 def _answer(doc: dict, fetched_at) -> dict:
     main = doc["tables"][0]
-    return {"doc": quick.brief(doc), "items": main["rows"][:PREVIEW_ROWS], "total": len(main["rows"]), "columns": main["columns"], "fetched_at": fetched_at, "preview_rows": PREVIEW_ROWS}
+    return {"doc": quick.brief(doc), "items": main["rows"][:PREVIEW_ROWS], "total": len(main["rows"]), "columns": main["columns"], "fetched_at": fetched_at, "preview_rows": PREVIEW_ROWS,
+            "html_row_limit": quick_export.HTML_ROW_LIMIT}

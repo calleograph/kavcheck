@@ -160,6 +160,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
             {options.patchable && <label className="check"><input type="checkbox" checked={!!params.patchable} onChange={(e) => setExtra({ ...extra, patchable: e.target.checked })} />Только с доступным исправлением</label>}
           </div>
         </details>
+        {data && data.html_row_limit && data.doc && data.doc.tables.some((t) => t.n > data.html_row_limit!) && (
+          <div className="alert warn"><Icon name="info" /><div className="alert-body">В HTML войдут только первые {num(data.html_row_limit)} строк каждой таблицы (сокращённая выборка), показатели в сводке — по полному результату. Полный список — в Excel и CSV.</div></div>)}
         {data?.fetched_at && <p className="muted small">Данные KSC получены {fmt(data.fetched_at)}.</p>}
       </div>
     </Modal>

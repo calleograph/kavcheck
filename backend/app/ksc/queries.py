@@ -182,6 +182,8 @@ EVENTS_PAGE = """SELECT e.nId AS event_id, e.tmRiseTime AS at, e.strEventType AS
   e.wstrPar5 AS par5, e.wstrPar7 AS par7, e.wstrPar8 AS par8
 FROM dbo.v_akpub_ev_event e LEFT JOIN dbo.v_akpub_host h ON h.nId = e.nHostId
 WHERE {where} ORDER BY e.tmRiseTime DESC, e.nId DESC OFFSET %(offset)s ROWS FETCH NEXT %(limit)s ROWS ONLY"""
+# Все события выборки одним запросом (отчёты): без OFFSET и повторного COUNT на каждой порции; TOP ограничивает чтение пределом отчёта
+EVENTS_ALL = EVENTS_PAGE.replace("SELECT e.nId AS event_id", "SELECT TOP (%(cap)s) e.nId AS event_id", 1).split(" OFFSET ")[0]
 EVENTS_COUNT = "SELECT COUNT(*) AS n FROM dbo.v_akpub_ev_event e LEFT JOIN dbo.v_akpub_host h ON h.nId = e.nHostId WHERE {where}"
 
 # Объекты, необходимые функциям: по ним проверяется совместимость источника при добавлении

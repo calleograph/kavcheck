@@ -141,7 +141,8 @@ INSERT INTO dbo.v_akpub_ev_event (nId, nHostId, tmRiseTime, tmRegistrationTime, 
  (4,2,DATEADD(hour,-30,GETUTCDATE()),DATEADD(hour,-30,GETUTCDATE()),'GNRL_EV_ATTACK_DETECTED',N'Обнаружена сетевая атака',4,N'kesl',N'Сетевая атака',N'Scan.Generic.PortScan.TCP',N'TCP',N'3325256824',N'22',NULL,NULL,NULL),
  (5,7,DATEADD(day,-2,GETUTCDATE()),DATEADD(day,-2,GETUTCDATE()),'GNRL_EV_OBJECT_NOTCURED',N'Объект не вылечен',3,N'KES',N'Объект не вылечен',NULL,N'C:\Users\user\Downloads\sample.bin',NULL,NULL,N'EICAR-Test-File',NULL,NULL),
  (6,1,DATEADD(hour,-2,GETUTCDATE()),DATEADD(hour,-2,GETUTCDATE()),'KLEVP_GroupTaskSyncState',N'Синхронизация задачи',1,N'1103',N'Служебное',NULL,NULL,NULL,NULL,NULL,NULL,NULL),
- (7,6,DATEADD(day,-40,GETUTCDATE()),DATEADD(day,-40,GETUTCDATE()),'GNRL_EV_VIRUS_FOUND',N'Обнаружен вредоносный объект',4,N'KES',N'Обнаружен объект',NULL,N'D:\old\setup.exe',NULL,NULL,N'not-a-virus:RiskTool.Win32.Example',NULL,N'65');
+ (7,6,DATEADD(day,-40,GETUTCDATE()),DATEADD(day,-40,GETUTCDATE()),'GNRL_EV_VIRUS_FOUND',N'Обнаружен вредоносный объект',4,N'KES',N'Обнаружен объект',NULL,N'D:\old\setup.exe',NULL,NULL,N'not-a-virus:RiskTool.Win32.Example',NULL,N'65'),
+ (8,9901,DATEADD(hour,-3,GETUTCDATE()),DATEADD(hour,-3,GETUTCDATE()),'GNRL_EV_VIRUS_FOUND',N'Обнаружен вредоносный объект',4,N'KES',N'Обнаружен объект',NULL,N'C:\Temp\gone.exe',NULL,NULL,N'EICAR-Test-File',NULL,N'60');
 GO
 -- Проверка условий версий: «Contoso Agent» с заранее известными версиями и компьютерами (tests/test_ksc_live.py::test_version_conditions_end_to_end).
 -- Активные за 30 суток: 1, 2, 3, 4, 6, 7; без связи: 5 (45 суток), 8 (никогда); 9 — кластер (подчинённая запись). Версии 8.9 и 8.10 — проверка числового сравнения.

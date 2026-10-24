@@ -86,7 +86,7 @@ export default function EventsPage({ ctx }: { ctx: Ctx }) {
           {!s ? <div className="pad"><SkelRows rows={5} cols={2} /></div> : !s.top_hosts.length ? <p className="muted small pad">Событий обнаружения {per} нет.</p> : (
             <ul className="rows pad-x">{s.top_hosts.map((h) => (
               <li key={h.host_id ?? h.name}>
-                <div className="r-main">{h.host_id && !h.deleted ? <Link to={`/hosts/${h.host_id}?tab=events`} className="strong-link">{h.name}</Link> : <b>{h.deleted ? `Удалённое устройство (${h.host_id ?? "?"})` : h.name}</b>}
+                <div className="r-main">{h.host_id && !h.deleted ? <Link to={`/hosts/${h.host_id}?tab=events`} className="strong-link">{h.name}</Link> : <b>{h.deleted ? `Удалённое устройство (ID ${h.host_id ?? "?"}, имя неизвестно)` : h.name}</b>}
                   <span className="r-sub">{h.ip && <span className="mono">{h.ip} · </span>}последнее {fmt(h.last)}</span></div>
                 {h.notcured > 0 && <span className="badge err">не вылечено {num(h.notcured)}</span>}{h.attacks > 0 && <span className="badge err">атаки {num(h.attacks)}</span>}
                 <span className="num"><b>{num(h.n)}</b></span>
@@ -139,7 +139,7 @@ export function EventList({ ctx, days, hostId, group, threat, onGroup, onThreat 
                 <tr className={sel.has(e.event_id) ? "sel" : ""}>
                   <td className="check"><input type="checkbox" aria-label="Выбрать событие" checked={sel.has(e.event_id)} onChange={() => sel.toggle(e.event_id)} /></td>
                   <td className="nowrap small">{fmt(e.at)}</td>
-                  {!hostId && <td>{e.host_id && e.host ? <Link to={`/hosts/${e.host_id}?tab=events`}>{e.host}</Link> : <span className="muted">удалённое устройство</span>}{e.ip && <span className="sub mono">{e.ip}</span>}</td>}
+                  {!hostId && <td>{e.host_known ? <Link to={`/hosts/${e.host_id}?tab=events`}>{e.host}</Link> : <span className="muted" title="Устройства уже нет в KSC: имя и IP-адрес на момент события недоступны">{e.host}</span>}{e.ip ? <span className="sub mono">{e.ip}</span> : <span className="sub muted">IP: нет данных</span>}</td>}
                   <td><span className={`badge ${TYPE_TONE[e.type] ?? ""}`}>{e.type_title}</span></td>
                   <td>{e.threat ? <button type="button" className="link-btn mono threat-name" onClick={() => onThreat(e.threat)} title="Показать события этой угрозы">{e.threat}</button> : <span className="muted">—</span>}{e.threat_kind && <span className="sub">{e.threat_kind}</span>}</td>
                   <td className="small obj">{e.type === "attack" ? <span className="mono">{e.attacker || "?"}{e.port ? ` → порт ${e.port}` : ""}{e.protocol ? ` (${e.protocol})` : ""}</span> : e.object ? <span className="mono" title={e.object}>{e.object}</span> : <span className="muted">—</span>}</td>
