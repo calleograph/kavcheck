@@ -132,7 +132,7 @@ function ProductsView({ ctx }: { ctx: Ctx }) {
                 <tr key={`${p.product_id}-${p.name}`} className="clickable" onClick={() => open(p)}>
                   <td><button type="button" className="link-btn strong-link" onClick={() => open(p)}>{p.name}</button></td><td className="num"><b>{num(p.hosts)}</b></td>
                   <td><SevCounts critical={p.critical} high={p.high} warning={p.warning} compact /></td><td className="num">{num(p.vulns)}</td><td className="num">{num(p.total)}</td><td className="num">{num(p.patchable)}</td>
-                  <td className="actions"><button type="button" className="btn mini" onClick={(e) => { e.stopPropagation(); open(p); }}><Icon name="monitor" size={15} />Компьютеры</button></td>
+                  <td className="actions"><button type="button" className="btn mini ghost row-act" onClick={(e) => { e.stopPropagation(); open(p); }}><Icon name="monitor" size={15} />Компьютеры</button></td>
                 </tr>))}
               {data && !data.items.length && <tr><td colSpan={7}><Empty icon="checkCircle" title="Уязвимых программ нет">По этим условиям KSC не нашёл неисправленных уязвимостей.</Empty></td></tr>}
             </tbody>

@@ -17,6 +17,8 @@
   --accent: #0f6a8b; --accent-hover: #0b5672; --accent-ink: #ffffff; --accent-soft: #e2eff4; --accent-line: #a7cddb;
   /* навигация */
   --chrome: #121820; --chrome-2: #1b232d; --chrome-3: #242e3a; --chrome-line: #263039; --chrome-ink: #e4e9ee; --chrome-muted: #8f9ba7; --chrome-accent: #6ccbe6;
+  /* плавающие тёмные поверхности (уведомление, панель выбора, аватар): в тёмной теме светлее полотна, иначе сливаются */
+  --float: var(--chrome); --float-line: transparent;
   /* состояния: насыщенный цвет / фон / текст на фоне (≥ 4.5:1) */
   --ok: #1f8a55; --ok-bg: #e2f3ea; --ok-text: #17663f;
   --warn: #c88a14; --warn-bg: #fbf0d8; --warn-text: #7a4f00;
@@ -42,6 +44,7 @@
   --ink: #e7ecf1; --ink-2: #c4cdd6; --muted: #95a2af; --faint: #66727e;
   --accent: #5ec8e5; --accent-hover: #86d7ed; --accent-ink: #052330; --accent-soft: #11303b; --accent-line: #22586a;
   --chrome: #090c10; --chrome-2: #131a22; --chrome-3: #1c2530; --chrome-line: #1d252e;
+  --float: #1e2731; --float-line: rgba(255, 255, 255, .09);
   --ok: #3cc47e; --ok-bg: #12301f; --ok-text: #8fdcaf; --warn: #e2b04a; --warn-bg: #33290f; --warn-text: #ecd08f; --danger: #ec6a64; --danger-bg: #3a1c1b; --danger-text: #f6aca7;
   --sp-0: #8fdcf0; --sp-1: #5ec8e5; --sp-2: #3fa9c8; --sp-3: #2e8aa6; --sp-4: #256f86; --sp-5: #1f5869; --sp-6: #1a4452; --sp-7: #163640;
   --sh-1: 0 1px 2px rgba(0, 0, 0, .35); --sh-2: 0 8px 20px -8px rgba(0, 0, 0, .6); --sh-pop: 0 20px 48px -12px rgba(0, 0, 0, .7), 0 0 0 1px rgba(255, 255, 255, .04);
@@ -52,6 +55,7 @@
   --ink: #e7ecf1; --ink-2: #c4cdd6; --muted: #95a2af; --faint: #66727e;
   --accent: #5ec8e5; --accent-hover: #86d7ed; --accent-ink: #052330; --accent-soft: #11303b; --accent-line: #22586a;
   --chrome: #090c10; --chrome-2: #131a22; --chrome-3: #1c2530; --chrome-line: #1d252e;
+  --float: #1e2731; --float-line: rgba(255, 255, 255, .09);
   --ok: #3cc47e; --ok-bg: #12301f; --ok-text: #8fdcaf; --warn: #e2b04a; --warn-bg: #33290f; --warn-text: #ecd08f; --danger: #ec6a64; --danger-bg: #3a1c1b; --danger-text: #f6aca7;
   --sp-0: #8fdcf0; --sp-1: #5ec8e5; --sp-2: #3fa9c8; --sp-3: #2e8aa6; --sp-4: #256f86; --sp-5: #1f5869; --sp-6: #1a4452; --sp-7: #163640;
   --sh-1: 0 1px 2px rgba(0, 0, 0, .35); --sh-2: 0 8px 20px -8px rgba(0, 0, 0, .6); --sh-pop: 0 20px 48px -12px rgba(0, 0, 0, .7), 0 0 0 1px rgba(255, 255, 255, .04);
@@ -409,7 +413,7 @@ td .empty { padding: 28px 12px; }
 .dd-who { padding: 8px 10px 10px; }
 .dd-who b { display: block; font-weight: 600; } .dd-who span { font-size: var(--fs-xs); color: var(--muted); }
 .dd-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; font-size: var(--fs-sm); color: var(--ink-2); }
-.avatar { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: var(--chrome); color: var(--chrome-accent); font-weight: 600; font-size: 13px; flex: none; }
+.avatar { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: var(--float); color: var(--chrome-accent); font-weight: 600; font-size: 13px; flex: none; }
 .uname { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .src-btn { display: inline-flex; align-items: center; gap: 10px; min-height: 40px; max-width: 420px; padding: 4px 10px 4px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface);
@@ -432,11 +436,11 @@ td .empty { padding: 28px 12px; }
 
 /* плавающая панель выбора (Kinetics «Contextual Dock») */
 .dock { position: fixed; z-index: var(--z-dock); left: calc(50% + var(--side-w) / 2); bottom: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  max-width: calc(100vw - var(--side-w) - 32px); padding: 8px 8px 8px 16px; background: var(--chrome); color: var(--chrome-ink); border-radius: 14px; box-shadow: var(--sh-pop);
+  max-width: calc(100vw - var(--side-w) - 32px); padding: 8px 8px 8px 16px; background: var(--float); color: var(--chrome-ink); border-radius: 14px; box-shadow: var(--sh-pop), inset 0 0 0 1px var(--float-line);
   animation: dock-in 360ms var(--ease-out) both; }
 .dock b { font-weight: 600; } .dock .muted { color: var(--chrome-muted); }
-.dock .btn { --b-bg: var(--chrome-3); --b-fg: var(--chrome-ink); --b-line: transparent; box-shadow: none; }
-.dock .btn:hover:not(:disabled) { --b-bg: #2d3946; --b-line: transparent; --b-fg: #fff; }
+.dock .btn { --b-bg: color-mix(in srgb, var(--chrome-ink) 10%, transparent); --b-fg: var(--chrome-ink); --b-line: transparent; box-shadow: none; }
+.dock .btn:hover:not(:disabled) { --b-bg: color-mix(in srgb, var(--chrome-ink) 18%, transparent); --b-line: transparent; --b-fg: #fff; }
 .dock .btn.primary { --b-bg: var(--chrome-accent); --b-fg: #062330; }
 .dock .btn.primary:hover:not(:disabled) { --b-bg: #8bd8ee; --b-fg: #062330; }
 @keyframes dock-in { from { opacity: 0; transform: translate(-50%, 18px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0); } }
@@ -457,7 +461,7 @@ td .empty { padding: 28px 12px; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(.975); } }
 @keyframes modal-out { to { opacity: 0; transform: translateY(6px) scale(.985); } }
 .toast-host { position: fixed; right: 24px; bottom: 24px; z-index: var(--z-toast); pointer-events: none; }
-.toast { display: inline-flex; align-items: center; gap: 9px; background: var(--chrome); color: var(--chrome-ink); padding: 10px 16px 10px 12px; border-radius: 12px; font-size: var(--fs-md); box-shadow: var(--sh-pop);
+.toast { display: inline-flex; align-items: center; gap: 9px; background: var(--float); color: var(--chrome-ink); padding: 10px 16px 10px 12px; border-radius: 12px; font-size: var(--fs-md); box-shadow: var(--sh-pop), inset 0 0 0 1px var(--float-line);
   animation: toast-in 420ms var(--ease-out) both; max-width: min(520px, calc(100vw - 32px)); }
 .toast svg { flex: none; color: var(--chrome-accent); }
 .toast.error svg { color: color-mix(in srgb, var(--danger) 65%, #fff); }

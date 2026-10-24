@@ -74,7 +74,7 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
                   <td className="small">{v.names.slice(0, 2).join("; ")}{v.names.length > 2 ? "…" : ""}</td>
                   <td className="num">{num(v.hosts)}</td>
                   <td className="actions">
-                    <button className={`btn mini ${on ? "primary" : ""}`} onClick={() => setSel(on ? null : { version: v.version })} aria-pressed={on}><Icon name="monitor" size={15} />Компьютеры</button>
+                    <button className={`btn mini ${on ? "primary" : "ghost row-act"}`} onClick={() => setSel(on ? null : { version: v.version })} aria-pressed={on}><Icon name="monitor" size={15} />Компьютеры</button>
                     {canEdit && <Link className="btn mini ghost row-act" to={checkHref(`&value=${encodeURIComponent(v.version)}&op=le`)} title={`Найти компьютеры с версией ${v.version} и ниже`}><Icon name="target" size={15} />Эта и ниже</Link>}
                   </td>
                 </tr>);

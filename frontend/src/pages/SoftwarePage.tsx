@@ -7,7 +7,7 @@ import { Modal } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
 import { Dock, Empty, PageHead, SkelRows, SortTh, Spectrum, Tabs } from "../components/ui";
 import { CatalogView, PublishersView } from "./CatalogPage";
-import { fmt, fmtDate, num } from "../util";
+import { fmt, fmtDate, num, plural } from "../util";
 
 export { SortTh };
 
@@ -87,7 +87,7 @@ function Registry({ ctx }: { ctx: Ctx }) {
                   <td className="small">{p.publisher || <span className="muted">—</span>}</td>
                   <td className="num">{num(p.installs)}</td><td className="num">{num(p.hosts)}</td>
                   <td className="nowrap small">{fmtDate(p.first_seen)}</td>
-                  <td className="actions"><button className="btn mini" onClick={() => setOpen(p)} disabled={!p.installs}><Icon name="monitor" size={15} />Компьютеры</button></td>
+                  <td className="actions"><button className="btn mini ghost row-act" onClick={() => setOpen(p)} disabled={!p.installs}><Icon name="monitor" size={15} />Компьютеры</button></td>
                 </tr>))}
               {data && !data.items.length && <tr><td colSpan={8}><Empty icon="search" title="Ничего не найдено">Измените название, производителя или версию. Уберите «Только установленные», чтобы увидеть и удалённые программы.</Empty></td></tr>}
             </tbody>
@@ -98,7 +98,7 @@ function Registry({ ctx }: { ctx: Ctx }) {
         <button type="button" className="link-btn" onClick={() => { setAll(!all); setOffset(0); }}>{all ? "Только активные" : "Учитывать все"}</button></p>
       {selected.size > 0 && (
         <Dock label="Выбранные версии">
-          <span><b>{selected.size}</b> <span className="muted">{selected.size === 1 ? "версия выбрана" : "версий выбрано"}</span></span>
+          <span><b>{selected.size}</b> <span className="muted">{plural(selected.size, "версия выбрана", "версии выбраны", "версий выбрано")}</span></span>
           <button className="btn mini primary" onClick={() => setPreview(true)}><Icon name="monitor" size={15} />Найти компьютеры</button>
           {ctx.me.user.role !== "viewer" && <Link className="btn mini" to={reportHref(params)}><Icon name="file" size={15} />Отчёт</Link>}
           <button className="btn mini icon" onClick={() => setSelected(new Map())} aria-label="Снять выбор"><Icon name="close" size={15} /></button>
