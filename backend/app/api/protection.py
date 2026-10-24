@@ -43,16 +43,8 @@ async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_
     except KscError as exc:
         raise _ksc(exc) from None
     now = datetime.now(timezone.utc)
-    online_data = any(r.get("online") is not None for r in base)
-    hosts, hidden, offline = [], 0, 0
-    for r in base:
-        if not all_hosts and (r["days_since_connection"] is None or r["days_since_connection"] > general.activity_days):
-            hidden += 1
-            continue
-        if online and online_data and r.get("online") is not True:
-            offline += 1
-            continue
-        hosts.append({**r, "problems": P.problems(r, now, bases_days=bases_days, scan_days=scan_days)})
+    hosts, sc = P.scope(base, now=now, activity_days=general.activity_days, include_inactive=all_hosts, online_only=online, bases_days=bases_days, scan_days=scan_days)
+    hidden, offline, online_data = sc["hidden"], sc["offline"], sc["online_data"]
     counts = Counter(p for h in hosts for p in h["problems"])
     reasons = Counter(b for h in hosts for b in P.STATUS_MASK if h["mask"] & b)
     summary = {"hosts": len(hosts), "hidden_hosts": hidden, "offline_hosts": offline, "online_only": bool(online and online_data), "online_data": online_data,
@@ -63,21 +55,7 @@ async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_
                "ksc_status": {s: sum(1 for h in hosts if h["ksc_status"] == s) for s in P.KSC_STATUS.values()},
                "reasons": [{"bit": b, "title": P.STATUS_MASK[b], "hosts": n} for b, n in reasons.most_common()],
                "versions": P.versions(hosts), "fetched_at": datetime.fromtimestamp(at, timezone.utc)}
-    items = hosts
-    if problem == "ok":
-        items = [h for h in items if not h["problems"]]
-    elif problem:
-        items = [h for h in items if problem in h["problems"]]
-    if product:
-        def ver(h: dict) -> str | None:
-            av = h["av"] or {}
-            return h["agent_build"] if product == P.AGENT else av.get("build") if av.get("code") == product else None
-        items = [h for h in items if ver(h) and (not build or ver(h) == build)]
-    if q_.strip():
-        n = q_.strip().lower()
-        items = [h for h in items if n in f"{h['name']} {h['fqdn']} {h['ip']}".lower()]
-    if group.strip():
-        items = [h for h in items if group.strip().lower() in h["group"].lower()]
+    items = P.pick(hosts, problem=problem, product=product, build=build, q=q_, group=group)
     order = list(P.PROBLEMS)
     floor = datetime.min.replace(tzinfo=timezone.utc)
     keyf = {"risk": lambda h: (bool(h["problems"]), -order.index(h["problems"][0]) if h["problems"] else 0, len(h["problems"])),   # problems уже по важности

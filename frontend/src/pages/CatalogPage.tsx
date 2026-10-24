@@ -6,6 +6,7 @@ import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { Icon } from "../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { useToast } from "../components/Toast";
+import { QuickReportPanel } from "../components/QuickReport";
 import { Dock, Empty, HiddenNote, SkelRows, SortTh } from "../components/ui";
 import { selLabel, useSelection } from "../selection";
 import { fmt, num, plural } from "../util";
@@ -84,13 +85,11 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
   const toggleFamily = async (p: CatalogItem) => {
     try { const m = await loadMembers(p.key); sel.toggleFamily(pick(p), [pick(p), ...m.map(pick)]); } catch (e) { show((e as ApiError).message, "error"); }
   };
-  const report = async () => {
+  const [auditReport, setAuditReport] = useState<Record<string, unknown> | null>(null);
+  const report = () => {
     const items = sel.items.map((e) => ({ kind: "product" as const, product_key: e.key, product_keys: e.family?.map((m) => m.key) ?? [],
       product_name: e.family && e.family.length > 1 ? `${e.name} и компоненты` : e.name, op: "any" as const, exclude: [], branches: [] }));
-    try {
-      const j = await api.reports.create("version_audit", `Установки: ${sel.items.map(selLabel).join(", ")}`.slice(0, 200), { items, include_inactive: all, active_days: null, group_contains: null }, [sid]);
-      navigate(`/reports/${j.id}`, { state: { toast: "Отчёт по установкам поставлен в очередь" } });
-    } catch (e) { show((e as ApiError).message, "error"); }
+    setAuditReport({ items, include_inactive: all, active_days: null, group_contains: null });
   };
   return (
     <>
@@ -159,6 +158,8 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
         fetchPage={(offset, limit) => api.catalog.productHosts(hostsKey, { all_hosts: all, offset, limit }) as unknown as Promise<Chunk<DrawerHost>>}
         onClose={() => setSp((x) => { x.delete("hosts"); x.delete("hn"); return x; })} />}
       {sel.count > 0 && <SelectionDock sel={sel} canEdit={canEdit} onCheck={() => navigate("/reports?sel=1")} onReport={report} />}
+      {auditReport && <QuickReportPanel kind="version_audit" title={`Установки: ${sel.items.map(selLabel).join(", ")}`.slice(0, 120)} lede="Компьютеры, где установлены выбранные программы (любая версия)"
+        params={auditReport} sourceIds={[sid]} options={{ scope: true }} activityDays={ctx.me.activity_days} canReport={canEdit} onClose={() => setAuditReport(null)} />}
       {toast}
     </>
   );
@@ -173,7 +174,7 @@ export function SelectionDock({ sel, canEdit, onCheck, onReport }: { sel: Return
         {shown.map((e) => <span key={e.key} className="dock-chip">{selLabel(e)}<button type="button" aria-label={`Убрать ${e.name}`} onClick={() => sel.remove(e.key)}><Icon name="close" size={12} /></button></span>)}
         {sel.items.length > 3 && <span className="muted">и ещё {sel.items.length - 3}</span>}</span>
       {canEdit && <button className="btn mini primary" onClick={onCheck}><Icon name="target" size={15} />Проверить версии</button>}
-      {canEdit && <button className="btn mini" onClick={onReport}><Icon name="file" size={15} />Отчёт по установкам</button>}
+      {canEdit && <button className="btn mini" onClick={onReport}><Icon name="file" size={15} />Сформировать отчёт</button>}
       <button className="btn mini icon" onClick={sel.clear} aria-label="Снять выбор"><Icon name="close" size={15} /></button>
     </Dock>
   );

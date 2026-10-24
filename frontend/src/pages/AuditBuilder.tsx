@@ -1,9 +1,10 @@
 import { FormEvent, Fragment, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { api, type ApiError, type AuditItem, type AuditParams, type AuditResultRow, type AuditSummary, type SavedCheck, type VersionOp } from "../api";
 import type { Ctx } from "../App";
 import { Modal } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
+import { QuickReportPanel } from "../components/QuickReport";
 import { ProductPicker, type PickedProduct } from "../components/ProductPicker";
 import { useToast } from "../components/Toast";
 import { Empty, TagInput } from "../components/ui";
@@ -60,7 +61,6 @@ export type PreviewState = { result: { summary: AuditSummary; items: AuditResult
 
 export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx: Ctx; initial: { items: Draft[]; sources?: string[]; params?: Partial<AuditParams>; name?: string } | null;
   editing: SavedCheck | null; onSaved: (c: SavedCheck) => void; onResult: (r: PreviewState) => void }) {
-  const navigate = useNavigate();
   const [items, setItems] = useState<Draft[]>(initial?.items.length ? initial.items : [emptyDraft()]);
   const [sources, setSources] = useState<string[]>(initial?.sources?.length ? initial.sources : ctx.current ? [ctx.current.id] : []);
   const [includeInactive, setIncludeInactive] = useState(!!initial?.params?.include_inactive);
@@ -68,9 +68,9 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
   const [days, setDays] = useState<string>(initial?.params?.active_days ? String(initial.params.active_days) : "");
   const [group, setGroup] = useState(initial?.params?.group_contains ?? "");
   const [rules, setRules] = useState<{ key: string; name: string }[]>([]);
-  const [busy, setBusy] = useState<"" | "preview" | "xlsx">("");
+  const [busy, setBusy] = useState<"" | "preview">("");
   const [err, setErr] = useState("");
-  const [save, setSave] = useState(false);
+  const [save, setSave] = useState(false); const [panel, setPanel] = useState(false);
   const [scopeOpen, setScopeOpen] = useState(!!(initial?.params?.include_inactive || initial?.params?.online_only || initial?.params?.active_days || initial?.params?.group_contains));
   const [toast, show] = useToast();
   const canEdit = ctx.me.user.role !== "viewer";
@@ -84,11 +84,7 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
     try { onResult({ result: await api.audit.preview(params(), sources, 20000), multi: sources.length > 1, xlsx: canEdit ? xlsx : undefined }); window.requestAnimationFrame(() => document.getElementById("audit-result")?.scrollIntoView({ behavior: "smooth", block: "start" })); }
     catch (x) { setErr((x as ApiError).message); } finally { setBusy(""); }
   };
-  const xlsx = async () => {
-    if (!ready) return; setBusy("xlsx"); setErr("");
-    try { const j = await api.reports.create("version_audit", editing?.name ?? initial?.name ?? "", params(), sources); navigate(`/reports/${j.id}`, { state: { toast: "Отчёт XLSX поставлен в очередь" } }); }
-    catch (x) { setErr((x as ApiError).message); setBusy(""); }
-  };
+  const xlsx = () => { if (ready) setPanel(true); };   // предпросмотр с числом компьютеров и выбором Excel/HTML/CSV — в боковой панели
   const many = ctx.sources.length > 1;
   return (<>
     <form className="card builder" onSubmit={preview} noValidate>
@@ -179,12 +175,14 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       <div className="form-actions">
         <button className="btn primary" aria-busy={busy === "preview"} disabled={!ready || !!busy}><Icon name="search" size={15} /><span>Найти устаревшие версии</span></button>
-        <button type="button" className="btn" onClick={xlsx} aria-busy={busy === "xlsx"} disabled={!ready || !!busy || !canEdit}><Icon name="download" size={15} /><span>Сформировать XLSX</span></button>
+        <button type="button" className="btn" onClick={xlsx} disabled={!ready || !!busy || !canEdit}><Icon name="file" size={15} /><span>Сформировать отчёт</span></button>
         <button type="button" className="btn ghost" onClick={() => setSave(true)} disabled={!ready || !canEdit}><Icon name="save" size={15} />{editing ? "Сохранить изменения" : "Сохранить проверку"}</button>
         {!ready && <span className="help">{sources.length ? "Выберите программу и укажите версию" : "Выберите хотя бы один источник"}</span>}
-        {!canEdit && <span className="help">XLSX и сохранение проверок — для аналитиков и администраторов.</span>}
+        {!canEdit && <span className="help">Отчёты и сохранение проверок — для аналитиков и администраторов.</span>}
       </div>
     </form>
+      {panel && <QuickReportPanel kind="version_audit" title={editing?.name ?? initial?.name ?? "Проверка версий"} lede="Условия проверки передаются в отчёт без изменений" params={params() as unknown as Record<string, unknown>} sourceIds={sources}
+        options={{ scope: true }} activityDays={ctx.me.activity_days} canReport={canEdit} onClose={() => setPanel(false)} />}
       {save && <SaveCheck editing={editing} defaultName={initial?.name ?? items.map((d) => d.product?.name ?? d.label).filter(Boolean).slice(0, 3).join(", ")} params={params()} sources={sources}
         onClose={() => setSave(false)} onSaved={(c) => { setSave(false); show(editing ? "Проверка обновлена" : "Проверка сохранена — её можно запустить повторно одним щелчком"); onSaved(c); }} />}
       {toast}
@@ -249,8 +247,8 @@ export function AuditResult({ id, result, multi, onXlsx }: { id?: string; result
       </div>
       <div className="section-head" id="audit-rows"><h2>{program ? `Компьютеры: ${program}` : "Компьютеры, где нужно обновление"}</h2><span className="count">{num(program ? rows.length : result.total)}</span>
         {program && <button type="button" className="link-btn" onClick={() => setProgram(null)}>все программы</button>}<div className="spacer" />
-        {result.total > result.items.length && <span className="muted small">Показаны первые {num(result.items.length)} из {num(result.total)} — полный список в XLSX</span>}
-        {onXlsx && <button type="button" className="btn mini" onClick={onXlsx}><Icon name="download" size={15} />Сформировать XLSX</button>}</div>
+        {result.total > result.items.length && <span className="muted small">Показаны первые {num(result.items.length)} из {num(result.total)} — полный список в отчёте</span>}
+        {onXlsx && <button type="button" className="btn mini" onClick={onXlsx}><Icon name="file" size={15} />Сформировать отчёт</button>}</div>
       <p className="muted small">Компьютеры, где версия соответствует условию проверки, — это не подтверждённые уязвимости; уязвимости, найденные KSC, — в разделе «Уязвимости».</p>
       <div className="table-scroll">
         <table className="table compact virt">

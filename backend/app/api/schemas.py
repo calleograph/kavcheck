@@ -179,8 +179,64 @@ class AuditParams(BaseModel):
     group_contains: str | None = Field(default=None, max_length=200)
 
 
+class QuickScope(BaseModel):
+    """Общая область быстрых отчётов: давность связи с KSC, отдельно — «в сети сейчас», группа и поиск по компьютеру."""
+    active_days: int | None = Field(default=None, ge=1, le=3650)
+    include_inactive: bool = False
+    online_only: bool = False
+    group_contains: str | None = Field(default=None, max_length=200)
+    q: str | None = Field(default=None, max_length=200)
+
+
+class QuickVulns(QuickScope):
+    """Уязвимости, подтверждённые KSC: выбранные уязвимости (идентификаторы KSC или CVE), уязвимые программы и/или компьютеры."""
+    descr_ids: list[int] = Field(default_factory=list, max_length=5000)
+    cves: list[str] = Field(default_factory=list, max_length=200)
+    vp_ids: list[int] = Field(default_factory=list, max_length=5000)
+    product_names: list[str] = Field(default_factory=list, max_length=50)
+    host_ids: list[int] = Field(default_factory=list, max_length=500)
+    severity: Literal["", "critical", "high", "warning"] = ""
+    patchable: bool = False
+
+    @model_validator(mode="after")
+    def _need_selection(self):
+        if not (self.descr_ids or self.cves or self.vp_ids or self.product_names or self.host_ids):
+            raise ValueError("Выберите уязвимости, программы или компьютеры")
+        self.cves = [c.strip().upper() for c in self.cves if c.strip()]
+        return self
+
+
+class QuickHosts(QuickScope):
+    host_ids: list[int] = Field(min_length=1, max_length=500)
+    sections: list[Literal["software", "vulns", "protection"]] = Field(default_factory=lambda: ["software", "vulns", "protection"])
+    bases_days: int = Field(default=3, ge=1, le=90)
+    scan_days: int = Field(default=30, ge=1, le=365)
+
+
+class QuickProtection(QuickScope):
+    problem: str = Field(default="", pattern=r"^(|ok|no_av|rtp_off|infected|bases_old|license|scan_old|reboot)$")
+    product: str = Field(default="", max_length=64)
+    build: str = Field(default="", max_length=64)
+    bases_days: int = Field(default=3, ge=1, le=90)
+    scan_days: int = Field(default=30, ge=1, le=365)
+    host_ids: list[int] = Field(default_factory=list, max_length=500)
+
+
+class QuickEvents(BaseModel):
+    days: Literal[1, 7, 30] = 7
+    group: Literal["", "detections", "notcured", "resolved", "attacks"] = ""
+    types: list[str] = Field(default_factory=list, max_length=10)
+    threat: str = Field(default="", max_length=300)
+    q: str = Field(default="", max_length=200)
+    host_id: int | None = None
+    event_ids: list[int] = Field(default_factory=list, max_length=5000)
+
+
+QUICK_PARAMS = {"quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents}
+
+
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_vulns|quick_hosts|quick_protection|quick_events)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)

@@ -43,7 +43,16 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   trend: ({ at: string } & Record<EvGroup, number>)[]; top_hosts: { host_id: number | null; name: string; ip: string; deleted: boolean; n: number; detections: number; notcured: number; attacks: number; last: string | null }[];
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
-export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit"; title: string; params: ReportParams & Partial<AuditParams>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary>) | null; error: string | null }
+export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
+export type QuickKind = "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events";
+export interface QuickCol { key: string; title: string; type: string }
+export interface QuickMetric { key: string; label: string; value: number | string; hint: string; tone: string }
+/** Документ быстрого отчёта без строк: один источник правды для просмотра, XLSX, HTML и CSV. */
+export interface QuickDoc { kind?: string; title: string; subtitle: string; conditions: { label: string; text: string }[]; metrics: QuickMetric[]; notes: string[]; generated_at?: string; source?: string;
+  severity: { title: string; levels: { key: string; label: string; value: number; hint: string }[] } | null; tables: { id: string; title: string; columns: QuickCol[]; n: number; note: string }[] }
+export interface QuickPreview { doc: QuickDoc | null; items: Record<string, string | number | null>[]; total: number; columns: QuickCol[]; fetched_at?: string; preview_rows?: number; unsupported?: string[] }
+export interface VulnDescr { descr_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label?: string; cve: string[]; kb: string[]; products: string[]; hosts: number; total: number; patchable: number; last_detected: string | null; url?: string }
+export interface VulnListSummary { vulns: number; critical: number; high: number; warning: number; patchable: number; activity_days: number; fetched_at: string }
 export interface Template { id: string; name: string; kind: Job["kind"]; params: ReportParams & Partial<AuditParams>; shared: boolean; owner_id: string | null; created_at: string }
 export interface AdminUser { id: string; username: string; display_name: string; email: string | null; auth_source: string; role: User["role"]; is_active: boolean; all_sources: boolean; source_ids: string[]; must_change_password: boolean; last_login_at: string | null; created_at: string; totp_enabled?: boolean; totp_enabled_at?: string | null }
 export interface Rule { id?: string; key: string; name: string; name_like: string; name_regex: string; branch_regex: string | null; branch_parts: number; exclude_regex: string | null; description: string | null; builtin?: boolean; enabled: boolean }
@@ -147,6 +156,7 @@ export const api = {
   vulns: {
     hosts: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VulnHost> & { summary: VulnSummary | null; unsupported?: string[] }>("GET", `/vulnerabilities/hosts${qs(p)}`),
     products: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VulnProduct> & { fetched_at?: string; activity_days?: number; unsupported?: string[] }>("GET", `/vulnerabilities/products${qs(p)}`),
+    list: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VulnDescr> & { summary?: VulnListSummary; unsupported?: string[] }>("GET", `/vulnerabilities/list${qs(p)}`),
     host: (id: number) => req<{ host: Host; items: HostVuln[]; counts: Record<"critical" | "high" | "warning", number>; total: number; fetched_at: string; unsupported?: string[] }>("GET", `/vulnerabilities/hosts/${id}`),
   },
   protection: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<ProtHost> & { summary: ProtSummary | null; unsupported?: string[] }>("GET", `/protection${qs(p)}`),
@@ -158,12 +168,15 @@ export const api = {
     list: (p: Record<string, string | number | boolean | undefined>) => req<Page<Host> & { hidden: number; activity_days: number; fetched_at: string }>("GET", `/hosts${qs(p)}`),
     one: (id: number) => req<{ host: Host; activity_days: number; fetched_at: string; software: { install_id: number; product_id: number; name: string; version: string; publisher: string; install_date: string | null }[]; kaspersky: { product_code: string; product: string; build: string; state: string; av_bases_date: string | null; is_av: boolean; has_rtp: boolean }[] }>("GET", `/hosts/${id}`),
   },
+  quick: {
+    preview: (kind: QuickKind | "version_audit", params: object, refresh = false, sourceIds: string[] = []) => req<QuickPreview>("POST", "/quick/preview", { kind, params, refresh, source_ids: sourceIds }),
+  },
   reports: {
     list: (sourceOnly = true) => req<{ items: Job[] }>("GET", `/reports${qs({ source_only: sourceOnly })}`),
-    create: (kind: Job["kind"], title: string, params: ReportParams | AuditParams, sourceIds: string[] = []) => req<Job>("POST", "/reports", { kind, title, params, source_ids: sourceIds }),
+    create: (kind: Job["kind"], title: string, params: ReportParams | AuditParams | object, sourceIds: string[] = []) => req<Job>("POST", "/reports", { kind, title, params, source_ids: sourceIds }),
     get: (id: string) => req<Job>("GET", `/reports/${id}`),
     rows: (id: string, p: { offset: number; limit: number; q?: string; source?: string; program?: string; sort?: string; desc?: boolean }) => req<Page<SoftwareRow & Host & AuditResultRow>>("GET", `/reports/${id}/rows${qs(p)}`),
-    downloadUrl: (id: string, fmt: "csv" | "xlsx") => `/api/v1/reports/${id}/download/${fmt}`,
+    downloadUrl: (id: string, fmt: "csv" | "xlsx" | "html") => `/api/v1/reports/${id}/download/${fmt}`,
     cancel: (id: string) => req<Job>("POST", `/reports/${id}/cancel`),
     rerun: (id: string) => req<Job>("POST", `/reports/${id}/rerun`),
     remove: (id: string) => req<void>("DELETE", `/reports/${id}`),

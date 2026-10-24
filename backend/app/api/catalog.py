@@ -204,7 +204,13 @@ async def run_one(request: Request, db: AsyncSession, src: KscSource, items: lis
 async def preview(body: PreviewIn, request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     """«Найти устаревшие версии»: та же проверка, что и в отчёте, по нескольким источникам сразу; в ответе — итоги и первые строки.
     Полный список и XLSX — фоновым отчётом (предел строк просмотра ограничен)."""
-    ids = body.source_ids or ([su.current_source_id] if su.current_source_id else [])
+    merged, rows_all = await audit_preview(request, db, su, body.params.model_dump(), body.source_ids)
+    return {"summary": merged, "items": rows_all[:body.limit], "total": len(rows_all)}
+
+
+async def audit_preview(request: Request, db: AsyncSession, su: SessionUser, params: dict, source_ids: list) -> tuple[dict, list[dict]]:
+    """Проверка версий для просмотра (одна и та же функция у «Найти устаревшие версии» и быстрого отчёта): (сводка, все строки)."""
+    ids = source_ids or ([su.current_source_id] if su.current_source_id else [])
     if not ids:
         raise HTTPException(status_code=409, detail={"code": "no_source", "message": "Источник KSC не выбран."})
     sources = []
@@ -213,9 +219,7 @@ async def preview(body: PreviewIn, request: Request, su: SessionUser = Depends(r
         if s is None or not s.is_active or not su.can_use_source(s.id):
             raise HTTPException(status_code=403, detail="Нет доступа к одному из источников")
         sources.append(s)
-    params = body.params.model_dump()
     items = params["items"]
-    settings = request.app.state.settings
     not_ready, notes = [], []
     plans = []
     for s in sources:
@@ -252,4 +256,4 @@ async def preview(body: PreviewIn, request: Request, su: SessionUser = Depends(r
     merged["notes"] = notes + ([f"Каталог ещё строится: {', '.join(not_ready)} — источники пропущены"] if not_ready else [])
     merged["errors"] = errors
     rows_all.sort(key=lambda r: (r["program"].lower(), r["source"], r["name"].lower()))
-    return {"summary": merged, "items": rows_all[:body.limit], "total": len(rows_all)}
+    return merged, rows_all

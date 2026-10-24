@@ -5,6 +5,7 @@ import { NoSource, type Ctx } from "../App";
 import { Fetched, OnlineBadge } from "../components/Common";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
+import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
 
@@ -36,6 +37,8 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   });
   const data = list.extra as { summary?: ProtSummary | null; unsupported?: string[] } | null;
   const busy = list.loading;
+  const sel = useRowSel<number>(); const [report, setReport] = useState<"all" | "sel" | null>(null);
+  const canReport = ctx.me.user.role !== "viewer";
   // результат щелчка — список компьютеров ниже сводки: прокручиваем к нему, чтобы изменение было видно сразу
   const reveal = () => window.requestAnimationFrame(() => document.getElementById("prot-hosts")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   const revealed = useRef(false);
@@ -116,7 +119,8 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
         </div>
       </div>
 
-      <div className="section-head" id="prot-hosts"><h2>Компьютеры</h2>{!list.initial && <span className="count">{num(list.total)}</span>}</div>
+      <div className="section-head" id="prot-hosts"><h2>Компьютеры</h2>{!list.initial && <span className="count">{num(list.total)}</span>}<div className="spacer" />
+        {canReport && <button className="btn" onClick={() => setReport("all")} disabled={list.initial || !list.total}><Icon name="file" />{problem && problem !== "ok" ? `Отчёт: ${pTitle}` : "Отчёт по этому списку"}</button>}</div>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер или IP-адрес" aria-label="Компьютер" /></div>
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа" aria-label="Группа администрирования" />
@@ -131,14 +135,16 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
           <table className="table virt">
-            <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th>Онлайн</th><th>Защитный продукт</th><th className="hide-sm">Постоянная защита</th>
+            <thead><tr><CheckAll all={sel.allOf(list.items.map((h) => h.host_id))} some={sel.someOf(list.items.map((h) => h.host_id))} onToggle={() => sel.toggleMany(list.items.map((h) => h.host_id))} />
+              <SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th>Онлайн</th><th>Защитный продукт</th><th className="hide-sm">Постоянная защита</th>
               <SortTh k="bases" label="Базы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="scan" label="Полная проверка" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="risk" label="Проблемы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /></tr></thead>
             <tbody>
-              <VirtualRows list={list} colSpan={8} estimate={52} row={(h) => {
+              <VirtualRows list={list} colSpan={9} estimate={52} row={(h) => {
                 const b = daysAgo(h.av?.bases ?? null); const old = h.problems.includes("bases_old");
                 return (
-                  <tr className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/hosts/${h.host_id}`); }}>
+                  <tr className={`clickable ${sel.has(h.host_id) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("a, input")) navigate(`/hosts/${h.host_id}`); }}>
+                    <td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td>
                     <td><Link to={`/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span></td>
                     <td className="nowrap"><OnlineBadge online={h.online} seen={h.last_visible} />{h.online === false && h.last_info_update && <span className="sub">сведения от {fmtDate(h.last_info_update)}</span>}</td>
                     <td>{h.av ? <>{shortProduct(h.av.product)}<span className="sub mono">{h.av.build}</span></> : <span className="bad-text">нет</span>}{h.agent_build && <span className="sub nowrap">Агент <span className="mono">{h.agent_build}</span></span>}</td>
@@ -149,12 +155,17 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                     <td className="nowrap small hide-sm">{fmt(h.last_connected)}</td>
                   </tr>);
               }} />
-              {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="checkCircle" title={filtered ? "Ничего не найдено" : "Компьютеров нет"}>{filtered ? "По выбранным условиям компьютеров нет." : s?.online_only ? "Сейчас KSC не видит в сети ни одного устройства. Выключите «Только онлайн», чтобы увидеть все." : "В источнике нет компьютеров, подключавшихся к KSC за порог активности."}</Empty></td></tr>}
+              {!list.items.length && !list.loading && <tr><td colSpan={9}><Empty icon="checkCircle" title={filtered ? "Ничего не найдено" : "Компьютеров нет"}>{filtered ? "По выбранным условиям компьютеров нет." : s?.online_only ? "Сейчас KSC не видит в сети ни одного устройства. Выключите «Только онлайн», чтобы увидеть все." : "В источнике нет компьютеров, подключавшихся к KSC за порог активности."}</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
       <ListFoot list={list} />
       {s && <HiddenNote hidden={s.hidden_hosts} days={s.activity_days} all={all} onToggle={() => setAll(!all)} />}
+      <ReportDock label="Выбранные компьютеры" count={sel.count} noun={["компьютер выбран", "компьютера выбрано", "компьютеров выбрано"]} canReport={canReport} onClear={sel.clear} onReport={() => setReport("sel")} />
+      {report && <QuickReportPanel kind="quick_protection" title={report === "sel" ? `Состояние защиты: выбранные компьютеры (${sel.count})` : `Состояние защиты: ${problem && problem !== "ok" ? pTitle : "все компьютеры списка"}`}
+        lede={report === "all" ? "Условия берутся из текущих фильтров страницы" : undefined} options={{ scope: true }} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)}
+        params={{ problem, product, build, bases_days: Number(basesDays), scan_days: Number(scanDays), q: applied.q || null, group_contains: applied.group || null, include_inactive: all,
+          online_only: onlineOnly && s?.online_data !== false, host_ids: report === "sel" ? sel.ids : [] }} />}
       <p className="muted small mt-sm">Сведения — из последних отчётов Агентов администрирования в KSC; время — UTC, показано в вашем часовом поясе. «Нет антивируса» означает, что KSC не получал от Агента сведений о защитном продукте Kaspersky.</p>
     </section>
   );

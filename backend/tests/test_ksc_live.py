@@ -69,8 +69,9 @@ def test_hosts_and_activity():
 def test_vulnerabilities():
     client = SourceClient(params(), name="test")
     page = asyncio.run(vulns.page(client, offset=0, limit=50, product="Chrome"))
-    assert len(page["items"]) == 4       # KLA10001 с двумя CVE на ws-002 и ws-003 = 4 строки; закрытое обнаружение не входит
-    assert {v["cve"] for v in page["items"]} == {"CVE-2024-0001", "CVE-2024-0002"}
+    # KLA10001 (две CVE) на компьютерах 7, 8, 6, 5, 9 = 10 строк и KLA10002 (одна CVE) на компьютере 6; закрытое обнаружение не входит
+    assert len(page["items"]) == 11
+    assert {v["cve"] for v in page["items"]} == {"CVE-2024-0001", "CVE-2024-0002", "CVE-2023-9999"}
     assert any(v["product"] == "Google Chrome" and v["product_version"] == "120.0.6099.130" for v in page["items"])
 
 
@@ -103,15 +104,16 @@ def test_guard_blocks_write_even_with_rights():
 def test_vuln_aggregates():
     client = SourceClient(params(), name="test")
     hosts = {r["host_id"]: r for r in asyncio.run(vulns.hosts_aggregate(client))}
-    assert set(hosts) == {1, 6, 7, 8}
-    assert (hosts[1]["critical"], hosts[1]["warning"], hosts[1]["total"], hosts[1]["patchable"]) == (1, 1, 2, 1)     # Java 8u391 на ksc-server
-    assert hosts[7]["critical"] == 1 and hosts[6]["high"] == 1
+    assert set(hosts) == {1, 2, 5, 6, 7, 8, 9}
+    # ksc-server: Java 8u391 (критическая и предупреждение) и Contoso Agent (KLA10001, критическая)
+    assert (hosts[1]["critical"], hosts[1]["warning"], hosts[1]["total"], hosts[1]["patchable"]) == (2, 1, 3, 1)
+    assert hosts[7]["critical"] == 1 and hosts[6]["high"] == 2
     only_java = asyncio.run(vulns.hosts_aggregate(client, cve="CVE-2024-2222"))
     assert [int(r["host_id"]) for r in only_java] == [1]
     prods = {r["name"]: r for r in asyncio.run(vulns.products_aggregate(client, active_days=None))}
-    assert prods["Google Chrome"]["hosts"] == 2 and prods["Oracle Java"]["critical"] == 1 and prods["Mozilla Firefox"]["high"] == 1
-    active = {r["name"] for r in asyncio.run(vulns.products_aggregate(client, active_days=7))}
-    assert "Google Chrome" not in active and "Oracle Java" in active         # Chrome уязвим только на давно не подключавшихся ws-002 и ws-003
+    assert prods["Google Chrome"]["hosts"] == 4 and prods["Oracle Java"]["critical"] == 1 and prods["Mozilla Firefox"]["high"] == 1     # кластер 9 не считается
+    active = {r["name"]: r for r in asyncio.run(vulns.products_aggregate(client, active_days=7))}
+    assert active["Google Chrome"]["hosts"] == 1 and "Oracle Java" in active         # за 7 суток Chrome уязвим только на ws-001; ws-002 (20 суток) и ws-003 — нет
     on1 = asyncio.run(vulns.on_host(client, 1))
     j = next(v for v in on1 if v["kla_id"] == "KLA10004")
     assert j["cve"] == ["CVE-2024-2222"] and j["kb"] == ["KB5034441"] and j["severity"] == "critical" and j["app_name"] == "Java 8 Update 391 (64-bit)"

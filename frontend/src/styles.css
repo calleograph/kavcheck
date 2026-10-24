@@ -924,3 +924,31 @@ pre.notes-pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
 /* цели прокрутки «к результату» — с учётом закреплённой верхней панели */
 #prot-hosts, #ev-journal, #audit-rows, #audit-result { scroll-margin-top: calc(var(--top-h) + 10px); }
 .row-detail { margin-top: 6px; }
+
+/* Быстрые отчёты: боковая панель предпросмотра и выгрузки */
+.qr { display: flex; flex-direction: column; gap: 14px; }
+.qr-loading { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 18px 0; }
+.qr-hero { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.qr-big { font-size: 40px; font-weight: 600; letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+.qr-cap { font-size: var(--fs-md); }
+.qr-cond { margin: 0; display: grid; gap: 4px; font-size: var(--fs-sm); }
+.qr-cond div { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px; }
+.qr-cond dt { color: var(--muted); } .qr-cond dd { margin: 0; overflow-wrap: anywhere; }
+.qr-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.qr-metric { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.qr-metric b { font-size: 20px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.qr-metric span { font-size: var(--fs-xs); color: var(--muted); }
+.qr-sev-bar { display: flex; gap: 2px; height: 12px; border-radius: var(--radius-xs); overflow: hidden; }
+.qr-sev-bar span { min-width: 4px; }
+.qs-critical { background: var(--danger); } .qs-high { background: var(--warn); } .qs-warning { background: var(--line-strong); }
+.qr-sev-legend { list-style: none; margin: 8px 0 2px; padding: 0; display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--fs-sm); }
+.qr-sev-legend li.zero { color: var(--faint); }
+.dot-sev { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.qr-h { font-size: var(--fs-md); margin: 4px 0 -4px; }
+.qr-more .qr-fields { display: grid; gap: 10px; padding: 8px 0 2px; }
+.qr-actions { display: flex; gap: 8px; flex-wrap: wrap; width: 100%; }
+@media (max-width: 700px) { .qr-cond div { grid-template-columns: 1fr; gap: 0; } .qr-big { font-size: 34px; } .qr-actions .btn { flex: 1 1 100%; justify-content: center; } }
+.job-cond { margin: 0 0 12px; max-width: 900px; } .job-sev { margin: 12px 0; max-width: 700px; }
+.qr-sections { border: 0; padding: 0; margin: 0; display: grid; gap: 4px; } .qr-sections legend { font-size: var(--fs-sm); color: var(--muted); padding: 0 0 4px; }
+.qr-notes ul { margin: 0; padding-left: 16px; display: grid; gap: 4px; } .qr-notes .alert-body { font-size: var(--fs-sm); }
+.modal.side .modal-foot:has(.qr-actions) { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); margin: 8px -4px 0; padding: 10px 4px; z-index: 1; }

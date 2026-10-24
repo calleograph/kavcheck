@@ -100,6 +100,43 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
     return {"items": page, "total": len(items), "offset": offset, "limit": limit, "summary": summary}
 
 
+@router.get("/list")
+async def vulnerabilities(request: Request, q_: str = Query("", alias="q", max_length=200), severity: str = Query("", pattern=r"^(|critical|high|warning)$"), patchable: bool = False,
+                          sort: str = Query("risk", pattern=r"^(risk|hosts|total|name|detected)$"), desc: bool = True, all_hosts: bool = False,
+                          offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), refresh: bool = False,
+                          su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+    """Уязвимости, найденные KSC: по одной строке на уязвимость (KLA) с CVE, затронутыми программами и числом компьютеров — для выбора и отчётов."""
+    miss = unsupported(src)
+    if miss:
+        return {"items": [], "total": 0, "offset": offset, "limit": limit, "unsupported": miss}
+    general = await request.app.state.settings_svc.get(db, "general")
+    rcfg = await request.app.state.settings_svc.get(db, "reports")
+    client = request.app.state.sources.client(src)
+    days = None if all_hosts else general.activity_days
+    key = (str(src.id), "vuln_list", days, rcfg.exclude_slave_servers)
+    try:
+        base, at = await request.app.state.cache.get(key, request.app.state.settings.cache_ttl_seconds,
+                                                     lambda: V.descr_list(client, active_days=days, exclude_slaves=rcfg.exclude_slave_servers), refresh=refresh)
+    except KscError as exc:
+        raise _ksc(exc) from None
+    items = base
+    needle = q_.strip().lower()
+    if needle:
+        items = [i for i in items if needle in " ".join([i["kla_id"], *i["cve"], *i["products"]]).lower()]
+    if severity:
+        items = [i for i in items if i["severity"] == severity]
+    if patchable:
+        items = [i for i in items if i["patchable"] > 0]
+    rank = {"critical": 3, "high": 2, "warning": 1}
+    keyf = {"risk": lambda i: (rank[i["severity"]], i["hosts"], i["total"]), "hosts": lambda i: i["hosts"], "total": lambda i: i["total"], "name": lambda i: i["kla_id"],
+            "detected": lambda i: i["last_detected"] or datetime.min.replace(tzinfo=timezone.utc)}[sort]
+    items = sorted(items, key=keyf, reverse=desc if sort != "name" else not desc)
+    summary = {"vulns": len(items), "critical": sum(1 for i in items if i["severity"] == "critical"), "high": sum(1 for i in items if i["severity"] == "high"),
+               "warning": sum(1 for i in items if i["severity"] == "warning"), "patchable": sum(1 for i in items if i["patchable"]), "activity_days": general.activity_days,
+               "fetched_at": datetime.fromtimestamp(at, timezone.utc)}
+    return {"items": items[offset:offset + limit], "total": len(items), "offset": offset, "limit": limit, "summary": summary}
+
+
 @router.get("/products")
 async def products(request: Request, q_: str = Query("", alias="q", max_length=200), cve: str = Query("", max_length=100),
                    severity: str = Query("", pattern=r"^(|critical|high|warning)$"), sort: str = Query("risk", pattern=r"^(risk|hosts|total|name)$"), desc: bool = True,

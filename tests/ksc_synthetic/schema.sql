@@ -158,6 +158,19 @@ INSERT INTO dbo.hst_inventory_hstprds (nHostId, nProduct, tmInstallDate, bDelete
  (7,9104,DATEADD(day,-10,GETUTCDATE()),0),
  (6,9105,DATEADD(day,-5,GETUTCDATE()),0),(8,9105,DATEADD(day,-5,GETUTCDATE()),0),(1,9105,DATEADD(day,-5,GETUTCDATE()),1);
 
+-- Быстрые отчёты по уязвимостям (tests/test_quick_reports.py): KLA10903/CVE-2024-0903 для Contoso Agent 8.4.14; KLA10001 также на Contoso Agent.
+-- KLA10001 (5001): компьютеры 7, 6, 1 (активны), 8 и 5 (без связи), 9 (кластер); KLA10903 (5903): 6 и 2; Chrome (vp 7001): 6 дважды (KLA10001, KLA10002) и 7.
+INSERT INTO dbo.vapm_vulnerability_descr VALUES (5903,N'KLA10903',1,N'https://threats.kaspersky.com/en/vulnerability/KLA10003',0);
+INSERT INTO dbo.vapm_vulnerability_names VALUES (5903,3,N'CVE-2024-0903'),(5903,6,N'5030001');
+INSERT INTO dbo.v_vapm_product VALUES (7902,N'Contoso Agent');
+INSERT INTO dbo.vapm_product_exact_version VALUES (7912,7902,N'8.4.14');
+INSERT INTO dbo.vapm_product_vulnerability VALUES (8903,5903,7912,0),(8904,5001,7912,0);
+INSERT INTO dbo.vapm_vulnerability_occurence VALUES
+ (9904,6,8001,NULL,REPLICATE('b',31)+'8',DATEADD(day,-3,GETUTCDATE()),NULL,0,1), (9905,6,8002,NULL,REPLICATE('b',31)+'8',DATEADD(day,-3,GETUTCDATE()),NULL,0,0),
+ (9906,6,8903,NULL,REPLICATE('9',28)+'9101',DATEADD(day,-2,GETUTCDATE()),NULL,0,1), (9907,1,8904,NULL,REPLICATE('9',28)+'9101',DATEADD(day,-4,GETUTCDATE()),NULL,0,0),
+ (9908,2,8903,NULL,NULL,DATEADD(day,-1,GETUTCDATE()),NULL,0,1), (9909,5,8001,NULL,REPLICATE('b',31)+'8',DATEADD(day,-40,GETUTCDATE()),NULL,0,0),
+ (9910,9,8001,NULL,NULL,DATEADD(day,-40,GETUTCDATE()),NULL,0,0);
+
 -- Учётная запись только для чтения (так же, как рекомендуется для реальной базы KSC)
 IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'kavcheck_ro') CREATE LOGIN kavcheck_ro WITH PASSWORD = 'KavCheck-Test-Pass-1', CHECK_POLICY = OFF; -- private-data: ignore (тестовый пароль синтетической базы)
 IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'kavcheck_ro') CREATE USER kavcheck_ro FOR LOGIN kavcheck_ro;

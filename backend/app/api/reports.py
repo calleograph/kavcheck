@@ -14,14 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth.deps import SessionUser, get_db, require_analyst, require_user
 from ..ksc import versions
 from ..models import AuditCheck, KscSource, ReportJob, ReportTemplate, utcnow
-from ..reports import audit
+from ..reports import audit, quick
 from ..reports.export import read_all_jsonl
 from ..reports.runner import job_dir
 from ..services.audit import write_audit
-from .schemas import AuditParams, ReportIn, ReportParams, SavedCheckIn, TemplateIn
+from .schemas import QUICK_PARAMS, AuditParams, ReportIn, ReportParams, SavedCheckIn, TemplateIn
 
 router = APIRouter(prefix="/reports", tags=["reports"])
-KIND_TITLE = {"software_hosts": "Компьютеры с программами", "hosts": "Компьютеры и активность", "version_audit": "Проверка версий"}
+KIND_TITLE = {"software_hosts": "Компьютеры с программами", "hosts": "Компьютеры и активность", "version_audit": "Проверка версий", **quick.KIND_TITLE}
 
 
 def job_sources(j: ReportJob) -> list[str]:
@@ -63,7 +63,8 @@ async def _sources(db: AsyncSession, su: SessionUser, ids: list[uuid.UUID], fall
 
 def validate_params(kind: str, params: dict) -> dict:
     try:
-        return (AuditParams if kind == "version_audit" else ReportParams).model_validate(params).model_dump()
+        model = QUICK_PARAMS.get(kind) or (AuditParams if kind == "version_audit" else ReportParams)
+        return model.model_validate(params).model_dump()
     except ValidationError as exc:
         msg = "; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())
         raise HTTPException(status_code=422, detail=msg or "Некорректные параметры") from None
@@ -118,6 +119,23 @@ async def get_job(job_id: uuid.UUID, su: SessionUser = Depends(require_user), db
     return job_out(await _job(db, job_id, su))
 
 
+_SEARCH_KEYS = {"name", "fqdn", "ip", "os", "app_name", "app_version", "group", "program", "host", "threat", "cve", "kla_id", "product", "installed_version", "problems", "av", "type_ru", "target", "user", "object"}
+_ROWS_CACHE: dict[str, tuple[int, list[dict]]] = {}
+
+
+def _job_rows(p: Path) -> list[dict]:
+    """Строки отчёта из файла; последний прочитанный отчёт держится в памяти (порции прокрутки не перечитывают файл)."""
+    key, stamp = str(p), p.stat().st_mtime_ns
+    got = _ROWS_CACHE.get(key)
+    if got and got[0] == stamp:
+        return got[1]
+    rows = read_all_jsonl(p)
+    if len(_ROWS_CACHE) >= 3:
+        _ROWS_CACHE.pop(next(iter(_ROWS_CACHE)))
+    _ROWS_CACHE[key] = (stamp, rows)
+    return rows
+
+
 SORTABLE = {"name", "program", "app_version", "compared_version", "source", "ip", "os", "last_connected", "days_since_connection", "group", "app_name", "activity", "target_version"}
 
 
@@ -132,18 +150,18 @@ async def job_rows(job_id: uuid.UUID, request: Request, offset: int = Query(0, g
     p: Path = job_dir(request.app.state.settings, j.id) / "rows.jsonl"
     if not p.exists():
         raise HTTPException(status_code=410, detail="Файлы отчёта удалены по сроку хранения")
-    rows = read_all_jsonl(p)
+    rows = list(_job_rows(p))
     if source:
         rows = [r for r in rows if r.get("source") == source]
     if program:
         rows = [r for r in rows if r.get("program") == program]
     if q.strip():
         needle = q.strip().lower()
-        rows = [r for r in rows if needle in " ".join(str(r.get(k) or "") for k in ("name", "fqdn", "ip", "os", "app_name", "app_version", "group", "program")).lower()]
-    if sort in SORTABLE:
+        rows = [r for r in rows if needle in " ".join(str(v) for k, v in r.items() if isinstance(v, (str, int)) and k in _SEARCH_KEYS).lower()]
+    if sort in SORTABLE or (sort and rows and sort in rows[0]):
         if sort in ("app_version", "compared_version"):
             rows.sort(key=lambda r: versions.sort_key(str(r.get(sort) or "0")), reverse=desc)
-        elif sort == "days_since_connection":
+        elif sort == "days_since_connection" or all(isinstance(r.get(sort), (int, float)) or r.get(sort) is None for r in rows):
             rows.sort(key=lambda r: (r.get(sort) is None, r.get(sort) or 0), reverse=desc)
         else:
             rows.sort(key=lambda r: str(r.get(sort) or "").lower(), reverse=desc)
@@ -152,8 +170,8 @@ async def job_rows(job_id: uuid.UUID, request: Request, offset: int = Query(0, g
 
 @router.get("/{job_id}/download/{fmt}")
 async def download(job_id: uuid.UUID, fmt: str, request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    if fmt not in ("csv", "xlsx"):
-        raise HTTPException(status_code=404, detail="Формат: csv | xlsx")
+    if fmt not in ("csv", "xlsx", "html"):
+        raise HTTPException(status_code=404, detail="Формат: csv | xlsx | html")
     j = await _job(db, job_id, su)
     p: Path = job_dir(request.app.state.settings, j.id) / f"report.{fmt}"
     if j.status != "done" or not p.exists():
@@ -161,8 +179,8 @@ async def download(job_id: uuid.UUID, fmt: str, request: Request, su: SessionUse
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="report.download", target_type="report", target_id=str(j.id), source_id=j.source_id, details={"format": fmt})
     await db.commit()
     name = f"kavcheck_{j.kind}_{j.created_at:%Y%m%d_%H%M}.{fmt}"
-    media = "text/csv; charset=utf-8" if fmt == "csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    return FileResponse(p, media_type=media, filename=name)
+    media = {"csv": "text/csv; charset=utf-8", "html": "text/html; charset=utf-8"}.get(fmt, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(p, media_type=media, filename=name, content_disposition_type="attachment", headers={"X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/{job_id}/cancel")

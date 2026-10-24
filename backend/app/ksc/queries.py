@@ -117,12 +117,38 @@ VULNS_ON_HOST = f"""SELECT TOP (5000) o.nId AS occurrence_id, d.nId AS descr_id,
 {VULN_FROM}
 WHERE {VULNS_WHERE} AND o.nHostId = %(host)s
 ORDER BY d.nKlSeverity DESC, o.tmDetectTime DESC"""
+# Быстрые отчёты: действующие обнаружения целиком (уязвимость × компьютер × программа) с данными компьютера; keyset по o.nId, выбор — в {extra}
+VULN_DETAIL = f"""SELECT TOP (50000) o.nId AS occurrence_id, d.nId AS descr_id, d.wstrPrimaryName AS kla_id, d.nKlSeverity AS severity, d.wstrDescriptionURL AS url,
+       vp.nId AS vp_id, vp.wstrName AS product, ev.strProductDisplVersion AS product_version, p.wstrDisplayName AS app_name, p.wstrDisplayVersion AS app_version,
+       p.nId AS inv_id, p.wstrPublisher AS publisher, o.tmDetectTime AS detected, o.bPatchesAvailable AS patches_available, {HOST_COLS}
+{VULN_FROM}
+JOIN dbo.v_akpub_host h ON h.nId = o.nHostId
+WHERE {VULNS_WHERE} AND o.nId > %(after)s {{extra}}
+ORDER BY o.nId"""
+# Список уязвимостей: одна строка на уязвимость KSC (KLA) с числом затронутых компьютеров
+# Группировка только по идентификатору уязвимости (текстовые поля в GROUP BY замедляли запрос в пять раз); имена и ссылки — отдельным небольшим запросом
+VULN_DESCR_AGG = f"""SELECT d.nId AS descr_id, COUNT(DISTINCT o.nHostId) AS hosts, COUNT(*) AS total,
+       SUM(CASE WHEN o.bPatchesAvailable = 1 THEN 1 ELSE 0 END) AS patchable, MAX(o.tmDetectTime) AS last_detected
+{VULN_FROM_BASE}
+JOIN dbo.v_akpub_host h ON h.nId = o.nHostId
+WHERE {{where}}
+GROUP BY d.nId"""
+VULN_DESCR_INFO = "SELECT d.nId AS descr_id, d.wstrPrimaryName AS kla_id, d.nKlSeverity AS severity, d.wstrDescriptionURL AS url FROM dbo.vapm_vulnerability_descr d WHERE d.nId IN ({ids})"
+VULN_DESCR_PRODUCTS = f"""SELECT d.nId AS descr_id, COALESCE(vp.wstrName, N'') AS product, COUNT(DISTINCT o.nHostId) AS hosts
+{VULN_FROM_BASE}
+JOIN dbo.v_akpub_host h ON h.nId = o.nHostId
+WHERE {{where}}
+GROUP BY d.nId, COALESCE(vp.wstrName, N'')"""
+VULN_DESCR_BY_CVE = "SELECT n.nVulnerabilityDescrId AS descr_id, n.wstrName AS name FROM dbo.vapm_vulnerability_names n WHERE n.nSense = 3 AND n.wstrName IN ({names})"
 VULN_NAMES = "SELECT n.nVulnerabilityDescrId AS descr_id, n.nSense AS sense, n.wstrName AS name FROM dbo.vapm_vulnerability_names n WHERE n.nSense IN (3, 5, 6) AND n.nVulnerabilityDescrId IN ({ids})"
 VULN_CVE_EXISTS = "EXISTS (SELECT 1 FROM dbo.vapm_vulnerability_names n WHERE n.nVulnerabilityDescrId = d.nId AND n.nSense = 3 AND n.wstrName LIKE %(cve)s)"
 
 # Состояние защиты: компьютеры со статусом KSC (1:1) и защитные продукты на них — два чтения небольших таблиц, проверки — в приложении (ksc/protection.py)
 PROTECTION_HOSTS = (f"SELECT {HOST_COLS}, s.nStatus AS ksc_status, s.nStatusMask AS status_mask, h.nUncured AS uncured, h.nVirusCount AS virus_count "
                     "FROM dbo.v_akpub_host h LEFT JOIN dbo.v_akpub_host_status s ON s.nId = h.nId WHERE {where}")
+PROTECTION_PRODUCTS_FOR = ("SELECT p.nHost AS host_id, p.wstrProductNameId AS code, p.wstrProductDisplayName AS name, p.wstrProductBuildNumber AS build, p.nState AS state, "
+                           "p.tmAvbasesDate AS bases, p.bAvProduct AS is_av, p.bHasRtp AS has_rtp FROM dbo.v_akpub_hst_prdstate p "
+                           "WHERE (p.bAvProduct = 1 OR p.wstrProductNameId = '1103') AND p.nHost IN ({ids})")
 PROTECTION_PRODUCTS = ("SELECT p.nHost AS host_id, p.wstrProductNameId AS code, p.wstrProductDisplayName AS name, p.wstrProductBuildNumber AS build, p.nState AS state, "
                        "p.tmAvbasesDate AS bases, p.bAvProduct AS is_av, p.bHasRtp AS has_rtp FROM dbo.v_akpub_hst_prdstate p WHERE p.bAvProduct = 1 OR p.wstrProductNameId = '1103'")
 

@@ -23,6 +23,7 @@ TYPES = {
 BY_TYPE = {t: k for k, (t, _, _) in TYPES.items()}
 THREAT_KIND = {"60": "вирус", "61": "троянская программа", "62": "вредоносная программа", "63": "бэкдор", "64": "червь", "65": "riskware", "0": "неизвестно"}
 GROUPS = ("detections", "notcured", "resolved", "attacks")
+GROUP_TYPES = {g: [k for k, t in TYPES.items() if t[2] == g] for g in GROUPS}      # группа результата → ключи типов (для фильтров и отчётов)
 PERIODS = {1: "hour", 7: "day", 30: "day", 90: "day"}
 
 
@@ -81,10 +82,12 @@ async def summary(client: SourceClient, *, days: int) -> dict:
             "top_threats": [{"kind": r["kind"], "name": r.get("name") or "(без названия)", "n": int(r["n"]), "hosts": int(r["hosts"]), "last": _utc(r.get("last"))} for r in threats]}
 
 
-def where(*, days: int, types: list[str], host_id: int | None, qtext: str, threat: str) -> tuple[str, dict]:
+def where(*, days: int, types: list[str], host_id: int | None, qtext: str, threat: str, event_ids: list[int] | None = None) -> tuple[str, dict]:
     keys = [k for k in types if k in TYPES] or list(TYPES)
     parts = [q.EV_PERIOD, "e.strEventType IN (" + ", ".join(f"'{TYPES[k][0]}'" for k in keys) + ")"]   # только константы из TYPES
     params: dict = {"hours": days * 24}
+    if event_ids:
+        parts.append(f"e.nId IN ({q.ids_list(event_ids[:5000])})")
     if host_id:
         parts.append("e.nHostId = %(host)s")
         params["host"] = int(host_id)
@@ -97,8 +100,9 @@ def where(*, days: int, types: list[str], host_id: int | None, qtext: str, threa
     return " AND ".join(parts), params
 
 
-async def page(client: SourceClient, *, days: int, types: list[str], host_id: int | None = None, qtext: str = "", threat: str = "", offset: int, limit: int) -> dict:
-    w, params = where(days=days, types=types, host_id=host_id, qtext=qtext, threat=threat)
+async def page(client: SourceClient, *, days: int, types: list[str], host_id: int | None = None, qtext: str = "", threat: str = "", event_ids: list[int] | None = None,
+               offset: int, limit: int) -> dict:
+    w, params = where(days=days, types=types, host_id=host_id, qtext=qtext, threat=threat, event_ids=event_ids)
     rows = await client.run(q.EVENTS_PAGE.format(where=w), {**params, "offset": offset, "limit": limit}, max_rows=limit)
     cnt = await client.run(q.EVENTS_COUNT.format(where=w), params, max_rows=1)
     return {"items": [event_row(r) for r in rows], "total": int(cnt[0]["n"]) if cnt else 0, "offset": offset, "limit": limit, "days": days}

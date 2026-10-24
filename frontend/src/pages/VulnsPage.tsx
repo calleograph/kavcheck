@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type HostVuln, type SavedCheck, type VulnHost, type VulnProduct, type VulnSummary } from "../api";
+import { api, type ApiError, type HostVuln, type QuickKind, type SavedCheck, type VulnDescr, type VulnHost, type VulnProduct, type VulnSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
+import { CheckAll, QuickReportPanel, ReportDock, useRowSel, type QuickScopeOpts } from "../components/QuickReport";
 import { ListFoot, VirtualRows, useInfinite, useKept, useStaticList, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { useToast } from "../components/Toast";
@@ -10,21 +11,22 @@ import { Empty, HiddenNote, PageHead, Segmented, SevCounts, SkelRows, SortTh, Ta
 import { fmt, fmtDate, num } from "../util";
 import { itemSummary } from "./AuditBuilder";
 
-type Tab = "hosts" | "products" | "checks";
+type Tab = "list" | "hosts" | "products" | "checks";
+type Report = { kind: QuickKind; title: string; lede?: string; params: Record<string, unknown>; options?: QuickScopeOpts };
 type Sev = "" | "critical" | "high" | "warning";
 const SEV_OPTS: [Sev, string][] = [["", "Все"], ["critical", "Критические"], ["high", "Высокие"], ["warning", "Предупреждения"]];
 
 /** Раздел «Уязвимости»: сначала самые проблемные компьютеры и программы (данные KSC), отдельно — проверки версий (условия пользователей). */
 export default function VulnsPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
-  const tab = (["hosts", "products", "checks"].includes(sp.get("tab") ?? "") ? sp.get("tab") : "hosts") as Tab;
+  const tab = (["list", "hosts", "products", "checks"].includes(sp.get("tab") ?? "") ? sp.get("tab") : "list") as Tab;
   if (!ctx.current) return <NoSource ctx={ctx} />;
   return (
     <section>
       <PageHead title="Уязвимости" lede="Уязвимости программ, найденные Kaspersky Security Center: какие компьютеры и программы требуют внимания в первую очередь. Проверки версий — ваши собственные условия — показаны отдельно." />
       <Tabs label="Вид" value={tab} onChange={(t) => setSp((p) => { p.set("tab", t); return p; })}
-        items={[{ id: "hosts", label: "Компьютеры" }, { id: "products", label: "Уязвимые программы" }, { id: "checks", label: "Проверки версий" }]} />
-      {tab === "hosts" ? <HostsView ctx={ctx} /> : tab === "products" ? <ProductsView ctx={ctx} /> : <ChecksView ctx={ctx} />}
+        items={[{ id: "list", label: "Уязвимости" }, { id: "products", label: "Уязвимые программы" }, { id: "hosts", label: "Компьютеры" }, { id: "checks", label: "Проверки версий" }]} />
+      {tab === "list" ? <ListView ctx={ctx} /> : tab === "hosts" ? <HostsView ctx={ctx} /> : tab === "products" ? <ProductsView ctx={ctx} /> : <ChecksView ctx={ctx} />}
     </section>
   );
 }
@@ -43,6 +45,8 @@ function HostsView({ ctx }: { ctx: Ctx }) {
   const [severity, setSeverity] = useKept<Sev>("vulns.severity", ""); const [patchable, setPatchable] = useKept("vulns.patchable", false);
   const [all, setAll] = useKept("vulns.all", false);
   const [sort, setSort] = useKept("vulns.sort", "risk"); const [desc, setDesc] = useKept("vulns.desc", true);
+  const sel = useRowSel<number>(); const [report, setReport] = useState<Report | null>(null);
+  const canReport = ctx.me.user.role !== "viewer";
   const force = useRef(false);   // «Обновить» перечитывает данные KSC один раз, а не при каждой следующей порции
   useEffect(() => { const t = window.setTimeout(() => setApplied({ q, group, product, cve }), 350); return () => window.clearTimeout(t); }, [q, group, product, cve]);
   const list = useInfinite<VulnHost>(`vulns-hosts:${sid}`, [applied, productId, productName, severity, patchable, all, sort, desc], (offset, limit) => {
@@ -77,23 +81,93 @@ function HostsView({ ctx }: { ctx: Ctx }) {
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
           <table className="table virt">
-            <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">ОС</th><th className="hide-sm">Группа</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
+            <thead><tr><CheckAll all={sel.allOf(list.items.map((h) => h.host_id))} some={sel.someOf(list.items.map((h) => h.host_id))} onToggle={() => sel.toggleMany(list.items.map((h) => h.host_id))} />
+              <SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">ОС</th><th className="hide-sm">Группа</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="risk" label="Уязвимости" sort={sort} desc={desc} onSort={onSort} /><SortTh k="total" label="Всего" sort={sort} desc={desc} onSort={onSort} className="num" /><SortTh k="patchable" label="С исправлением" sort={sort} desc={desc} onSort={onSort} className="num hide-sm" /></tr></thead>
             <tbody>
-              <VirtualRows list={list} colSpan={7} estimate={46} row={(h) => (
-                <tr className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/vulnerabilities/hosts/${h.host_id}`); }}>
+              <VirtualRows list={list} colSpan={8} estimate={46} row={(h) => (
+                <tr className={`clickable ${sel.has(h.host_id) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("a, input")) navigate(`/vulnerabilities/hosts/${h.host_id}`); }}>
+                  <td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td>
                   <td><Link to={`/vulnerabilities/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span></td>
                   <td className="small hide-sm">{h.os}</td><td className="small hide-sm">{h.group}</td><td className="nowrap small hide-sm">{fmt(h.last_connected)}</td>
                   <td><SevCounts critical={h.critical} high={h.high} warning={h.warning} compact /></td>
                   <td className="num"><b>{num(h.total)}</b><span className="sub">{num(h.products)} прогр.</span></td><td className="num hide-sm">{num(h.patchable)}</td>
                 </tr>)} />
-              {!list.items.length && !list.loading && <tr><td colSpan={7}><Empty icon="checkCircle" title="Компьютеров с уязвимостями нет">{applied.q || applied.product || applied.cve || applied.group || severity || patchable ? "По этим условиям ничего не найдено." : "KSC не нашёл неисправленных уязвимостей на учтённых компьютерах."}</Empty></td></tr>}
+              {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="checkCircle" title="Компьютеров с уязвимостями нет">{applied.q || applied.product || applied.cve || applied.group || severity || patchable ? "По этим условиям ничего не найдено." : "KSC не нашёл неисправленных уязвимостей на учтённых компьютерах."}</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
       <ListFoot list={list} />
       {s && <HiddenNote hidden={s.hidden_hosts} days={s.activity_days} all={all} onToggle={() => setAll(!all)} />}
+      <ReportDock label="Выбранные компьютеры" count={sel.count} noun={["компьютер выбран", "компьютера выбрано", "компьютеров выбрано"]} canReport={canReport} onClear={sel.clear}
+        onReport={() => setReport({ kind: "quick_vulns", title: `Уязвимости выбранных компьютеров (${sel.count})`, options: { scope: true, severity: true, patchable: true },
+          params: { host_ids: sel.ids, severity, patchable, include_inactive: all } })} />
+      {report && <QuickReportPanel {...report} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)} />}
       <p className="muted small mt-sm">Действующие обнаружения: не исправлены и не игнорируются. KSC оценивает только программы из своего справочника; пакеты Linux и, например, PHP он не проверяет — для них используйте проверку версий.</p>
+    </>
+  );
+}
+
+/** Список уязвимостей KSC (KLA/CVE): найти новую CVE, выбрать одну или несколько записей и сразу получить отчёт о затронутых компьютерах. */
+function ListView({ ctx }: { ctx: Ctx }) {
+  const sid = ctx.current?.id ?? "";
+  const [q, setQ] = useKept("vlist.q", ""); const [applied, setApplied] = useState(q);
+  const [severity, setSeverity] = useKept<Sev>("vlist.severity", ""); const [patchable, setPatchable] = useKept("vlist.patchable", false); const [all, setAll] = useKept("vlist.all", false);
+  const [sort, setSort] = useKept("vlist.sort", "risk"); const [desc, setDesc] = useKept("vlist.desc", true);
+  const sel = useRowSel<number>(); const [report, setReport] = useState<Report | null>(null);
+  const canReport = ctx.me.user.role !== "viewer";
+  useEffect(() => { const t = window.setTimeout(() => setApplied(q), 350); return () => window.clearTimeout(t); }, [q]);
+  const list = useInfinite<VulnDescr>(`vulns-list:${sid}`, [applied, severity, patchable, all, sort, desc],
+    (offset, limit) => api.vulns.list({ q: applied, severity, patchable, all_hosts: all, sort, desc, offset, limit }) as unknown as Promise<Chunk<VulnDescr>>);
+  const extra = list.extra as { summary?: { vulns: number; critical: number; high: number; warning: number; patchable: number; fetched_at: string }; unsupported?: string[] } | null;
+  const s = extra?.summary;
+  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } };
+  const ids = list.items.map((v) => v.descr_id);
+  const reportFor = (list_: number[], title: string): Report => ({ kind: "quick_vulns", title, options: { scope: true, severity: false, patchable: true }, params: { descr_ids: list_, include_inactive: all } });
+  if (extra?.unsupported) return <Unsupported missing={extra.unsupported} />;
+  return (
+    <>
+      <div className="meters">
+        <div className="meter"><span className="l">Уязвимостей в KSC</span><span className="v">{s ? num(s.vulns) : "…"}</span><span className="t">{all ? "по всем устройствам" : `по компьютерам, активным за ${ctx.me.activity_days} сут`}</span></div>
+        <div className="meter"><span className="l">Критических</span><span className={`v ${s?.critical ? "bad-text" : ""}`}>{s ? num(s.critical) : "…"}</span></div>
+        <div className="meter"><span className="l">Высоких</span><span className={`v ${s?.high ? "warn-text" : ""}`}>{s ? num(s.high) : "…"}</span></div>
+        <div className="meter"><span className="l">С исправлением</span><span className="v">{s ? num(s.patchable) : "…"}</span></div>
+      </div>
+      <div className="toolbar">
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="CVE-2024-…, KLA или программа" aria-label="Поиск уязвимости" /></div>
+        <Segmented<Sev> label="Уровень опасности" value={severity} onChange={setSeverity} options={SEV_OPTS} />
+        <label className="check inline-check"><input type="checkbox" className="switch" checked={patchable} onChange={(e) => setPatchable(e.target.checked)} />Есть исправление</label>
+        <div className="toolbar-foot">{s && <Fetched at={s.fetched_at} />}<span className="muted small">Отметьте одну или несколько уязвимостей — отчёт покажет затронутые компьютеры без повторов.</span></div>
+      </div>
+      {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
+      <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
+        {list.initial ? <SkelRows cols={6} /> : (
+          <table className="table virt">
+            <thead><tr><CheckAll all={sel.allOf(ids)} some={sel.someOf(ids)} onToggle={() => sel.toggleMany(ids)} />
+              <SortTh k="name" label="Уязвимость" sort={sort} desc={desc} onSort={onSort} /><SortTh k="risk" label="Опасность" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">Программы</th>
+              <SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" /><SortTh k="total" label="Обнаружений" sort={sort} desc={desc} onSort={onSort} className="num hide-sm" /><th className="hide-sm">Исправление</th><th><span className="sr-only">Действия</span></th></tr></thead>
+            <tbody>
+              <VirtualRows list={list} colSpan={8} estimate={58} row={(v) => (
+                <tr className={sel.has(v.descr_id) ? "sel" : ""}>
+                  <td className="check"><input type="checkbox" aria-label={`Выбрать ${v.kla_id}`} checked={sel.has(v.descr_id)} onChange={() => sel.toggle(v.descr_id)} /></td>
+                  <td>{v.url ? <a href={v.url} target="_blank" rel="noopener noreferrer" className="mono strong-link">{v.kla_id}<Icon name="external" size={13} className="ext" /></a> : <span className="mono">{v.kla_id}</span>}
+                    <span className="sub mono">{v.cve.length ? `${v.cve.slice(0, 3).join(", ")}${v.cve.length > 3 ? ` +${v.cve.length - 3}` : ""}` : "без CVE"}</span></td>
+                  <td><span className={`sev ${v.severity === "critical" ? "crit" : v.severity === "high" ? "high" : "warn"}`}>{v.severity_label}</span></td>
+                  <td className="small hide-sm">{v.products.slice(0, 3).join(", ")}{v.products.length > 3 ? "…" : ""}</td>
+                  <td className="num"><b>{num(v.hosts)}</b></td><td className="num hide-sm">{num(v.total)}</td>
+                  <td className="hide-sm">{v.patchable ? <span className="badge ok">доступно</span> : <span className="muted small">нет</span>}</td>
+                  <td className="actions">{canReport && <button type="button" className="btn mini ghost row-act" onClick={() => setReport(reportFor([v.descr_id], `Отчёт по уязвимости ${v.cve[0] ?? v.kla_id}`))}><Icon name="file" size={15} />Отчёт по этой уязвимости</button>}</td>
+                </tr>)} />
+              {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="checkCircle" title="Уязвимостей не найдено">{applied || severity || patchable ? "По этим условиям ничего нет. Проверьте написание CVE или включите «Все устройства»." : "KSC не нашёл неисправленных уязвимостей."}</Empty></td></tr>}
+            </tbody>
+          </table>)}
+      </div>
+      <ListFoot list={list} />
+      {s && <p className="hidden-note"><Icon name={all ? "eye" : "eyeOff"} size={15} /><span>{all ? "Счётчики учитывают все устройства." : `Счётчики учитывают компьютеры, подключавшиеся к KSC за ${ctx.me.activity_days} сут.`}</span>
+        <button type="button" className="link-btn" onClick={() => setAll(!all)}>{all ? "Только активные" : "Учитывать все"}</button></p>}
+      <ReportDock label="Выбранные уязвимости" count={sel.count} noun={["уязвимость выбрана", "уязвимости выбраны", "уязвимостей выбрано"]} canReport={canReport} onClear={sel.clear}
+        onReport={() => setReport(reportFor(sel.ids, sel.count === 1 ? "Отчёт по выбранной уязвимости" : `Отчёт по выбранным уязвимостям (${sel.count})`))} />
+      {report && <QuickReportPanel {...report} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)} />}
     </>
   );
 }
@@ -108,6 +182,11 @@ function ProductsView({ ctx }: { ctx: Ctx }) {
     (offset, limit) => api.vulns.products({ ...applied, severity, all_hosts: all, sort, desc, offset, limit }) as unknown as Promise<Chunk<VulnProduct>>);
   const extra = list.extra as { fetched_at?: string; unsupported?: string[] } | null;
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } };
+  const sel = useRowSel<string>(); const [report, setReport] = useState<Report | null>(null);
+  const canReport = ctx.me.user.role !== "viewer";
+  const pk = (p: VulnProduct) => (p.product_id ? `id:${p.product_id}` : `name:${p.name}`);
+  const reportFor = (keys: string[], title: string): Report => ({ kind: "quick_vulns", title, options: { scope: true, severity: true, patchable: true },
+    params: { vp_ids: keys.filter((k) => k.startsWith("id:")).map((k) => Number(k.slice(3))), product_names: keys.filter((k) => k.startsWith("name:")).map((k) => k.slice(5)), severity, include_inactive: all } });
   // результат — список компьютеров на вкладке «Компьютеры»: открываем её сверху, где он виден сразу
   const open = (p: VulnProduct) => { setSp((x) => { x.set("tab", "hosts"); if (p.product_id) x.set("product_id", String(p.product_id)); else x.set("product_name", p.name); x.set("product_title", p.name); return x; }); window.scrollTo({ top: 0, behavior: "instant" }); };
   if (extra?.unsupported) return <Unsupported missing={extra.unsupported} />;
@@ -124,20 +203,26 @@ function ProductsView({ ctx }: { ctx: Ctx }) {
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={5} /> : (
           <table className="table virt">
-            <thead><tr><SortTh k="name" label="Программа" sort={sort} desc={desc} onSort={onSort} /><SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" />
+            <thead><tr><CheckAll all={sel.allOf(list.items.map(pk))} some={sel.someOf(list.items.map(pk))} onToggle={() => sel.toggleMany(list.items.map(pk))} />
+              <SortTh k="name" label="Программа" sort={sort} desc={desc} onSort={onSort} /><SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" />
               <SortTh k="risk" label="Уровни опасности" sort={sort} desc={desc} onSort={onSort} /><th className="num">Уязвимостей</th><SortTh k="total" label="Обнаружений" sort={sort} desc={desc} onSort={onSort} className="num" /><th className="num">С исправлением</th><th><span className="sr-only">Действия</span></th></tr></thead>
             <tbody>
-              <VirtualRows list={list} colSpan={7} estimate={40} row={(p) => (
-                <tr className="clickable" onClick={() => open(p)}>
+              <VirtualRows list={list} colSpan={8} estimate={40} row={(p) => (
+                <tr className={`clickable ${sel.has(pk(p)) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("input, button")) open(p); }}>
+                  <td className="check"><input type="checkbox" aria-label={`Выбрать ${p.name}`} checked={sel.has(pk(p))} onChange={() => sel.toggle(pk(p))} /></td>
                   <td><button type="button" className="link-btn strong-link" onClick={() => open(p)}>{p.name}</button></td><td className="num"><b>{num(p.hosts)}</b></td>
                   <td><SevCounts critical={p.critical} high={p.high} warning={p.warning} compact /></td><td className="num">{num(p.vulns)}</td><td className="num">{num(p.total)}</td><td className="num">{num(p.patchable)}</td>
-                  <td className="actions"><button type="button" className="btn mini ghost row-act" onClick={(e) => { e.stopPropagation(); open(p); }}><Icon name="monitor" size={15} />Компьютеры</button></td>
+                  <td className="actions"><button type="button" className="btn mini ghost row-act" onClick={(e) => { e.stopPropagation(); open(p); }}><Icon name="monitor" size={15} />Компьютеры</button>
+                    {canReport && <button type="button" className="btn mini ghost row-act" onClick={(e) => { e.stopPropagation(); setReport(reportFor([pk(p)], `Уязвимости программы: ${p.name}`)); }}><Icon name="file" size={15} />Отчёт</button>}</td>
                 </tr>)} />
-              {!list.items.length && !list.loading && <tr><td colSpan={7}><Empty icon="checkCircle" title="Уязвимых программ нет">По этим условиям KSC не нашёл неисправленных уязвимостей.</Empty></td></tr>}
+              {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="checkCircle" title="Уязвимых программ нет">По этим условиям KSC не нашёл неисправленных уязвимостей.</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
       <ListFoot list={list} />
+      <ReportDock label="Выбранные программы" count={sel.count} noun={["программа выбрана", "программы выбраны", "программ выбрано"]} canReport={canReport} onClear={sel.clear}
+        onReport={() => setReport(reportFor(sel.ids, `Уязвимости выбранных программ (${sel.count})`))} />
+      {report && <QuickReportPanel {...report} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)} />}
     </>
   );
 }
@@ -178,7 +263,7 @@ function ChecksView({ ctx }: { ctx: Ctx }) {
 export function VulnHostPage({ ctx }: { ctx: Ctx }) {
   const { hostId } = useParams();
   const [d, setD] = useState<Awaited<ReturnType<typeof api.vulns.host>> | null>(null);
-  const [err, setErr] = useState("");
+  const [err, setErr] = useState(""); const [report, setReport] = useState(false);
   useEffect(() => { if (ctx.current && hostId) api.vulns.host(Number(hostId)).then(setD).catch((e) => setErr((e as ApiError).message)); }, [ctx.current, hostId]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const back = <Link className="back-link" to="/vulnerabilities"><Icon name="arrowL" size={15} />Уязвимости</Link>;
@@ -191,7 +276,10 @@ export function VulnHostPage({ ctx }: { ctx: Ctx }) {
     <section>
       <PageHead title={h.name} back={back} lede={<>{h.ip && <span className="mono">{h.ip}</span>} · {h.os} · {h.group} · подключение к KSC {fmt(h.last_connected)}</>}>
         <Fetched at={d.fetched_at} /><Link className="btn" to={`/hosts/${h.host_id}`}><Icon name="monitor" />Карточка компьютера</Link>
+        {ctx.me.user.role !== "viewer" && <button className="btn primary" onClick={() => setReport(true)}><Icon name="file" />Подробный отчёт</button>}
       </PageHead>
+      {report && <QuickReportPanel kind="quick_vulns" title={`Уязвимости: ${h.name}`} lede="Все действующие уязвимости компьютера" options={{ scope: false, severity: true, patchable: true }}
+        params={{ host_ids: [h.host_id] }} activityDays={ctx.me.activity_days} canReport onClose={() => setReport(false)} />}
       <div className="meters">
         <div className="meter"><span className="l">Критические</span><span className={`v ${d.counts.critical ? "bad-text" : ""}`}>{num(d.counts.critical)}</span></div>
         <div className="meter"><span className="l">Высокие</span><span className={`v ${d.counts.high ? "warn-text" : ""}`}>{num(d.counts.high)}</span></div>

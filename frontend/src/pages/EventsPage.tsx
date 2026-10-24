@@ -5,6 +5,7 @@ import { api, type ApiError, type EvGroup, type EvSummary, type SecEvent } from 
 import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
 import { Icon } from "../components/Icons";
+import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { Empty, PageHead, Segmented, SkelRows } from "../components/ui";
 import { fmt, num } from "../util";
 
@@ -104,34 +105,39 @@ export default function EventsPage({ ctx }: { ctx: Ctx }) {
       </div>
 
       <div className="section-head" id="ev-journal"><h2>Журнал обнаружений {per}</h2></div>
-      <EventList days={days} group={group} threat={threat} onGroup={(g) => set({ type: g })} onThreat={(t) => set({ threat: t })} />
+      <EventList ctx={ctx} days={days} group={group} threat={threat} onGroup={(g) => set({ type: g })} onThreat={(t) => set({ threat: t })} />
     </section>
   );
 }
 
 /** Журнал событий обнаружения — непрерывный список с поиском и фильтром по результату; используется в разделе и в карточке компьютера. */
-export function EventList({ days, hostId, group, threat, onGroup, onThreat }: { days: number; hostId?: number; group: EvFilter; threat: string; onGroup: (g: EvFilter) => void; onThreat: (t: string) => void }) {
+export function EventList({ ctx, days, hostId, group, threat, onGroup, onThreat }: { ctx: Ctx; days: number; hostId?: number; group: EvFilter; threat: string; onGroup: (g: EvFilter) => void; onThreat: (t: string) => void }) {
   const [q, setQ] = useKept(`events.q:${hostId ?? ""}`, ""); const [applied, setApplied] = useState(q);
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 350); return () => window.clearTimeout(t); }, [q]);
   const list = useInfinite<SecEvent>(`events:${hostId ?? "all"}`, [days, hostId, group, threat, applied],
     (offset, limit) => api.events.list({ days, host_id: hostId, type: GROUP_TYPES[group], q: applied, threat, offset, limit }) as unknown as Promise<Chunk<SecEvent>>);
   const unsupported = (list.extra as { unsupported?: string[] } | null)?.unsupported;
+  const sel = useRowSel<number>(); const [report, setReport] = useState<"all" | "sel" | null>(null);
+  const canReport = ctx.me.user.role !== "viewer";
+  const evIds = list.items.map((e) => e.event_id);
   if (unsupported) return <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет журнала событий KSC ({unsupported.join(", ")}).</div></div>;
   return (
     <>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={hostId ? "Угроза, объект или пользователь" : "Компьютер, угроза, объект или пользователь"} aria-label="Поиск событий" /></div>
         <Segmented<EvFilter> label="Результат" value={group} onChange={onGroup} options={GROUP_OPTS} />
+        {canReport && <button className="btn" onClick={() => setReport("all")} disabled={list.initial || !list.total}><Icon name="file" />Отчёт по списку</button>}
         {threat && <div className="toolbar-foot"><span className="chip">Угроза: <b className="mono">{threat}</b><button type="button" className="link-btn" onClick={() => onThreat("")}>сбросить</button></span></div>}
       </div>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={5} /> : (
           <table className="table virt">
-            <thead><tr><th>Время</th>{!hostId && <th>Компьютер</th>}<th>Событие</th><th>Угроза или атака</th><th>Объект</th><th className="hide-sm">Пользователь</th></tr></thead>
+            <thead><tr><CheckAll all={sel.allOf(evIds)} some={sel.someOf(evIds)} onToggle={() => sel.toggleMany(evIds)} /><th>Время</th>{!hostId && <th>Компьютер</th>}<th>Событие</th><th>Угроза или атака</th><th>Объект</th><th className="hide-sm">Пользователь</th></tr></thead>
             <tbody>
-              <VirtualRows list={list} colSpan={hostId ? 5 : 6} estimate={48} row={(e) => (
-                <tr>
+              <VirtualRows list={list} colSpan={hostId ? 6 : 7} estimate={48} row={(e) => (
+                <tr className={sel.has(e.event_id) ? "sel" : ""}>
+                  <td className="check"><input type="checkbox" aria-label="Выбрать событие" checked={sel.has(e.event_id)} onChange={() => sel.toggle(e.event_id)} /></td>
                   <td className="nowrap small">{fmt(e.at)}</td>
                   {!hostId && <td>{e.host_id && e.host ? <Link to={`/hosts/${e.host_id}?tab=events`}>{e.host}</Link> : <span className="muted">удалённое устройство</span>}{e.ip && <span className="sub mono">{e.ip}</span>}</td>}
                   <td><span className={`badge ${TYPE_TONE[e.type] ?? ""}`}>{e.type_title}</span></td>
@@ -139,11 +145,15 @@ export function EventList({ days, hostId, group, threat, onGroup, onThreat }: { 
                   <td className="small obj">{e.type === "attack" ? <span className="mono">{e.attacker || "?"}{e.port ? ` → порт ${e.port}` : ""}{e.protocol ? ` (${e.protocol})` : ""}</span> : e.object ? <span className="mono" title={e.object}>{e.object}</span> : <span className="muted">—</span>}</td>
                   <td className="small hide-sm">{e.user || <span className="muted">—</span>}</td>
                 </tr>)} />
-              {!list.items.length && !list.loading && <tr><td colSpan={hostId ? 5 : 6}><Empty icon="checkCircle" title={applied || group || threat ? "Ничего не найдено" : "Событий нет"}>{applied || group || threat ? "Измените поиск или фильтр." : `Kaspersky не сообщал об обнаружениях ${days === 1 ? "за сутки" : `за ${days} суток`}.`}</Empty></td></tr>}
+              {!list.items.length && !list.loading && <tr><td colSpan={hostId ? 6 : 7}><Empty icon="checkCircle" title={applied || group || threat ? "Ничего не найдено" : "Событий нет"}>{applied || group || threat ? "Измените поиск или фильтр." : `Kaspersky не сообщал об обнаружениях ${days === 1 ? "за сутки" : `за ${days} суток`}.`}</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
       <ListFoot list={list} />
+      <ReportDock label="Выбранные события" count={sel.count} noun={["событие выбрано", "события выбраны", "событий выбрано"]} canReport={canReport} onClear={sel.clear} onReport={() => setReport("sel")} />
+      {report && <QuickReportPanel kind="quick_events" title={report === "sel" ? `События безопасности: выбранные (${sel.count})` : "События безопасности"} lede={report === "all" ? "Условия берутся из текущих фильтров страницы" : undefined}
+        options={{ period: report === "all", scope: false }} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)}
+        params={report === "sel" ? { days, event_ids: sel.ids } : { days, group, threat, q: applied, host_id: hostId ?? null }} />}
     </>
   );
 }

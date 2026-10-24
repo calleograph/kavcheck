@@ -89,3 +89,104 @@ async def page(client: SourceClient, *, offset: int, limit: int, host: str = "",
               "severity": SEVERITY.get(r.get("severity"), str(r.get("severity") or "")), "cve": r.get("cve") or "", "product": r.get("product") or r.get("app_name") or "",
               "product_version": r.get("product_version") or r.get("app_version") or "", "patches_available": bool(r.get("patches_available")), "url": r.get("url") or ""} for r in rows]
     return {"items": items, "total": total, "offset": offset, "limit": limit, "approximate_total": bool(product)}
+
+
+# ------------------------------------------------------------------------------------------------ быстрые отчёты и список уязвимостей
+async def names_for(client: SourceClient, descr_ids: list[int]) -> dict[int, dict[str, list[str]]]:
+    """CVE и KB по идентификаторам уязвимостей KSC (порциями)."""
+    out: dict[int, dict[str, list[str]]] = {}
+    ids = sorted({int(i) for i in descr_ids})
+    for k in range(0, len(ids), 500):
+        for n in await client.run(q.VULN_NAMES.format(ids=q.ids_list(ids[k:k + 500])), max_rows=100_000):
+            d = out.setdefault(int(n["descr_id"]), {"cve": [], "kb": []})
+            key = {3: "cve", 6: "kb"}.get(int(n["sense"]))
+            if key and n.get("name") and n["name"] not in d[key]:
+                d[key].append(n["name"])
+    return out
+
+
+async def resolve_cves(client: SourceClient, cves: list[str]) -> dict[str, int | None]:
+    """Идентификаторы уязвимостей KSC по списку CVE; None — такого CVE в KSC нет."""
+    found: dict[str, list[int]] = {}
+    clean = [c.strip().upper() for c in cves if c and c.strip()][:200]
+    for k in range(0, len(clean), 100):
+        chunk = clean[k:k + 100]
+        names = ", ".join(f"%(c{i})s" for i in range(len(chunk)))
+        for r in await client.run(q.VULN_DESCR_BY_CVE.format(names=names), {f"c{i}": c for i, c in enumerate(chunk)}, max_rows=100_000):
+            found.setdefault(str(r["name"]).upper(), []).append(int(r["descr_id"]))
+    return {c: (found[c][0] if c in found else None) for c in clean}
+
+
+async def detail_rows(client: SourceClient, *, descr_ids: list[int], vp_ids: list[int], product_names: list[str], host_ids: list[int], severity: int | None, patchable: bool,
+                      max_rows: int, progress=lambda _t: None, cancelled=lambda: False) -> list[dict]:
+    """Действующие обнаружения выбранных уязвимостей и программ (или всех уязвимостей выбранных компьютеров). Один проход по ключу o.nId, порциями по 50 000;
+    активность и сеть — в приложении (по строкам), чтобы отчёт мог сказать, сколько компьютеров не вошло и почему."""
+    sel, params = [], {}
+    if descr_ids:
+        sel.append(f"d.nId IN ({q.ids_list(descr_ids[:5000])})")
+    if vp_ids:
+        sel.append(f"vp.nId IN ({q.ids_list(vp_ids[:5000])})")
+    names = [n for n in product_names if n][:50]
+    if names:
+        keys = ", ".join(f"%(n{i})s" for i in range(len(names)))
+        sel.append(f"(vp.nId IS NULL AND p.wstrDisplayName IN ({keys}))")
+        params.update({f"n{i}": n for i, n in enumerate(names)})
+    extra = []
+    if sel:
+        extra.append("(" + " OR ".join(sel) + ")")
+    if host_ids:
+        extra.append(f"o.nHostId IN ({q.ids_list(host_ids[:5000])})")
+    if not extra:
+        raise ValueError("Не выбраны уязвимости, программы или компьютеры")
+    if severity in (1, 2, 4):
+        extra.append("d.nKlSeverity = %(sev)s")
+        params["sev"] = severity
+    if patchable:
+        extra.append("o.bPatchesAvailable = 1")
+    sql = q.VULN_DETAIL.format(extra=" AND " + " AND ".join(extra))
+    out: list[dict] = []
+    after = 0
+    while True:
+        if cancelled():
+            raise RuntimeError("cancelled")
+        rows = await client.run(sql, {**params, "after": after}, max_rows=50_000)
+        out += rows
+        if len(out) > max_rows:
+            from .driver import KscError  # noqa: PLC0415
+
+            raise KscError("too_many_rows", f"Обнаружений больше предела отчёта ({max_rows}): сузьте выбор или период")
+        progress(f"обнаружений прочитано: {len(out)}")
+        if len(rows) < 50_000:
+            return out
+        after = int(rows[-1]["occurrence_id"])
+
+
+async def descr_list(client: SourceClient, *, active_days: int | None, exclude_slaves: bool) -> list[dict]:
+    """Список действующих уязвимостей KSC: опасность, CVE, затронутые программы, число компьютеров (один набор запросов, кэшируется)."""
+    where = q.VULNS_WHERE
+    if exclude_slaves:
+        where += " AND h.bIsSlaveServer = 0"
+    params: dict = {}
+    if active_days:
+        where += " AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())"
+        params["days"] = int(active_days)
+    rows = await client.run(q.VULN_DESCR_AGG.format(where=where), params, max_rows=500_000)
+    prods = await client.run(q.VULN_DESCR_PRODUCTS.format(where=where), params, max_rows=1_000_000)
+    info: dict[int, dict] = {}
+    for k in range(0, len(rows), 500):
+        for d in await client.run(q.VULN_DESCR_INFO.format(ids=q.ids_list([int(r["descr_id"]) for r in rows[k:k + 500]])), max_rows=100_000):
+            info[int(d["descr_id"])] = d
+    names = await names_for(client, [int(r["descr_id"]) for r in rows])      # имена только для найденных уязвимостей, не соединение по всей таблице
+    by_descr: dict[int, list[tuple[str, int]]] = {}
+    for p in prods:
+        by_descr.setdefault(int(p["descr_id"]), []).append((p.get("product") or "", int(p["hosts"])))
+    out = []
+    for r in rows:
+        did = int(r["descr_id"])
+        r = {**info.get(did, {}), **r}
+        nm = names.get(did, {"cve": [], "kb": []})
+        pr = sorted(by_descr.get(did, []), key=lambda x: -x[1])
+        out.append({"descr_id": did, "kla_id": r.get("kla_id") or "", "severity": SEVERITY_KEY.get(r.get("severity"), "warning"), "severity_label": SEVERITY.get(r.get("severity"), ""),
+                    "url": r.get("url") or "", "cve": sorted(nm["cve"]), "kb": nm["kb"], "products": [p for p, _ in pr if p][:6], "hosts": int(r["hosts"]), "total": int(r["total"]),
+                    "patchable": int(r.get("patchable") or 0), "last_detected": r.get("last_detected")})
+    return out

@@ -117,6 +117,45 @@ async def load(client: SourceClient, *, exclude_slaves: bool, groups: dict | Non
     return [record(h, by_host.get(int(h["host_id"]), []), groups, now) for h in hosts]
 
 
+def scope(base: list[dict], *, now: datetime, activity_days: int, include_inactive: bool, online_only: bool, bases_days: int, scan_days: int) -> tuple[list[dict], dict]:
+    """Компьютеры в области отчёта: активность (связывались с KSC за N суток) и, отдельно, «в сети сейчас» (флаг KSC «видимо»); проблемы по порогам.
+    Возвращает (компьютеры с problems, счётчики: hidden — без связи, offline — не в сети, online_data — передаёт ли KSC статус сети)."""
+    online_data = any(r.get("online") is not None for r in base)
+    out, hidden, offline = [], 0, 0
+    for r in base:
+        if not include_inactive and (r["days_since_connection"] is None or r["days_since_connection"] > activity_days):
+            hidden += 1
+            continue
+        if online_only and online_data and r.get("online") is not True:
+            offline += 1
+            continue
+        out.append({**r, "problems": problems(r, now, bases_days=bases_days, scan_days=scan_days)})
+    return out, {"hidden": hidden, "offline": offline, "online_data": online_data, "online_only": bool(online_only and online_data)}
+
+
+def pick(hosts: list[dict], *, problem: str = "", product: str = "", build: str = "", q: str = "", group: str = "", host_ids: list[int] | None = None) -> list[dict]:
+    """Отбор компьютеров по категории проблемы, версии продукта, тексту, группе и выбранным строкам (одинаково для страницы и отчёта)."""
+    items = hosts
+    if host_ids:
+        ids = set(host_ids)
+        items = [h for h in items if h["host_id"] in ids]
+    if problem == "ok":
+        items = [h for h in items if not h["problems"]]
+    elif problem:
+        items = [h for h in items if problem in h["problems"]]
+    if product:
+        def ver(h: dict) -> str | None:
+            av = h["av"] or {}
+            return h["agent_build"] if product == AGENT else av.get("build") if av.get("code") == product else None
+        items = [h for h in items if ver(h) and (not build or ver(h) == build)]
+    if q.strip():
+        n = q.strip().lower()
+        items = [h for h in items if n in f"{h['name']} {h['fqdn']} {h['ip']}".lower()]
+    if group.strip():
+        items = [h for h in items if group.strip().lower() in h["group"].lower()]
+    return items
+
+
 def host_protection(h: dict, products: list[dict], status: dict | None, now: datetime, *, bases_days: int = 3, scan_days: int = 30) -> dict:
     """Проблемы защиты одного компьютера (карточка): те же правила, что и в разделе «Состояние защиты»."""
     raw = {**h, "ksc_status": (status or {}).get("status"), "status_mask": (status or {}).get("mask")}

@@ -14,13 +14,13 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
-from ..ksc.driver import ConnParams, KscError, Session
+from ..ksc.driver import ConnParams, KscError, Session, SourceClient
 from ..ksc.grouping import Rule
 from ..models import GroupingRule, KscSource, ReportJob, utcnow
 from ..services import catalog as catalog_svc
 from ..services.audit import Journal
 from ..services.settings import ReportsSettings, SettingsService
-from . import audit, builder, export
+from . import audit, builder, export, quick, quick_export
 
 log = logging.getLogger("app.reports")
 WORKER = f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}"
@@ -70,6 +70,9 @@ class Runner:
     async def _execute(self, job: ReportJob) -> None:
         if job.kind == "version_audit":
             await self._execute_audit(job)
+            return
+        if job.kind in quick.QUICK_KINDS:
+            await self._execute_quick(job)
             return
         started = utcnow()
         async with self._sm() as db:
@@ -130,6 +133,64 @@ class Runner:
             await self._journal.emit("report", "report_failed", level="error", user=job.created_by, source=job.source_name, message=f"{job.title}: {type(exc).__name__}", data={"job_id": str(job.id)})
         finally:
             watcher.cancel()
+
+    async def _execute_quick(self, job: ReportJob) -> None:
+        """Быстрый контекстный отчёт (уязвимости, компьютеры, защита, события): тот же построитель, что у предпросмотра; выгрузки XLSX, HTML, CSV."""
+        started = utcnow()
+        async with self._sm() as db:
+            src = await db.get(KscSource, job.source_id)
+            rcfg: ReportsSettings = await self._svc.get(db, "reports")  # type: ignore[assignment]
+            general = await self._svc.get(db, "general")
+        if src is None:
+            await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
+            return
+        client = SourceClient(conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), concurrency=self._cfg.ksc_concurrency, name=src.name)
+        flag = {"cancel": False}
+        loop = asyncio.get_running_loop()
+
+        async def watch():
+            while True:
+                await asyncio.sleep(2)
+                if await self._cancelled(job.id):
+                    flag["cancel"] = True
+                    return
+
+        watcher = asyncio.create_task(watch())
+        ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
+                        progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"])
+        try:
+            doc = await quick.build(job.kind, client, {k: v for k, v in (job.params or {}).items() if not k.startswith("_")}, ctx)
+            if job.title:
+                doc["title"] = job.title if job.title != quick.KIND_TITLE.get(job.kind) else doc["title"]
+            d = job_dir(self._cfg, job.id)
+            d.mkdir(parents=True, exist_ok=True)
+            main = doc["tables"][0]["rows"]
+            await asyncio.to_thread(self._write_quick, d, doc)
+            summary = {**quick.brief(doc), "rows": len(main), "hosts": next((m["value"] for m in doc["metrics"] if m["key"] == "hosts"), None),
+                       "fetched_at": ctx.now.isoformat(timespec="seconds")}
+            await self._set(job.id, status="done", finished_at=utcnow(), rows=len(main), summary=summary, progress="готово", data_fetched_at=ctx.now)
+            await self._journal.emit("report", "report_done", user=job.created_by, source=job.source_name[:120], message=f"{job.title}: строк {len(main)}",
+                                     duration_ms=int((utcnow() - started).total_seconds() * 1000), data={"job_id": str(job.id), "kind": job.kind})
+        except RuntimeError as exc:
+            if str(exc) != "cancelled":
+                raise
+            await self._set(job.id, status="cancelled", finished_at=utcnow(), progress="отменён")
+        except KscError as exc:
+            await self._set(job.id, status="failed", finished_at=utcnow(), error=exc.message, progress="ошибка")
+            await self._journal.emit("report", "report_failed", level="error", user=job.created_by, source=job.source_name[:120], message=f"{job.title}: {exc.message}",
+                                     data={"job_id": str(job.id), "code": exc.code})
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Сбой формирования отчёта", extra={"job_id": str(job.id)})
+            await self._set(job.id, status="failed", finished_at=utcnow(), error=f"Внутренняя ошибка: {type(exc).__name__}", progress="ошибка")
+        finally:
+            watcher.cancel()
+
+    @staticmethod
+    def _write_quick(d: Path, doc: dict) -> None:
+        export.write_jsonl(d / "rows.jsonl", doc["tables"][0]["rows"])
+        quick_export.write_csv_main(d / "report.csv", doc)
+        quick_export.write_xlsx(d / "report.xlsx", doc)
+        quick_export.write_html(d / "report.html", doc)
 
     async def _execute_audit(self, job: ReportJob) -> None:
         """Проверка версий по одному или нескольким источникам: источники обрабатываются по очереди, каждый на своём соединении."""
@@ -213,6 +274,8 @@ class Runner:
                     "Сравнение версий": "Пакеты Linux — по версии без эпохи и ревизии (граница с ревизией сравнивается с полной версией), программы Windows — по числовым частям "
                                         "(130 = 130.0.0.0); нестандартная нумерация Java и Python для Windows приводится к обычной."}
             await asyncio.to_thread(self._write, d, job.kind, rows, summary, meta)
+            doc = quick.doc_from_audit(rows, summary, {"title": job.title, "source": job.source_name})
+            await asyncio.to_thread(self._write_audit_html, d, doc)
             await self._set(job.id, status="done", finished_at=utcnow(), rows=len(rows), summary=summary, progress="готово",
                             data_fetched_at=datetime.fromisoformat(summary["fetched_at"]).replace(tzinfo=timezone.utc) if summary.get("fetched_at") else utcnow())
             await self._journal.emit("report", "report_done", user=job.created_by, source=job.source_name[:120], message=f"{job.title}: строк {len(rows)}",
@@ -228,6 +291,11 @@ class Runner:
             await self._set(job.id, status="failed", finished_at=utcnow(), error=f"Внутренняя ошибка: {type(exc).__name__}", progress="ошибка")
         finally:
             watcher.cancel()
+
+    @staticmethod
+    def _write_audit_html(d: Path, doc: dict) -> None:
+        doc.update(kind="version_audit", generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        quick_export.write_html(d / "report.html", doc)
 
     @staticmethod
     def _write(d: Path, kind: str, rows: list[dict], summary: dict, meta: dict) -> None:

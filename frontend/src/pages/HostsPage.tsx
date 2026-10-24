@@ -5,6 +5,7 @@ import { NoSource, type Ctx } from "../App";
 import { ActivityBadge, Fetched, OnlineBadge } from "../components/Common";
 import { ListFoot, VirtualRows, staticList, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
+import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import { EventList, type EvFilter } from "./EventsPage";
 import { ProblemBadges } from "./ProtectionPage";
@@ -27,6 +28,8 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
   const list = useInfinite<Host>(`hosts:${ctx.current?.id}`, [applied, activity, threshold, sort, desc],
     (offset, limit) => api.hosts.list({ ...applied, activity, days: threshold, sort, desc, offset, limit }) as unknown as Promise<Chunk<Host>>);
   const extra = list.extra as { hidden?: number; activity_days?: number; fetched_at?: string } | null;
+  const sel = useRowSel<number>(); const [report, setReport] = useState(false);
+  const canReport = ctx.me.user.role !== "viewer";
   useEffect(() => { setSp((p) => { if (activity === "active") p.delete("activity"); else p.set("activity", activity); return p; }, { replace: true }); }, [activity, setSp]);
   // переход из поиска в верхней панели на уже открытую страницу: запрос и активность берутся из адреса
   const urlQ = sp.get("q"), urlActivity = sp.get("activity") as Activity | null;
@@ -56,18 +59,22 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
           <table className="table virt">
-            <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
+            <thead><tr><CheckAll all={sel.allOf(list.items.map((h) => h.host_id))} some={sel.someOf(list.items.map((h) => h.host_id))} onToggle={() => sel.toggleMany(list.items.map((h) => h.host_id))} />
+              <SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="group" label="Группа" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Связь</th><th>Онлайн</th></tr></thead>
             <tbody>
-              <VirtualRows list={list} colSpan={7} estimate={46} row={(h) => (
-                <tr><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}</td><td className="mono nowrap">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
+              <VirtualRows list={list} colSpan={8} estimate={46} row={(h) => (
+                <tr className={sel.has(h.host_id) ? "sel" : ""}><td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}</td><td className="mono nowrap">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
                   <td className="nowrap">{fmt(h.last_connected)}</td><td><ActivityBadge days={h.days_since_connection} activityDays={eff} /></td><td><OnlineBadge online={h.online} seen={h.last_visible} /></td></tr>)} />
-              {!list.items.length && !list.loading && <tr><td colSpan={7}><Empty icon="monitor" title="Компьютеров не найдено">Измените поиск или фильтр связи с KSC.</Empty></td></tr>}
+              {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="monitor" title="Компьютеров не найдено">Измените поиск или фильтр связи с KSC.</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
       <ListFoot list={list} />
       {extra && (activity === "active" || activity === "all") && <HiddenNote hidden={extra.hidden ?? 0} days={eff} all={activity === "all"} onToggle={() => setActivity(activity === "all" ? "active" : "all")} />}
+      <ReportDock label="Выбранные компьютеры" count={sel.count} noun={["компьютер выбран", "компьютера выбрано", "компьютеров выбрано"]} canReport={canReport} onClear={sel.clear} onReport={() => setReport(true)} />
+      {report && <QuickReportPanel kind="quick_hosts" title={`Отчёт по компьютерам (${sel.count})`} lede="Состояние, защита, установленное ПО и уязвимости выбранных компьютеров" options={{ sections: true, scope: false }}
+        params={{ host_ids: sel.ids }} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(false)} />}
       <p className="muted small mt-sm">Записи кластеров и подчинённых серверов не считаются компьютерами.</p>
     </section>
   );
@@ -81,7 +88,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   const tab = (["software", "vulns", "events"].includes(sp.get("tab") ?? "") ? sp.get("tab") : "software") as HostTab;
   const [vulns, setVulns] = useState<{ items: HostVuln[]; unsupported?: string[] } | null>(null);
   const [vErr, setVErr] = useState("");
-  const [evGroup, setEvGroup] = useState<EvFilter>(""); const [evThreat, setEvThreat] = useState("");
+  const [evGroup, setEvGroup] = useState<EvFilter>(""); const [evThreat, setEvThreat] = useState(""); const [report, setReport] = useState(false);
   useEffect(() => { setVulns(null); setVErr(""); }, [ctx.current, hostId]);
   useEffect(() => { if (tab === "vulns" && !vulns && !vErr && ctx.current && hostId) api.vulns.host(Number(hostId)).then(setVulns).catch((e) => setVErr((e as ApiError).message)); }, [tab, vulns, vErr, ctx.current, hostId]);
   const [d, setD] = useState<Awaited<ReturnType<typeof api.hosts.one>> | null>(null);
@@ -103,7 +110,10 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
     <section>
       <PageHead title={h.name} back={back} lede={<span className="row tight wrap"><OnlineBadge online={h.online} seen={h.last_visible} /><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}</span>}>
         <Fetched at={d.fetched_at} />
+        {ctx.me.user.role !== "viewer" && <button className="btn primary" onClick={() => setReport(true)}><Icon name="file" />Подробный отчёт</button>}
       </PageHead>
+      {report && <QuickReportPanel kind="quick_hosts" title={`Отчёт: ${h.name}`} lede="Состояние, защита, установленное ПО и все уязвимости компьютера" options={{ sections: true, scope: false }}
+        params={{ host_ids: [h.host_id] }} activityDays={ctx.me.activity_days} canReport onClose={() => setReport(false)} />}
       <div className="split even">
         <div className="card">
           <h2>Сведения</h2>
@@ -141,7 +151,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
         : !vulns ? <div className="card"><SkelRows rows={4} cols={5} /></div>
           : vulns.unsupported ? <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет объектов уязвимостей KSC.</div></div>
             : <><HostVulns items={vulns.items} /><p className="muted small mt-sm"><Link to={`/vulnerabilities/hosts/${h.host_id}`}>Сводка уязвимостей компьютера</Link> — счётчики по уровням опасности.</p></>)}
-      {tab === "events" && <><p className="muted small">События обнаружения за 30 суток: новые сверху.</p><EventList days={30} hostId={h.host_id} group={evGroup} threat={evThreat} onGroup={setEvGroup} onThreat={setEvThreat} /></>}
+      {tab === "events" && <><p className="muted small">События обнаружения за 30 суток: новые сверху.</p><EventList ctx={ctx} days={30} hostId={h.host_id} group={evGroup} threat={evThreat} onGroup={setEvGroup} onThreat={setEvThreat} /></>}
     </section>
   );
 }

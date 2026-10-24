@@ -17,6 +17,14 @@ import { getSelection, selLabel } from "../selection";
 export function describe(p: Record<string, unknown>): string {
   if (Array.isArray(p.items)) return (p.items as Parameters<typeof itemSummary>[0][]).map(itemSummary).join("; ");
   const parts: string[] = [];
+  const n = (k: string) => (Array.isArray(p[k]) ? (p[k] as unknown[]).length : 0);
+  if (n("cves")) parts.push(`CVE: ${(p.cves as string[]).slice(0, 3).join(", ")}${n("cves") > 3 ? "…" : ""}`);
+  if (n("descr_ids")) parts.push(`уязвимостей: ${n("descr_ids")}`);
+  if (n("vp_ids") || n("product_names")) parts.push(`программ: ${n("vp_ids") + n("product_names")}`);
+  if (n("host_ids")) parts.push(`компьютеров: ${n("host_ids")}`);
+  if (n("event_ids")) parts.push(`событий: ${n("event_ids")}`);
+  if (typeof p.problem === "string" && p.problem) parts.push(`проблема: ${p.problem}`);
+  if (p.online_only) parts.push("только в сети");
   if (p.rule) parts.push(`правило «${p.rule}»`);
   if (Array.isArray(p.branches) && p.branches.length) parts.push(`ветки ${p.branches.map((b) => b || "не определена").join(", ")}`);
   if (Array.isArray(p.product_ids) && p.product_ids.length) parts.push(`записей реестра: ${p.product_ids.length}`);
@@ -186,19 +194,23 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
   if (!j) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="table-scroll"><SkelRows /></div>{toast}</section>;
   const [l, c] = JOB_STATUS[j.status] ?? [j.status, ""];
   const audit = j.kind === "version_audit";
+  const quickJob = j.kind.startsWith("quick_");
+  const qcols = (j.summary?.tables?.[0]?.columns ?? []) as { key: string; title: string; type: string }[];
+  const dateKeys = new Set(qcols.filter((c) => c.type === "date").map((c) => c.key));
   const multi = (j.source_ids?.length ?? 1) > 1;
   const fam = (j.params.items ?? []).some((it) => (it.product_keys?.length ?? 0) > 1);   // пункт из нескольких продуктов — нужен столбец «Продукт»
-  const cols = (audit ? AUDIT_COLS.filter(([k]) => (multi || k !== "source") && (fam || k !== "product")) : j.kind === "software_hosts" ? SOFT_COLS : HOST_COLS);
+  const cols = (quickJob ? qcols.map((c): [string, string, string?] => [c.key, c.title, c.type === "mono" ? "mono nowrap" : c.type === "num" ? "num" : undefined]) : audit ? AUDIT_COLS.filter(([k]) => (multi || k !== "source") && (fam || k !== "product")) : j.kind === "software_hosts" ? SOFT_COLS : HOST_COLS);
   const s = j.summary;
+  const s0 = s ?? {} as NonNullable<typeof s>;
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } };
   const canEdit = ctx.me.user.role !== "viewer";
   const filtered = !!(applied || source || program);
   return (
     <section>
-      <PageHead title={j.title} back={back} lede={<>{j.source_name} · {describe(j.params as Record<string, unknown>)}. Сформировал {j.created_by}, {fmt(j.created_at)}.</>}>
+      <PageHead title={j.title} back={back} lede={<>{j.source_name} · {quickJob ? (s0.conditions?.map((c) => c.text).join("; ") ?? "") : describe(j.params as Record<string, unknown>)}. Сформировал {j.created_by}, {fmt(j.created_at)}.</>}>
         <span className={`badge ${c}`}>{l}</span>
         {j.data_fetched_at && <Fetched at={j.data_fetched_at} />}
-        {j.status === "done" && <><a className="btn primary" href={api.reports.downloadUrl(j.id, "xlsx")}><Icon name="download" />Скачать XLSX</a><a className="btn" href={api.reports.downloadUrl(j.id, "csv")}>CSV</a></>}
+        {j.status === "done" && <><a className="btn primary" href={api.reports.downloadUrl(j.id, "xlsx")}><Icon name="download" />Скачать XLSX</a><a className="btn" href={api.reports.downloadUrl(j.id, "csv")}>CSV</a>{(audit || quickJob) && <a className="btn" href={api.reports.downloadUrl(j.id, "html")}>HTML</a>}</>}
         {canEdit && j.status !== "running" && j.status !== "queued" && <button className="btn ghost" onClick={async () => { const n = await api.reports.rerun(j.id); navigate(`/reports/${n.id}`, { state: { toast: "Отчёт поставлен в очередь" } }); }}><Icon name="refresh" />Повторить</button>}
       </PageHead>
       {(j.status === "running" || j.status === "queued") && (
@@ -226,7 +238,15 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
           </table>
         </div>
       </>)}
-      {s && !audit && (
+      {s && quickJob && (<>
+        {s.conditions && <dl className="qr-cond job-cond">{s.conditions.map((c) => <div key={c.label}><dt>{c.label}</dt><dd>{c.text}</dd></div>)}</dl>}
+        <div className="meters">{(s.metrics ?? []).map((m) => <div key={m.key} className="meter" title={m.hint}><span className="l">{m.label}</span><span className={`v ${m.tone === "danger" ? "bad-text" : ""}`}>{typeof m.value === "number" ? num(m.value) : m.value}</span>{m.hint && <span className="t">{m.hint}</span>}</div>)}</div>
+        {s.severity && s.severity.levels.some((l) => l.value > 0) && <div className="qr-sev job-sev" aria-label={s.severity.title}>
+          <div className="qr-sev-bar">{s.severity.levels.filter((l) => l.value > 0).map((l) => <span key={l.key} className={`qs-${l.key}`} style={{ flexGrow: l.value }} title={`${l.label}: ${l.value}`} />)}</div>
+          <ul className="qr-sev-legend">{s.severity.levels.map((l) => <li key={l.key} className={l.value ? "" : "zero"}><span className={`dot-sev qs-${l.key}`} />{l.label}: <b>{num(l.value)}</b></li>)}</ul>
+          <p className="muted small">{s.severity.title}</p></div>}
+      </>)}
+      {s && !audit && !quickJob && (
         <div className="meters">
           <div className="meter"><span className="l">Строк в отчёте</span><span className="v">{num(s.rows)}</span></div>
           <div className="meter"><span className="l">Уникальных компьютеров</span><span className="v">{num(s.hosts)}</span></div>
@@ -245,7 +265,7 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
             <table className="table compact virt">
               <thead><tr>{cols.map(([k, t]) => <SortTh key={k} k={k} label={t} sort={sort} desc={desc} onSort={onSort} />)}</tr></thead>
               <tbody><VirtualRows list={rows} colSpan={cols.length} estimate={36} row={(r) => <tr>{cols.map(([k, , cls]) => <td key={k} className={`${cls ?? ""} ${k === "last_connected" || k === "ip" ? "nowrap" : ""}`}>
-                {k === "name" && !multi ? <Link to={`/hosts/${String(r.host_id)}`}>{String(r[k] ?? "")}</Link> : k === "last_connected" ? fmt(r[k] as string) : k === "program" ? <>{String(r[k] ?? "")}{r.app_name !== r.program && <span className="sub">{String(r.app_name ?? "")}</span>}</> : String(r[k] ?? "")}</td>)}</tr>} />
+                {k === "name" && !multi && r.host_id ? <Link to={`/hosts/${String(r.host_id)}`}>{String(r[k] ?? "")}</Link> : k === "last_connected" || dateKeys.has(k) ? fmt(r[k] as string) : k === "program" ? <>{String(r[k] ?? "")}{r.app_name !== r.program && <span className="sub">{String(r.app_name ?? "")}</span>}</> : String(r[k] ?? "")}</td>)}</tr>} />
                 {!rows.items.length && !rows.loading && <tr><td colSpan={cols.length}><Empty icon={filtered ? "search" : "checkCircle"} title={filtered ? "Ничего не найдено" : audit ? "Устаревших версий не найдено" : "В отчёте нет строк"}>
                   {filtered ? "Измените фильтр." : audit ? "На учтённых компьютерах версий, подходящих под условие, нет." : "По заданным условиям данных не нашлось."}</Empty></td></tr>}
               </tbody>
