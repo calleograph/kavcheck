@@ -10,7 +10,7 @@ import { Empty, TagInput } from "../components/ui";
 import { VirtualRows, useStaticList } from "../components/Infinite";
 import { fmt, num } from "../util";
 
-export const OP_LABEL: Record<VersionOp, string> = { lt: "ниже", le: "ниже или равна", eq: "равна", ge: "не ниже", gt: "выше", range: "в диапазоне", any: "любая" };
+export const OP_LABEL: Record<VersionOp, string> = { lt: "ниже", le: "ниже или равна", eq: "равна", ge: "выше или равна", gt: "выше", range: "в диапазоне", any: "любая" };
 
 export interface Draft {
   id: number; kind: "product" | "pattern" | "rule"; product: PickedProduct | null; family: PickedProduct[]; op: VersionOp; value: string; min: string; max: string; target: string;
@@ -51,8 +51,8 @@ function draftProblem(d: Draft): string | null {
 
 export const itemSummary = (it: AuditItem) => {
   const name = it.product_name || it.product_key || it.name_like || it.rule || "?";
-  const cond = it.op === "range" ? `${it.min ?? "…"}–${it.max ?? "…"}` : it.op === "any" ? "любая версия" : `${OP_LABEL[it.op]} ${it.value ?? ""}`;
-  return `${name}: ${cond}`;
+  const cond = it.op === "range" ? (it.min && it.max ? `от ${it.min} до ${it.max} включительно` : it.min ? `не ниже ${it.min}` : `не выше ${it.max}`) : it.op === "any" ? "любая" : `${OP_LABEL[it.op]} ${it.value ?? ""}`;
+  return `${name}: установленная версия ${cond}`;
 };
 
 /** Конструктор проверки версий: программа → граница устаревших версий → источники → «Найти устаревшие версии» / XLSX / «Сохранить проверку». */
@@ -64,18 +64,19 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
   const [items, setItems] = useState<Draft[]>(initial?.items.length ? initial.items : [emptyDraft()]);
   const [sources, setSources] = useState<string[]>(initial?.sources?.length ? initial.sources : ctx.current ? [ctx.current.id] : []);
   const [includeInactive, setIncludeInactive] = useState(!!initial?.params?.include_inactive);
+  const [onlineOnly, setOnlineOnly] = useState(!!initial?.params?.online_only);
   const [days, setDays] = useState<string>(initial?.params?.active_days ? String(initial.params.active_days) : "");
   const [group, setGroup] = useState(initial?.params?.group_contains ?? "");
   const [rules, setRules] = useState<{ key: string; name: string }[]>([]);
   const [busy, setBusy] = useState<"" | "preview" | "xlsx">("");
   const [err, setErr] = useState("");
   const [save, setSave] = useState(false);
-  const [scopeOpen, setScopeOpen] = useState(!!(initial?.params?.include_inactive || initial?.params?.active_days || initial?.params?.group_contains));
+  const [scopeOpen, setScopeOpen] = useState(!!(initial?.params?.include_inactive || initial?.params?.online_only || initial?.params?.active_days || initial?.params?.group_contains));
   const [toast, show] = useToast();
   const canEdit = ctx.me.user.role !== "viewer";
   useEffect(() => { api.software.rules().then((r) => setRules(r.items)).catch(() => undefined); }, []);
   const set = (id: number, patch: Partial<Draft>) => setItems((xs) => xs.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  const params = (): AuditParams => ({ items: items.map(toItem), include_inactive: includeInactive, active_days: days ? Number(days) : null, group_contains: group.trim() || null });
+  const params = (): AuditParams => ({ items: items.map(toItem), include_inactive: includeInactive, online_only: onlineOnly, active_days: days ? Number(days) : null, group_contains: group.trim() || null });
   const problems = items.map(draftProblem);
   const ready = problems.every((p) => !p) && sources.length > 0;
   const preview = async (e?: FormEvent) => {
@@ -120,7 +121,7 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
               <summary>Дополнительные условия{(d.op !== "lt" || d.exclude.length || d.branches.length || d.platform || d.target || d.kind !== "product") ? <span className="badge accent">заданы</span> : null}</summary>
               <div className="adv">
                 <div className="cols">
-                  <label>Целевая версия<input className="mono" value={d.target} onChange={(e) => set(d.id, { target: e.target.value })} placeholder={d.op === "lt" && d.value ? `${d.value} или выше` : "до какой обновить"} /><span className="help">Попадёт в отчёт в столбец «Нужна»</span></label>
+                  <label>Целевая версия<input className="mono" value={d.target} onChange={(e) => set(d.id, { target: e.target.value })} placeholder={d.op === "lt" && d.value ? `${d.value} или выше` : "до какой обновить"} /><span className="help">Куда обновить; попадёт в столбец «Целевая версия» (само условие проверки от неё не зависит)</span></label>
                   <label>Условие сравнения<select value={d.op} onChange={(e) => set(d.id, { op: e.target.value as VersionOp })}>
                     {(Object.keys(OP_LABEL) as VersionOp[]).map((o) => <option key={o} value={o}>Версия {OP_LABEL[o]}</option>)}</select></label>
                 </div>
@@ -163,10 +164,12 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
           </div>)}
       </fieldset>}
       <details className="disclosure scope" open={scopeOpen} onToggle={(e) => setScopeOpen((e.target as HTMLDetailsElement).open)}>
-        <summary>Какие компьютеры учитывать: <span className="scope-now">{includeInactive ? "все, включая без связи с KSC" : `активные за ${days || ctx.me.activity_days} сут`}{group.trim() ? `, группа «${group.trim()}»` : ""}</span>{!many && <span className="muted"> · {ctx.current?.name}</span>}</summary>
+        <summary>Какие компьютеры учитывать: <span className="scope-now">{includeInactive ? "все, включая без связи с KSC" : `активные за ${days || ctx.me.activity_days} сут`}{onlineOnly ? ", только в сети сейчас" : ""}{group.trim() ? `, группа «${group.trim()}»` : ""}</span>{!many && <span className="muted"> · {ctx.current?.name}</span>}</summary>
         <div className="adv">
           <label className="check"><input type="checkbox" className="switch" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
             <span className="check-body">Включать давно не подключавшиеся компьютеры<span className="help">{includeInactive ? "Учитываются все устройства." : `Учитываются компьютеры, подключавшиеся к KSC за ${days || ctx.me.activity_days} сут.`}</span></span></label>
+          <label className="check"><input type="checkbox" className="switch" checked={onlineOnly} onChange={(e) => setOnlineOnly(e.target.checked)} />
+            <span className="check-body">Только устройства, которые KSC видит в сети сейчас<span className="help">«Связывался за {days || ctx.me.activity_days} сут» и «в сети сейчас» — разные состояния; это отдельный фильтр поверх активности.</span></span></label>
           <div className="cols">
             <label>Свой порог активности, сут<input type="number" min={1} max={3650} value={days} onChange={(e) => setDays(e.target.value)} placeholder={String(ctx.me.activity_days)} disabled={includeInactive} /></label>
             <label>Группа администрирования содержит<input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Серверы" /></label>
@@ -219,12 +222,14 @@ export function AuditResult({ id, result, multi, onXlsx }: { id?: string; result
         <div className="meter"><span className="l">Установок с устаревшей версией</span><span className="v">{num(s.rows)}</span></div>
         <div className="meter"><span className="l">Программ проверено</span><span className="v">{num(s.programs.length)}</span><span className="t">{num(s.programs.filter((p) => p.hosts > 0).length)} с находками</span></div>
         <div className="meter"><span className="l">Не учтено неактивных</span><span className="v">{s.include_inactive ? "—" : num(s.hidden_inactive_hosts)}</span><span className="t">{s.include_inactive ? "учтены все устройства" : `без связи дольше ${s.active_days} сут`}</span></div>
+        {s.online_only && <div className="meter"><span className="l">Не в сети сейчас (скрыто)</span><span className="v">{s.online_unavailable ? "нет данных" : num(s.hidden_offline_hosts)}</span><span className="t">{s.online_unavailable ? "KSC не передаёт статус «в сети»" : "по флагу «видимо» в KSC"}</span></div>}
       </div>
       {s.errors?.map((e) => <div key={e.source} className="alert error"><Icon name="alert" /><div className="alert-body"><b>{e.source}:</b> {e.message}</div></div>)}
       {s.notes?.map((n) => <div key={n} className="alert warn"><Icon name="info" /><div className="alert-body">{n}</div></div>)}
+      {s.programs.filter((p) => p.explain).map((p) => <div key={p.program} className="alert info"><Icon name="info" /><div className="alert-body"><b>{p.program}:</b> {p.explain}</div></div>)}
       <div className="table-scroll">
         <table className="table">
-          <thead><tr><th>Программа</th><th>Условие</th><th>Требуемая версия</th><th>Найдено записей реестра</th>{multi && s.sources.map((x) => <th key={x.source} className="num">{x.source}</th>)}<th className="num">Компьютеров</th></tr></thead>
+          <thead><tr><th>Программа</th><th>Условие проверки</th><th>Целевая версия</th><th>Найдено записей реестра</th>{multi && s.sources.map((x) => <th key={x.source} className="num">{x.source}</th>)}<th className="num">Компьютеров</th></tr></thead>
           <tbody>{s.programs.map((p) => {
             const f = p.found ?? []; const ok = f.filter((x) => x.matched).length;
             return (<Fragment key={p.program}>
@@ -249,7 +254,7 @@ export function AuditResult({ id, result, multi, onXlsx }: { id?: string; result
       <p className="muted small">Компьютеры, где версия соответствует условию проверки, — это не подтверждённые уязвимости; уязвимости, найденные KSC, — в разделе «Уязвимости».</p>
       <div className="table-scroll">
         <table className="table compact virt">
-          <thead><tr>{multi && <th>Источник</th>}<th>Программа</th>{byProduct && <th>Продукт</th>}<th>Установлена</th><th>Нужна</th><th>Компьютер</th><th>IP-адрес</th><th className="hide-sm">ОС</th><th>Подключение к KSC</th></tr></thead>
+          <thead><tr>{multi && <th>Источник</th>}<th>Программа</th>{byProduct && <th>Продукт</th>}<th>Установлена</th><th>Целевая версия</th><th>Компьютер</th><th>IP-адрес</th><th className="hide-sm">ОС</th><th>Подключение к KSC</th></tr></thead>
           <tbody>
             <VirtualRows list={list} colSpan={8 + (multi ? 1 : 0) + (byProduct ? 1 : 0)} estimate={40} row={(r) => (
               <tr>{multi && <td className="small">{r.source}</td>}<td>{r.program}{r.app_name !== r.program && <span className="sub">{r.app_name}</span>}</td>

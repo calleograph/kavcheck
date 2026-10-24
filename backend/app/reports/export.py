@@ -88,12 +88,12 @@ def _write_audit(path: Path, rows: list[dict], summary: dict, meta: dict) -> Non
     it = wb.active
     it.title = "Итог"
     sources = [s["source"] for s in summary.get("sources", [])]
-    it.append(["Программа", "Условие", "Требуемая версия", "Компьютеров всего", *[f"{s}: компьютеров" for s in sources]])
+    it.append(["Программа", "Условие проверки", "Целевая версия", "Компьютеров (уникальных)", *[f"{s}: компьютеров" for s in sources], "Пояснение"])
     for c in it[1]:
         c.font = Font(bold=True)
     for p in summary.get("programs", []):
         by = {b["source"]: b["hosts"] for b in p.get("by_source", [])}
-        it.append([p["program"], p["condition"], p["target_version"], p["hosts"], *[by.get(s, 0) for s in sources]])
+        it.append([p["program"], p["condition"], p["target_version"], p["hosts"], *[by.get(s, 0) for s in sources], p.get("explain") or ""])
     it.append([])
     it.append(["Всего строк", summary.get("rows")])
     it.append(["Компьютеров (уникальных в пределах источника)", summary.get("hosts")])

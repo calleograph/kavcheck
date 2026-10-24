@@ -140,6 +140,18 @@ class AuditItem(BaseModel):
             v = getattr(self, f)
             if v is not None:
                 setattr(self, f, v.strip() or None)
+        # поля, не относящиеся к выбранному оператору, отбрасываются: условие хранится ровно в том виде, в каком его выполняют
+        if self.op == "range":
+            self.value = None
+        elif self.op == "any":
+            self.value = self.min = self.max = None
+        else:
+            self.min = self.max = None
+        if self.op == "range" and self.min and self.max:
+            from ..ksc.versions import compare_numeric  # noqa: PLC0415
+
+            if compare_numeric(self.min, self.max) > 0:
+                raise ValueError(f"Диапазон задан неверно: нижняя граница {self.min} выше верхней {self.max}")
         if self.kind == "product" and not self.product_key:
             raise ValueError("Выберите программу из каталога")
         if self.kind == "pattern" and not (self.name_like or self.name_regex):
@@ -163,6 +175,7 @@ class AuditParams(BaseModel):
     items: list[AuditItem] = Field(min_length=1, max_length=50)
     active_days: int | None = Field(default=None, ge=1, le=3650)
     include_inactive: bool = False
+    online_only: bool = False                  # только устройства, которые KSC сейчас видит в сети (отдельно от «связывались за N суток»)
     group_contains: str | None = Field(default=None, max_length=200)
 
 

@@ -94,8 +94,17 @@ def _tokens(v: str) -> list[str]:
     return re.findall(r"\d+|[A-Za-z]+", v or "")
 
 
+def _canon(tokens: list[str]) -> list[str]:
+    """Хвостовые нули числовой части не значимы (5.0.0-beta = 5-beta, 130.0 = 130): без этого «5.0.0-beta» оказывалась старше «5.0»."""
+    k = next((i for i, t in enumerate(tokens) if not t.isdigit()), len(tokens))
+    nums = tokens[:k]
+    while len(nums) > 1 and nums[-1].isdigit() and int(nums[-1]) == 0:
+        nums.pop()
+    return nums + tokens[k:]
+
+
 def compare_numeric(a: str, b: str) -> int:
-    ta, tb = _tokens(a), _tokens(b)
+    ta, tb = _canon(_tokens(a)), _canon(_tokens(b))
     for i in range(max(len(ta), len(tb))):
         x = ta[i] if i < len(ta) else None
         y = tb[i] if i < len(tb) else None
@@ -167,15 +176,18 @@ def scheme_for(platform_mask: int | None, override: str | None = None) -> str:
 
 # ------------------------------------------------------------------------------------------------ условия проверки
 OPS = ("lt", "le", "eq", "ge", "gt", "range", "any")
-OP_TITLES = {"lt": "ниже", "le": "ниже или равна", "eq": "равна", "ge": "не ниже", "gt": "выше", "range": "в диапазоне", "any": "любая"}
+OP_TITLES = {"lt": "ниже", "le": "ниже или равна", "eq": "равна", "ge": "выше или равна", "gt": "выше", "range": "в диапазоне", "any": "любая"}
 
 
-def condition_text(op: str, value: str | None = None, vmin: str | None = None, vmax: str | None = None) -> str:
+def condition_text(op: str, value: str | None = None, vmin: str | None = None, vmax: str | None = None, *, full: bool = True) -> str:
+    """Условие проверки словами пользователя: «Установленная версия ниже 8.4.15». full=False — без подлежащего («ниже 8.4.15»), для заголовков."""
     if op == "range":
-        return f"от {vmin or '…'} до {vmax or '…'} включительно"
-    if op == "any":
-        return "любая версия"
-    return f"{OP_TITLES.get(op, op)} {value or ''}".strip()
+        body = f"от {vmin or '…'} до {vmax or '…'} включительно" if vmin and vmax else f"не ниже {vmin}" if vmin else f"не выше {vmax}"
+    elif op == "any":
+        return "Любая установленная версия" if full else "любая версия"
+    else:
+        body = f"{OP_TITLES.get(op, op)} {value or ''}".strip()
+    return f"Установленная версия {body}" if full else body
 
 
 def _needs_full(threshold: str | None) -> bool:

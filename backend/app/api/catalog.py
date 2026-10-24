@@ -179,7 +179,7 @@ async def delete_override(override_id: uuid.UUID, su: SessionUser = Depends(requ
 
 # ------------------------------------------------------------------------------------------------ быстрая проверка версий
 async def run_one(request: Request, db: AsyncSession, src: KscSource, items: list[dict], *, all_hosts: bool, max_rows: int, active_days: int | None = None,
-                  group_contains: str = "") -> tuple[list[dict], dict]:
+                  group_contains: str = "", online_only: bool = False) -> tuple[list[dict], dict]:
     general = await request.app.state.settings_svc.get(db, "general")
     rcfg = await request.app.state.settings_svc.get(db, "reports")
     rules = {r.key: Rule(r.key, r.name, r.name_like, r.name_regex, r.branch_regex, r.branch_parts, r.exclude_regex)
@@ -191,7 +191,7 @@ async def run_one(request: Request, db: AsyncSession, src: KscSource, items: lis
         with Session(params) as conn:
             return audit.build_source(conn, source_name=src.name, items=items, rules=rules, active_days=active_days or general.activity_days, include_inactive=all_hosts,
                                       group_contains=group_contains, exclude_slaves=rcfg.exclude_slave_servers, max_rows=max_rows, progress=lambda _t: None,
-                                      cancelled=lambda: False)
+                                      cancelled=lambda: False, online_only=online_only)
 
     try:
         async with client._sem:  # noqa: SLF001 — один слот источника на всё построение
@@ -224,14 +224,19 @@ async def preview(body: PreviewIn, request: Request, su: SessionUser = Depends(r
             await svc.request_rebuild(db, s.id)
             continue
         resolved, missing = await svc.resolve_items(db, s.id, items)
+        try:
+            audit.check_conditions(items, resolved)
+        except KscError as exc:
+            raise _ksc(exc) from None
         if missing:
             notes.append(f"{s.name}: нет в каталоге — {', '.join(missing)}")
         plans.append((s, resolved))
     await db.commit()
     if not_ready and not plans:
         raise HTTPException(status_code=409, detail={"code": "catalog_building", "message": f"Каталог программ ещё строится: {', '.join(not_ready)}. Повторите через минуту."})
+    rcfg_max = (await request.app.state.settings_svc.get(db, "reports")).max_rows    # тот же предел, что у отчёта: просмотр и отчёт считают одно и то же
     results = await asyncio.gather(*[run_one(request, db, s, resolved, all_hosts=params["include_inactive"], active_days=params.get("active_days"),
-                                             group_contains=params.get("group_contains") or "", max_rows=min(settings.ksc_max_rows, 20_000)) for s, resolved in plans],
+                                             group_contains=params.get("group_contains") or "", max_rows=rcfg_max, online_only=params.get("online_only", False)) for s, resolved in plans],
                                    return_exceptions=True)
     rows_all, per_source, errors = [], [], []
     for (s, _r), res in zip(plans, results):
@@ -243,7 +248,7 @@ async def preview(body: PreviewIn, request: Request, su: SessionUser = Depends(r
         rows_all += rows
         per_source.append(summ)
     general = await request.app.state.settings_svc.get(db, "general")
-    merged = audit.merge_summaries(per_source, items, active_days=params.get("active_days") or general.activity_days, include_inactive=params["include_inactive"], rows=rows_all)
+    merged = audit.merge_summaries(per_source, items, active_days=params.get("active_days") or general.activity_days, include_inactive=params["include_inactive"], rows=rows_all, online_only=params.get("online_only", False))
     merged["notes"] = notes + ([f"Каталог ещё строится: {', '.join(not_ready)} — источники пропущены"] if not_ready else [])
     merged["errors"] = errors
     rows_all.sort(key=lambda r: (r["program"].lower(), r["source"], r["name"].lower()))

@@ -157,6 +157,11 @@ class Runner:
                         await self.catalog.build(src.id, "нужен для отчёта")
                 async with self._sm() as db2:
                     resolved, missing = await catalog_svc.resolve_items(db2, src.id, items)
+            try:
+                audit.check_conditions(items, resolved)      # условие должно дойти до выполнения без изменений
+            except KscError as exc:
+                await self._set(job.id, status="failed", finished_at=utcnow(), error=exc.message, progress="ошибка")
+                return
             if missing:
                 notes.append(f"{src.name}: нет в каталоге — {', '.join(missing)}")
             plan.append((src.name, conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), resolved))
@@ -183,13 +188,17 @@ class Runner:
                     rows, summ = audit.build_source(conn, source_name=name, items=resolved, rules=rules, active_days=params.get("active_days"),
                                                     include_inactive=bool(params.get("include_inactive")), group_contains=params.get("group_contains") or "",
                                                     exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows - len(all_rows), progress=progress,
-                                                    cancelled=lambda: flag["cancel"])
+                                                    cancelled=lambda: flag["cancel"], online_only=bool(params.get("online_only")))
                 all_rows += rows
                 per_source.append(summ)
-            return all_rows, audit.merge_summaries(per_source, items, active_days=params.get("active_days"), include_inactive=bool(params.get("include_inactive")), rows=all_rows)
+            return all_rows, audit.merge_summaries(per_source, items, active_days=params.get("active_days"), include_inactive=bool(params.get("include_inactive")), rows=all_rows, online_only=bool(params.get("online_only")))
 
+        expect = params.get("_expect")
         try:
             rows, summary = await asyncio.to_thread(work)
+            done = [p["condition"] for p in summary["programs"]]
+            if expect is not None and done != expect:
+                raise KscError("params", f"Расхождение условий проверки: задано «{'; '.join(expect)}», выполнено «{'; '.join(done)}». Отчёт не сформирован.")
             summary["notes"] = notes
             d = job_dir(self._cfg, job.id)
             d.mkdir(parents=True, exist_ok=True)

@@ -55,7 +55,7 @@ INSERT INTO dbo.v_akpub_host (nId, strName, wstrDisplayName, wstrDnsName, wstrDn
  (4,  'guid-0004', N'app-01.example.local', N'app-01', N'example.local', 3221225984+23, N'Linux', 6, 5, 15, 0, 10, DATEADD(day,-10,GETUTCDATE()), DATEADD(day,-10,GETUTCDATE()), DATEADD(day,-10,GETUTCDATE()), NULL, NULL, DATEADD(day,-200,GETUTCDATE()), 5, 0, 0, 1, 2, 2),
  (5,  'guid-0005', N'old-srv.example.local', N'old-srv', N'example.local', 3221225984+24, N'Linux', 6, 4, 19, 0, 10, DATEADD(day,-45,GETUTCDATE()), DATEADD(day,-45,GETUTCDATE()), DATEADD(day,-45,GETUTCDATE()), NULL, NULL, DATEADD(day,-500,GETUTCDATE()), 4, 0, 0, 2, 2, 2),
  (6,  'guid-0006', N'ws-001', N'ws-001', N'example.local', 3221225984+101, N'Microsoft Windows 11', 2, 10, 0, 22631, 12, DATEADD(minute,-20,GETUTCDATE()), DATEADD(minute,-20,GETUTCDATE()), DATEADD(minute,-20,GETUTCDATE()), DATEADD(hour,-1,GETUTCDATE()), DATEADD(day,-1,GETUTCDATE()), DATEADD(day,-100,GETUTCDATE()), 29, 4, 0, 0, 1, 2),
- (7,  'guid-0007', N'ws-002', N'ws-002', N'example.local', 3221225984+102, N'Microsoft Windows 10', 2, 10, 0, 19045, 12, DATEADD(day,-20,GETUTCDATE()), DATEADD(day,-20,GETUTCDATE()), DATEADD(day,-20,GETUTCDATE()), DATEADD(day,-21,GETUTCDATE()), DATEADD(day,-40,GETUTCDATE()), DATEADD(day,-100,GETUTCDATE()), 5, 1, 0, 0, 1, 2),
+ (7,  'guid-0007', N'ws-002', N'ws-002', N'example.local', 3221225984+102, N'Microsoft Windows 10', 2, 10, 0, 19045, 12, DATEADD(day,-20,GETUTCDATE()), DATEADD(day,-20,GETUTCDATE()), DATEADD(day,-20,GETUTCDATE()), DATEADD(day,-21,GETUTCDATE()), DATEADD(day,-40,GETUTCDATE()), DATEADD(day,-100,GETUTCDATE()), 4, 1, 0, 0, 1, 2),
  (8,  'guid-0008', N'ws-003', N'ws-003', N'example.local', 3221225984+103, N'Microsoft Windows 11', 2, 10, 0, 22631, 12, NULL, NULL, DATEADD(day,-90,GETUTCDATE()), NULL, NULL, DATEADD(day,-90,GETUTCDATE()), 0, 0, 0, 0, 1, 2),
  (9,  'guid-0009', N'SQL-CL-01', N'SQL-CL-01', N'example.local', 3221225984+30, N'Microsoft Windows Server 2019', 2, 10, 0, 17763, 10, NULL, NULL, NULL, NULL, NULL, DATEADD(day,-300,GETUTCDATE()), 64, 0, 1, 0, 2, 2);
 -- Продукты: PHP-пакеты, ОС-пакеты, Windows-приложения, «ложные» PHP (PhpStorm, Composer)
@@ -143,6 +143,21 @@ INSERT INTO dbo.v_akpub_ev_event (nId, nHostId, tmRiseTime, tmRegistrationTime, 
  (6,1,DATEADD(hour,-2,GETUTCDATE()),DATEADD(hour,-2,GETUTCDATE()),'KLEVP_GroupTaskSyncState',N'Синхронизация задачи',1,N'1103',N'Служебное',NULL,NULL,NULL,NULL,NULL,NULL,NULL),
  (7,6,DATEADD(day,-40,GETUTCDATE()),DATEADD(day,-40,GETUTCDATE()),'GNRL_EV_VIRUS_FOUND',N'Обнаружен вредоносный объект',4,N'KES',N'Обнаружен объект',NULL,N'D:\old\setup.exe',NULL,NULL,N'not-a-virus:RiskTool.Win32.Example',NULL,N'65');
 GO
+-- Проверка условий версий: «Contoso Agent» с заранее известными версиями и компьютерами (tests/test_ksc_live.py::test_version_conditions_end_to_end).
+-- Активные за 30 суток: 1, 2, 3, 4, 6, 7; без связи: 5 (45 суток), 8 (никогда); 9 — кластер (подчинённая запись). Версии 8.9 и 8.10 — проверка числового сравнения.
+INSERT INTO dbo.hst_inventory_products (nId, strID, wstrDisplayName, wstrDisplayVersion, wstrPublisher, nPlatformTypeMask, bIsMsi, tmFirstAppear) VALUES
+ (9101, REPLICATE('9',28)+'9101', N'Contoso Agent', N'8.4.14', N'Contoso Ltd', 1, 0, DATEADD(day,-300,GETUTCDATE())),
+ (9102, REPLICATE('9',28)+'9102', N'Contoso Agent', N'8.4.15', N'Contoso Ltd', 1, 0, DATEADD(day,-200,GETUTCDATE())),
+ (9103, REPLICATE('9',28)+'9103', N'Contoso Agent', N'8.4.16', N'Contoso Ltd', 1, 0, DATEADD(day,-100,GETUTCDATE())),
+ (9104, REPLICATE('9',28)+'9104', N'Contoso Agent', N'8.9', N'Contoso Ltd', 1, 0, DATEADD(day,-90,GETUTCDATE())),
+ (9105, REPLICATE('9',28)+'9105', N'Contoso Agent', N'8.10', N'Contoso Ltd', 1, 0, DATEADD(day,-30,GETUTCDATE()));
+INSERT INTO dbo.hst_inventory_hstprds (nHostId, nProduct, tmInstallDate, bDeleted) VALUES
+ (1,9101,DATEADD(day,-100,GETUTCDATE()),0),(5,9101,DATEADD(day,-100,GETUTCDATE()),0),(9,9101,DATEADD(day,-100,GETUTCDATE()),0),
+ (2,9102,DATEADD(day,-50,GETUTCDATE()),0),(3,9102,DATEADD(day,-50,GETUTCDATE()),0),
+ (4,9103,DATEADD(day,-20,GETUTCDATE()),0),(6,9103,DATEADD(day,-20,GETUTCDATE()),0),
+ (7,9104,DATEADD(day,-10,GETUTCDATE()),0),
+ (6,9105,DATEADD(day,-5,GETUTCDATE()),0),(8,9105,DATEADD(day,-5,GETUTCDATE()),0),(1,9105,DATEADD(day,-5,GETUTCDATE()),1);
+
 -- Учётная запись только для чтения (так же, как рекомендуется для реальной базы KSC)
 IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'kavcheck_ro') CREATE LOGIN kavcheck_ro WITH PASSWORD = 'KavCheck-Test-Pass-1', CHECK_POLICY = OFF; -- private-data: ignore (тестовый пароль синтетической базы)
 IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'kavcheck_ro') CREATE USER kavcheck_ro FOR LOGIN kavcheck_ro;

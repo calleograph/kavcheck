@@ -61,7 +61,7 @@ def test_hosts_and_activity():
     h = asyncio.run(client.run(q.HOST_ONE, {"id": 2}, max_rows=1))[0]
     assert H.ip_str(h["ip_int"]) == "192.0.2.21"
     sw = asyncio.run(client.run(q.SOFTWARE_ON_HOST, {"id": 2}, max_rows=100))
-    assert len(sw) == 8
+    assert len(sw) == 9
     st = asyncio.run(client.run(q.HOST_STATUS, {"id": 7}, max_rows=1))[0]
     assert st["status"] == 1 and st["mask"] & 16384
 
@@ -205,3 +205,47 @@ def test_protection_and_events():
     page = asyncio.run(events.page(client, days=7, types=["attack"], offset=0, limit=10))
     assert page["total"] == 1 and page["items"][0]["attacker"] == "198.51.100.120" and page["items"][0]["port"] == "22"
     assert asyncio.run(events.page(client, days=30, types=[], qtext="sample.bin", offset=0, limit=10))["total"] == 2
+
+
+# --------------------------------------------------------------------------------------------- условия версий: сквозная проверка
+# Contoso Agent (tests/ksc_synthetic/schema.sql): активные ≤30 сут — компьютеры 1, 2, 3, 4, 6, 7; без связи — 5 и 8; 9 — кластер; ключ каталога contoso-agent
+#   8.4.14: 1, 5, 9 · 8.4.15: 2, 3 · 8.4.16: 4, 6 · 8.9: 7 · 8.10: 6 (второй раз), 8; удалённая установка 8.10 на 1 не считается
+CONTOSO = [  # (оператор, значение, мин, макс, исключения, ветки) → (компьютеры, установки) среди активных
+    ("lt", "8.4.15", None, None, [], [], {1}, 1), ("le", "8.4.15", None, None, [], [], {1, 2, 3}, 3), ("eq", "8.4.15", None, None, [], [], {2, 3}, 2),
+    ("ge", "8.4.15", None, None, [], [], {2, 3, 4, 6, 7}, 6), ("gt", "8.4.15", None, None, [], [], {4, 6, 7}, 4),
+    ("range", None, "8.4.15", "8.9", [], [], {2, 3, 4, 6, 7}, 5), ("range", None, "8.4.16", None, [], [], {4, 6, 7}, 4),
+    ("lt", "8.10", None, None, [], [], {1, 2, 3, 4, 6, 7}, 6),                       # 8.9 < 8.10 (число, а не строка)
+    ("gt", "8.9", None, None, [], [], {6}, 1), ("le", "8.9", None, None, [], [], {1, 2, 3, 4, 6, 7}, 6),
+    ("ge", "8.4.15", None, None, ["8.4"], [], {6, 7}, 2),                            # исключена ветка 8.4: остаются 8.9 и 8.10
+    ("any", None, None, None, [], ["8"], {1, 2, 3, 4, 6, 7}, 7), ("any", None, None, None, [], ["9"], set(), 0),        # ветка по умолчанию — первая часть версии
+    ("lt", "9", None, None, [], [], {1, 2, 3, 4, 6, 7}, 7), ("gt", "9", None, None, [], [], set(), 0),
+]
+
+
+def _plan(op, value, vmin, vmax, exclude, branches):
+    return [{"kind": "pattern", "name_like": "Contoso Agent%", "product_name": "Contoso Agent", "op": op, "value": value, "min": vmin, "max": vmax, "exclude": exclude, "branches": branches}]
+
+
+@pytest.mark.parametrize("case", CONTOSO, ids=lambda c: f"{c[0]} {c[1] or ''}{c[2] or ''}..{c[3] or ''} excl={c[4]} br={c[5]}")
+def test_version_conditions_end_to_end(case):
+    from app.reports import audit
+
+    op, value, vmin, vmax, excl, br, hosts, installs = case
+    items = _plan(op, value, vmin, vmax, excl, br)
+    for include_inactive in (False, True):
+        with Session(params()) as s:
+            rows, summ = audit.build_source(s, source_name="KAVTEST", items=items, rules={}, active_days=30, include_inactive=include_inactive, max_rows=10_000,
+                                            progress=lambda t: None, cancelled=lambda: False)
+        # независимый эталон: версии-числа из таблицы «как в KSC» и ожидаемые наборы выше
+        expect = set(hosts)
+        if include_inactive:
+            inactive = {5: "8.4.14", 8: "8.10"}                                                  # 9 — кластер (исключён всегда), удалённая установка не считается
+            from app.ksc import versions as V
+            for h, v in inactive.items():
+                if V.matches(v, op, value, vmin, vmax) and not V.excluded(v, excl) and (not br or v.split(".")[0] in br):
+                    expect.add(h)
+        assert {r["host_id"] for r in rows} == {h for h in expect}, (case, include_inactive)
+        assert summ["hosts"] == len(expect) and len({r["host_id"] for r in rows}) == summ["hosts"]
+        if not include_inactive:
+            assert len(rows) == installs == summ["rows"], case
+        assert all(r["condition"] == audit.item_condition(items[0]) for r in rows)             # условие в строках — ровно заданное

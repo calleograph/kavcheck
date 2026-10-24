@@ -55,7 +55,8 @@ def test_transforms_and_conditions():
     assert versions.matches("7.4.33-1+deb11u4", "lt", "7.4.33-1+deb11u5", scheme="dpkg")
     assert versions.matches("1:9.2p1-2", "lt", "9.3", scheme="dpkg")
     assert versions.excluded("115.10.0", ["115"]) and not versions.excluded("1150.1", ["115"]) and versions.excluded("7.4.33", ["7.4.*"])
-    assert versions.condition_text("lt", "130") == "ниже 130" and versions.condition_text("range", vmin="1", vmax="2") == "от 1 до 2 включительно"
+    assert versions.condition_text("lt", "130") == "Установленная версия ниже 130" and versions.condition_text("lt", "130", full=False) == "ниже 130"
+    assert versions.condition_text("range", vmin="1", vmax="2") == "Установленная версия от 1 до 2 включительно"
 
 
 def test_catalog_classification():

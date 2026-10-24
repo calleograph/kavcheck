@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth.deps import SessionUser, get_db, require_analyst, require_user
 from ..ksc import versions
 from ..models import AuditCheck, KscSource, ReportJob, ReportTemplate, utcnow
+from ..reports import audit
 from ..reports.export import read_all_jsonl
 from ..reports.runner import job_dir
 from ..services.audit import write_audit
@@ -73,6 +74,8 @@ async def enqueue(request: Request, db: AsyncSession, su: SessionUser, *, kind: 
     general = await request.app.state.settings_svc.get(db, "general")
     if params.get("active_days") is None:
         params["active_days"] = general.activity_days
+    if kind == "version_audit":
+        params["_expect"] = [audit.item_condition(i) for i in params.get("items") or []]   # условия в виде, заданном пользователем: сверяются при выполнении
     title = title.strip() or default_title(kind, params)
     job = ReportJob(id=uuid.uuid4(), source_id=sources[0].id, source_ids=[str(s.id) for s in sources], source_name=", ".join(s.name for s in sources)[:600], kind=kind,
                     title=title[:300], params=params, created_by=su.display_name, created_by_id=su.user_id)
@@ -88,7 +91,7 @@ def default_title(kind: str, params: dict) -> str:
     if kind == "version_audit":
         items = params.get("items") or []
         names = [i.get("product_name") or i.get("product_key") or i.get("name_like") or "?" for i in items]
-        cond = versions.condition_text(items[0].get("op") or "lt", items[0].get("value"), items[0].get("min"), items[0].get("max")) if len(items) == 1 else ""
+        cond = versions.condition_text(items[0].get("op") or "lt", items[0].get("value"), items[0].get("min"), items[0].get("max"), full=False) if len(items) == 1 else ""
         return (f"{names[0]}: версия {cond}" if len(items) == 1 else f"Проверка версий: {', '.join(names[:4])}{'…' if len(names) > 4 else ''}")[:300]
     return KIND_TITLE.get(kind, kind)
 

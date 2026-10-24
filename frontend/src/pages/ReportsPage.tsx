@@ -155,7 +155,7 @@ function JobsTable({ jobs, canEdit, onChanged, onDelete, show }: { jobs: Job[] |
   );
 }
 
-const AUDIT_COLS: [string, string, string?][] = [["source", "Источник"], ["program", "Программа"], ["product", "Продукт"], ["app_version", "Установлена", "mono nowrap"], ["target_version", "Нужна", "mono nowrap"], ["name", "Компьютер"],
+const AUDIT_COLS: [string, string, string?][] = [["source", "Источник"], ["program", "Программа"], ["product", "Продукт"], ["app_version", "Установлена", "mono nowrap"], ["target_version", "Целевая версия", "mono nowrap"], ["name", "Компьютер"],
   ["ip", "IP-адрес", "mono"], ["os", "ОС"], ["last_connected", "Подключение к KSC"], ["group", "Группа"]];
 const SOFT_COLS: [string, string, string?][] = [["name", "Компьютер"], ["ip", "IP-адрес", "mono"], ["os", "ОС"], ["app_name", "Программа"], ["app_version", "Версия", "mono"], ["branch", "Ветка", "mono"], ["group", "Группа"], ["last_connected", "Подключение к KSC"], ["activity", "Связь"]];
 const HOST_COLS: [string, string, string?][] = [["name", "Компьютер"], ["ip", "IP-адрес", "mono"], ["os", "ОС"], ["group", "Группа"], ["last_connected", "Подключение к KSC"], ["days_since_connection", "Суток без связи"], ["activity", "Связь"]];
@@ -207,6 +207,7 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
           {canEdit && <button className="btn mini" onClick={async () => { await api.reports.cancel(j.id); void load(); }}><Icon name="stop" size={14} />Отменить</button>}</div>)}
       {j.error && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{j.error}</div></div>}
       {s?.notes?.map((n) => <div key={n} className="alert warn"><Icon name="info" /><div className="alert-body">{n}</div></div>)}
+      {audit && s?.programs?.filter((p) => p.explain).map((p) => <div key={p.program} className="alert info"><Icon name="info" /><div className="alert-body"><b>{p.program}:</b> {p.explain}</div></div>)}
       {s && audit && s.programs && (<>
         <div className="meters">
           <div className="meter"><span className="l">Компьютеров требуют обновления</span><span className="v">{num(s.hosts)}</span><span className="t">{multi ? "уникальных в пределах источника" : "уникальных"}</span></div>
@@ -216,7 +217,7 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
         </div>
         <div className="table-scroll">
           <table className="table">
-            <thead><tr><th>Программа</th><th>Условие</th><th>Требуемая версия</th>{multi && s.sources?.map((x) => <th key={x.source} className="num">{x.source}</th>)}<th className="num">Компьютеров</th></tr></thead>
+            <thead><tr><th>Программа</th><th>Условие проверки</th><th>Целевая версия</th>{multi && s.sources?.map((x) => <th key={x.source} className="num">{x.source}</th>)}<th className="num">Компьютеров</th></tr></thead>
             <tbody>{s.programs.map((p) => (
               <tr key={p.program} className={`clickable ${program === p.program ? "sel" : ""}`} onClick={() => { setProgram(program === p.program ? "" : p.program); window.requestAnimationFrame(() => document.getElementById("job-rows")?.scrollIntoView({ behavior: "smooth", block: "start" })); }}>
                 <td><b>{p.program}</b></td><td className="small">{p.condition}</td><td className="mono small">{p.target_version || "—"}</td>

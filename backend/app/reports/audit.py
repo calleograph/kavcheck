@@ -22,7 +22,7 @@ from .builder import Cancelled, _hosts, _installs
 Progress = Callable[[str], None]
 CancelCheck = Callable[[], bool]
 
-AUDIT_COLUMNS = [("source", "Источник KSC"), ("program", "Программа"), ("product", "Продукт каталога"), ("app_version", "Установленная версия"), ("target_version", "Требуемая версия"),
+AUDIT_COLUMNS = [("source", "Источник KSC"), ("program", "Программа"), ("product", "Продукт каталога"), ("app_version", "Установленная версия"), ("target_version", "Целевая версия"),
                  ("name", "Компьютер"), ("ip", "IP-адрес"), ("os", "ОС"), ("last_connected", "Последнее подключение (UTC)"), ("days_since_connection", "Суток без связи"),
                  ("condition", "Условие проверки"), ("app_name", "Запись реестра KSC"), ("compared_version", "Сравниваемая версия"), ("branch", "Ветка"),
                  ("publisher", "Производитель"), ("fqdn", "FQDN"), ("group", "Группа администрирования"), ("linux_release", "Дистрибутив Linux"), ("activity", "Активность"),
@@ -49,6 +49,21 @@ def item_title(item: dict) -> str:
         return item.get("product_name") or item.get("rule") or "правило"
     d = C.BUILTIN_BY_KEY.get(item.get("product_key") or "")
     return item.get("product_name") or (d.name if d else None) or item.get("product_key") or "программа"
+
+
+_COND_FIELDS = ("op", "value", "min", "max", "exclude", "branches", "platform", "name_like", "name_regex", "publisher_like", "rule", "product_key", "product_keys", "kind")
+
+
+def check_conditions(original: list[dict], executed: list[dict]) -> None:
+    """Условие, которое выполняется, должно совпадать с заданным пользователем: оператор, границы, исключения, ветки. Иначе отчёт не формируется
+    (пустой отчёт по изменённому условию был бы ошибочным решением об обновлении)."""
+    if len(original) != len(executed):
+        raise KscError("params", "Расхождение условий проверки: число пунктов изменилось. Отчёт не сформирован.")
+    for n, (a, b) in enumerate(zip(original, executed), 1):
+        for f in _COND_FIELDS:
+            va, vb = a.get(f) or ([] if f in ("exclude", "branches", "product_keys") else None), b.get(f) or ([] if f in ("exclude", "branches", "product_keys") else None)
+            if va != vb:
+                raise KscError("params", f"Расхождение условий проверки в пункте {n}: «{item_condition(a)}» задано, а выполнялось бы «{item_condition(b)}» (поле {f}). Отчёт не сформирован.")
 
 
 def item_condition(item: dict) -> str:
@@ -135,7 +150,7 @@ def _candidates(s: Session, item: dict, rule: Rule | None, cancelled: CancelChec
 
 def build_source(s: Session, *, source_name: str, items: list[dict], rules: dict[str, Rule], active_days: int | None, include_inactive: bool,
                  group_contains: str = "", exclude_slaves: bool = True, max_rows: int, progress: Progress, cancelled: CancelCheck,
-                 now: datetime | None = None) -> tuple[list[dict], dict]:
+                 now: datetime | None = None, online_only: bool = False) -> tuple[list[dict], dict]:
     """Строки и сводка по одному источнику."""
     now = now or datetime.now(timezone.utc)
     matched: dict[int, list[tuple[int, str, str]]] = {}       # product_id → [(номер пункта, сравниваемая версия, ветка)]
@@ -192,16 +207,36 @@ def build_source(s: Session, *, source_name: str, items: list[dict], rules: dict
                          **{k: hr[k] for k in ("name", "fqdn", "ip", "os", "linux_release", "group", "last_connected", "days_since_connection", "activity", "host_id", "online")},
                          "product_id": int(rec["product_id"])})
     rows.sort(key=lambda r: (r["program"].lower(), r["name"].lower(), versions.sort_key(r["compared_version"] or "0")))
+    offline_hidden = 0
+    unavailable = False
+    if online_only:
+        # «в сети» — флаг KSC «видимо», не давность подключения; если KSC не передаёт флаг ни для одного компьютера, фильтр не применяется и это отмечено
+        if any(r.get("online") is not None for r in rows):
+            keep = [r for r in rows if r.get("online") is True]
+            offline_hidden = len({r["host_id"] for r in rows}) - len({r["host_id"] for r in keep})
+            rows = keep
+        else:
+            unavailable = bool(rows)
     for n, item in enumerate(items):
         rs = [r for r in rows if r["item"] == n]
         per_item[n].update({"program": item_title(item), "condition": item_condition(item), "target_version": target_text(item), "hosts": len({r["host_id"] for r in rs}),
                             "installs": len(rs), "versions": [[v, c] for v, c in Counter(r["compared_version"] for r in rs).most_common(50)]})
     summary = {"source": source_name, "rows": len(rows), "hosts": len({r["host_id"] for r in rows}), "hidden_inactive_hosts": len(hidden),
-               "excluded_not_computers": not_computers, "items": per_item, "fetched_at": now.isoformat(timespec="seconds")}
+               "excluded_not_computers": not_computers, "items": per_item, "fetched_at": now.isoformat(timespec="seconds"), "hidden_offline_hosts": offline_hidden,
+               "online_unavailable": unavailable}
     return rows, summary
 
 
-def merge_summaries(per_source: list[dict], items: list[dict], *, active_days: int | None, include_inactive: bool, rows: list[dict]) -> dict:
+def explain_empty(found: list[dict], condition: str) -> str:
+    """Почему результат пуст: что нашлось в KSC и почему не подходит (чтобы пустой отчёт не выглядел как ошибка условия)."""
+    if not found:
+        return "В KSC не найдено ни одной записи реестра этой программы на учтённых компьютерах (проверьте источник, платформу и каталог)."
+    vs = sorted({f["compared_version"] for f in found if f.get("compared_version")}, key=versions.sort_key)
+    span = f"от {vs[0]} до {vs[-1]}" if len(vs) > 1 else (vs[0] if vs else "—")
+    return f"Условию «{condition}» не соответствует ни одна установка. Найдено записей реестра: {len(found)}, версии {span}; подходящих нет."
+
+
+def merge_summaries(per_source: list[dict], items: list[dict], *, active_days: int | None, include_inactive: bool, rows: list[dict], online_only: bool = False) -> dict:
     """Общий итог: уникальные компьютеры считаются в пределах источника (источник — часть идентификации записи)."""
     progs = []
     for n, item in enumerate(items):
@@ -214,6 +249,10 @@ def merge_summaries(per_source: list[dict], items: list[dict], *, active_days: i
         progs.append({"program": item_title(item), "condition": item_condition(item), "target_version": target_text(item), "hosts": len({(r["source"], r["host_id"]) for r in rs}),
                       "installs": len(rs), "by_source": [{"source": s["source"], "hosts": s["items"][n]["hosts"]} for s in per_source],
                       "found": sorted(found.values(), key=lambda x: (not x["matched"], x["name"].lower()))[:300]})
+        if not progs[-1]["hosts"]:
+            progs[-1]["explain"] = explain_empty(list(found.values()), item_condition(item))
     return {"rows": len(rows), "hosts": len({(r["source"], r["host_id"]) for r in rows}), "sources": per_source, "programs": progs,
             "hidden_inactive_hosts": sum(s["hidden_inactive_hosts"] for s in per_source), "active_days": active_days, "include_inactive": include_inactive,
+            "hidden_offline_hosts": sum(s.get("hidden_offline_hosts", 0) for s in per_source), "online_unavailable": any(s.get("online_unavailable") for s in per_source),
+            "online_only": online_only,
             "fetched_at": max((s["fetched_at"] for s in per_source), default=datetime.now(timezone.utc).isoformat(timespec="seconds"))}
