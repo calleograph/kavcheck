@@ -193,6 +193,9 @@ def test_protection_and_events():
     assert recs[6]["av"]["build"] == "12.6.0.438" and recs[6]["agent_build"] == "15.1.0.22239"
     assert "no_av" in pr(1) and "no_av" in pr(8)                 # сервер без антивируса; статус KSC «антивирус не установлен»
     assert {"rtp_off", "bases_old"} <= set(pr(7)) and "bases_old" not in pr(2)
+    # «в сети» — флаг KSC «видимо» (бит 0 nStatus), а не давность подключения: в синтетике nStatus 5 и 29 — в сети, 4, 0, 64 — нет
+    assert {h for h, r in recs.items() if r["online"]} and all(r["online"] in (True, False) for r in recs.values())
+    assert all(r["online"] == bool(int(r.get("status_bits") or 0) & 1) for r in recs.values() if "status_bits" in r)
     vers = {v["code"]: v for v in protection.versions(list(recs.values()))}
     assert vers["1103"]["latest"] == "15.1.0.22239" and vers["KES"]["versions"][0]["build"] == "12.6.0.438"
     s = asyncio.run(events.summary(client, days=7))

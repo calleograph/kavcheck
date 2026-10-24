@@ -40,6 +40,12 @@ def group_path(groups: dict[int, dict], gid) -> str:
     return " / ".join(reversed(names))
 
 
+def online(status_bits) -> bool | None:
+    """В сети ли устройство сейчас — по флагу KSC «видимо» (бит 0 nStatus; KSC снимает его по тайм-ауту видимости).
+    Нет значения — None («нет данных»): время последнего подключения онлайн-статус не подтверждает."""
+    return None if status_bits is None else bool(int(status_bits) & 1)
+
+
 def host_row(h: dict, groups: dict[int, dict] | None, now: datetime | None = None, release: str | None = None) -> dict:
     days, status = activity(h.get("last_connected"), now)
     fqdn = (h.get("dns_name") or "") + ("." + h["dns_domain"] if h.get("dns_name") and h.get("dns_domain") else "")
@@ -50,7 +56,7 @@ def host_row(h: dict, groups: dict[int, dict] | None, now: datetime | None = Non
             "last_connected": _utc(h.get("last_connected")), "last_visible": _utc(h.get("last_visible")), "last_info_update": _utc(h.get("last_info_update")),
             "last_av_update": _utc(h.get("last_av_update")), "last_full_scan": _utc(h.get("last_full_scan")),
             "days_since_connection": days, "activity": status, "active": days is not None and days <= (now_days if (now_days := None) else 1e9),
-            "status_bits": h.get("status_bits"), "rtp_state": h.get("rtp_state"), "is_slave": bool(h.get("is_slave")), "pkg_mgr": {1: "RPM", 2: "dpkg"}.get(h.get("pkg_mgr"), ""),
+            "status_bits": h.get("status_bits"), "online": online(h.get("status_bits")), "rtp_state": h.get("rtp_state"), "is_slave": bool(h.get("is_slave")), "pkg_mgr": {1: "RPM", 2: "dpkg"}.get(h.get("pkg_mgr"), ""),
             "linux_release": release or "", "created": _utc(h.get("created"))}
 
 

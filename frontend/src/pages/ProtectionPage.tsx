@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type ProblemKey, type ProtHost, type ProtSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
-import { Fetched, Pager } from "../components/Common";
+import { Fetched, OnlineBadge, Pager } from "../components/Common";
 import { Icon } from "../components/Icons";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum } from "../components/ui";
-import { fmt, fmtDate, num } from "../util";
+import { fmt, fmtDate, num, plural } from "../util";
 
 export const PROBLEM_TONE: Record<ProblemKey, "err" | "warn"> = { no_av: "err", rtp_off: "err", infected: "err", license: "err", bases_old: "warn", scan_old: "warn", reboot: "warn" };
 export const PROBLEM_SHORT: Record<ProblemKey, string> = { no_av: "нет антивируса", rtp_off: "защита не работает", infected: "невылеченные объекты", bases_old: "старые базы", license: "лицензия истекла", scan_old: "нет полной проверки", reboot: "нужна перезагрузка" };
@@ -23,6 +23,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
   const navigate = useNavigate();
   const problem = sp.get("problem") ?? ""; const product = sp.get("product") ?? ""; const build = sp.get("build") ?? "";
+  const onlineOnly = sp.get("online") !== "0";   // по умолчанию — только устройства, которые KSC сейчас видит в сети
   const [basesDays, setBasesDays] = useState("3"); const [scanDays, setScanDays] = useState("30");
   const [q, setQ] = useState(""); const [group, setGroup] = useState(""); const [applied, setApplied] = useState({ q: "", group: "" });
   const [all, setAll] = useState(false); const [sort, setSort] = useState("risk"); const [desc, setDesc] = useState(true); const [offset, setOffset] = useState(0);
@@ -34,9 +35,9 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
     if (!ctx.current) return;
     const refresh = force.current || undefined; force.current = false;
     setBusy(true);
-    api.protection({ problem, product, build, bases_days: basesDays, scan_days: scanDays, ...applied, all_hosts: all, sort, desc, offset, limit: 50, refresh })
+    api.protection({ problem, product, build, bases_days: basesDays, scan_days: scanDays, ...applied, all_hosts: all, online: onlineOnly, sort, desc, offset, limit: 50, refresh })
       .then((r) => { setData(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)).finally(() => setBusy(false));
-  }, [ctx.current, problem, product, build, basesDays, scanDays, applied, all, sort, desc, offset, tick]);
+  }, [ctx.current, problem, product, build, basesDays, scanDays, applied, all, onlineOnly, sort, desc, offset, tick]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const setParams = (kv: Record<string, string>) => { setSp((p) => { for (const [k, v] of Object.entries(kv)) { if (v) p.set(k, v); else p.delete(k); } return p; }); setOffset(0); };
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } setOffset(0); };
@@ -49,13 +50,19 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   if (data?.unsupported) return <section><PageHead title="Состояние защиты" /><div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет объектов состояния защиты ({data.unsupported.join(", ")}). Раздел недоступен для этого источника.</div></div></section>;
   return (
     <section>
-      <PageHead title="Состояние защиты" lede="Где защиты Kaspersky нет или она не работает, насколько свежи базы и какие версии продуктов развёрнуты. Учитываются компьютеры, подключавшиеся к KSC за порог активности.">
+      <PageHead title="Состояние защиты" lede="Где защиты Kaspersky нет или она не работает, насколько свежи базы и какие версии продуктов развёрнуты.">
+        <label className="check inline-check" title={s && !s.online_data ? "KSC не передаёт сведения о присутствии устройств в сети" : "Только устройства, которые KSC сейчас видит в сети"}>
+          <input type="checkbox" className="switch" checked={onlineOnly && s?.online_data !== false} disabled={s?.online_data === false} onChange={(e) => setParams({ online: e.target.checked ? "" : "0" })} />Только онлайн</label>
         {s && <Fetched at={s.fetched_at} />}
         <button className="btn" onClick={() => { force.current = true; setTick((x) => x + 1); }} aria-busy={busy && !!data}><Icon name="refresh" /><span>Обновить</span></button>
       </PageHead>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
+      {s && <p className="scope-line">{s.online_only
+        ? <><span className="dot ok" aria-hidden />Устройства в сети сейчас: <b>{num(s.hosts)}</b>. Ещё {num(s.offline_hosts)} {plural(s.offline_hosts, "активное устройство", "активных устройства", "активных устройств")} не в сети — их сведения о защите могут быть устаревшими. <button type="button" className="link-btn" onClick={() => setParams({ online: "0" })}>Показать все</button></>
+        : s.online_data ? <><span className="dot off" aria-hidden />Все устройства, подключавшиеся к KSC за {s.activity_days} сут: <b>{num(s.hosts)}</b>; у тех, что не в сети, сведения — на время последнего подключения. <button type="button" className="link-btn" onClick={() => setParams({ online: "" })}>Только онлайн</button></>
+          : <>KSC не передаёт сведения о присутствии устройств в сети: показаны устройства, подключавшиеся к KSC за {s.activity_days} сут.</>}</p>}
       <div className="meters">
-        <div className="meter"><span className="l">Защищены</span><span className={`v ${s && pct(s.protected) < 90 ? "warn-text" : ""}`}>{s ? `${pct(s.protected)}%` : "…"}</span><span className="t">{s ? `${num(s.protected)} из ${num(s.hosts)}: антивирус работает, базы свежее ${s.bases_days} сут` : ""}</span></div>
+        <div className="meter"><span className="l">Защищены</span><span className={`v ${s && pct(s.protected) < 90 ? "warn-text" : ""}`}>{s ? `${pct(s.protected)}%` : "…"}</span><span className="t">{s ? `${num(s.protected)} из ${num(s.hosts)}${s.online_only ? " в сети" : ""}: антивирус работает, базы свежее ${s.bases_days} сут` : ""}</span></div>
         {([["no_av", "Без антивируса", "нет продукта Kaspersky"], ["rtp_off", "Защита не работает", "остановлена, в сбое или не запущена"], ["bases_old", "Устаревшие базы", `старше ${s?.bases_days ?? "…"} сут`]] as [ProblemKey, string, string][]).map(([k, l, t]) => (
           <button key={k} type="button" className={`meter meter-btn ${problem === k ? "on" : ""}`} aria-pressed={problem === k} onClick={() => setParams({ problem: problem === k ? "" : k })}>
             <span className="l">{l}</span><span className={`v ${s && count(k) ? (PROBLEM_TONE[k] === "err" ? "bad-text" : "warn-text") : ""}`}>{s ? num(count(k)) : "…"}</span><span className="t">{t}</span>
@@ -118,7 +125,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
       <div className={`table-scroll ${busy && data ? "is-busy" : ""}`}>
         {!data && busy ? <SkelRows cols={6} /> : (
           <table className="table">
-            <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th>Защитный продукт</th><th className="hide-sm">Постоянная защита</th>
+            <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th>Онлайн</th><th>Защитный продукт</th><th className="hide-sm">Постоянная защита</th>
               <SortTh k="bases" label="Базы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="scan" label="Полная проверка" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="risk" label="Проблемы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /></tr></thead>
             <tbody>
@@ -127,6 +134,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                 return (
                   <tr key={h.host_id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/hosts/${h.host_id}`); }}>
                     <td><Link to={`/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span></td>
+                    <td className="nowrap"><OnlineBadge online={h.online} seen={h.last_visible} />{h.online === false && h.last_info_update && <span className="sub">сведения от {fmtDate(h.last_info_update)}</span>}</td>
                     <td>{h.av ? <>{shortProduct(h.av.product)}<span className="sub mono">{h.av.build}</span></> : <span className="bad-text">нет</span>}{h.agent_build && <span className="sub nowrap">Агент <span className="mono">{h.agent_build}</span></span>}</td>
                     <td className="small hide-sm">{h.av ? (h.problems.includes("rtp_off") ? <span className="bad-text">{h.av.state_label && h.av.state_label !== "запущен" ? `продукт ${h.av.state_label}` : h.rtp_label || "не работает"}</span> : h.rtp_label || h.av.state_label || "—") : "—"}</td>
                     <td className="nowrap">{h.av ? (h.av.bases ? <span className={old ? "warn-text" : ""}>{fmtDate(h.av.bases)}<span className="sub">{b === 0 ? "сегодня" : `${b} сут назад`}</span></span> : <span className="warn-text">нет сведений</span>) : "—"}</td>
@@ -135,7 +143,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                     <td className="nowrap small hide-sm">{fmt(h.last_connected)}</td>
                   </tr>);
               })}
-              {data && !data.items.length && <tr><td colSpan={7}><Empty icon="checkCircle" title={filtered ? "Ничего не найдено" : "Компьютеров нет"}>{filtered ? "По выбранным условиям компьютеров нет." : "В источнике нет компьютеров, подключавшихся к KSC за порог активности."}</Empty></td></tr>}
+              {data && !data.items.length && <tr><td colSpan={8}><Empty icon="checkCircle" title={filtered ? "Ничего не найдено" : "Компьютеров нет"}>{filtered ? "По выбранным условиям компьютеров нет." : s?.online_only ? "Сейчас KSC не видит в сети ни одного устройства. Выключите «Только онлайн», чтобы увидеть все." : "В источнике нет компьютеров, подключавшихся к KSC за порог активности."}</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>

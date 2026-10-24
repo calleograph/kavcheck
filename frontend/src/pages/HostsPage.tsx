@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type Host, type HostVuln } from "../api";
 import { NoSource, type Ctx } from "../App";
-import { ActivityBadge, Fetched, Pager } from "../components/Common";
+import { ActivityBadge, Fetched, OnlineBadge, Pager } from "../components/Common";
 import { Icon } from "../components/Icons";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import { EventList, type EvFilter } from "./EventsPage";
@@ -61,12 +61,12 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
         {!data && busy ? <SkelRows cols={6} /> : (
           <table className="table">
             <thead><tr><SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
-              <SortTh k="group" label="Группа" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Связь</th></tr></thead>
+              <SortTh k="group" label="Группа" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Связь</th><th>Онлайн</th></tr></thead>
             <tbody>
               {(data?.items ?? []).map((h) => (
                 <tr key={h.host_id}><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}</td><td className="mono nowrap">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
-                  <td className="nowrap">{fmt(h.last_connected)}</td><td><ActivityBadge days={h.days_since_connection} activityDays={eff} /></td></tr>))}
-              {data && !data.items.length && <tr><td colSpan={6}><Empty icon="monitor" title="Компьютеров не найдено">Измените поиск или фильтр связи с KSC.</Empty></td></tr>}
+                  <td className="nowrap">{fmt(h.last_connected)}</td><td><ActivityBadge days={h.days_since_connection} activityDays={eff} /></td><td><OnlineBadge online={h.online} seen={h.last_visible} /></td></tr>))}
+              {data && !data.items.length && <tr><td colSpan={7}><Empty icon="monitor" title="Компьютеров не найдено">Измените поиск или фильтр связи с KSC.</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
@@ -104,7 +104,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   const st = h.ksc_status;
   return (
     <section>
-      <PageHead title={h.name} back={back} lede={<span className="row tight wrap"><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}</span>}>
+      <PageHead title={h.name} back={back} lede={<span className="row tight wrap"><OnlineBadge online={h.online} seen={h.last_visible} /><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}</span>}>
         <Fetched at={d.fetched_at} />
       </PageHead>
       <div className="split even">

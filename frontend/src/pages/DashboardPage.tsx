@@ -25,7 +25,7 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
   const [ev, setEv] = useState<EvSummary | null | "err">(null);
   useEffect(() => {
     if (!ctx.current) return;
-    api.protection({ limit: 0 }).then((r) => setProt(r.summary ?? "err")).catch(() => setProt("err"));
+    api.protection({ limit: 0, online: true }).then((r) => setProt(r.summary ?? "err")).catch(() => setProt("err"));
     api.events.summary(7).then((r) => setEv(r.unsupported ? "err" : r)).catch(() => setEv("err"));
   }, [ctx.current]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
@@ -49,7 +49,7 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
     { to: "/hosts?activity=inactive", icon: "clock", title: "Компьютеры без связи с KSC", sub: `Агент не подключался дольше ${s?.activity_days ?? "…"} сут` },
   ];
   const protMeters: [string, string, number | string | null, string, string, "prot" | "ev"][] = [
-    ["/protection", "Защищены", ok(prot) ? share(prot.protected, prot.hosts) : null, ok(prot) ? `${num(prot.protected)} из ${num(prot.hosts)} компьютеров` : "", "", "prot"],
+    ["/protection", "Защищены", ok(prot) ? share(prot.protected, prot.hosts) : null, ok(prot) ? `${num(prot.protected)} из ${num(prot.hosts)}${prot.online_only ? " в сети" : " компьютеров"}` : "", "", "prot"],
     ["/protection?problem=no_av", "Без антивируса", ok(prot) ? prot.problems.find((p) => p.key === "no_av")?.hosts ?? 0 : null, "нет продукта Kaspersky", "bad-text", "prot"],
     ["/protection?problem=rtp_off", "Защита не работает", ok(prot) ? prot.problems.find((p) => p.key === "rtp_off")?.hosts ?? 0 : null, "остановлена или в сбое", "bad-text", "prot"],
     ["/events?type=notcured", "Не вылечено за 7 сут", ok(ev) ? ev.totals.notcured : null, ok(ev) ? `обнаружено угроз: ${num(ev.totals.detections)}` : "", "bad-text", "ev"],
@@ -68,7 +68,7 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       {d?.error && <div className="alert warn" role="status"><Icon name="alert" /><div className="alert-body">Источник сейчас недоступен: {d.error}. {s ? "Показаны последние полученные данные." : ""}</div></div>}
 
-      <div className="section-head first"><h2>Защита и угрозы</h2><span className="muted small">активные компьютеры; события — за 7 суток</span></div>
+      <div className="section-head first"><h2>Защита и угрозы</h2><span className="muted small">{ok(prot) && prot.online_only ? "устройства в сети сейчас" : "активные компьютеры"}; события — за 7 суток</span></div>
       <div className="meters" aria-label="Защита и угрозы">
         {protMeters.map(([to, l, v, foot, tone, kind]) => (
           <Link key={to} to={to} className="meter meter-link">

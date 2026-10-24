@@ -37,3 +37,15 @@ def test_event_row_and_where():
     assert (d["type_title"], d["object"], d["threat_kind"]) == ("Обнаружена угроза", r"C:\x.exe", "троянская программа")
     w, p = events.where(days=7, types=["bogus'; DROP"], host_id=5, qtext="x", threat="")
     assert "DROP" not in w and "GNRL_EV_VIRUS_FOUND" in w and p == {"hours": 168, "host": 5, "q": "%x%"}   # неизвестный тип — все типы, строки только параметрами
+
+
+def test_online_flag_from_ksc_visibility():
+    """«В сети» — только по флагу KSC «видимо» (бит 0 nStatus); нет значения — «нет данных», а не вывод из времени подключения."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.ksc.hosts import host_row, online
+    assert online(None) is None and online(0) is False and online(4) is False and online(5) is True and online(13) is True
+    now = datetime.now(timezone.utc)
+    recent = {"host_id": 1, "name": "ws-1", "last_connected": now - timedelta(minutes=5)}
+    assert host_row({**recent, "status_bits": None}, None, now)["online"] is None        # подключался недавно, но статуса нет — «нет данных»
+    assert host_row({**recent, "status_bits": 4}, None, now)["online"] is False

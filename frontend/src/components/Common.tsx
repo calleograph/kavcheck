@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { DiagResult } from "../api";
-import { fmt, num } from "../util";
+import { ago, fmt, num } from "../util";
 import { Icon } from "./Icons";
 
 const STAGE_TITLE: Record<string, string> = { dns: "DNS", tcp: "TCP", tls: "TLS и сертификат", bind: "Вход сервисной записи", user: "Поиск пользователя", groups: "Группы", access: "Доступ в KAV Checker",
@@ -62,6 +62,14 @@ export function Pager({ total, offset, limit, onPage, approximate }: { total: nu
 
 export function Fetched({ at, prefix = "Данные получены" }: { at: string | null | undefined; prefix?: string }) {
   return <span className="stamp" title="Время получения данных из базы KSC"><Icon name="clock" size={14} />{prefix} {fmt(at)}</span>;
+}
+
+/** Присутствие в сети сейчас — по флагу KSC «видимо», отдельно от давности последнего подключения Агента. */
+export function OnlineBadge({ online, seen }: { online: boolean | null | undefined; seen?: string | null }) {
+  if (online == null) return <span className="badge outline" title="KSC не передал сведения о присутствии устройства в сети">нет данных</span>;
+  if (online) return <span className="badge ok" title="KSC сейчас видит устройство в сети"><span className="dot" />в сети</span>;
+  const since = seen ? Math.max(0, Math.round((Date.now() - new Date(seen).getTime()) / 1000)) : null;
+  return <span className="badge" title={seen ? `KSC последний раз видел устройство ${fmt(seen)}` : "KSC не видит устройство в сети"}><span className="dot off" />не в сети{since !== null && since > 600 ? `, ${ago(since)}` : ""}</span>;
 }
 
 export function ActivityBadge({ days, activityDays }: { days: number | null; activityDays: number }) {

@@ -73,7 +73,7 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
   const quick = async (params: ReportParams, title: string) => { try { const j = await api.reports.create("hosts", title, params); navigate(`/reports/${j.id}`, { state: { toast: `Отчёт «${title}» поставлен в очередь` } }); } catch (e) { show((e as ApiError).message, "error"); } };
   return (
     <section>
-      <PageHead title="Отчёты" lede="Выберите программу и границу устаревших версий — получите список компьютеров и отчёт XLSX. Проверку можно сохранить и повторять одним щелчком.">
+      <PageHead title="Отчёты" lede="Программа и версия, ниже которой она устарела, — компьютеры сразу и отчёт XLSX. Сохранённые проверки запускаются одним щелчком.">
         {(editing || initial) && <button className="btn ghost" onClick={newCheck}><Icon name="plus" />Новая проверка</button>}
       </PageHead>
       {legacy && (

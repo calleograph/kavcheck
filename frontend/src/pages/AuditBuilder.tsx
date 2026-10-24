@@ -87,24 +87,23 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
     <form className="card builder" onSubmit={preview} noValidate>
       <div className="card-head"><h2>{editing ? `Проверка «${editing.name}»` : "Проверка версий"}</h2>
         {editing && <span className="badge accent">изменение сохранённой проверки</span>}</div>
-      <p className="muted small builder-lede">Выберите программу и версию, ниже которой она устарела. Результат — компьютеры с такими версиями, а не подтверждённые уязвимости.</p>
       <ol className="items">
         {items.map((d, n) => (
           <li key={d.id} className="item">
             <div className="item-head"><span className="item-n">{n + 1}</span>
-              <div className="grow">{d.kind === "product"
+              <div className="item-prog"><span className="cap" aria-hidden>Программа</span>{d.kind === "product"
                 ? <ProductPicker value={d.product} onChange={(p) => set(d.id, { product: p, branches: [], exclude: [] })} sourceIds={sources} autoFocus={n > 0 && !d.product} label={`Программа ${n + 1}`} />
                 : <div className="picked"><span className="picked-name"><b>{d.kind === "rule" ? "Правило группировки" : "Отбор по шаблону названия"}</b><span className="muted"> · дополнительные настройки ниже</span></span>
                   <button type="button" className="btn mini ghost" onClick={() => set(d.id, { kind: "product" })}>Выбрать из каталога</button></div>}</div>
               {items.length > 1 && <button type="button" className="btn ghost icon" onClick={() => setItems((xs) => xs.filter((x) => x.id !== d.id))} aria-label={`Убрать программу ${n + 1}`}><Icon name="close" /></button>}
-            </div>
             <div className="item-cond">
               {d.op === "range" ? (<>
                 <label>Версия от<input className="mono" value={d.min} onChange={(e) => set(d.id, { min: e.target.value })} placeholder="100" /></label>
                 <label>до (включительно)<input className="mono" value={d.max} onChange={(e) => set(d.id, { max: e.target.value })} placeholder="129.99" /></label>
               </>) : d.op === "any" ? <p className="muted small any-note">Все версии программы</p> : (
-                <label>{d.op === "lt" ? "Устаревшие версии: ниже" : `Версия ${OP_LABEL[d.op]}`}<input className="mono" value={d.value} onChange={(e) => set(d.id, { value: e.target.value })} placeholder={d.product?.latest_version ? d.product.latest_version.split(".")[0] : "130"} aria-invalid={!!problems[n] && problems[n] === "укажите версию"} />
+                <label>{d.op === "lt" ? "Устаревшие: ниже версии" : `Версия ${OP_LABEL[d.op]}`}<input className="mono" value={d.value} onChange={(e) => set(d.id, { value: e.target.value })} placeholder={d.product?.latest_version ? d.product.latest_version.split(".")[0] : "130"} aria-invalid={!!problems[n] && problems[n] === "укажите версию"} />
                   {d.product?.latest_version && d.value !== d.product.latest_version && <span className="help">Новейшая в каталоге: <button type="button" className="link-btn mono" onClick={() => set(d.id, { value: d.product!.latest_version! })} title="Устаревшими считать все версии ниже новейшей">{d.product.latest_version}</button></span>}</label>)}
+            </div>
             </div>
             <details className="disclosure" open={d.open} onToggle={(e) => set(d.id, { open: (e.target as HTMLDetailsElement).open })}>
               <summary>Дополнительные условия{(d.op !== "lt" || d.exclude.length || d.branches.length || d.platform || d.target || d.kind !== "product") ? <span className="badge accent">заданы</span> : null}</summary>
@@ -222,6 +221,7 @@ export function AuditResult({ id, result, multi, onXlsx }: { id?: string; result
         {program && <button type="button" className="link-btn" onClick={() => setProgram(null)}>все программы</button>}<div className="spacer" />
         {result.total > result.items.length && <span className="muted small">Показаны первые {num(result.items.length)} из {num(result.total)}</span>}
         {onXlsx && <button type="button" className="btn mini" onClick={onXlsx}><Icon name="download" size={15} />Полный список в XLSX</button>}</div>
+      <p className="muted small">Компьютеры, где версия соответствует условию проверки, — это не подтверждённые уязвимости; уязвимости, найденные KSC, — в разделе «Уязвимости».</p>
       <div className="table-scroll">
         <table className="table compact">
           <thead><tr>{multi && <th>Источник</th>}<th>Программа</th><th>Установлена</th><th>Нужна</th><th>Компьютер</th><th>IP-адрес</th><th>ОС</th><th>Подключение к KSC</th></tr></thead>

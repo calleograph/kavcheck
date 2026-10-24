@@ -62,7 +62,8 @@ def main() -> None:
     out: list[str] = [f"USE {a.db};", "SET NOCOUNT ON;"]
     out.append("""INSERT INTO dbo.v_akpub_adm_group VALUES (0, N'Управляемые устройства', 2, 0), (1, N'Нераспределенные устройства', NULL, 0), (10, N'Серверы', 0, 0),
  (11, N'Web', 10, 0), (12, N'Рабочие станции', 0, 0), (13, N'Филиал Север', 12, 0), (14, N'Филиал Юг', 12, 0), (15, N'Бухгалтерия', 12, 0);""")
-    # компьютеры: каждый седьмой — сервер Linux; активность: 70% подключались за сутки, 15% — 1–30 сут, 15% — давно
+    # компьютеры: каждый седьмой — сервер Linux; активность: 70% подключались за сутки, 15% — 1–30 сут, 15% — давно;
+    # nStatus: бит 2 (Агент установлен) у всех, биты 0 и 3 (видимо в сети, Агент жив) — у подключавшихся за последние 6 часов
     out.append(f""";WITH n AS (SELECT TOP ({H}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
 INSERT INTO dbo.v_akpub_host (nId, strName, wstrDisplayName, wstrDnsName, wstrDnsDomain, nIp, wstrOSName, nPlatformType, nVersionMajor, nVersionMinor, nOsBuildNumber, nGroup,
   tmLastNagentConnected, tmLastVisible, tmLastInfoUpdate, tmLastUpdate, tmLastFullScan, tmCreated, nStatus, nLastRtpState, bIsSlaveServer, nPkgMgrType, nComputerType, nProcType, nVirusCount, nUncured)
@@ -74,7 +75,7 @@ SELECT i + 100, 'g-' + CAST(i AS varchar(10)),
   CASE WHEN i % 7 = 0 THEN 10 + i % 2 WHEN i % 5 = 0 THEN 13 WHEN i % 5 = 1 THEN 14 WHEN i % 5 = 2 THEN 15 ELSE 12 END,
   CASE WHEN i % 20 < 14 THEN DATEADD(minute, -(i % 1440), GETUTCDATE()) WHEN i % 20 < 17 THEN DATEADD(day, -(1 + i % 29), GETUTCDATE()) WHEN i % 20 < 19 THEN DATEADD(day, -(31 + i % 300), GETUTCDATE()) ELSE NULL END,
   DATEADD(minute, -(i % 1440), GETUTCDATE()), DATEADD(minute, -(i % 1440), GETUTCDATE()), DATEADD(hour, -(i % 200), GETUTCDATE()), DATEADD(day, -(i % 60), GETUTCDATE()),
-  DATEADD(day, -(100 + i % 900), GETUTCDATE()), 0, CASE WHEN i % 41 = 0 THEN 1 WHEN i % 97 = 0 THEN 9 ELSE 4 END, 0, CASE WHEN i % 7 = 0 THEN 2 ELSE 0 END, 1, 2,
+  DATEADD(day, -(100 + i % 900), GETUTCDATE()), 4 | CASE WHEN i % 20 < 14 AND i % 1440 < 360 THEN 9 ELSE 0 END, CASE WHEN i % 41 = 0 THEN 1 WHEN i % 97 = 0 THEN 9 ELSE 4 END, 0, CASE WHEN i % 7 = 0 THEN 2 ELSE 0 END, 1, 2,
   CASE WHEN i % 53 = 0 THEN 3 ELSE 0 END, CASE WHEN i % 151 = 0 THEN 1 ELSE 0 END
 FROM n;""")
     # записи реестра

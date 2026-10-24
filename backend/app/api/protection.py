@@ -23,9 +23,11 @@ PROBLEM_RE = "^(|ok|" + "|".join(P.PROBLEMS) + ")$"
 async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_RE), q_: str = Query("", alias="q", max_length=200), group: str = Query("", max_length=200),
                      product: str = Query("", max_length=64), build: str = Query("", max_length=64), bases_days: int = Query(3, ge=1, le=90),
                      scan_days: int = Query(30, ge=1, le=365), sort: str = Query("risk", pattern=r"^(risk|name|last_connected|bases|scan)$"), desc: bool = True,
-                     all_hosts: bool = False, offset: int = Query(0, ge=0), limit: int = Query(50, ge=0, le=500), refresh: bool = False,
+                     all_hosts: bool = False, online: bool = False, offset: int = Query(0, ge=0), limit: int = Query(50, ge=0, le=500), refresh: bool = False,
                      su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
-    """Сводка (проблемы, статус KSC, версии) по активным компьютерам и страница компьютеров по фильтру. limit=0 — только сводка."""
+    """Сводка (проблемы, статус KSC, версии) по активным компьютерам и страница компьютеров по фильтру. limit=0 — только сводка.
+    online=true — только устройства, которые KSC сейчас видит в сети (флаг «видимо»); применяется до подсчёта, поэтому числа и списки совпадают.
+    Если KSC не передаёт флаг ни для одного устройства, фильтр не применяется (online_data=false)."""
     miss = unsupported(src, "protection")
     if miss:
         return {"items": [], "total": 0, "offset": offset, "limit": limit, "unsupported": miss, "summary": None}
@@ -41,15 +43,20 @@ async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_
     except KscError as exc:
         raise _ksc(exc) from None
     now = datetime.now(timezone.utc)
-    hosts, hidden = [], 0
+    online_data = any(r.get("online") is not None for r in base)
+    hosts, hidden, offline = [], 0, 0
     for r in base:
         if not all_hosts and (r["days_since_connection"] is None or r["days_since_connection"] > general.activity_days):
             hidden += 1
             continue
+        if online and online_data and r.get("online") is not True:
+            offline += 1
+            continue
         hosts.append({**r, "problems": P.problems(r, now, bases_days=bases_days, scan_days=scan_days)})
     counts = Counter(p for h in hosts for p in h["problems"])
     reasons = Counter(b for h in hosts for b in P.STATUS_MASK if h["mask"] & b)
-    summary = {"hosts": len(hosts), "hidden_hosts": hidden, "activity_days": general.activity_days, "bases_days": bases_days, "scan_days": scan_days,
+    summary = {"hosts": len(hosts), "hidden_hosts": hidden, "offline_hosts": offline, "online_only": bool(online and online_data), "online_data": online_data,
+               "activity_days": general.activity_days, "bases_days": bases_days, "scan_days": scan_days,
                "ok": sum(1 for h in hosts if not h["problems"]),
                "protected": sum(1 for h in hosts if h["av"] and not {"rtp_off", "bases_old", "no_av"} & set(h["problems"])),
                "problems": [{"key": k, "title": t, "hint": hint, "hosts": counts.get(k, 0)} for k, (t, hint) in P.PROBLEMS.items()],
