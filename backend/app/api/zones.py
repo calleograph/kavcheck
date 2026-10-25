@@ -527,6 +527,18 @@ async def zone_host_ids(request: Request, db: AsyncSession, src: KscSource, zone
         raise _ksc(exc) from None
 
 
+async def zone_labels(db: AsyncSession, src: KscSource, rows: list[dict]) -> None:
+    """Добавляет строкам компьютеров поле zone — подпись зоны для столбца «Зона» в разделах (одна выборка зон на страницу, без обращения к KSC)."""
+    defs = await S.load_defs(db)
+    if not defs:
+        return
+    names = {d.id: d.name for d in defs}
+    idx = ZM.ZoneIndex(defs, await S.load_pins(db))
+    for r in rows:
+        a = idx.assign(r.get("host_id"), str(src.id), name=r.get("name") or "", fqdn=r.get("fqdn") or "", group=r.get("group") or "", ips=[r["ip"]] if r.get("ip") else [])
+        r["zone"] = " / ".join(names[z] for z in a.zone_ids if z in names) + (" (спорный)" if a.conflict else "") if a.zone_ids else "Без ответственного"
+
+
 @router.get("/options/list")
 async def zone_options(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     """Короткий список зон для фильтров «Зона ответственности»."""

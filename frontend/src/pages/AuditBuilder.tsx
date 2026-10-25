@@ -1,3 +1,4 @@
+import { ZoneField } from "../components/ZoneBits";
 import { FormEvent, Fragment, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type ApiError, type AuditItem, type AuditParams, type AuditResultRow, type AuditSummary, type SavedCheck, type VersionOp } from "../api";
@@ -67,16 +68,17 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
   const [onlineOnly, setOnlineOnly] = useState(!!initial?.params?.online_only);
   const [days, setDays] = useState<string>(initial?.params?.active_days ? String(initial.params.active_days) : "");
   const [group, setGroup] = useState(initial?.params?.group_contains ?? "");
+  const [zone, setZone] = useState(initial?.params?.zone ?? "");
   const [rules, setRules] = useState<{ key: string; name: string }[]>([]);
   const [busy, setBusy] = useState<"" | "preview">("");
   const [err, setErr] = useState("");
   const [save, setSave] = useState(false); const [panel, setPanel] = useState(false);
-  const [scopeOpen, setScopeOpen] = useState(!!(initial?.params?.include_inactive || initial?.params?.online_only || initial?.params?.active_days || initial?.params?.group_contains));
+  const [scopeOpen, setScopeOpen] = useState(!!(initial?.params?.include_inactive || initial?.params?.online_only || initial?.params?.active_days || initial?.params?.group_contains || initial?.params?.zone));
   const [toast, show] = useToast();
   const canEdit = ctx.me.user.role !== "viewer";
   useEffect(() => { api.software.rules().then((r) => setRules(r.items)).catch(() => undefined); }, []);
   const set = (id: number, patch: Partial<Draft>) => setItems((xs) => xs.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  const params = (): AuditParams => ({ items: items.map(toItem), include_inactive: includeInactive, online_only: onlineOnly, active_days: days ? Number(days) : null, group_contains: group.trim() || null });
+  const params = (): AuditParams => ({ items: items.map(toItem), include_inactive: includeInactive, online_only: onlineOnly, active_days: days ? Number(days) : null, group_contains: group.trim() || null, zone: zone || null });
   const problems = items.map(draftProblem);
   const ready = problems.every((p) => !p) && sources.length > 0;
   const preview = async (e?: FormEvent) => {
@@ -169,6 +171,7 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
           <div className="cols">
             <label>Свой порог активности, сут<input type="number" min={1} max={3650} value={days} onChange={(e) => setDays(e.target.value)} placeholder={String(ctx.me.activity_days)} disabled={includeInactive} /></label>
             <label>Группа администрирования содержит<input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Серверы" /></label>
+            <ZoneField value={zone} onChange={setZone} />
           </div>
         </div>
       </details>

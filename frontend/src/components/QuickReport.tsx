@@ -5,7 +5,7 @@ import { fmt, num, plural } from "../util";
 import { Modal } from "./Dialogs";
 import { Icon } from "./Icons";
 import { Dock, Segmented } from "./ui";
-import { ZoneSelect } from "./ZoneBits";
+import { ZoneField } from "./ZoneBits";
 import { ZONE_CATEGORIES } from "../pages/zoneCats";
 
 /** Выбор строк флажками: идентификаторы живут, пока открыта страница (между вкладками одного раздела — отдельные наборы). */
@@ -166,7 +166,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
               <label className="check"><input type="checkbox" checked={!!params.show_excluded} onChange={(e) => setExtra({ ...extra, show_excluded: e.target.checked })} />Перечислить исключённые обнаружения с обоснованиями</label>
               <p className="muted small">Ложные срабатывания не входят в показатели; их число и правила исключения указываются в конце отчёта. Принятые риски учитываются отдельно.</p>
             </>}
-            {options.zoneFilter && <label className="field">Зона ответственности<ZoneSelect className="" value={String(params.zone ?? "")} onChange={(v) => setExtra({ ...extra, zone: v })} /></label>}
+            {options.zoneFilter && <ZoneField value={String(params.zone ?? "")} onChange={(v) => setExtra({ ...extra, zone: v })} />}
             {options.sections && <fieldset className="qr-sections"><legend>Что включить</legend>{SECTIONS.map(([k, l]) => {
               const cur = (params.sections as string[] | undefined) ?? SECTIONS.map(([x]) => x);
               return <label key={k} className="check"><input type="checkbox" checked={cur.includes(k)} disabled={cur.length === 1 && cur.includes(k)}

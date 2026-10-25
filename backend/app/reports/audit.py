@@ -151,8 +151,8 @@ def _candidates(s: Session, item: dict, rule: Rule | None, cancelled: CancelChec
 
 def build_source(s: Session, *, source_name: str, items: list[dict], rules: dict[str, Rule], active_days: int | None, include_inactive: bool,
                  group_contains: str = "", exclude_slaves: bool = True, max_rows: int, progress: Progress, cancelled: CancelCheck,
-                 now: datetime | None = None, online_only: bool = False) -> tuple[list[dict], dict]:
-    """Строки и сводка по одному источнику."""
+                 now: datetime | None = None, online_only: bool = False, host_filter: set[int] | None = None) -> tuple[list[dict], dict]:
+    """Строки и сводка по одному источнику. host_filter — только компьютеры зоны ответственности (остальные не учитываются ни в строках, ни в сводке)."""
     now = now or datetime.now(timezone.utc)
     matched: dict[int, list[tuple[int, str, str]]] = {}       # product_id → [(номер пункта, сравниваемая версия, ветка)]
     records: dict[int, dict] = {}
@@ -188,6 +188,8 @@ def build_source(s: Session, *, source_name: str, items: list[dict], rules: dict
     hidden: set[int] = set()
     not_computers = 0
     for i in installs:
+        if host_filter is not None and int(i["host_id"]) not in host_filter:
+            continue
         h = hosts.get(int(i["host_id"]))
         if h is None or (exclude_slaves and h.get("is_slave")):
             not_computers += 1

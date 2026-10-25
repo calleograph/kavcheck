@@ -181,6 +181,7 @@ class AuditParams(BaseModel):
     include_inactive: bool = False
     online_only: bool = False                  # только устройства, которые KSC сейчас видит в сети (отдельно от «связывались за N суток»)
     group_contains: MaskText = None
+    zone: str = Field(default="", max_length=40)   # зона ответственности («none» — без ответственного); пусто — все компьютеры
 
 
 class QuickScope(BaseModel):

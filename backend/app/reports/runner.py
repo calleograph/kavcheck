@@ -287,7 +287,16 @@ class Runner:
                 return
             if missing:
                 notes.append(f"{src.name}: нет в каталоге — {', '.join(missing)}")
-            plan.append((src.name, conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), resolved))
+            zset = None
+            if params.get("zone"):
+                from ..services.sources import SourceRegistry  # noqa: PLC0415
+                from ..zones.reporter import ZoneData  # noqa: PLC0415
+
+                if getattr(self, "_zones", None) is None:
+                    self._zones = ZoneData(self._sm, self._cfg, self._svc, SourceRegistry(self._cfg, self._svc))
+                async with self._sm() as db3:
+                    zset = await self._zones.host_ids(db3, src, params["zone"])
+            plan.append((src.name, conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), resolved, zset))
         loop = asyncio.get_running_loop()
         flag = {"cancel": False}
 
@@ -305,13 +314,13 @@ class Runner:
 
         def work():
             all_rows, per_source = [], []
-            for name, cp, resolved in plan:
+            for name, cp, resolved, zset in plan:
                 progress(f"{name}: подключение")
                 with Session(cp) as conn:
                     rows, summ = audit.build_source(conn, source_name=name, items=resolved, rules=rules, active_days=params.get("active_days"),
                                                     include_inactive=bool(params.get("include_inactive")), group_contains=params.get("group_contains") or "",
                                                     exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows - len(all_rows), progress=progress,
-                                                    cancelled=lambda: flag["cancel"], online_only=bool(params.get("online_only")))
+                                                    cancelled=lambda: flag["cancel"], online_only=bool(params.get("online_only")), host_filter=zset)
                 all_rows += rows
                 per_source.append(summ)
             return all_rows, audit.merge_summaries(per_source, items, active_days=params.get("active_days"), include_inactive=bool(params.get("include_inactive")), rows=all_rows, online_only=bool(params.get("online_only")))

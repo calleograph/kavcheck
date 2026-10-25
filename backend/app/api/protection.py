@@ -68,4 +68,7 @@ async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_
             "bases": lambda h: (h["av"] or {}).get("bases") or floor, "scan": lambda h: h["last_full_scan"] or floor}[sort]
     items = sorted(items, key=keyf, reverse=desc if sort != "name" else not desc)
     page = [{k: v for k, v in h.items() if k not in ("mask", "is_slave")} for h in items[offset:offset + limit]]
+    from .zones import zone_labels  # noqa: PLC0415
+
+    await zone_labels(db, src, page)
     return {"items": page, "total": len(items), "offset": offset, "limit": limit, "summary": summary}

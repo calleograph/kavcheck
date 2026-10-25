@@ -184,19 +184,24 @@ async def delete_override(override_id: uuid.UUID, su: SessionUser = Depends(requ
 
 # ------------------------------------------------------------------------------------------------ быстрая проверка версий
 async def run_one(request: Request, db: AsyncSession, src: KscSource, items: list[dict], *, all_hosts: bool, max_rows: int, active_days: int | None = None,
-                  group_contains: str = "", online_only: bool = False) -> tuple[list[dict], dict]:
+                  group_contains: str = "", online_only: bool = False, zone: str = "") -> tuple[list[dict], dict]:
     general = await request.app.state.settings_svc.get(db, "general")
     rcfg = await request.app.state.settings_svc.get(db, "reports")
     rules = {r.key: Rule(r.key, r.name, r.name_like, r.name_regex, r.branch_regex, r.branch_parts, r.exclude_regex)
              for r in (await db.execute(select(GroupingRule).where(GroupingRule.enabled.is_(True)))).scalars().all()} if any(i.get("kind") == "rule" for i in items) else {}
     params = conn_params(src, request.app.state.settings_svc.decrypt(src.password_enc, f"source.{src.id}"))
     client = request.app.state.sources.client(src)
+    zset = None
+    if zone:
+        from .zones import zone_host_ids  # noqa: PLC0415
+
+        zset = await zone_host_ids(request, db, src, zone)
 
     def work():
         with Session(params) as conn:
             return audit.build_source(conn, source_name=src.name, items=items, rules=rules, active_days=active_days or general.activity_days, include_inactive=all_hosts,
                                       group_contains=group_contains, exclude_slaves=rcfg.exclude_slave_servers, max_rows=max_rows, progress=lambda _t: None,
-                                      cancelled=lambda: False, online_only=online_only)
+                                      cancelled=lambda: False, online_only=online_only, host_filter=zset)
 
     try:
         async with client._sem:  # noqa: SLF001 — один слот источника на всё построение
@@ -245,7 +250,7 @@ async def audit_preview(request: Request, db: AsyncSession, su: SessionUser, par
         raise HTTPException(status_code=409, detail={"code": "catalog_building", "message": f"Каталог программ ещё строится: {', '.join(not_ready)}. Повторите через минуту."})
     rcfg_max = (await request.app.state.settings_svc.get(db, "reports")).max_rows    # тот же предел, что у отчёта: просмотр и отчёт считают одно и то же
     results = await asyncio.gather(*[run_one(request, db, s, resolved, all_hosts=params["include_inactive"], active_days=params.get("active_days"),
-                                             group_contains=params.get("group_contains") or "", max_rows=rcfg_max, online_only=params.get("online_only", False)) for s, resolved in plans],
+                                             group_contains=params.get("group_contains") or "", max_rows=rcfg_max, online_only=params.get("online_only", False), zone=params.get("zone") or "") for s, resolved in plans],
                                    return_exceptions=True)
     rows_all, per_source, errors = [], [], []
     for (s, _r), res in zip(plans, results):

@@ -105,6 +105,9 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
             "last_connected": lambda i: i["last_connected"] or datetime.min.replace(tzinfo=timezone.utc)}[sort]
     items.sort(key=keyf, reverse=desc if sort != "name" else not desc)
     page = [{k: v for k, v in i.items() if k != "_search"} for i in items[offset:offset + limit]]
+    from .zones import zone_labels  # noqa: PLC0415
+
+    await zone_labels(db, src, page)
     return {"items": page, "total": len(items), "offset": offset, "limit": limit, "summary": summary}
 
 

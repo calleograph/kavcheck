@@ -16,6 +16,14 @@ export function ZoneSelect({ value, onChange, className = "w-md", label = "Зо�
   return <select className={className} value={value} onChange={(e) => onChange(e.target.value)} aria-label={label} title={label}><option value="">{all}</option>{items.map((z) => <option key={z.id} value={z.id}>{z.name}</option>)}</select>;
 }
 
+/** Поле формы «Зона ответственности» (с подписью): без созданных зон не показывается. */
+export function ZoneField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [n, setN] = useState<number | null>(cache ? cache.length : null);
+  useEffect(() => { void loadZones().then((x) => setN(x.length)); }, []);
+  if (!n || n <= 1) return null;
+  return <label className="field">Зона ответственности<ZoneSelect className="" value={value} onChange={onChange} /></label>;
+}
+
 /** Зона компьютера и её ответственные — строка в карточках компьютеров и уязвимостей. */
 export function HostZones({ sourceId, hostId }: { sourceId: string | null | undefined; hostId: number }) {
   const [d, setD] = useState<Awaited<ReturnType<typeof api.zones.ofHost>> | null>(null);

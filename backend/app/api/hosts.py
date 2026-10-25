@@ -51,7 +51,11 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
     except KscError as exc:
         raise _ksc(exc) from None
     now = datetime.now(timezone.utc)
-    return {"items": [H.host_row(h, None, now) for h in rows], "total": total, "hidden": hidden, "offset": offset, "limit": limit, "activity_days": active_days, "fetched_at": now}
+    items = [H.host_row(h, None, now) for h in rows]
+    from .zones import zone_labels  # noqa: PLC0415
+
+    await zone_labels(db, src, items)
+    return {"items": items, "total": total, "hidden": hidden, "offset": offset, "limit": limit, "activity_days": active_days, "fetched_at": now}
 
 
 @router.get("/{host_id}")
