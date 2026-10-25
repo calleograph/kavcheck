@@ -105,7 +105,7 @@ async def hosts_for_selection(request: Request, body: ReportParams, offset: int 
 
 
 @router.get("/{product_id}/hosts")
-async def product_hosts(product_id: int, request: Request, su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+async def product_hosts(product_id: int, request: Request, zone: str = Query("", max_length=40), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
     """Компьютеры, на которых установлена одна запись реестра (до 5000)."""
     client = request.app.state.sources.client(src)
     general = await request.app.state.settings_svc.get(db, "general")
@@ -126,6 +126,11 @@ async def product_hosts(product_id: int, request: Request, su: SessionUser = Dep
         if h is None:
             continue
         items.append({**H.host_row(h, groups, now), "install_date": i.get("install_date"), "install_id": int(i["install_id"])})
+    if zone:
+        from .zones import zone_host_ids  # noqa: PLC0415
+
+        zids = await zone_host_ids(request, db, src, zone)
+        items = [r for r in items if r["host_id"] in zids]
     items.sort(key=lambda r: r["name"].lower())
     active = sum(1 for r in items if r["days_since_connection"] is not None and r["days_since_connection"] <= general.activity_days)
     return {"items": items, "total": len(items), "active": active, "inactive": len(items) - active, "activity_days": general.activity_days, "fetched_at": now}

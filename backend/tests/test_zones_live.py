@@ -157,3 +157,37 @@ async def test_two_ksc_sources_are_merged_without_double_counting_hosts_ids(clie
     assert one["stats"]["total"] == 3 and {h["source_id"] for h in one["items"]} == {sid2}
     ov = (await client.get("/api/v1/zones")).json()
     assert ov["totals"]["hosts"] == 2 * ov["totals"]["unique_hosts"] // 2 * 2 // 2 or ov["totals"]["unique_hosts"] >= ov["totals"]["hosts"] // 2
+
+
+async def test_external_potential_is_separate_from_confirmed_and_respects_triage(client, app):
+    from app.vdb.sync import analyze
+    from tests.test_vdb_live import seed as seed_vdb
+    sid, runner, z_srv, z_arm = await setup(client, app)
+    await seed_vdb(app)
+    async with app.state.session_maker() as db:
+        await analyze(db, uuid.UUID(sid), None)
+        await db.commit()
+    srv = await dash(client, z_srv)
+    h1 = next(h for h in srv["items"] if h["host_id"] == 1)
+    assert h1["ext"]["total"] == 1 and h1["ext"]["kev"] == 1 and h1["ksc"]["critical"] >= 1                     # подтверждённая KLA10001 и потенциальная CVE-2099-2 — раздельно
+    assert srv["stats"]["potential"] >= 1 and srv["stats"]["critical"] == 1                                     # критических по KSC по-прежнему один компьютер
+    arm = await dash(client, z_arm)
+    h7 = next(h for h in arm["items"] if h["host_id"] == 7)
+    assert h7["ext"]["total"] == 1 and h7["ext"]["critical"] == 1
+    off = await dash(client, z_arm, ext="false")
+    assert next(h for h in off["items"] if h["host_id"] == 7)["ext"]["total"] == 0                              # переключатель «Внешние базы»
+    card = (await client.get(f"/api/v1/zones/{z_arm}/hosts/{sid}/7")).json()
+    ext = card["rows"]["ext"]["current"]
+    assert [r["vuln_key"] for r in ext] == ["CVE-2099-1"] and ext[0]["status"] == "confirmed" and "Chrome" in ext[0]["product"]
+    r = await client.post("/api/v1/triage", json={"source_id": sid, "vuln_key": "CVE-2099-1", "origin": "ext", "scope": "host", "host_id": 7, "host_name": "ws-002", "status": "false_positive", "reason": "fp_product",
+                                                  "comment": "Другая сборка Chrome", "product": ext[0]["product"], "version": ext[0]["installed_version"]})
+    assert r.status_code == 200
+    arm2 = await dash(client, z_arm)
+    assert next(h for h in arm2["items"] if h["host_id"] == 7)["ext"]["total"] == 0 and arm2["stats"]["excluded"] == 1
+    # отчёт: потенциальные в отдельной таблице, исключённые — только по явному запросу
+    job = (await client.post("/api/v1/reports", json={"kind": "quick_zone", "title": "", "params": {"zone_ids": [z_srv], "level": "technical", "categories": ["ksc_vulns", "ext_vulns"]}, "source_ids": [sid]})).json()
+    await _run(app, runner, job["id"])
+    wb = load_workbook(job_dir(app.state.settings, uuid.UUID(job["id"])) / "report.xlsx", read_only=True)
+    assert "Потенциальные (внешние)" in wb.sheetnames and "Исключённые" not in wb.sheetnames
+    rows = list(wb["Потенциальные (внешние)"].iter_rows(values_only=True))
+    assert any("CVE-2099-2" in str(c) for r in rows[1:] for c in r)

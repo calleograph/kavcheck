@@ -18,7 +18,7 @@ T_NET="${UPD_TIMEOUT_NET:-60}"; T_PULL="${UPD_TIMEOUT_PULL:-1800}"; S_PULL="${UP
 T_MIG="${UPD_TIMEOUT_MIGRATE:-600}"; T_BACKUP="${UPD_TIMEOUT_BACKUP:-900}"; T_UP="${UPD_TIMEOUT_UP:-300}"
 STEP=0; STEPS=11; CUR="init"; STAGE_CODE=generic
 step() { STEP=$((STEP + 1)); CUR="$1"; log; log "[$STEP/$STEPS] $1"; }
-OLD_VER="$(installed_version)"; PREV_HEAD="$(installed_head "$OLD_VER")"; OLD_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=12 "$PREV_HEAD" 2>/dev/null || echo unknown)"; OLD_TAG="${IMAGE_TAG:-}"; OLD_REPO="${IMAGE_REPO:-kavcheck}"
+OLD_VER="$(installed_version)"; PREV_HEAD="$(installed_head "$OLD_VER")"; START_HEAD="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)"; OLD_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=12 "$PREV_HEAD" 2>/dev/null || echo unknown)"; OLD_TAG="${IMAGE_TAG:-}"; OLD_REPO="${IMAGE_REPO:-kavcheck}"
 NEW_VER="?"; MARKED=0; UPD_MODE_USED=""
 if [ "$DRY_RUN" != 1 ]; then
   # прерванное прежнее обновление (перезагрузка, Ctrl-C) обрабатывается до нового: сначала возвращается работоспособное состояние
@@ -67,7 +67,7 @@ if [ "$SKIP_PF" -eq 1 ]; then warn "Проверки пропущены (--skip-
 fi
 if [ "$DRY_RUN" = 1 ]; then info "[dry-run] дальше: checkout $TARGET_TAG → образы ($UPD_MODE_USED) → остановка → резервная копия → миграции → запуск → проверка → очистка"; exit 0; fi
 if [ "$YES" -ne 1 ]; then if [ -t 0 ]; then read -r -p "Обновить $OLD_VER → $NEW_VER? [y/N] " a; [ "$a" = y ] || die "Отменено."; else die "Нет терминала: добавьте --yes"; fi; fi
-for kv in "pid=$$" "started=$(date +%s)" "old_ver=$OLD_VER" "new_ver=$NEW_VER" "old_tag=$OLD_TAG" "old_repo=$OLD_REPO" "prev_head=$PREV_HEAD" "stage=prepare" "mode=$UPD_MODE_USED" "target=$TARGET_TAG"; do marker_set "${kv%%=*}" "${kv#*=}"; done
+for kv in "pid=$$" "started=$(date +%s)" "old_ver=$OLD_VER" "new_ver=$NEW_VER" "old_tag=$OLD_TAG" "old_repo=$OLD_REPO" "prev_head=$PREV_HEAD" "start_head=$START_HEAD" "stage=prepare" "mode=$UPD_MODE_USED" "target=$TARGET_TAG"; do marker_set "${kv%%=*}" "${kv#*=}"; done
 MARKED=1
 step "Переход кода на $TARGET_TAG"
 marker_set stage code
@@ -75,7 +75,7 @@ mirror_local_fix
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]; then git -C "$REPO_ROOT" stash push -q -m "update-$(date +%s)" && action_log "прочие локальные изменения файлов проекта сохранены в git stash"; fi
 git -C "$REPO_ROOT" checkout -q --detach "$TARGET_TAG" || stop_update generic "git checkout $TARGET_TAG не удался"
 host_version_info
-state_set previous_version "$OLD_VER"; state_set previous_commit "$OLD_COMMIT"; state_set previous_tag "$OLD_TAG"; state_set previous_head "$PREV_HEAD"; state_set previous_repo "$OLD_REPO"
+state_set previous_version "$OLD_VER"; state_set previous_commit "$OLD_COMMIT"; state_set previous_tag "$OLD_TAG"; state_set previous_head "$PREV_HEAD"; state_set previous_start "$START_HEAD"; state_set previous_repo "$OLD_REPO"
 step "Образы релиза: $([ "$UPD_MODE_USED" = pull ] && echo "загрузка готовых образов" || echo "локальная сборка")"
 marker_set stage images
 dc_base

@@ -27,14 +27,14 @@ STATE_ORDER = ("critical", "vulns", "protection", "potential", "ok")
 class Raw:
     base: list[dict]
     vuln_rows: list[dict]
-    ext_rows: list[dict] | None
+    ext_rows: list[dict] | None = None
     agg_only: bool = False                         # деталей слишком много: известны только счётчики по компьютерам
     agg: dict[int, dict] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-async def load_raw(client: SourceClient, ctx: quick.Ctx, *, with_ext: bool) -> Raw:
+async def load_raw(client: SourceClient, ctx: quick.Ctx) -> Raw:
     from ..ksc import hosts as H  # noqa: PLC0415
 
     groups = await H.groups_map(client)
@@ -45,6 +45,8 @@ async def load_raw(client: SourceClient, ctx: quick.Ctx, *, with_ext: bool) -> R
     ids = sorted(raw.agg)
     total = 0
     try:
+        if sum(a["total"] for a in raw.agg.values()) > ctx.max_rows:      # заведомо больше предела: деталей не читаем, только счётчики по компьютерам
+            raise KscError("too_many_rows", "")
         for i in range(0, len(ids), CHUNK):
             if ctx.cancelled():
                 raise RuntimeError("cancelled")
@@ -60,20 +62,6 @@ async def load_raw(client: SourceClient, ctx: quick.Ctx, *, with_ext: bool) -> R
             raise
         raw.vuln_rows, raw.agg_only = [], True
         raw.notes.append(f"Обнаружений уязвимостей больше предела ({ctx.max_rows}): показаны только счётчики по компьютерам, решения по отдельным уязвимостям не применяются. Увеличьте предел в настройках отчётов.")
-    if with_ext and ctx.sm is not None:
-        from ..reports.quick_ext import build_extvulns  # noqa: PLC0415
-
-        try:
-            doc = await build_extvulns(client, {"all_known": True, "include_inactive": True, "online_only": False, "q": "", "group_contains": ""}, ctx)
-            raw.ext_rows = doc["tables"][0]["rows"]
-            for r in raw.ext_rows:
-                r["ids_list"] = (r.get("ids") or "").split()[:20]
-            raw.notes += [n for n in doc["notes"] if "Не вошли записи кластеров" in n]
-        except KscError as exc:
-            if exc.code not in ("params", "too_many_rows"):
-                raise
-            raw.ext_rows = []
-            raw.notes.append(f"Потенциальные совпадения с внешними базами не добавлены: {exc.message if hasattr(exc, 'message') else exc}")
     return raw
 
 
@@ -99,20 +87,21 @@ def short_text(h: dict) -> str:
     return "; ".join(parts) or "проблем не выявлено"
 
 
-def assemble(raw: Raw, zindex: ZoneIndex, tindex: T.TriageIndex, *, source_id: str, source_name: str, now: datetime, activity_days: int, include_inactive: bool, online_only: bool,
+def assemble(raw: Raw, zindex: ZoneIndex, tindex: T.TriageIndex, *, ext_rows: list[dict] | None = None, source_id: str, source_name: str, now: datetime, activity_days: int, include_inactive: bool, online_only: bool,
              bases_days: int = 3, scan_days: int = 30, zone_activity: dict[str, int] | None = None, min_sev: str = "") -> dict:
     """Компьютеры источника с зонами, проблемами и разобранными по решениям обнаружениями.
     Возвращает {hosts, hidden, total_all}: hosts — в области (по активности и сети), у каждого vulns.current/accepted/excluded и сводка по уровням."""
     records = annotate(raw.base, zindex, source_id)
     by_host: dict[int, dict[str, list[dict]]] = {}
     zones_of = {r["host_id"]: r["zones"] for r in records}
+    names_of = {r["host_id"]: r["name"] for r in records}
     vr = [{**r, "zones": zones_of.get(r["host_id"], [])} for r in raw.vuln_rows]
     for bucket, rows in T.split(vr, tindex).items():
         for r in rows:
             by_host.setdefault(r["host_id"], {"current": [], "accepted": [], "excluded": []})[bucket].append(r)
     ext_by: dict[int, dict[str, list[dict]]] = {}
-    if raw.ext_rows is not None:
-        er = [{**r, "zones": zones_of.get(r["host_id"], []), "product": r.get("program")} for r in raw.ext_rows]
+    if ext_rows is not None:
+        er = [{**r, "zones": zones_of.get(r["host_id"], []), "product": r.get("program"), "name": names_of.get(r["host_id"], ""), "ids_list": (r.get("ids") or "").split()[:20]} for r in ext_rows]
         for bucket, rows in T.split(er, tindex, key_fields=("vuln_key", "ids_list")).items():
             for r in rows:
                 ext_by.setdefault(r["host_id"], {"current": [], "accepted": [], "excluded": []})[bucket].append(r)

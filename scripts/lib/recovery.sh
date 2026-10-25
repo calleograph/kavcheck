@@ -8,8 +8,8 @@
 # Результат в RECOVER_RESULT: rolled_back | finalized | manual (нужно вмешательство; автоматически ничего опасного не делается).
 RECOVER_RESULT=""; RECOVER_ADVICE=""; RECOVER_SCHEMA=""
 recover_start_old() { # вернуть код, .env и запустить контейнеры прежней версии
-  local old_tag old_repo prev_head
-  old_tag="$(marker_get old_tag)"; old_repo="$(marker_get old_repo)"; prev_head="$(marker_get prev_head)"
+  local old_tag old_repo prev_head code_head
+  old_tag="$(marker_get old_tag)"; old_repo="$(marker_get old_repo)"; prev_head="$(marker_get prev_head)"; code_head="$(marker_get start_head)"; code_head="${code_head:-$prev_head}"
   [ -n "$old_tag" ] && [ -n "$prev_head" ] || return 1
   # прежняя версия не должна запускаться на несовместимой схеме базы: ревизия базы должна быть известна её миграциям
   dc up -d postgres >/dev/null 2>&1 && wait_healthy 90 postgres
@@ -17,7 +17,8 @@ recover_start_old() { # вернуть код, .env и запустить кон
   if [ -n "$dbrev" ] && ! git -C "$REPO_ROOT" grep -q "revision = \"$dbrev\"" "$prev_head" -- backend/migrations/versions 2>/dev/null; then
     RECOVER_SCHEMA="$dbrev"; return 3
   fi
-  [ "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" = "$prev_head" ] || git -C "$REPO_ROOT" checkout -q --detach "$prev_head" || return 1
+  # код возвращается к тому состоянию, в котором был до обновления (в нём могут быть свежие скрипты), а не к тегу прежней версии: иначе следующее обновление запустит устаревшие скрипты
+  [ "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" = "$code_head" ] || git -C "$REPO_ROOT" checkout -q --detach "$code_head" || return 1
   export IMAGE_TAG="$old_tag" IMAGE_REPO="$old_repo"
   env_put IMAGE_TAG "$old_tag"; env_put IMAGE_REPO "$old_repo"
   dc up -d >/dev/null 2>&1 && wait_healthy 180 backend web

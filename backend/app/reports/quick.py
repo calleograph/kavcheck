@@ -43,6 +43,8 @@ class Ctx:
     protection_loader: Callable | None = None         # асинхронный источник набора «Состояния защиты» (кэш страницы); без него набор читается из KSC
     sm: object | None = None                          # фабрика сессий внутренней базы (отчёты по внешним базам уязвимостей)
     source_id: object | None = None
+    zone_name: str = ""
+    zone_hosts: set | None = None                      # компьютеры выбранной зоны (фильтр «Зона ответственности»); None — без отбора
     org: dict = field(default_factory=dict)            # данные организации для шапки и подвала (настройки «Организация и оформление отчётов»)
 
 
@@ -63,6 +65,8 @@ def scope_conditions(p: dict, ctx: Ctx) -> list[dict]:
         out.append({"label": "Группа администрирования", "text": f"содержит «{p['group_contains']}»"})
     if p.get("q"):
         out.append({"label": "Поиск по компьютеру", "text": f"«{p['q']}»"})
+    if p.get("zone"):
+        out.append({"label": "Зона ответственности", "text": "Без ответственного" if p["zone"] == "none" else (ctx.zone_name or p["zone"])})
     return out
 
 
@@ -79,6 +83,8 @@ def apply_scope(hosts: dict[int, dict], p: dict, ctx: Ctx) -> tuple[set[int], di
     n = _days(p, ctx)
     online_known = any(h.get("online") is not None for h in hosts.values())
     keep, hidden, offline = set(), 0, 0
+    if ctx.zone_hosts is not None:
+        hosts = {k: v for k, v in hosts.items() if k in ctx.zone_hosts}
     for hid, h in hosts.items():
         d = h.get("days_since_connection")
         if not p.get("include_inactive") and (d is None or d > n):
@@ -343,6 +349,8 @@ async def build_protection(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     groups = await H.groups_map(client)
     base = await ctx.protection_loader() if ctx.protection_loader else await P.load(client, exclude_slaves=ctx.exclude_slaves, groups=groups)
     bases_days, scan_days = int(p.get("bases_days") or 3), int(p.get("scan_days") or 30)
+    if ctx.zone_hosts is not None:
+        base = [h for h in base if h["host_id"] in ctx.zone_hosts]
     hosts, sc = P.scope(base, now=ctx.now, activity_days=_days(p, ctx), include_inactive=bool(p.get("include_inactive")), online_only=bool(p.get("online_only")), bases_days=bases_days, scan_days=scan_days)
     problem = p.get("problem") or ""
     items = P.pick(hosts, problem=problem, product=p.get("product") or "", build=p.get("build") or "", q=p.get("q") or "", group=p.get("group_contains") or "", host_ids=[int(i) for i in p.get("host_ids") or []])

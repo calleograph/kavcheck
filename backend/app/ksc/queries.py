@@ -43,6 +43,9 @@ INSTALL_COUNTS = ("SELECT i.nProduct AS product_id, COUNT(*) AS installs, COUNT(
                   "WHERE i.bDeleted = 0 AND i.nProduct IN ({ids}) GROUP BY i.nProduct")
 INSTALLS_BY_PRODUCTS = ("SELECT i.nId AS install_id, i.nHostId AS host_id, i.nProduct AS product_id, i.tmInstallDate AS install_date FROM dbo.hst_inventory_hstprds i "
                         "WHERE i.bDeleted = 0 AND i.nProduct IN ({ids}) ORDER BY i.nId OFFSET %(offset)s ROWS FETCH NEXT %(limit)s ROWS ONLY")
+# установленное ПО выбранных компьютеров (действующие установки) вместе с записью реестра: версия, название, производитель
+INSTALLS_FOR_HOSTS = ("SELECT i.nHostId AS host_id, i.nProduct AS product_id, p.wstrDisplayName AS name, p.wstrDisplayVersion AS version, p.wstrPublisher AS publisher, i.tmInstallDate AS install_date "
+                      "FROM dbo.hst_inventory_hstprds i JOIN dbo.hst_inventory_products p ON p.nId = i.nProduct WHERE i.bDeleted = 0 AND i.nHostId IN ({ids})")
 HOSTS_BY_IDS = f"SELECT {HOST_COLS} FROM dbo.v_akpub_host h WHERE h.nId IN ({{ids}})"
 GROUPS_ALL = "SELECT g.nId AS group_id, g.wstrName AS name, g.nParentId AS parent_id FROM dbo.v_akpub_adm_group g"
 RELEASE_PACKAGES = ("SELECT i.nHostId AS host_id, p.wstrDisplayName AS name, p.wstrDisplayVersion AS version FROM dbo.hst_inventory_products p "

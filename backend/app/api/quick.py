@@ -75,12 +75,20 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
     client = request.app.state.sources.client(src)
     ttl = request.app.state.settings.cache_ttl_seconds
     cache = request.app.state.cache
-    rev = await vdb_store.revision(db, src.id) if body.kind == "quick_extvulns" else ""      # данные внешних баз, сопоставления и каталог меняют результат
+    zset, zname = None, ""
+    if params.get("zone"):
+        from .zones import zd, zone_host_ids  # noqa: PLC0415
+
+        zset, zname = await zone_host_ids(request, db, src, params["zone"]), await zd(request).zone_name(db, params["zone"])
+    rev = await vdb_store.revision(db, src.id) if body.kind == "quick_extvulns" else ""
+    if zset is not None:
+        rev += f"|zone:{hashlib.sha1(','.join(map(str, sorted(zset))).encode()).hexdigest()}"      # состав зоны меняет результат      # данные внешних баз, сопоставления и каталог меняют результат
     key = (str(src.id), "quick", body.kind, hashlib.sha1(json.dumps(params, sort_keys=True, default=str).encode()).hexdigest(), general.activity_days, rcfg.exclude_slave_servers, rev)
 
     async def make() -> dict:
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
-                        protection_loader=lambda: _cached_protection(request, src, rcfg.exclude_slave_servers), sm=request.app.state.session_maker, source_id=src.id)
+                        protection_loader=lambda: _cached_protection(request, src, rcfg.exclude_slave_servers), sm=request.app.state.session_maker, source_id=src.id,
+                        zone_hosts=zset, zone_name=zname)
         doc = await quick.build(body.kind, client, params, ctx)
         main = doc["tables"][0]
         # в кэше и ответе — только документ без строк и первые строки основной таблицы

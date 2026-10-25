@@ -4,7 +4,9 @@ import { api, type ApiError, type QuickCol, type QuickKind, type QuickPreview } 
 import { fmt, num, plural } from "../util";
 import { Modal } from "./Dialogs";
 import { Icon } from "./Icons";
-import { Dock } from "./ui";
+import { Dock, Segmented } from "./ui";
+import { ZoneSelect } from "./ZoneBits";
+import { ZONE_CATEGORIES } from "../pages/zoneCats";
 
 /** Выбор строк флажками: идентификаторы живут, пока открыта страница (между вкладками одного раздела — отдельные наборы). */
 export function useRowSel<K extends string | number>() {
@@ -48,7 +50,7 @@ function cell(c: QuickCol, v: string | number | null | undefined) {
   return c.type === "mono" ? <span className="mono small nowrap">{v}</span> : <>{v}</>;
 }
 
-export type QuickScopeOpts = { period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean };
+export type QuickScopeOpts = { period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean };
 const EXT_STATUSES: [string, string][] = [["confirmed", "Подтверждено источником"], ["potential", "Потенциально затронуто"], ["clarify", "Требуется уточнение"], ["insufficient", "Данных недостаточно"], ["fixed", "Исправлено (показать отдельно)"]];
 const SECTIONS: [string, string][] = [["software", "Установленное ПО"], ["vulns", "Уязвимости"], ["protection", "Состояние защиты"]];
 const FORMATS: [string, string][] = [["xlsx", "Excel (XLSX)"], ["html", "HTML для руководства"], ["csv", "CSV"]];
@@ -100,7 +102,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
   const doc = data?.doc ?? null;
   const hosts = doc?.metrics.find((m) => m.key === "hosts");
   const cols = (data?.columns ?? []).slice(0, 7);
-  const showScope = options.scope !== false;
+  const showScope = options.scope !== false && !options.zone;
+  const zoneCats = (params.categories as string[] | undefined) ?? [];
   const days = Number(params.active_days ?? activityDays);
   return (
     <Modal side wide title={title} lede={lede} onClose={onClose}
@@ -152,6 +155,18 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
               <label className="check"><input type="checkbox" checked={!!params.online_only} onChange={(e) => setExtra({ ...extra, online_only: e.target.checked })} />Только в сети сейчас (флаг KSC «видимо в сети»)</label>
               <p className="muted small">«Связь за {days} сут» и «в сети сейчас» — разные условия: устройство могло выйти на связь вчера и быть выключенным сейчас.</p>
             </>}
+            {options.zone && <>
+              <fieldset className="qr-sections"><legend>Что включить в отчёт</legend>{ZONE_CATEGORIES.map(([k, l]) => (
+                <label key={k} className="check"><input type="checkbox" checked={zoneCats.includes(k)} disabled={zoneCats.length === 1 && zoneCats.includes(k)}
+                  onChange={(e) => setExtra({ ...extra, categories: e.target.checked ? [...zoneCats, k] : zoneCats.filter((x) => x !== k) })} />{l}</label>))}</fieldset>
+              <div className="field">Подробность<Segmented label="Подробность отчёта" value={String(params.level ?? "management")} onChange={(v) => setExtra({ ...extra, level: v })} options={[["management", "Для руководства"], ["technical", "Для администраторов"]]} /></div>
+              <label className="field">Критичность уязвимостей<select value={String(params.severity ?? "")} onChange={(e) => setExtra({ ...extra, severity: e.target.value })}><option value="">Все уровни</option><option value="high">Высокие и критические</option><option value="critical">Только критические</option></select></label>
+              <label className="check"><input type="checkbox" checked={!!params.include_inactive} onChange={(e) => setExtra({ ...extra, include_inactive: e.target.checked })} />Включить давно не подключавшиеся к KSC</label>
+              <label className="check"><input type="checkbox" checked={!!params.online_only} onChange={(e) => setExtra({ ...extra, online_only: e.target.checked })} />Только в сети сейчас</label>
+              <label className="check"><input type="checkbox" checked={!!params.show_excluded} onChange={(e) => setExtra({ ...extra, show_excluded: e.target.checked })} />Перечислить исключённые обнаружения с обоснованиями</label>
+              <p className="muted small">Ложные срабатывания не входят в показатели; их число и правила исключения указываются в конце отчёта. Принятые риски учитываются отдельно.</p>
+            </>}
+            {options.zoneFilter && <label className="field">Зона ответственности<ZoneSelect className="" value={String(params.zone ?? "")} onChange={(v) => setExtra({ ...extra, zone: v })} /></label>}
             {options.sections && <fieldset className="qr-sections"><legend>Что включить</legend>{SECTIONS.map(([k, l]) => {
               const cur = (params.sections as string[] | undefined) ?? SECTIONS.map(([x]) => x);
               return <label key={k} className="check"><input type="checkbox" checked={cur.includes(k)} disabled={cur.length === 1 && cur.includes(k)}

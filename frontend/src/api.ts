@@ -44,7 +44,7 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns";
+export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns";
 export interface QuickCol { key: string; title: string; type: string }
 export interface QuickMetric { key: string; label: string; value: number | string; hint: string; tone: string }
 /** Документ быстрого отчёта без строк: один источник правды для просмотра, XLSX, HTML и CSV. */
@@ -100,6 +100,45 @@ export interface CertPreview { subject: string; issuer: string; serial: string; 
 export interface AccessRuleT { id: string; connection_id: string | null; connection: string; group_dn: string; role: User["role"]; all_sources: boolean; source_ids: string[]; note: string | null; created_at: string }
 export interface LdapDiag extends DiagResult { server_certificate?: { subject: string; issuer: string; not_after: string; san: string[] }; test_user?: { display_name: string; username: string; email?: string | null; groups: string[]; role: string | null; sources?: string; rules?: string[]; disabled?: boolean } }
 
+// ---- зоны ответственности, рассылки, обработка уязвимостей
+export type ZoneRuleKind = "net" | "exclude" | "group" | "name";
+export type ContactRole = "responsible" | "cc" | "group";
+export interface ZoneRuleT { id?: string; kind: ZoneRuleKind; kind_ru?: string; value: string; note: string }
+export interface ZoneContact { id?: string; name: string; position: string; email: string; role: ContactRole; enabled: boolean }
+export interface ZoneFull { id: string; name: string; description: string; purpose: string; priority: number; activity_days: number | null; enabled: boolean; updated_at?: string; updated_by?: string | null; rules: ZoneRuleT[]; contacts: ZoneContact[] }
+export interface ZoneBrief { id: string; name: string; description: string; purpose: string; priority: number; enabled: boolean; rules: number; contacts: number; updated_at: string }
+export type HostState = "critical" | "vulns" | "protection" | "potential" | "ok";
+export interface ZoneStats { total: number; in_scope: number; inactive: number; active: number; online: number; offline: number; online_unknown: number; critical: number; other_vulns: number; any_vulns: number; protection: number; potential: number; ok: number;
+  state: Record<HostState, number>; severity: { critical: number; high: number; warning: number; none: number }; vulns: { critical: number; high: number; warning: number }; problems: { key: ProblemKey; title: string; hosts: number }[]; excluded: number; accepted: number; review: number }
+export interface ZoneOverviewRow { id: string; name: string; description: string; purpose: string; enabled: boolean; stats: Pick<ZoneStats, "total" | "active" | "online" | "critical" | "other_vulns" | "protection" | "ok" | "state" | "inactive">; problem_hosts: number; conflicts: number; responsible: string[]; contacts_n: number; activity_days: number }
+export interface ZoneOverview { items: ZoneOverviewRow[]; totals: { zones: number; hosts: number; unique_hosts: number; unassigned: number; conflicts: number }; sources: string[]; activity_days: number; notes: string[]; fetched_at: string | null }
+export interface HostCounts { critical: number; high: number; warning: number; total: number; worst: string; accepted: number; excluded: number; review: number }
+export interface ZoneHost { source_id: string; source: string; host_id: number; name: string; fqdn: string; ip: string; os: string; group: string; last_connected: string | null; days_since_connection: number | null; active: boolean; online: boolean | null;
+  max_sev: "" | "critical" | "high" | "warning"; max_sev_ru: string; max_sev_basis: "" | "ksc" | "ext"; ksc: HostCounts; ext: { total: number; critical: number; high: number; warning: number; kev: number; confirmed: number; accepted: number; excluded: number };
+  problems: { key: ProblemKey; title: string }[]; state: HostState; summary: string; zones: string[]; zone_conflict: boolean; zone_pinned: boolean }
+export interface ZoneInfo { id: string; name: string; description: string; purpose: string; priority: number; enabled: boolean; activity_days: number | null; contacts: ZoneContact[] }
+export interface ZoneDash { zone: ZoneInfo; stats: ZoneStats & { bars: unknown }; activity_days: number; total: number; offset: number; limit: number; items: ZoneHost[]; sources: { id: string; name: string }[]; notes: string[]; fetched_at: string | null; conflicts: number; ext_included: boolean }
+export interface TriageDecision { id: string; scope: "host" | "product" | "zone"; scope_ru: string; status: TriageStatus; stored_status: TriageStatus; status_ru: string; stored_status_ru: string; reason: string; reason_ru: string; comment: string; by: string; at: string | null;
+  review_until: string | null; recheck: boolean; recheck_reason: string; expired: boolean; version: string; product: string }
+export type TriageStatus = "review" | "confirmed" | "false_positive" | "obsolete" | "risk_accepted";
+export interface ZoneVulnRow { severity: "critical" | "high" | "warning"; severity_ru: string; kla_id?: string; cve?: string; cve_list?: string[]; vuln_key?: string; ids?: string; title?: string; product?: string; program?: string; installed_version: string; fix?: string; detected?: string | null;
+  url?: string; status?: string; status_ru?: string; basis?: string; kev?: boolean; sources?: string; triage: TriageDecision | null; host_id: number; descr_id?: number }
+export interface ZoneHostCard extends ZoneHost { zones_info: { id: string; name: string; contacts: ZoneContact[] }[]; candidates: { id: string; name: string }[]; zone_via: string; protection: { key: ProblemKey; title: string; detail: string }[];
+  av: { product: string | null; build: string | null; state: string | null; bases: string | null; rtp: string; last_full_scan: string | null; agent: string; ksc_status: string | null };
+  rows: { ksc: Record<"current" | "accepted" | "excluded", ZoneVulnRow[]>; ext: Record<"current" | "accepted" | "excluded", ZoneVulnRow[]> } }
+export interface TriageRow { id: string; source_id: string; scope: "host" | "product" | "zone"; scope_ru: string; host_id: number | null; host_name: string; zone_id: string | null; vuln_key: string; origin: "ksc" | "ext"; product: string; version: string; status: TriageStatus; stored_status: TriageStatus;
+  status_ru: string; stored_status_ru: string; reason: string; reason_ru: string; comment: string; review_until: string | null; recheck: boolean; recheck_reason: string; created_by: string; created_at: string; updated_at: string }
+export interface TriageMeta { statuses: { key: TriageStatus; title: string }[]; reasons: { key: string; title: string }[]; scopes: { key: string; title: string }[]; default_review_days: number; can_wide: boolean; can_set: boolean }
+export interface TriageBody { source_id: string; vuln_key: string; origin: "ksc" | "ext"; scope: "host" | "product" | "zone"; host_id?: number; host_name?: string; zone_id?: string; product?: string; version?: string; status: TriageStatus; reason?: string; comment?: string; review_until?: string | null }
+export interface CsvPlan { mode: string; fingerprint: string; ok: boolean; summary: Record<string, number | string>; zones: { id: string; name: string; action: "create" | "update" | "unchanged" | "skip" | "delete"; rules_add: string[]; rules_remove: string[]; contacts_add: string[]; contacts_update: string[]; contacts_remove: string[]; fields: string[]; lines: number[] }[];
+  errors: { line: number; column: string; message: string }[]; warnings: { line: number; column: string; message: string }[]; overlaps: { a: string; b: string; example: string; resolved: boolean }[] }
+export interface Conflict { source_id: string; source: string; host_id: number; name: string; ip: string; via: string; conflict: boolean; zones: { id: string; name: string; chosen: boolean }[] }
+export interface Composition { total: number; active: number; online: number; shared: number; all_hosts: number; items: { source: string; host_id: number; name: string; ip: string; os: string; group: string; active: boolean; online: boolean | null; also_in: string[]; assigned_here: boolean; via: string }[]; rules: { kind: string; value: string }[] }
+export interface Schedule { id: string; name: string; enabled: boolean; zone_ids: string[]; zone_names: string[]; all_zones: boolean; include_unassigned: boolean; sections: string[]; sections_ru: string[]; filters: Record<string, unknown>; level: "management" | "technical"; level_ru: string;
+  frequency: "daily" | "weekly" | "monthly"; weekday: number; monthday: number; at_time: string; tz: string; when: string; attach_html: boolean; attach_xlsx: boolean; skip_empty: boolean; next_run_at: string | null; last_run_at: string | null; last_period: string | null; created_by: string | null; created_at: string }
+export interface OutboxRow { id: string; schedule_id: string | null; zone_id: string | null; zone_name: string; period_key: string; kind: "schedule" | "manual" | "test"; status: "queued" | "sending" | "accepted" | "failed" | "skipped"; subject: string; to: string[]; cc: string[];
+  stats: Record<string, number>; attempts: number; last_error: string | null; refused: { address: string; reply: string }[]; created_at: string; next_attempt_at: string | null; sent_at: string | null }
+
 let csrf = "";
 let sourceId: string | null = null;
 let onUnauthorized: (() => void) | null = null;
@@ -128,6 +167,16 @@ async function req<T>(method: string, path: string, body?: unknown, opts: { raw?
   return r.json() as Promise<T>;
 }
 const qs = (o: Record<string, string | number | boolean | undefined | null>) => { const p = new URLSearchParams(); for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== null && v !== "") p.set(k, String(v)); const s = p.toString(); return s ? `?${s}` : ""; };
+
+async function rawPost<T>(path: string, data: ArrayBuffer): Promise<T> {
+  const r = await fetch(`/api/v1${path}`, { method: "POST", headers: { "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream", ...(sourceId ? { "X-Source-Id": sourceId } : {}) }, body: data, credentials: "same-origin" });
+  if (!r.ok) {
+    let msg = `Ошибка ${r.status}`; let detail: unknown = null;
+    try { const d = await r.json(); detail = d.detail; if (typeof detail === "string") msg = detail; else if (detail && typeof detail === "object") msg = (detail as { message?: string }).message ?? msg; } catch { /* текст по умолчанию */ }
+    const e = new ApiError(r.status, msg); (e as ApiError & { detail?: unknown }).detail = detail; throw e;
+  }
+  return r.json() as Promise<T>;
+}
 
 export const api = {
   login: (login: string, password: string, domain = "") => req<Me | { totp_required: true; challenge: string }>("POST", "/auth/login", { login, password, domain }),
@@ -231,7 +280,48 @@ export const api = {
     saveTemplate: (name: string, kind: Job["kind"], params: ReportParams | AuditParams, shared = true) => req<Template>("POST", "/report-templates", { name, kind, params, shared }),
     deleteTemplate: (id: string) => req<void>("DELETE", `/report-templates/${id}`),
   },
+  zones: {
+    overview: (p: Record<string, string | number | boolean | undefined | null>) => req<ZoneOverview>("GET", `/zones${qs(p)}`),
+    options: () => req<{ items: { id: string; name: string }[] }>("GET", "/zones/options/list"),
+    dashboard: (id: string, p: Record<string, string | number | boolean | undefined | null>) => req<ZoneDash>("GET", `/zones/${id}${qs(p)}`),
+    host: (zid: string, sourceId: string, hostId: number) => req<ZoneHostCard>("GET", `/zones/${zid}/hosts/${sourceId}/${hostId}`),
+    ofHost: (sourceId: string, hostId: number) => req<{ zones: { id: string; name: string; responsible: string[] }[]; candidates: { id: string; name: string }[]; conflict: boolean; pinned?: boolean; via?: string }>("GET", `/zones/of-host/${sourceId}/${hostId}`),
+  },
+  triage: {
+    meta: () => req<TriageMeta>("GET", "/triage/meta"),
+    set: (b: TriageBody) => req<TriageRow>("POST", "/triage", b),
+    bulk: (items: TriageBody[]) => req<{ count: number }>("POST", "/triage/bulk", { items }),
+    list: (p: Record<string, string | number | undefined | null>) => req<Page<TriageRow> & { counts: Record<string, number> }>("GET", `/triage${qs(p)}`),
+    history: (id: string) => req<{ decision: TriageRow; events: { at: string; actor: string; action: string; from: string; to: string; comment: string }[] }>("GET", `/triage/${id}/history`),
+  },
   admin: {
+    zones: {
+      list: () => req<{ items: ZoneBrief[] }>("GET", "/admin/zones"),
+      get: (id: string) => req<ZoneFull>("GET", `/admin/zones/${id}`),
+      create: (b: Omit<ZoneFull, "id">) => req<ZoneFull>("POST", "/admin/zones", b),
+      update: (id: string, b: Omit<ZoneFull, "id">) => req<ZoneFull>("PUT", `/admin/zones/${id}`, b),
+      remove: (id: string) => req<void>("DELETE", `/admin/zones/${id}`),
+      composition: (b: { zone_id?: string | null; name: string; priority: number; rules: ZoneRuleT[] }) => req<Composition>("POST", "/admin/zones/preview/composition", b),
+      conflicts: () => req<{ items: Conflict[]; total: number; by_via: Record<string, number> }>("GET", "/admin/zones/overview/conflicts"),
+      pin: (b: { source_id: string; host_id: number; host_name: string; zone_id: string }) => req<{ ok: boolean }>("POST", "/admin/zones/pins", b),
+      unpin: (sourceId: string, hostId: number) => req<void>("DELETE", `/admin/zones/pins/${sourceId}/${hostId}`),
+      csvUrl: (what: "sample" | "export") => `/api/v1/admin/zones/csv/${what}`,
+      csvPreview: (data: ArrayBuffer, mode: string) => rawPost<CsvPlan>(`/admin/zones/csv/preview${qs({ mode })}`, data),
+      csvApply: (data: ArrayBuffer, mode: string, expect: string, confirm: boolean) => rawPost<{ done: Record<string, number>; summary: Record<string, number | string> }>(`/admin/zones/csv/apply${qs({ mode, expect, confirm })}`, data),
+    },
+    mail: {
+      summary: () => req<{ smtp_ready: boolean; smtp_enabled: boolean; counts_30d: Record<string, number>; next_run_at: string | null }>("GET", "/admin/mail/summary"),
+      check: () => req<{ ok: boolean; error: string; transient: boolean }>("POST", "/admin/mail/check"),
+      test: (to: string) => req<{ ok: boolean; error: string; refused: Record<string, string>; note: string }>("POST", "/admin/mail/test", { to }),
+      schedules: () => req<{ items: Schedule[]; categories: { key: string; title: string }[] }>("GET", "/admin/mail/schedules"),
+      createSchedule: (b: object) => req<Schedule>("POST", "/admin/mail/schedules", b),
+      updateSchedule: (id: string, b: object) => req<Schedule>("PUT", `/admin/mail/schedules/${id}`, b),
+      toggleSchedule: (id: string, enabled: boolean) => req<Schedule>("POST", `/admin/mail/schedules/${id}/toggle${qs({ enabled })}`),
+      deleteSchedule: (id: string) => req<void>("DELETE", `/admin/mail/schedules/${id}`),
+      runSchedule: (id: string, zone_ids: string[] = []) => req<{ queued: number; skipped: number; duplicates: number }>("POST", `/admin/mail/schedules/${id}/run`, { zone_ids }),
+      outbox: (p: Record<string, string | number | undefined | null>) => req<{ items: OutboxRow[]; total: number; counts: Record<string, number> }>("GET", `/admin/mail/outbox${qs(p)}`),
+      retry: (id: string) => req<OutboxRow>("POST", `/admin/mail/outbox/${id}/retry`),
+    },
     users: (q = "") => req<{ items: AdminUser[] }>("GET", `/admin/users${qs({ q })}`),
     createUser: (body: Partial<AdminUser> & { password?: string }) => req<AdminUser>("POST", "/admin/users", body),
     patchUser: (id: string, body: Partial<AdminUser> & { password?: string }) => req<AdminUser>("PATCH", `/admin/users/${id}`, body),

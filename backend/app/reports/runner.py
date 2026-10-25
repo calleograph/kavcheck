@@ -163,6 +163,15 @@ class Runner:
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
                         progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"], sm=self._sm, source_id=src.id, org=org)
         try:
+            zone = (job.params or {}).get("zone") or ""
+            if zone:
+                from ..services.sources import SourceRegistry  # noqa: PLC0415
+                from ..zones.reporter import ZoneData  # noqa: PLC0415
+
+                if getattr(self, "_zones", None) is None:
+                    self._zones = ZoneData(self._sm, self._cfg, self._svc, SourceRegistry(self._cfg, self._svc))
+                async with self._sm() as db:
+                    ctx.zone_hosts, ctx.zone_name = await self._zones.host_ids(db, src, zone), await self._zones.zone_name(db, zone)
             doc = await quick.build(job.kind, client, {k: v for k, v in (job.params or {}).items() if not k.startswith("_")}, ctx)
             if job.title:
                 doc["title"] = job.title if job.title != quick.KIND_TITLE.get(job.kind) else doc["title"]

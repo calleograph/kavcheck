@@ -18,6 +18,7 @@ const VulnHostPage = lazy(() => import("./pages/VulnsPage").then((m) => ({ defau
 const ProductPage = lazy(() => import("./pages/ProductPage"));
 const EventsPage = lazy(() => import("./pages/EventsPage"));
 const ProtectionPage = lazy(() => import("./pages/ProtectionPage"));
+const ZonesPage = lazy(() => import("./pages/ZonesPage"));
 const ReportsPage = lazy(() => import("./pages/ReportsPage"));
 import { fmt, versionLabel } from "./util";
 
@@ -33,11 +34,12 @@ const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/vdb", label: "База уязвимостей", icon: "vault" },
   { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" },
   { to: "/events", label: "События безопасности", icon: "bell" },
+  { to: "/zones", label: "Зоны ответственности", icon: "grid" },
   { to: "/reports", label: "Отчёты", icon: "file" },
 ];
 export const ADMIN_TABS: { id: string; label: string }[] = [
   { id: "system", label: "Состояние системы" }, { id: "sources", label: "Источники KSC" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" },
-  { id: "general", label: "Общие настройки" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
+  { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
 ];
 
 type Theme = "system" | "light" | "dark";
@@ -170,7 +172,7 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
               {adminOpen && ADMIN_TABS.map((t) => {
                 const active = inAdmin && tab === t.id;
                 return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>
-                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", catalog: "package", vdb: "vault", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
+                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", zones: "grid", mail: "mail", org: "file", catalog: "package", vdb: "vault", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
               })}
             </>}
           </div>
@@ -211,7 +213,7 @@ export default function App() {
   useEffect(() => { if (me) void reloadSources(); }, [me, reloadSources]);
   useEffect(() => { setUnauthorizedHandler(() => { setCsrf(""); setMe(null); }); return () => setUnauthorizedHandler(null); }, []);
   useEffect(() => {
-    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
+    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
     const t = me ? (titles.find(([p]) => pathname.startsWith(p))?.[1] ?? "Главная") : "Вход";
     document.title = `${t} — ${me?.site_name || "KAV Checker"}`;
   }, [pathname, me]);
@@ -240,6 +242,8 @@ export default function App() {
           <Route path="/vdb" element={<VdbPage key={currentId} ctx={ctx} />} />
           <Route path="/protection" element={<ProtectionPage key={currentId} ctx={ctx} />} />
           <Route path="/events" element={<EventsPage key={currentId} ctx={ctx} />} />
+          <Route path="/zones" element={<ZonesPage key={currentId} ctx={ctx} />} />
+          <Route path="/zones/:zid" element={<ZonesPage key={currentId} ctx={ctx} />} />
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />
           <Route path="/reports/:jobId" element={<ReportsPage ctx={ctx} />} />
           <Route path="/security" element={<SecurityPage me={me} onLogout={logout} />} />

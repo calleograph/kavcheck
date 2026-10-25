@@ -9,7 +9,7 @@ while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; shift 2 ;; --yes|-y) Y
 load_env; validate_project_name; require_vars DATA_ROOT
 take_lock
 PREV_HEAD="$(state_get previous_head)"; PREV_TAG="$(state_get previous_tag)"; PREV_VER="$(state_get previous_version)"; CUR_VER="$(version_file_read)"
-PREV_REPO="$(state_get previous_repo)"; PREV_REPO="${PREV_REPO:-$IMAGE_REPO}"
+PREV_REPO="$(state_get previous_repo)"; PREV_REPO="${PREV_REPO:-$IMAGE_REPO}"; CODE_HEAD="$(state_get previous_start)"; CODE_HEAD="${CODE_HEAD:-$PREV_HEAD}"
 [ -n "$PREV_HEAD" ] && [ -n "$PREV_TAG" ] || die "Нет сведений о предыдущей версии (обновление ещё не выполнялось)"
 log "Откат: $CUR_VER → ${PREV_VER:-?} (образы ${PREV_REPO}:${PREV_TAG})"
 for svc in backend web; do docker image inspect "${PREV_REPO}-${svc}:${PREV_TAG}" >/dev/null 2>&1 || die "Образ ${PREV_REPO}-${svc}:${PREV_TAG} не найден — откат без пересборки невозможен; обновитесь до исправленной версии"; done
@@ -20,7 +20,7 @@ if [ "$SKIP_SCHEMA" -eq 0 ] && [ -n "$DBREV" ] && ! git -C "$REPO_ROOT" grep -q 
   history_append rollback failed "$CUR_VER" "$PREV_VER" "schema"; exit 3
 fi
 if [ "$YES" -ne 1 ]; then read -r -p "Откатить код и образы? [y/N] " a; [ "$a" = y ] || die "Отменено."; fi
-git -C "$REPO_ROOT" checkout -q --detach "$PREV_HEAD" || die "git checkout не удался"
+git -C "$REPO_ROOT" checkout -q --detach "$CODE_HEAD" || die "git checkout не удался"
 export IMAGE_TAG="$PREV_TAG" IMAGE_REPO="$PREV_REPO"
 env_put IMAGE_TAG "$PREV_TAG"; env_put IMAGE_REPO "$PREV_REPO"
 dc_base; run_guarded "запуск сервисов" "${UPD_TIMEOUT_UP:-300}" "${UPD_TIMEOUT_UP:-300}" "${DCB[@]}" up -d || die "docker compose up не выполнен"

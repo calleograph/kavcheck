@@ -364,12 +364,12 @@ def _stat_for(hosts: list[dict], all_hosts_n: int) -> dict:
     return D.stats(act, total_all=all_hosts_n, hidden=all_hosts_n - len(act))
 
 
-async def _compute(request: Request, su: SessionUser, db: AsyncSession, *, ext: bool, refresh: bool = False, bases_days: int = 3, scan_days: int = 30) -> tuple[list[dict], list[dict], list[KscSource], dict]:
+async def _compute(request: Request, su: SessionUser, db: AsyncSession, *, ext: bool, refresh: bool = False, bases_days: int = 3, scan_days: int = 30, zone_ids: list[str] | None = None) -> tuple[list[dict], list[dict], list[KscSource], dict]:
     cats = ["ksc_vulns", "no_av", "rtp_off", "bases_old", "infected", "license", "scan_old", "reboot"] + (["ext_vulns"] if ext else [])
     params = {"categories": cats, "include_inactive": True, "bases_days": bases_days, "scan_days": scan_days}
     zdata = zd(request)
     try:
-        parts, srcs = await zdata.parts(db, params=params, allowed=lambda s: su.can_use_source(s.id), refresh=refresh)
+        parts, srcs = await zdata.parts(db, params=params, allowed=lambda s: su.can_use_source(s.id), refresh=refresh, zone_ids=zone_ids, ext_cap=4000)
     except KscError as exc:
         raise _ksc(exc) from None
     hosts = [h for p in parts for h in p["hosts"]]
@@ -448,7 +448,7 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
     if info is None:
         raise HTTPException(status_code=404, detail="Зона не найдена")
     general = await request.app.state.settings_svc.get(db, "general")
-    hosts, parts, srcs, _ = await _compute(request, su, db, ext=ext, refresh=refresh, bases_days=bases_days, scan_days=scan_days)
+    hosts, parts, srcs, _ = await _compute(request, su, db, ext=ext, refresh=refresh, bases_days=bases_days, scan_days=scan_days, zone_ids=[zid])
     mine = [h for h in hosts if _in_zone(h, zid) and (not source_id or h["source_id"] == source_id)]
     days = info["activity_days"] or general.activity_days
     pool = [h for h in mine if h["active"]]
@@ -484,7 +484,7 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
 @router.get("/{zid}/hosts/{source_id}/{host_id}")
 async def host_card(zid: str, source_id: str, host_id: int, request: Request, ext: bool = True, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     """Карточка компьютера: уязвимости KSC и потенциальные совпадения (с решениями), принятые и исключённые обнаружения, проблемы защиты, зона и ответственные."""
-    hosts, _, _, _ = await _compute(request, su, db, ext=ext)
+    hosts, _, _, _ = await _compute(request, su, db, ext=ext, zone_ids=[zid])
     h = next((x for x in hosts if x["source_id"] == source_id and x["host_id"] == host_id), None)
     if h is None:
         raise HTTPException(status_code=404, detail="Компьютер не найден среди доступных источников")
@@ -517,12 +517,13 @@ async def of_host(source_id: uuid.UUID, host_id: int, request: Request, su: Sess
 
 
 async def zone_host_ids(request: Request, db: AsyncSession, src: KscSource, zone: str) -> set[int]:
-    """Идентификаторы компьютеров источника, принадлежащих зоне (или «none» — без ответственного): общий фильтр «Зона» для разделов приложения."""
+    """Идентификаторы компьютеров источника, принадлежащих зоне (или «none» — без ответственного): общий фильтр «Зона» разделов приложения."""
     if zone != UNASSIGNED:
         _uid(zone)
-    raw = await zd(request).raw(db, src, with_ext=False)
-    recs = ZM.annotate(raw.base, await S.index(db), str(src.id))
-    return {r["host_id"] for r in recs if (not r["zones"] if zone == UNASSIGNED else zone in r["zones"])}
+    try:
+        return await zd(request).host_ids(db, src, zone)
+    except KscError as exc:
+        raise _ksc(exc) from None
 
 
 @router.get("/options/list")

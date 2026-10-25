@@ -190,6 +190,7 @@ class QuickScope(BaseModel):
     online_only: bool = False
     group_contains: MaskText = None
     q: MaskText = None
+    zone: str = Field(default="", max_length=40)          # зона ответственности («none» — без ответственного); пусто — все компьютеры
 
 
 class QuickVulns(QuickScope):

@@ -23,7 +23,7 @@ PROBLEM_RE = "^(|ok|" + "|".join(P.PROBLEMS) + ")$"
 async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_RE), q_: str = Query("", alias="q", max_length=200), group: str = Query("", max_length=200),
                      product: str = Query("", max_length=64), build: str = Query("", max_length=64), bases_days: int = Query(3, ge=1, le=90),
                      scan_days: int = Query(30, ge=1, le=365), sort: str = Query("risk", pattern=r"^(risk|name|last_connected|bases|scan)$"), desc: bool = True,
-                     all_hosts: bool = False, online: bool = False, offset: int = Query(0, ge=0), limit: int = Query(50, ge=0, le=500), refresh: bool = False,
+                     all_hosts: bool = False, online: bool = False, zone: str = Query("", max_length=40), offset: int = Query(0, ge=0), limit: int = Query(50, ge=0, le=500), refresh: bool = False,
                      su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
     """Сводка (проблемы, статус KSC, версии) по активным компьютерам и страница компьютеров по фильтру. limit=0 — только сводка.
     online=true — только устройства, которые KSC сейчас видит в сети (флаг «видимо»); применяется до подсчёта, поэтому числа и списки совпадают.
@@ -42,6 +42,11 @@ async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_
         base, at = await request.app.state.cache.get((str(src.id), "protection", rcfg.exclude_slave_servers), request.app.state.settings.cache_ttl_seconds, make, refresh=refresh)
     except KscError as exc:
         raise _ksc(exc) from None
+    if zone:
+        from .zones import zone_host_ids  # noqa: PLC0415
+
+        zids = await zone_host_ids(request, db, src, zone)
+        base = [h for h in base if h["host_id"] in zids]
     now = datetime.now(timezone.utc)
     hosts, sc = P.scope(base, now=now, activity_days=general.activity_days, include_inactive=all_hosts, online_only=online, bases_days=bases_days, scan_days=scan_days)
     hidden, offline, online_data = sc["hidden"], sc["offline"], sc["online_data"]

@@ -22,7 +22,7 @@ def _ksc(exc: KscError) -> HTTPException:
 
 @router.get("")
 async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200), group: str = Query("", max_length=200), os: str = Query("", max_length=200),
-                activity: str = Query("active", pattern=r"^(all|active|inactive)$"), days: int | None = Query(None, ge=1, le=3650), sort: str = "name", desc: bool = False,
+                activity: str = Query("active", pattern=r"^(all|active|inactive)$"), days: int | None = Query(None, ge=1, le=3650), sort: str = "name", desc: bool = False, zone: str = Query("", max_length=40),
                 offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
     """Компьютеры источника: имя, IP, ОС, группа, последнее подключение к KSC и статус активности.
     По умолчанию (activity=active) — только подключавшиеся к KSC за порог глобального фильтра; hidden — сколько при этом скрыто."""
@@ -32,12 +32,21 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
     active_days = days or general.activity_days
     where, params = H.hosts_where(qtext=q_, group_contains=group, os_contains=os, active_days=active_days if activity != "all" else None, inactive_only=activity == "inactive",
                                   exclude_slaves=rcfg.exclude_slave_servers)
+    zsql = ""
+    if zone:        # фильтр «Зона ответственности»: компьютеры зоны по сетям, группам и закреплениям
+        from .zones import zone_host_ids  # noqa: PLC0415
+
+        zids = sorted(await zone_host_ids(request, db, src, zone))
+        if len(zids) > 30_000:
+            raise HTTPException(status_code=422, detail="В зоне больше 30 000 компьютеров: сузьте зону или используйте отчёт")
+        zsql = f" AND h.nId IN ({q.ids_list(zids)})" if zids else " AND 1 = 0"
     try:
-        rows = await client.run(q.HOSTS_PAGE.format(where=where, order=H.hosts_order(sort, desc)), {**params, "offset": offset, "limit": limit}, max_rows=limit)
-        total = int((await client.run(q.HOSTS_COUNT.format(where=where), params, max_rows=1))[0]["n"])
+        rows = await client.run(q.HOSTS_PAGE.format(where=where + zsql, order=H.hosts_order(sort, desc)), {**params, "offset": offset, "limit": limit}, max_rows=limit)
+        total = int((await client.run(q.HOSTS_COUNT.format(where=where + zsql), params, max_rows=1))[0]["n"])
         hidden = 0
         if activity == "active":
             w_all, p_all = H.hosts_where(qtext=q_, group_contains=group, os_contains=os, exclude_slaves=rcfg.exclude_slave_servers)
+            w_all += zsql
             hidden = int((await client.run(q.HOSTS_COUNT.format(where=w_all), p_all, max_rows=1))[0]["n"]) - total
     except KscError as exc:
         raise _ksc(exc) from None

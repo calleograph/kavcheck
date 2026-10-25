@@ -13,6 +13,7 @@ class FakeSMTP:
         self.reject: set[str] = set()    # адреса, которые сервер отклоняет (550)
         self.user, self.password = user, password
         self.connections = 0
+        self._writers: list[asyncio.StreamWriter] = []
         self.server: asyncio.AbstractServer | None = None
         self.port = 0
 
@@ -24,10 +25,13 @@ class FakeSMTP:
     async def stop(self) -> None:
         if self.server:
             self.server.close()
-            await self.server.wait_closed()
+            for w in self._writers:
+                w.close()
+            await asyncio.wait_for(self.server.wait_closed(), 5)
 
     async def _handle(self, r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
         self.connections += 1
+        self._writers.append(w)
         send = lambda line: (w.write((line + "\r\n").encode()), None)[1]  # noqa: E731
         send("220 fake ESMTP")
         if self.mode == "drop":

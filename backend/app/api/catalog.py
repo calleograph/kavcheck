@@ -86,7 +86,7 @@ async def search(q: str = Query("", max_length=200), source_ids: str = Query("",
 
 
 @router.get("/catalog/products/{key:path}/hosts")
-async def product_hosts(key: str, request: Request, version: str = Query("", max_length=200), branch: str | None = Query(None, max_length=60), all_hosts: bool = False,
+async def product_hosts(key: str, request: Request, version: str = Query("", max_length=200), branch: str | None = Query(None, max_length=60), all_hosts: bool = False, zone: str = Query("", max_length=40),
                         offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source),
                         db: AsyncSession = Depends(get_db)):
     """Компьютеры с продуктом (всеми версиями, одной версией или веткой) — живой запрос к KSC по записям реестра продукта."""
@@ -112,6 +112,11 @@ async def product_hosts(key: str, request: Request, version: str = Query("", max
     # список собирается одним запросом к KSC и кэшируется: порции бесконечной прокрутки берутся из кэша, а не повторяют запрос
     (items, summ), _at = await request.app.state.cache.get((str(src.id), "product_hosts", key, version, branch, all_hosts, p.built_at.isoformat() if p.built_at else ""),
                                                            request.app.state.settings.cache_ttl_seconds, make)
+    if zone:
+        from .zones import zone_host_ids  # noqa: PLC0415
+
+        zids = await zone_host_ids(request, db, src, zone)
+        items = [h for h in items if h["host_id"] in zids]
     return {"items": items[offset:offset + limit], "total": len(items), "offset": offset, "limit": limit, "hidden_hosts": summ["hidden_inactive_hosts"],
             "fetched_at": summ["fetched_at"]}
 

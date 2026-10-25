@@ -9,6 +9,7 @@ import asyncio
 
 from sqlalchemy import select
 
+from ..ksc import queries as q
 from ..ksc.driver import KscError, Session, SourceClient
 from ..models import VdbFinding, VdbSource, VdbVuln
 from ..vdb import match as M
@@ -207,3 +208,46 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                 {"id": "vulns", "title": "Уязвимости", "columns": [col("vuln_key", "Уязвимость", "mono"), col("ids", "Идентификаторы", "mono"), col("title", "Название"), col("severity_ru", "Опасность", "sev"), col("score", "CVSS", "num"),
                                                                     col("kev", "Эксплуатация (CISA KEV)"), col("hosts", "Компьютеров", "num"), col("installs", "Установок", "num"), col("status_ru", "Лучший статус"),
                                                                     col("sources", "Источники"), col("fix", "Исправление")], "rows": vuln_rows}]}
+
+
+async def ext_rows_for_hosts(client: SourceClient, ctx: Ctx, host_ids: list[int], *, statuses: tuple[str, ...] = M.AFFECTED, chunk: int = 400) -> tuple[list[dict], list[str]]:
+    """Потенциальные совпадения с внешними базами для выбранных компьютеров (страницы и отчёты по зонам).
+    Не обходит весь источник: сопоставление «уязвимость × версия каталога» строится по известным находкам источника, затем читаются установки только выбранных компьютеров.
+    Строки — как в build_extvulns, без полей компьютера (имя, адрес добавляет вызывающий по host_id). Возвращает (строки, замечания)."""
+    if ctx.sm is None or ctx.source_id is None:
+        return [], ["Внешние базы недоступны: нет доступа к локальной базе уязвимостей"]
+    async with ctx.sm() as db:
+        prods, maps = await M.load_context(db, ctx.source_id)
+        if not prods:
+            return [], ["Каталог программ источника ещё не построен: потенциальные совпадения с внешними базами не рассчитаны"]
+        keys = list((await db.execute(select(VdbFinding.vuln_key).where(VdbFinding.source_id == ctx.source_id))).scalars().all())
+        affs = await M.affected_for(db, keys)
+        matches = [m for m in M.matches_from(M.Matcher(prods, maps), affs) if m.status in statuses]
+        meta = {v.vuln_key: v for i in range(0, len(keys), 400) for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_(keys[i:i + 400])))).scalars().all()}
+        srcs: dict[str, set[str]] = {}
+        for a in affs:
+            srcs.setdefault(a.vuln_key, set()).add(a.source)
+    by_pid: dict[int, list[M.Match]] = {}
+    for m in matches:
+        for pid in m.product_ids:
+            by_pid.setdefault(int(pid), []).append(m)
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for i in range(0, len(host_ids), chunk):
+        if ctx.cancelled():
+            raise RuntimeError("cancelled")
+        for r in await client.run(q.INSTALLS_FOR_HOSTS.format(ids=q.ids_list(host_ids[i:i + chunk])), max_rows=2_000_000):
+            for m in by_pid.get(int(r["product_id"]), ()):
+                k = (r["host_id"], r["product_id"], m.vuln_key)
+                if k in seen:
+                    continue
+                seen.add(k)
+                v = meta.get(m.vuln_key)
+                rank = v.sev_rank if v else 0
+                out.append({"host_id": int(r["host_id"]), "vuln_key": m.vuln_key, "ids": (v.ids_text.upper() if v else m.vuln_key)[:120], "title": (v.title if v else "")[:200],
+                            "severity": "critical" if (v and v.exploited) or rank >= 4 else _level(rank), "rank": rank, "severity_ru": SEV_RU[next((k2 for k2, r2 in SEV_RANK.items() if r2 == rank), "")],
+                            "kev": "да" if v and v.exploited else "", "status": m.status, "status_ru": M.STATUS_RU[m.status], "basis": m.basis, "program": m.product_name, "installed_version": r.get("version") or "",
+                            "sources": ", ".join(sorted(srcs.get(m.vuln_key, set()))), "fix": "есть сведения об исправлении" if v and v.has_fix else "нет сведений", "product_id": int(r["product_id"]),
+                            "score": v.score if v else None, "app_name": r.get("name") or "", "publisher": r.get("publisher") or ""})
+        ctx.progress(f"внешние базы: {len(out)} совпадений, компьютеров проверено {min(i + chunk, len(host_ids))} из {len(host_ids)}")
+    return out, []

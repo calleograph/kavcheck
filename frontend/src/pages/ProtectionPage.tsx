@@ -8,6 +8,7 @@ import { Icon } from "../components/Icons";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum, MaskHint } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
+import { ZoneSelect } from "../components/ZoneBits";
 
 export const PROBLEM_TONE: Record<ProblemKey, "err" | "warn"> = { no_av: "err", rtp_off: "err", infected: "err", license: "err", bases_old: "warn", scan_old: "warn", reboot: "warn" };
 export const PROBLEM_SHORT: Record<ProblemKey, string> = { no_av: "нет антивируса", rtp_off: "защита не работает", infected: "невылеченные объекты", bases_old: "старые базы", license: "лицензия истекла", scan_old: "нет полной проверки", reboot: "нужна перезагрузка" };
@@ -29,11 +30,12 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   const [basesDays, setBasesDays] = useKept("prot.bases", "3"); const [scanDays, setScanDays] = useKept("prot.scan", "30");
   const [q, setQ] = useKept("prot.q", ""); const [group, setGroup] = useKept("prot.group", ""); const [applied, setApplied] = useState({ q, group });
   const [all, setAll] = useKept("prot.all", false); const [sort, setSort] = useKept("prot.sort", "risk"); const [desc, setDesc] = useKept("prot.desc", true);
+  const [zone, setZone] = useKept("prot.zone", sp.get("zone") ?? "");
   const force = useRef(false);
   useEffect(() => { const t = window.setTimeout(() => setApplied({ q, group }), 350); return () => window.clearTimeout(t); }, [q, group]);
-  const list = useInfinite<ProtHost>(`protection:${ctx.current?.id}`, [problem, product, build, basesDays, scanDays, applied, all, onlineOnly, sort, desc], (offset, limit) => {
+  const list = useInfinite<ProtHost>(`protection:${ctx.current?.id}`, [problem, product, build, basesDays, scanDays, applied, all, onlineOnly, sort, desc, zone], (offset, limit) => {
     const refresh = (force.current && offset === 0) || undefined; force.current = false;
-    return api.protection({ problem, product, build, bases_days: basesDays, scan_days: scanDays, ...applied, all_hosts: all, online: onlineOnly, sort, desc, offset, limit, refresh }) as unknown as Promise<Chunk<ProtHost>>;
+    return api.protection({ problem, product, build, bases_days: basesDays, scan_days: scanDays, ...applied, all_hosts: all, online: onlineOnly, zone, sort, desc, offset, limit, refresh }) as unknown as Promise<Chunk<ProtHost>>;
   });
   const data = list.extra as { summary?: ProtSummary | null; unsupported?: string[] } | null;
   const busy = list.loading;
@@ -55,7 +57,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   const pct = (n: number) => (s?.hosts ? Math.round((n / s.hosts) * 100) : 0);
   const pTitle = s?.problems.find((p) => p.key === problem)?.title ?? (problem === "ok" ? "Без проблем" : problem);
   const vTitle = product ? `${shortProduct(s?.versions.find((v) => v.code === product)?.product ?? product)}${build ? ` ${build}` : ""}` : "";
-  const filtered = !!(problem || product || applied.q || applied.group);
+  const filtered = !!(problem || product || applied.q || applied.group || zone);
   if (data?.unsupported) return <section><PageHead title="Состояние защиты" /><div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет объектов состояния защиты ({data.unsupported.join(", ")}). Раздел недоступен для этого источника.</div></div></section>;
   return (
     <section>
@@ -124,6 +126,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер или IP-адрес" aria-label="Компьютер" /><MaskHint /></div>
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа" aria-label="Группа администрирования" />
+        <ZoneSelect value={zone} onChange={setZone} />
         <Segmented label="Показать" value={problem === "ok" ? "ok" : problem ? "problem" : ""} onChange={(v) => setParams({ problem: v === "ok" ? "ok" : "" })}
           options={[["", "Все"], ["ok", "Без проблем"], ...(problem && problem !== "ok" ? [["problem", pTitle] as [string, string]] : [])]} />
         {(product || (problem && problem !== "ok")) && (
@@ -163,8 +166,8 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
       {s && <HiddenNote hidden={s.hidden_hosts} days={s.activity_days} all={all} onToggle={() => setAll(!all)} />}
       <ReportDock label="Выбранные компьютеры" count={sel.count} noun={["компьютер выбран", "компьютера выбрано", "компьютеров выбрано"]} canReport={canReport} onClear={sel.clear} onReport={() => setReport("sel")} />
       {report && <QuickReportPanel kind="quick_protection" title={report === "sel" ? `Состояние защиты: выбранные компьютеры (${sel.count})` : `Состояние защиты: ${problem && problem !== "ok" ? pTitle : "все компьютеры списка"}`}
-        lede={report === "all" ? "Условия берутся из текущих фильтров страницы" : undefined} options={{ scope: true }} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)}
-        params={{ problem, product, build, bases_days: Number(basesDays), scan_days: Number(scanDays), q: applied.q || null, group_contains: applied.group || null, include_inactive: all,
+        lede={report === "all" ? "Условия берутся из текущих фильтров страницы" : undefined} options={{ scope: true, zoneFilter: true }} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)}
+        params={{ problem, product, build, bases_days: Number(basesDays), scan_days: Number(scanDays), q: applied.q || null, group_contains: applied.group || null, include_inactive: all, zone: zone || undefined,
           online_only: onlineOnly && s?.online_data !== false, host_ids: report === "sel" ? sel.ids : [] }} />}
       <p className="muted small mt-sm">Сведения — из последних отчётов Агентов администрирования в KSC; время — UTC, показано в вашем часовом поясе. «Нет антивируса» означает, что KSC не получал от Агента сведений о защитном продукте Kaspersky.</p>
     </section>

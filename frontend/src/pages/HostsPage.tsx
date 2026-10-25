@@ -13,6 +13,7 @@ import { ProblemBadges } from "./ProtectionPage";
 import { Kev, StatusBadge } from "../components/VdbBits";
 import { HostVulns } from "./VulnsPage";
 import { fmt, fmtDate, num } from "../util";
+import { HostZones, ZoneSelect } from "../components/ZoneBits";
 
 const DAYS = [1, 3, 7, 14, 30];
 type Activity = "all" | "active" | "inactive";
@@ -24,11 +25,12 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
   const [days, setDays] = useKept<string>("hosts.days", "");
   const [customDays, setCustomDays] = useKept("hosts.customDays", "");
   const [sort, setSort] = useKept("hosts.sort", "name"); const [desc, setDesc] = useKept("hosts.desc", false);
+  const [zone, setZone] = useKept("hosts.zone", sp.get("zone") ?? "");
   const [applied, setApplied] = useState({ q, group, os });
   useEffect(() => { const t = window.setTimeout(() => setApplied({ q, group, os }), 350); return () => window.clearTimeout(t); }, [q, group, os]);
   const threshold = days === "custom" ? (Number(customDays) || undefined) : days ? Number(days) : undefined;
-  const list = useInfinite<Host>(`hosts:${ctx.current?.id}`, [applied, activity, threshold, sort, desc],
-    (offset, limit) => api.hosts.list({ ...applied, activity, days: threshold, sort, desc, offset, limit }) as unknown as Promise<Chunk<Host>>);
+  const list = useInfinite<Host>(`hosts:${ctx.current?.id}`, [applied, activity, threshold, sort, desc, zone],
+    (offset, limit) => api.hosts.list({ ...applied, activity, days: threshold, sort, desc, zone, offset, limit }) as unknown as Promise<Chunk<Host>>);
   const extra = list.extra as { hidden?: number; activity_days?: number; fetched_at?: string } | null;
   const sel = useRowSel<number>(); const [report, setReport] = useState(false);
   const canReport = ctx.me.user.role !== "viewer";
@@ -49,6 +51,7 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя компьютера или DNS-имя" aria-label="Поиск" /><MaskHint /></div>
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа администрирования" aria-label="Группа" />
         <input className="w-md" value={os} onChange={(e) => setOs(e.target.value)} placeholder="ОС, например *Windows 11*" aria-label="ОС" />
+        <ZoneSelect value={zone} onChange={setZone} />
         <Segmented<Activity> label="Связь с KSC" value={activity} onChange={setActivity} options={[["active", "Активные"], ["inactive", "Без связи"], ["all", "Все"]]} />
         <label className="inline">Порог
           <select value={days} onChange={(e) => setDays(e.target.value)}>
@@ -115,7 +118,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   const st = h.ksc_status;
   return (
     <section>
-      <PageHead title={h.name} back={back} lede={<span className="row tight wrap"><OnlineBadge online={h.online} seen={h.last_visible} /><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}</span>}>
+      <PageHead title={h.name} back={back} lede={<span className="row tight wrap"><OnlineBadge online={h.online} seen={h.last_visible} /><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}<HostZones sourceId={ctx.current?.id} hostId={h.host_id} /></span>}>
         <Fetched at={d.fetched_at} />
         {ctx.me.user.role !== "viewer" && <button className="btn primary" onClick={() => setReport(true)}><Icon name="file" />Подробный отчёт</button>}
       </PageHead>

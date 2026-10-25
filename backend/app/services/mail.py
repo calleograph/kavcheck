@@ -40,12 +40,16 @@ def _connect(cfg: SmtpSettings) -> smtplib.SMTP:
         s: smtplib.SMTP = smtplib.SMTP_SSL(cfg.host, cfg.port, timeout=cfg.timeout_s, context=ctx)
     else:
         s = smtplib.SMTP(cfg.host, cfg.port, timeout=cfg.timeout_s)
-    s.ehlo()
-    if cfg.security == "starttls":
-        s.starttls(context=ctx)
+    try:
         s.ehlo()
-    if cfg.username:
-        s.login(cfg.username, cfg.password)
+        if cfg.security == "starttls":
+            s.starttls(context=ctx)
+            s.ehlo()
+        if cfg.username:
+            s.login(cfg.username, cfg.password)
+    except Exception:
+        s.close()            # соединение не оставляем висеть при ошибке входа или TLS
+        raise
     return s
 
 
@@ -53,6 +57,8 @@ def classify(exc: Exception, password: str = "") -> SendResult:
     msg = _scrub(exc, password)
     if isinstance(exc, smtplib.SMTPAuthenticationError):
         return SendResult(False, False, f"Сервер отклонил имя или пароль ({exc.smtp_code}). Проверьте учётные данные.")
+    if isinstance(exc, UnicodeEncodeError):
+        return SendResult(False, False, "Имя пользователя или пароль содержат символы вне ASCII, которые протокол SMTP AUTH библиотеки не передаёт. Используйте пароль из латинских символов и цифр.")
     if isinstance(exc, smtplib.SMTPRecipientsRefused):
         refused = {a: _scrub(v[1].decode(errors="replace") if isinstance(v[1], bytes) else v[1], password) for a, v in exc.recipients.items()}
         perm = all(500 <= v[0] < 600 for v in exc.recipients.values())

@@ -99,7 +99,7 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
         onClose={() => setSel(null)} />}
 
       <div className="section-gap"><ProductVulns productKey={p.key} canReport={canEdit} onCheck={() => setVdbReport(true)} /></div>
-      {vdbReport && <QuickReportPanel kind="quick_extvulns" title={`Проверка инфраструктуры: ${p.name}`} lede="Известные уязвимости продукта по внешним базам" options={{ scope: true, ext: true }}
+      {vdbReport && <QuickReportPanel kind="quick_extvulns" title={`Проверка инфраструктуры: ${p.name}`} lede="Известные уязвимости продукта по внешним базам" options={{ scope: true, ext: true, zoneFilter: true }}
         params={{ product_keys: [p.key] }} activityDays={ctx.me.activity_days} canReport={canEdit} onClose={() => setVdbReport(false)} />}
       <div className="split even section-gap">
         <div className="card flush">

@@ -144,20 +144,20 @@ async def test_temporary_error_retries_with_same_message_then_succeeds(client, a
 
 
 async def test_permanent_errors_do_not_retry_and_admin_is_alerted(client, app, smtp):
-    srv = FakeSMTP(user="kav", password="верный-пароль")
+    srv = FakeSMTP(user="kav", password="right-pass-1")
     await srv.start()
     try:
         sid, z_srv, z_arm, s = await prepare(client, app, smtp)
-        await smtp_on(client, srv, username="kav", password="неверный")
+        await smtp_on(client, srv, username="kav", password="wrong-pass-1")
         await make_due(app, s["id"])
         m = new_mailer(app)
         await m.tick_schedules()
         await m.process_queue()
         rows = await outbox(app)
         assert {r.status for r in rows} == {"failed"} and all(r.attempts == 1 and "имя или пароль" in r.last_error for r in rows) and not srv.messages
-        assert all("неверный" not in (r.last_error or "") for r in rows)                  # пароль в ошибках не светится
+        assert all("wrong-pass-1" not in (r.last_error or "") for r in rows)                  # пароль в ошибках не светится
         # администратор исправляет пароль и повторяет отправку из интерфейса
-        await smtp_on(client, srv, username="kav", password="верный-пароль")
+        await smtp_on(client, srv, username="kav", password="right-pass-1")
         r = await client.post(f"/api/v1/admin/mail/outbox/{rows[0].id}/retry")
         assert r.status_code == 200 and r.json()["status"] == "queued"
         await new_mailer(app).process_queue()

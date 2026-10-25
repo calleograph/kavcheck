@@ -51,7 +51,7 @@ export default function VdbPage({ ctx }: { ctx: Ctx }) {
 type Report = { title: string; keys: string[] };
 function ReportHost({ ctx, report, onClose }: { ctx: Ctx; report: Report | null; onClose: () => void }) {
   if (!report) return null;
-  return <QuickReportPanel kind="quick_extvulns" title={report.title} lede="Потенциально затронутые компьютеры по внешним базам и каталогу установленного ПО" options={{ scope: true, ext: true }}
+  return <QuickReportPanel kind="quick_extvulns" title={report.title} lede="Потенциально затронутые компьютеры по внешним базам и каталогу установленного ПО" options={{ scope: true, ext: true, zoneFilter: true }}
     params={{ vuln_keys: report.keys }} activityDays={ctx.me.activity_days} canReport={ctx.me.user.role !== "viewer"} onClose={onClose} />;
 }
 

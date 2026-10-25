@@ -1,3 +1,4 @@
+import { ZoneSelect, HostZones } from "../components/ZoneBits";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type HostVuln, type QuickKind, type SavedCheck, type VulnDescr, type VulnHost, type VulnProduct, type VulnSummary } from "../api";
@@ -44,15 +45,15 @@ function HostsView({ ctx }: { ctx: Ctx }) {
   const [q, setQ] = useKept("vulns.q", ""); const [group, setGroup] = useKept("vulns.group", ""); const [product, setProduct] = useKept("vulns.product", ""); const [cve, setCve] = useKept("vulns.cve", "");
   const [applied, setApplied] = useState({ q, group, product, cve });
   const [severity, setSeverity] = useKept<Sev>("vulns.severity", ""); const [patchable, setPatchable] = useKept("vulns.patchable", false);
-  const [all, setAll] = useKept("vulns.all", false);
+  const [all, setAll] = useKept("vulns.all", false); const [zone, setZone] = useKept("vulns.zone", sp.get("zone") ?? "");
   const [sort, setSort] = useKept("vulns.sort", "risk"); const [desc, setDesc] = useKept("vulns.desc", true);
   const sel = useRowSel<number>(); const [report, setReport] = useState<Report | null>(null);
   const canReport = ctx.me.user.role !== "viewer";
   const force = useRef(false);   // «Обновить» перечитывает данные KSC один раз, а не при каждой следующей порции
   useEffect(() => { const t = window.setTimeout(() => setApplied({ q, group, product, cve }), 350); return () => window.clearTimeout(t); }, [q, group, product, cve]);
-  const list = useInfinite<VulnHost>(`vulns-hosts:${sid}`, [applied, productId, productName, severity, patchable, all, sort, desc], (offset, limit) => {
+  const list = useInfinite<VulnHost>(`vulns-hosts:${sid}`, [applied, productId, productName, severity, patchable, all, sort, desc, zone], (offset, limit) => {
     const refresh = (force.current && offset === 0) || undefined; force.current = false;
-    return api.vulns.hosts({ ...applied, product_id: productId, product_name: productName, severity, patchable, all_hosts: all, sort, desc, offset, limit, refresh }) as unknown as Promise<Chunk<VulnHost>>;
+    return api.vulns.hosts({ ...applied, product_id: productId, product_name: productName, severity, patchable, all_hosts: all, zone, sort, desc, offset, limit, refresh }) as unknown as Promise<Chunk<VulnHost>>;
   });
   const extra = list.extra as { summary?: VulnSummary | null; unsupported?: string[] } | null;
   const s = extra?.summary ?? null;
@@ -71,6 +72,7 @@ function HostsView({ ctx }: { ctx: Ctx }) {
         <input className="w-md" value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Программа" aria-label="Программа" />
         <input className="w-md mono-ph" value={cve} onChange={(e) => setCve(e.target.value)} placeholder="CVE-2024-…" aria-label="CVE" />
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа" aria-label="Группа администрирования" />
+        <ZoneSelect value={zone} onChange={setZone} />
         <Segmented<Sev> label="Уровень опасности" value={severity} onChange={setSeverity} options={SEV_OPTS} />
         <label className="check inline-check"><input type="checkbox" className="switch" checked={patchable} onChange={(e) => setPatchable(e.target.checked)} />Есть исправление</label>
         <div className="toolbar-foot">
@@ -275,7 +277,7 @@ export function VulnHostPage({ ctx }: { ctx: Ctx }) {
   const programs = new Set(d.items.map((v) => v.product || v.app_name)).size;
   return (
     <section>
-      <PageHead title={h.name} back={back} lede={<>{h.ip && <span className="mono">{h.ip}</span>} · {h.os} · {h.group} · подключение к KSC {fmt(h.last_connected)}</>}>
+      <PageHead title={h.name} back={back} lede={<>{h.ip && <span className="mono">{h.ip}</span>} · {h.os} · {h.group} · подключение к KSC {fmt(h.last_connected)} · <HostZones sourceId={ctx.current?.id} hostId={h.host_id} /></>}>
         <Fetched at={d.fetched_at} /><Link className="btn" to={`/hosts/${h.host_id}`}><Icon name="monitor" />Карточка компьютера</Link>
         {ctx.me.user.role !== "viewer" && <button className="btn primary" onClick={() => setReport(true)}><Icon name="file" />Подробный отчёт</button>}
       </PageHead>

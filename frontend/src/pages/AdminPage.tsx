@@ -10,6 +10,9 @@ import VdbAdmin from "./admin/VdbAdmin";
 import UpdatesAdmin from "./admin/UpdatesAdmin";
 import { AuditAdmin, JournalAdmin } from "./admin/JournalAdmin";
 import SystemAdmin from "./admin/SystemAdmin";
+import ZonesAdmin from "./admin/ZonesAdmin";
+import MailAdmin from "./admin/MailAdmin";
+import OrgAdmin from "./admin/OrgAdmin";
 
 const LEDE: Record<string, string> = {
   system: "Работают ли сервисы KAV Checker и доступны ли источники KSC.",
@@ -17,6 +20,9 @@ const LEDE: Record<string, string> = {
   users: "Учётные записи, роли и доступ к источникам KSC.",
   ldap: "Вход доменных пользователей: подключения LDAPS, доверенные сертификаты, правила доступа по группам Active Directory.",
   general: "Какие компьютеры показывать в рабочих разделах, сроки хранения и ограничения отчётов.",
+  zones: "Группы компьютеров по сетям и группам KSC с ответственными: создание, импорт из CSV, спорные компьютеры. Анализ зон — в разделе «Зоны ответственности».",
+  mail: "Автоматическая отправка отчётов ответственным: расписания, история отправок, подключение к серверу почты.",
+  org: "Название организации, подразделение, логотип и примечания для шапок и подвалов отчётов.",
   catalog: "Как записи реестра KSC объединяются в продукты и ветки: состояние каталога, ручные исправления, правила для опытных.",
   vdb: "Источники сведений об уязвимостях (NVD, CISA KEV, OSV, БДУ ФСТЭК): включение, расписание обновления, состояние загрузок и решения по сопоставлению продуктов.",
   updates: "Версия KAV Checker, релизы GitHub, обновление, откат и резервные копии.",
@@ -38,6 +44,9 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "users" && <UsersAdmin ctx={ctx} />}
       {tab === "ldap" && <LdapAdmin sources={ctx.sources} />}
       {tab === "general" && <GeneralAdmin />}
+      {tab === "zones" && <ZonesAdmin />}
+      {tab === "mail" && <MailAdmin sources={ctx.sources} />}
+      {tab === "org" && <OrgAdmin />}
       {tab === "catalog" && <CatalogAdmin />}
       {tab === "vdb" && <VdbAdmin />}
       {tab === "updates" && <UpdatesAdmin />}
