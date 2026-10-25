@@ -17,8 +17,9 @@ from ..services.audit import write_audit
 from ..vdb import match as M
 from ..vdb import sources as S
 from ..vdb import store
-from ..vdb.normalize import SEV_RANK, SEV_RU, norm
-from ..reports.quick_ext import like_escape
+from ..vdb.normalize import SEV_RANK, SEV_RU, norm, pick_primary, score_key
+from ..search import clean, is_mask, local_like
+from ..services.catalog import text_conds
 from ..vdb.sync import analyze, upload_path
 
 router = APIRouter(prefix="/vdb", tags=["vdb"])
@@ -168,8 +169,9 @@ async def upload_bdu(request: Request, su: SessionUser = Depends(require_admin),
 
 # ------------------------------------------------------------------------------------------------ поиск
 def _vuln_out(v: VdbVuln, f: VdbFinding | None = None) -> dict:
-    out = {"key": v.vuln_key, "title": v.title, "severity": next((k for k, r in SEV_RANK.items() if r == v.sev_rank), ""), "severity_ru": SEV_RU[next((k for k, r in SEV_RANK.items() if r == v.sev_rank), "")],
-           "sev_rank": v.sev_rank, "score": v.score, "exploited": v.exploited, "has_fix": v.has_fix, "published": _iso(v.published), "modified": _iso(v.modified),
+    sev = "none" if v.score == 0 else next((k for k, r in SEV_RANK.items() if r == v.sev_rank), "")
+    out = {"key": v.vuln_key, "title": v.title, "severity": sev, "severity_ru": SEV_RU[sev], "severity_basis": "cvss" if v.score is not None else "source" if v.sev_rank else "",
+           "sev_rank": v.sev_rank, "score": v.score, "score_version": v.score_version, "score_source": v.score_source, "exploited": v.exploited, "has_fix": v.has_fix, "published": _iso(v.published), "modified": _iso(v.modified),
            "sources": [s for s in v.sources.split(",") if s], "ids": [i.upper() for i in v.ids_text.split()][:8], "products": v.products_text.split("; ")[:6] if v.products_text else [],
            "description": v.description[:400]}
     if f is not None:
@@ -178,8 +180,34 @@ def _vuln_out(v: VdbVuln, f: VdbFinding | None = None) -> dict:
     return out
 
 
+def _score_filter(stmt, score_min: float | None, score_max: float | None, no_score: bool):
+    """Диапазон оценки CVSS (границы включены); уязвимости без оценки в диапазон не попадают, а отбираются отдельно (no_score)."""
+    if no_score:
+        return stmt.where(VdbVuln.score.is_(None))
+    if score_min is not None or score_max is not None:
+        stmt = stmt.where(VdbVuln.score.is_not(None))
+        if score_min is not None:
+            stmt = stmt.where(VdbVuln.score >= score_min)
+        if score_max is not None:
+            stmt = stmt.where(VdbVuln.score <= score_max)
+    return stmt
+
+
+def _text_cond(term: str):
+    """Слово или маска: идентификаторы (каждый — отдельно, по границам пробелов), название, продукты и описание. Звёздочка — любое число символов."""
+    p = local_like(term)
+    ids = VdbVuln.ids_text
+    cond = [func.lower(VdbVuln.title).like(p, escape="\\"), VdbVuln.products_text.like(p, escape="\\"), func.lower(VdbVuln.description).like(p, escape="\\")]
+    if is_mask(term):
+        cond += [ids.like(x, escape="\\") for x in (p, f"% {p}", f"{p} %", f"% {p} %")]
+    else:
+        cond.append(ids.like(p, escape="\\"))
+    return or_(*cond)
+
+
 @router.get("/vulns")
 async def vulns(q: str = Query("", max_length=200), min_severity: str = Query("", pattern=r"^(|critical|high|medium|low)$"), exploited: bool = False, has_fix: bool | None = None,
+                score_min: float | None = Query(None, ge=0, le=10), score_max: float | None = Query(None, ge=0, le=10), no_score: bool = False,
                 source: str = Query("", pattern=r"^(|nvd|kev|osv|bdu)$"), published_from: str = Query("", max_length=10), published_to: str = Query("", max_length=10),
                 modified_from: str = Query("", max_length=10), affects: bool = False,
                 sort: str = Query("priority", pattern=r"^(priority|published|modified|score|key)$"), desc: bool = True, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
@@ -187,13 +215,14 @@ async def vulns(q: str = Query("", max_length=200), min_severity: str = Query(""
     """Поиск по CVE, идентификатору БДУ/OSV, названию и производителю программы, версии и тексту описания; по умолчанию — подтверждённая эксплуатация и самые опасные сверху."""
     sid = su.current_source_id
     stmt = select(VdbVuln, VdbFinding).outerjoin(VdbFinding, (VdbFinding.vuln_key == VdbVuln.vuln_key) & (VdbFinding.source_id == sid))     # sid=None: соединение пусто
-    for term in q.lower().split()[:6]:
-        like = "%" + like_escape(term) + "%"
-        stmt = stmt.where(or_(VdbVuln.ids_text.like(like, escape="\\"), func.lower(VdbVuln.title).like(like, escape="\\"), VdbVuln.products_text.like(like, escape="\\"), func.lower(VdbVuln.description).like(like, escape="\\")))
+    q = clean(q)
+    for term in [q] if is_mask(q) else q.split()[:6]:      # маска со звёздочкой — вся строка целиком; обычный текст — все слова
+        stmt = stmt.where(_text_cond(term))
     if min_severity:
         stmt = stmt.where(VdbVuln.sev_rank >= SEV_RANK[min_severity])
     if exploited:
         stmt = stmt.where(VdbVuln.exploited.is_(True))
+    stmt = _score_filter(stmt, score_min, score_max, no_score)
     if has_fix is not None:
         stmt = stmt.where(VdbVuln.has_fix.is_(True) if has_fix else or_(VdbVuln.has_fix.is_(False), VdbVuln.has_fix.is_(None)))
     if source:
@@ -212,10 +241,20 @@ async def vulns(q: str = Query("", max_length=200), min_severity: str = Query(""
     total = int((await db.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))).scalar_one())
     d = (lambda c: c.desc()) if desc else (lambda c: c.asc())
     order = {"priority": [VdbVuln.exploited.desc(), VdbVuln.sev_rank.desc(), VdbVuln.published.desc()], "published": [d(VdbVuln.published)], "modified": [d(VdbVuln.modified)],
-             "score": [d(VdbVuln.score)], "key": [d(VdbVuln.vuln_key)]}[sort]
+             "score": [d(VdbVuln.score).nulls_last()], "key": [d(VdbVuln.vuln_key)]}[sort]
     rows = (await db.execute(stmt.order_by(*order, VdbVuln.vuln_key).offset(offset).limit(limit))).all()
     items = [_vuln_out(v, f if isinstance(f, VdbFinding) else None) for v, f in rows]
     return {"items": items, "total": total, "offset": offset, "limit": limit}
+
+
+def _score_out(s: dict, ext: dict[str, str]) -> dict:
+    """Оценка для показа: источник, происхождение значения (кто выставил), ссылка на первоисточник и дата обновления записи."""
+    src, kind, org = s.get("source"), s.get("kind"), s.get("origin") or ""
+    origin = {"nvd": "NVD (NIST)" if kind == "primary" else f"CNA: {org}" if org else "CNA (поставщик)", "bdu": "БДУ ФСТЭК России",
+              "osv": "Вычислено по вектору из записи OSV"}.get(src, org)
+    eid = ext.get(src, "")
+    url = {"nvd": f"https://nvd.nist.gov/vuln/detail/{eid}", "bdu": f"https://bdu.fstec.ru/vul/{eid.split(':', 1)[-1]}", "osv": f"https://osv.dev/vulnerability/{eid}"}.get(src, "") if eid else ""
+    return {**s, "severity_ru": SEV_RU.get(s["severity"], ""), "source_title": S.INFO[src]["title"] if src in S.INFO else src, "origin_label": origin, "url": url}
 
 
 @router.get("/vulns/{key}")
@@ -235,7 +274,11 @@ async def vuln_card(key: str, su: SessionUser = Depends(require_user), db: Async
         by_src.setdefault(a.source, []).append({"vendor": a.vendor, "product": a.product or a.pkg_name, "ecosystem": a.ecosystem, "cpe": a.cpe, "purl": a.purl, "platform": a.platform,
                                                  "exact": a.exact, "from": a.v_start, "from_incl": a.v_start_incl, "to": a.v_end, "to_incl": a.v_end_incl, "fixed": a.fixed, "all_versions": a.versions_all,
                                                  "version_text": a.version_text, "conditional": a.conditional})
-    records = [{"source": r.source, "title": S.INFO[r.source]["title"], "ext_id": r.ext_id, "aliases": r.aliases, "severity": r.severity, "severity_ru": SEV_RU.get(r.severity, ""), "score": r.score,
+    ext = {r.source: r.ext_id for r in recs}
+    all_scores = [s for r in recs for s in store.record_scores(r)]
+    main = pick_primary(all_scores)
+    cvss = {"primary": _score_out(main, ext), "all": [_score_out(s, ext) | {"primary": s is main} for s in sorted(all_scores, key=score_key)]} if main else None
+    records = [{"source": r.source, "scores": [_score_out(s, ext) for s in sorted(store.record_scores(r), key=score_key)], "title": S.INFO[r.source]["title"], "ext_id": r.ext_id, "aliases": r.aliases, "severity": r.severity, "severity_ru": SEV_RU.get(r.severity, ""), "score": r.score,
                 "vector": r.vector, "published": _iso(r.published), "modified": _iso(r.modified), "exploited": r.exploited, "fix_available": r.fix_available, "fix_text": r.fix_text,
                 "status": r.status, "title_text": r.title, "description": r.description, "refs": r.refs[:25], "extra": r.extra, "affected": by_src.get(r.source, [])[:150],
                 "affected_total": len(by_src.get(r.source, []))} for r in sorted(recs, key=lambda r: S.INFO[r.source]["title"])]
@@ -259,12 +302,14 @@ async def vuln_card(key: str, su: SessionUser = Depends(require_user), db: Async
                                                         key=lambda x: (-M.STATUS_RANK[x["status"]], -x["installs"]))[:300]}
         else:
             infra = {"catalog": False, "matches": []}
-    return {**_vuln_out(v), "description": v.description, "records": records, "differences": diffs, "infrastructure": infra}
+    return {**_vuln_out(v), "description": v.description, "cvss": cvss, "records": records, "differences": diffs, "infrastructure": infra}
 
 
 # ------------------------------------------------------------------------------------------------ находки для специалиста ИБ
 @router.get("/findings")
 async def findings(new_only: bool = False, min_severity: str = Query("", pattern=r"^(|critical|high|medium|low)$"), exploited: bool = False,
+                   score_min: float | None = Query(None, ge=0, le=10), score_max: float | None = Query(None, ge=0, le=10), no_score: bool = False,
+                   sort: str = Query("priority", pattern=r"^(priority|score)$"), desc: bool = True,
                    offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source),
                    db: AsyncSession = Depends(get_db)):
     """Уязвимости из внешних баз, потенциально затрагивающие установленное ПО выбранного источника KSC (оценка по каталогу): новые и ранее просмотренные."""
@@ -275,8 +320,10 @@ async def findings(new_only: bool = False, min_severity: str = Query("", pattern
         stmt = stmt.where(VdbVuln.sev_rank >= SEV_RANK[min_severity])
     if exploited:
         stmt = stmt.where(VdbVuln.exploited.is_(True))
+    stmt = _score_filter(stmt, score_min, score_max, no_score)
     total = int((await db.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))).scalar_one())
-    rows = (await db.execute(stmt.order_by(VdbVuln.exploited.desc(), VdbVuln.sev_rank.desc(), VdbFinding.first_seen_at.desc()).offset(offset).limit(limit))).all()
+    order = [(VdbVuln.score.desc() if desc else VdbVuln.score.asc()).nulls_last()] if sort == "score" else [VdbVuln.exploited.desc(), VdbVuln.sev_rank.desc()]
+    rows = (await db.execute(stmt.order_by(*order, VdbFinding.first_seen_at.desc(), VdbFinding.vuln_key).offset(offset).limit(limit))).all()
     counts = await finding_counts(db, src.id)
     return {"items": [_vuln_out(v, f) for f, v in rows], "total": total, "offset": offset, "limit": limit, "summary": counts}
 
@@ -411,7 +458,6 @@ async def delete_mapping(mid: uuid.UUID, su: SessionUser = Depends(require_analy
 async def suggest(q: str = Query("", max_length=100), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
     """Подсказка продуктов каталога для ручного сопоставления."""
     stmt = select(CatalogProduct.key, CatalogProduct.name, CatalogProduct.publisher).where(CatalogProduct.source_id == src.id).order_by(CatalogProduct.hosts_active.desc()).limit(15)
-    if q.strip():
-        stmt = stmt.where(CatalogProduct.search.like(f"%{q.strip().lower()}%"))
+    stmt = stmt.where(*text_conds(q))
     return {"items": [{"key": k, "name": n, "publisher": p} for k, n, p in (await db.execute(stmt)).all()]}
 

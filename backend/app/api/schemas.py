@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
+
+from ..search import clean
+
+MaskText = Annotated[str | None, Field(max_length=200), AfterValidator(lambda v: v if v is None else clean(v))]     # текст поиска со звёздочкой: число звёздочек проверяется при приёме запроса
 
 
 class LoginIn(BaseModel):
@@ -101,12 +105,12 @@ class ReportParams(BaseModel):
     max_version: str | None = Field(default=None, max_length=100)
     below_version: str | None = Field(default=None, max_length=100)
     platform: str | None = Field(default=None, pattern=r"^(windows|linux)?$")
-    group_contains: str | None = Field(default=None, max_length=200)
+    group_contains: MaskText = None
     active_days: int | None = Field(default=None, ge=1, le=3650)
     include_inactive: bool = False
     inactive_only: bool = False
-    q: str | None = Field(default=None, max_length=200)
-    os_contains: str | None = Field(default=None, max_length=200)
+    q: MaskText = None
+    os_contains: MaskText = None
 
 
 class AuditItem(BaseModel):
@@ -176,7 +180,7 @@ class AuditParams(BaseModel):
     active_days: int | None = Field(default=None, ge=1, le=3650)
     include_inactive: bool = False
     online_only: bool = False                  # только устройства, которые KSC сейчас видит в сети (отдельно от «связывались за N суток»)
-    group_contains: str | None = Field(default=None, max_length=200)
+    group_contains: MaskText = None
 
 
 class QuickScope(BaseModel):
@@ -184,8 +188,8 @@ class QuickScope(BaseModel):
     active_days: int | None = Field(default=None, ge=1, le=3650)
     include_inactive: bool = False
     online_only: bool = False
-    group_contains: str | None = Field(default=None, max_length=200)
-    q: str | None = Field(default=None, max_length=200)
+    group_contains: MaskText = None
+    q: MaskText = None
 
 
 class QuickVulns(QuickScope):
@@ -227,7 +231,7 @@ class QuickEvents(BaseModel):
     group: Literal["", "detections", "notcured", "resolved", "attacks"] = ""
     types: list[str] = Field(default_factory=list, max_length=10)
     threat: str = Field(default="", max_length=300)
-    q: str = Field(default="", max_length=200)
+    q: MaskText = ""
     host_id: int | None = None
     event_ids: list[int] = Field(default_factory=list, max_length=5000)
 

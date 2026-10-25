@@ -15,6 +15,7 @@ from ..ksc import queries as q
 from ..ksc import vulns as V
 from ..ksc.driver import KscError
 from ..models import KscSource
+from ..search import any_field, matcher
 
 router = APIRouter(prefix="/vulnerabilities", tags=["vulnerabilities"])
 SEV_PARAM = {"critical": 4, "high": 2, "warning": 1}
@@ -65,7 +66,7 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
             h = H.host_row(r, groups, now)
             out.append({**{k: h[k] for k in ("host_id", "name", "fqdn", "ip", "os", "os_version", "group", "last_connected", "days_since_connection", "activity")},
                         **{k: int(r.get(k) or 0) for k in ("critical", "high", "warning", "total", "patchable", "products")}, "last_detected": r.get("last_detected"),
-                        "_search": f"{h['name']} {h['fqdn']} {h['ip']}".lower()})
+                        "_search": (h["name"], h["fqdn"], h["ip"])})
         return out
 
     try:
@@ -73,7 +74,7 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
     except KscError as exc:
         raise _ksc(exc) from None
     items, hidden = [], 0
-    needle, gneedle = q_.strip().lower(), group.strip().lower()
+    needle, gneedle = any_field(q_), matcher(group)
     for i in base:
         if not all_hosts and (i["days_since_connection"] is None or i["days_since_connection"] > general.activity_days):
             hidden += 1
@@ -85,9 +86,9 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
                "patchable": sum(i["patchable"] for i in items), "activity_days": general.activity_days,
                "fetched_at": datetime.fromtimestamp(at, timezone.utc)}
     if needle:
-        items = [i for i in items if needle in i["_search"]]
+        items = [i for i in items if needle(*i["_search"])]
     if gneedle:
-        items = [i for i in items if gneedle in i["group"].lower()]
+        items = [i for i in items if gneedle(i["group"])]
     if severity:
         items = [i for i in items if i[severity] > 0]
     if patchable:
@@ -120,9 +121,9 @@ async def vulnerabilities(request: Request, q_: str = Query("", alias="q", max_l
     except KscError as exc:
         raise _ksc(exc) from None
     items = base
-    needle = q_.strip().lower()
+    needle = any_field(q_)
     if needle:
-        items = [i for i in items if needle in " ".join([i["kla_id"], *i["cve"], *i["products"]]).lower()]
+        items = [i for i in items if needle(i["kla_id"], *i["cve"], *i["products"])]
     if severity:
         items = [i for i in items if i["severity"] == severity]
     if patchable:
@@ -158,8 +159,8 @@ async def products(request: Request, q_: str = Query("", alias="q", max_length=2
         raise _ksc(exc) from None
     items = [{"product_id": int(r["vp_id"] or 0) or None, "name": r.get("name") or "(не определена)", **{k: int(r.get(k) or 0) for k in ("hosts", "vulns", "critical", "high", "warning", "total", "patchable")},
               "last_detected": r.get("last_detected")} for r in rows]
-    if q_.strip():
-        items = [i for i in items if q_.strip().lower() in i["name"].lower()]
+    if (f := matcher(q_)):
+        items = [i for i in items if f(i["name"])]
     if severity:
         items = [i for i in items if i[severity] > 0]
     keyf = {"risk": lambda i: (i["critical"] > 0, i["high"] > 0, i["hosts"], i["total"]), "hosts": lambda i: i["hosts"], "total": lambda i: i["total"],

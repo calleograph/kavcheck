@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from functools import cmp_to_key
 
+from ..search import any_field, matcher
 from . import hosts as H
 from . import queries as q
 from .driver import SourceClient
@@ -148,11 +149,10 @@ def pick(hosts: list[dict], *, problem: str = "", product: str = "", build: str 
             av = h["av"] or {}
             return h["agent_build"] if product == AGENT else av.get("build") if av.get("code") == product else None
         items = [h for h in items if ver(h) and (not build or ver(h) == build)]
-    if q.strip():
-        n = q.strip().lower()
-        items = [h for h in items if n in f"{h['name']} {h['fqdn']} {h['ip']}".lower()]
-    if group.strip():
-        items = [h for h in items if group.strip().lower() in h["group"].lower()]
+    if (f := any_field(q)):
+        items = [h for h in items if f(h["name"], h["fqdn"], h["ip"])]
+    if (g := matcher(group)):
+        items = [h for h in items if g(h["group"])]
     return items
 
 

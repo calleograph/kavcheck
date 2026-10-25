@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, get_db, require_analyst, require_user
 from ..ksc import versions
+from ..search import any_field
 from ..models import AuditCheck, KscSource, ReportJob, ReportTemplate, utcnow
 from ..reports import audit, quick
 from ..reports.export import read_all_jsonl
@@ -155,9 +156,8 @@ async def job_rows(job_id: uuid.UUID, request: Request, offset: int = Query(0, g
         rows = [r for r in rows if r.get("source") == source]
     if program:
         rows = [r for r in rows if r.get("program") == program]
-    if q.strip():
-        needle = q.strip().lower()
-        rows = [r for r in rows if needle in " ".join(str(v) for k, v in r.items() if isinstance(v, (str, int)) and k in _SEARCH_KEYS).lower()]
+    if (hit := any_field(q)):
+        rows = [r for r in rows if hit(*(v for k, v in r.items() if isinstance(v, (str, int)) and k in _SEARCH_KEYS))]
     if sort in SORTABLE or (sort and rows and sort in rows[0]):
         if sort in ("app_version", "compared_version"):
             rows.sort(key=lambda r: versions.sort_key(str(r.get(sort) or "0")), reverse=desc)

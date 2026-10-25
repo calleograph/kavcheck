@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { num, plural } from "../util";
 import { Icon, type IconName } from "./Icons";
 
@@ -170,5 +170,30 @@ export function TagInput({ value, onChange, placeholder, label, mono = true }: {
         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(text); } else if (e.key === "Backspace" && !text && value.length) onChange(value.slice(0, -1)); }}
         onBlur={() => text && add(text)} />
     </div>
+  );
+}
+
+
+const MASK_EXAMPLES: [string, string][] = [["SRV-*", "начинается с SRV-"], ["*-DB", "заканчивается на -DB"], ["*SQL*", "содержит SQL"], ["SRV-*-DB*", "несколько звёздочек"], ["CVE-2026-*", "все CVE за 2026 год"]];
+/** Подсказка про поиск со звёздочкой: кнопка в поле поиска и короткая справка с примерами (Esc или щелчок снаружи закрывает). */
+export function MaskHint() {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: Event) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); (box.current?.querySelector("button") as HTMLElement | null)?.focus(); } };
+    document.addEventListener("mousedown", away); document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  return (
+    <span className="mask-hint" ref={box}>
+      <button type="button" className="mask-btn" aria-expanded={open} aria-label="Подсказка: поиск со звёздочкой" title="Поиск со звёздочкой: SRV-*, *-DB, *SQL*" onClick={() => setOpen(!open)}>*</button>
+      {open && <div className="mask-pop" role="note">
+        <p><b>*</b> заменяет любое число символов, в том числе ни одного. Регистр не важен.</p>
+        <dl>{MASK_EXAMPLES.map(([m, t]) => <div key={m}><dt className="mono">{m}</dt><dd>{t}</dd></div>)}</dl>
+        <p className="muted small">Без звёздочки ищется часть строки. Работает во всех полях поиска и фильтрах.</p>
+      </div>}
+    </span>
   );
 }

@@ -8,7 +8,7 @@ import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../comp
 import { useToast } from "../components/Toast";
 import { QuickReportPanel } from "../components/QuickReport";
 import { VdbCountBadge, useVdbCounts } from "../components/VdbBits";
-import { Dock, Empty, HiddenNote, SkelRows, SortTh } from "../components/ui";
+import { Dock, Empty, HiddenNote, SkelRows, SortTh, MaskHint } from "../components/ui";
 import { selLabel, useSelection } from "../selection";
 import { fmt, num, plural } from "../util";
 
@@ -96,7 +96,7 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
   return (
     <>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Программа, пакет, производитель или вариант названия" aria-label="Поиск программы" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Программа, пакет, производитель или вариант названия" aria-label="Поиск программы" /><MaskHint /></div>
         <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Платформа" className="w-auto"><option value="">Все платформы</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
         <label className="check inline-check"><input type="checkbox" className="switch" checked={components} onChange={(e) => setComponents(e.target.checked)} />Служебные компоненты</label>
         <div className="toolbar-foot">
@@ -193,7 +193,7 @@ export function PublishersView({ ctx }: { ctx: Ctx }) {
   const open = (key: string) => setSp((p) => { p.set("tab", "catalog"); p.set("publisher", key); return p; });
   return (
     <>
-      <div className="toolbar"><div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Производитель или его программа" aria-label="Поиск производителя" /></div>
+      <div className="toolbar"><div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Производитель или его программа" aria-label="Поиск производителя" /><MaskHint /></div>
         <p className="note">Производители объединяются без учёта формы собственности: «Google LLC» и «Google Inc.» — один производитель. Показаны компьютеры, активные за {ctx.me.activity_days} сут.</p></div>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>

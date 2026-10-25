@@ -4,7 +4,7 @@ import type { Ctx } from "../../App";
 import { ConfirmDialog, Modal } from "../../components/Dialogs";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
-import { Empty, Segmented, SkelRows } from "../../components/ui";
+import { Empty, Segmented, SkelRows, MaskHint } from "../../components/ui";
 import { fmt } from "../../util";
 
 const ROLE: Record<string, [string, string]> = { admin: ["Администратор", "accent"], analyst: ["Аналитик", ""], viewer: ["Просмотр", "outline"] };
@@ -86,7 +86,7 @@ export default function UsersAdmin({ ctx }: { ctx: Ctx }) {
   return (
     <>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя или логин" aria-label="Поиск пользователя" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя или логин" aria-label="Поиск пользователя" /><MaskHint /></div>
         <button className="btn primary" onClick={() => { setErr(""); setEdit({ isNew: true, username: "", display_name: "", role: "viewer", is_active: true, all_sources: true, source_ids: [], must_change_password: true }); }}><Icon name="plus" />Локальный пользователь</button>
         <p className="note">Доменные пользователи появляются после первого входа; их роль и источники задают правила групп в разделе LDAPS. Права ролей и политика второго фактора — ниже.</p>
       </div>

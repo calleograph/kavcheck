@@ -6,7 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Iterator
 
-from .normalize import Aff, Rec, SEV_RANK, cvss3_score, norm, parse_cpe, parse_dt, parse_purl, platform_of, sev_from_score
+from .normalize import Aff, Rec, SEV_RANK, cvss3_score, cvss_version, make_score, norm, parse_cpe, parse_dt, parse_purl, platform_of, set_scores
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.I)
 
@@ -54,22 +54,18 @@ def parse_nvd(item: dict) -> Rec | None:
     if str(c.get("vulnStatus") or "").lower() == "rejected":
         return None
     desc = next((d["value"] for d in c.get("descriptions") or [] if d.get("lang") == "en"), "") or next((d["value"] for d in c.get("descriptions") or []), "")
-    score, vector, sev = None, "", ""
-    metrics = c.get("metrics") or {}
-    for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
-        ms = metrics.get(key) or []
-        if ms:
-            m = next((x for x in ms if x.get("type") == "Primary"), ms[0])
+    modified = parse_dt(c.get("lastModified"))
+    scores = []
+    for key, ver in (("cvssMetricV40", "4.0"), ("cvssMetricV31", "3.1"), ("cvssMetricV30", "3.0"), ("cvssMetricV2", "2.0")):     # все оценки NVD: основную выбирает set_scores
+        for m in (c.get("metrics") or {}).get(key) or []:
             d = m.get("cvssData") or {}
-            score, vector = d.get("baseScore"), d.get("vectorString", "")
-            sev = (d.get("baseSeverity") or m.get("baseSeverity") or "").lower() or sev_from_score(score)
-            break
-    sev = {"critical": "critical", "high": "high", "medium": "medium", "low": "low"}.get(sev, sev_from_score(score))
+            scores.append(make_score(d.get("version") or ver, d.get("baseScore"), d.get("vectorString", ""), source="nvd", origin=m.get("source") or "", kind=str(m.get("type") or "").lower(), updated=modified))
     refs = [{"url": r["url"], "tags": r.get("tags") or []} for r in c.get("references") or [] if r.get("url")][:40]
     fix = any(t in ("Patch", "Vendor Advisory", "Mitigation") for r in refs for t in r["tags"])
-    rec = Rec(source="nvd", ext_id=cid, vuln_key=cid, title=_short(desc, 160), description=desc, severity=sev, score=score, vector=vector, published=parse_dt(c.get("published")),
-              modified=parse_dt(c.get("lastModified")), fix_available=True if fix else None, status=c.get("vulnStatus") or "", refs=refs,
+    rec = Rec(source="nvd", ext_id=cid, vuln_key=cid, title=_short(desc, 160), description=desc, published=parse_dt(c.get("published")),
+              modified=modified, fix_available=True if fix else None, status=c.get("vulnStatus") or "", refs=refs,
               extra={"cwe": sorted({d["value"] for w in c.get("weaknesses") or [] for d in w.get("description") or [] if str(d.get("value", "")).startswith("CWE-")})})
+    set_scores(rec, scores)
     for cfg in c.get("configurations") or []:
         is_and = (cfg.get("operator") or "").upper() == "AND"
         hint = ""
@@ -117,19 +113,20 @@ def parse_osv(doc: dict) -> Rec | None:
     aliases = [a for a in (doc.get("aliases") or []) + (doc.get("upstream") or []) + (doc.get("related") or []) if a]
     cves = [a.upper() for a in aliases + [oid] if CVE_RE.fullmatch(a or "")]
     key = cves[0] if cves else oid
-    vector = ""
-    for s in doc.get("severity") or []:
-        if str(s.get("type", "")).startswith("CVSS") and str(s.get("score") or "").startswith("CVSS:3"):
-            vector = s.get("score") or ""
+    scores = []
+    for s in doc.get("severity") or []:     # OSV отдаёт только вектор: оценка CVSS 3.x вычисляется по нему (kind=calculated); для CVSS 4.0 и 2.0 вычисление не поддерживается
+        vec = str(s.get("score") or "")
+        if str(s.get("type", "")).startswith("CVSS") and vec.startswith("CVSS:3"):
+            scores.append(make_score(cvss_version(vec), cvss3_score(vec), vec, source="osv", origin="osv.dev", kind="calculated", updated=parse_dt(doc.get("modified"))))
     db = doc.get("database_specific") or {}
     sev = str(db.get("severity") or "").lower().replace("moderate", "medium")
-    score = cvss3_score(vector)
-    sev = sev if sev in SEV_RANK and sev else sev_from_score(score)
+    sev = sev if sev in SEV_RANK and sev else ""
     refs = [{"url": r["url"], "tags": [r.get("type", "")]} for r in doc.get("references") or [] if r.get("url")][:40]
     fixed_any = False
     rec = Rec(source="osv", ext_id=oid, vuln_key=key, aliases=sorted({oid, *aliases} - {key}), title=_short(doc.get("summary") or doc.get("details") or "", 160),
-              description=doc.get("details") or doc.get("summary") or "", severity=sev, score=score, vector=vector, published=parse_dt(doc.get("published")),
+              description=doc.get("details") or doc.get("summary") or "", severity=sev, published=parse_dt(doc.get("published")),
               modified=parse_dt(doc.get("modified")), refs=refs, extra={"cwe": db.get("cwe_ids") or []})
+    set_scores(rec, scores)
     for a in doc.get("affected") or []:
         pk = a.get("package") or {}
         pu = parse_purl(pk.get("purl", ""))
@@ -243,26 +240,23 @@ def parse_bdu(stream) -> Iterator[Rec]:
         key = cves[0] if cves else ident
         sev_text = _txt(_find(el, "severity")).lower()
         sev = next((v for k, v in _BDU_SEV if k in sev_text), "")
-        score, vector = None, ""
-        for tag in ("cvss3", "cvss"):
+        updated = parse_dt(_txt(_find(el, "last_upd_date")) or _txt(_find(el, "identify_date")))
+        scores = []
+        for tag, ver in (("cvss3", "3.0"), ("cvss", "2.0")):        # БДУ приводит обе: CVSS 3.0 (cvss3) и CVSS 2.0 (cvss); основную выбирает set_scores
             c = _find(el, tag)
             vec = _find(c, "vector") if c is not None else None
             if vec is not None and _txt(vec):
-                vector = _txt(vec)
-                try:
-                    score = float(vec.get("score"))
-                except (TypeError, ValueError):
-                    score = None
-                break
+                scores.append(make_score(ver, vec.get("score"), _txt(vec), source="bdu", origin="ФСТЭК России", kind="primary", updated=updated))
         fix_status = _txt(_find(el, "fix_status"))
         solution = _txt(_find(el, "solution"))
         rec = Rec(source="bdu", ext_id=ident, vuln_key=key, aliases=sorted(set(cves) - {key}) + ([ident] if key != ident else []), title=_txt(_find(el, "name")),
-                  description=_txt(_find(el, "description")), severity=sev or sev_from_score(score), score=score, vector=vector,
+                  description=_txt(_find(el, "description")), severity=sev,
                   published=parse_dt(_txt(_find(el, "identify_date")) or _txt(_find(el, "publication_date"))), modified=parse_dt(_txt(_find(el, "last_upd_date")) or _txt(_find(el, "identify_date"))),
                   fix_available=_bdu_fixed(fix_status), fix_text=solution, status=_txt(_find(el, "vul_status")),
                   refs=[{"url": u, "tags": ["БДУ"]} for u in re.findall(r"https?://[^\s<>\"']+", _txt(_find(el, "sources")))][:20] + [{"url": f"https://bdu.fstec.ru/vul/{ident.split(':', 1)[-1]}", "tags": ["БДУ"]}],
                   extra={"exploit_status": _txt(_find(el, "exploit_status")), "fix_status": fix_status, "severity_text": _txt(_find(el, "severity")),
                          "cwe": [_txt(i) for c in el.iter() if c.tag.split("}")[-1].lower() == "cwe" for i in c if _txt(i)][:5]})
+        set_scores(rec, scores)
         for soft in (_find(el, "vulnerable_software") or []):
             vendor, name, version, platform = (_txt(_find(soft, n)) for n in ("vendor", "name", "version", "platform"))
             if not name:

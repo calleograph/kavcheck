@@ -7,7 +7,8 @@ import { CheckAll, QuickReportPanel, ReportDock, useRowSel, type QuickScopeOpts 
 import { ListFoot, VirtualRows, useInfinite, useKept, useStaticList, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { useToast } from "../components/Toast";
-import { Empty, HiddenNote, PageHead, Segmented, SevCounts, SkelRows, SortTh, Tabs } from "../components/ui";
+import { maskMatcher } from "../mask";
+import { Empty, HiddenNote, PageHead, Segmented, SevCounts, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
 import { fmt, fmtDate, num } from "../util";
 import { itemSummary } from "./AuditBuilder";
 
@@ -66,7 +67,7 @@ function HostsView({ ctx }: { ctx: Ctx }) {
         <div className="meter"><span className="l">Можно исправить сейчас</span><span className="v">{s ? num(s.patchable) : "…"}</span><span className="t">{s ? `из ${num(s.total)} обнаружений` : ""}</span></div>
       </div>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер или IP-адрес" aria-label="Компьютер" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер или IP-адрес" aria-label="Компьютер" /><MaskHint /></div>
         <input className="w-md" value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Программа" aria-label="Программа" />
         <input className="w-md mono-ph" value={cve} onChange={(e) => setCve(e.target.value)} placeholder="CVE-2024-…" aria-label="CVE" />
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа" aria-label="Группа администрирования" />
@@ -134,7 +135,7 @@ function ListView({ ctx }: { ctx: Ctx }) {
         <div className="meter"><span className="l">С исправлением</span><span className="v">{s ? num(s.patchable) : "…"}</span></div>
       </div>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="CVE-2024-…, KLA или программа" aria-label="Поиск уязвимости" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="CVE-2024-…, KLA или программа" aria-label="Поиск уязвимости" /><MaskHint /></div>
         <Segmented<Sev> label="Уровень опасности" value={severity} onChange={setSeverity} options={SEV_OPTS} />
         <label className="check inline-check"><input type="checkbox" className="switch" checked={patchable} onChange={(e) => setPatchable(e.target.checked)} />Есть исправление</label>
         <div className="toolbar-foot">{s && <Fetched at={s.fetched_at} />}<span className="muted small">Отметьте одну или несколько уязвимостей — отчёт покажет затронутые компьютеры без повторов.</span></div>
@@ -193,7 +194,7 @@ function ProductsView({ ctx }: { ctx: Ctx }) {
   return (
     <>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Программа, например Google Chrome" aria-label="Программа" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Программа, например Google Chrome" aria-label="Программа" /><MaskHint /></div>
         <input className="w-md" value={cve} onChange={(e) => setCve(e.target.value)} placeholder="CVE-2024-…" aria-label="CVE" />
         <Segmented<Sev> label="Уровень опасности" value={severity} onChange={setSeverity} options={SEV_OPTS} />
         <label className="check inline-check"><input type="checkbox" className="switch" checked={all} onChange={(e) => setAll(e.target.checked)} />Все устройства</label>
@@ -294,12 +295,12 @@ export function VulnHostPage({ ctx }: { ctx: Ctx }) {
 /** Уязвимости компьютера с поиском и фильтром по опасности (страница уязвимостей компьютера и вкладка карточки). */
 export function HostVulns({ items: all }: { items: HostVuln[] }) {
   const [q, setQ] = useState(""); const [severity, setSeverity] = useState<Sev>("");
-  const items = useMemo(() => all.filter((v) => (!severity || v.severity === severity) && (!q || `${v.kla_id} ${v.cve.join(" ")} ${v.product} ${v.app_name} ${v.kb.join(" ")}`.toLowerCase().includes(q.toLowerCase()))), [all, q, severity]);
+  const items = useMemo(() => { const hit = maskMatcher(q); return all.filter((v) => (!severity || v.severity === severity) && (!hit || hit(v.kla_id, ...v.cve, v.product, v.app_name, ...v.kb))); }, [all, q, severity]);
   const list = useStaticList(`host-vulns:${q}:${severity}:${all.length}`, items);
   return (
     <>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="KLA, CVE, KB или программа" aria-label="Поиск уязвимости" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="KLA, CVE, KB или программа" aria-label="Поиск уязвимости" /><MaskHint /></div>
         <Segmented<Sev> label="Уровень опасности" value={severity} onChange={setSeverity} options={SEV_OPTS} />
       </div>
       <div className="table-scroll">

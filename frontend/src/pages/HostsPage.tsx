@@ -6,7 +6,8 @@ import { ActivityBadge, Fetched, OnlineBadge } from "../components/Common";
 import { ListFoot, VirtualRows, staticList, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
-import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
+import { maskMatcher } from "../mask";
+import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
 import { EventList, type EvFilter } from "./EventsPage";
 import { ProblemBadges } from "./ProtectionPage";
 import { Kev, StatusBadge } from "../components/VdbBits";
@@ -45,9 +46,9 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
         {extra?.fetched_at && <Fetched at={extra.fetched_at} />}
       </PageHead>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя компьютера или DNS-имя" aria-label="Поиск" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя компьютера или DNS-имя" aria-label="Поиск" /><MaskHint /></div>
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа администрирования" aria-label="Группа" />
-        <input className="w-md" value={os} onChange={(e) => setOs(e.target.value)} placeholder="ОС содержит" aria-label="ОС" />
+        <input className="w-md" value={os} onChange={(e) => setOs(e.target.value)} placeholder="ОС, например *Windows 11*" aria-label="ОС" />
         <Segmented<Activity> label="Связь с KSC" value={activity} onChange={setActivity} options={[["active", "Активные"], ["inactive", "Без связи"], ["all", "Все"]]} />
         <label className="inline">Порог
           <select value={days} onChange={(e) => setDays(e.target.value)}>
@@ -105,7 +106,8 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       : <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}</section>;
   if (!d) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="split even"><div className="card"><SkelRows rows={6} cols={2} /></div><div className="card"><SkelRows rows={3} cols={3} /></div></div></section>;
   const h = d.host;
-  const sw = d.software.filter((s) => !filter || `${s.name} ${s.version} ${s.publisher}`.toLowerCase().includes(filter.toLowerCase()));
+  const hit = maskMatcher(filter);
+  const sw = d.software.filter((s) => !hit || hit(s.name, s.version, s.publisher));
   const swList = staticList(`host-sw:${h.host_id}:${filter}`, sw);
   const facts: [string, React.ReactNode][] = [["FQDN", h.fqdn || "—"], ["IP-адрес", <span className="mono">{h.ip || "—"}</span>], ["Операционная система", `${h.os} ${h.os_version}`.trim() || "—"], ["Дистрибутив Linux", h.linux_release ? <span className="mono">{h.linux_release}</span> : "—"],
     ["Группа администрирования", h.group || "—"], ["Подключение к KSC", fmt(h.last_connected)], ["Последняя видимость", fmt(h.last_visible)], ["Обновление антивирусных баз", fmt(h.last_av_update)],
@@ -142,7 +144,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       </div>
       {tab === "software" && <>
         <div className="section-head"><span className="muted small">Программ: {num(d.software.length)}</span><div className="spacer" />
-          <div className="input-icon w-search"><Icon name="search" size={16} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, версия или производитель" aria-label="Фильтр программ" /></div></div>
+          <div className="input-icon w-search"><Icon name="search" size={16} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, версия или производитель" aria-label="Фильтр программ" /><MaskHint /></div></div>
         <div className="table-scroll">
           <table className="table compact virt">
             <thead><tr><th>Программа</th><th>Версия</th><th>Производитель</th><th>Установлена</th></tr></thead>

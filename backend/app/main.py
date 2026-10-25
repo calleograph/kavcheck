@@ -16,6 +16,7 @@ from starlette.datastructures import MutableHeaders
 
 from .api import admin, admin_ldap, admin_updates, auth, auth_totp, catalog, dashboard, events, health, hosts, protection, quick, reports, software, vdb as vdb_api, vulns
 from .auth.deps import client_ip
+from .search import MaskError
 from .auth.service import AuthService
 from .auth.sessions import SessionStore
 from .config import Settings, get_settings
@@ -166,6 +167,10 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
             raise exc
         log.error("Внутренняя база недоступна", extra={"path": request.url.path, "error": type(exc.orig).__name__ if exc.orig else type(exc).__name__})
         return JSONResponse({"detail": "Внутренняя база данных временно недоступна. Повторите через несколько секунд."}, status_code=503, headers={"Retry-After": "5"})
+
+    @app.exception_handler(MaskError)
+    async def bad_mask(request: Request, exc: MaskError):
+        return JSONResponse({"detail": str(exc)}, status_code=422)
 
     prefix = "/api/v1"
     for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, admin.router,

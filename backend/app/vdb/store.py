@@ -9,7 +9,7 @@ from sqlalchemy import and_, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import VdbAffected, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
-from .normalize import SEV_RANK, Rec, norm
+from .normalize import SEV_RANK, Rec, legacy_score, norm, pick_primary
 
 log = logging.getLogger("app.vdb")
 SOURCE_PRIORITY = ("nvd", "bdu", "osv", "kev")
@@ -28,7 +28,7 @@ def active(model):
 
 def _rec_row(r: Rec, gen: int, now: datetime) -> dict:
     return dict(source=r.source, generation=gen, ext_id=r.ext_id[:80], vuln_key=r.vuln_key[:80], aliases=r.aliases[:30], title=r.title[:500], description=r.description[:20000],
-                severity=r.severity, score=r.score, vector=r.vector[:200], published=r.published, modified=r.modified, exploited=r.exploited, fix_available=r.fix_available,
+                severity=r.severity, score=r.score, vector=r.vector[:200], scores=r.scores[:12], scores_at=now, published=r.published, modified=r.modified, exploited=r.exploited, fix_available=r.fix_available,
                 fix_text=r.fix_text[:4000], status=r.status[:80], refs=r.refs[:40], extra=r.extra, fetched_at=now)
 
 
@@ -40,8 +40,9 @@ def _aff_row(a, r: Rec, gen: int) -> dict:
     return d
 
 
-async def save_batch(db: AsyncSession, gen: int, recs: list[Rec]) -> tuple[int, set[str]]:
-    """Записать пачку записей одного источника в поколение. Неизменившиеся (та же дата изменения) пропускаются. Возвращает (изменено, затронутые ключи уязвимостей)."""
+async def save_batch(db: AsyncSession, gen: int, recs: list[Rec], *, force: bool = False) -> tuple[int, set[str]]:
+    """Записать пачку записей одного источника в поколение. Неизменившиеся (та же дата изменения) пропускаются, если не задано force (повторное получение: запись заменяется,
+    дублей нет — ключ записи ext_id). Возвращает (изменено, затронутые ключи уязвимостей)."""
     if not recs:
         return 0, set()
     now = utcnow()
@@ -55,7 +56,7 @@ async def save_batch(db: AsyncSession, gen: int, recs: list[Rec]) -> tuple[int, 
     todo, keys = [], set()
     for ext, r in by_id.items():
         old = existing.get(ext)
-        if old is not None and r.modified is not None and old[0] is not None and _utc(old[0]) == _utc(r.modified) and old[1] == r.vuln_key:
+        if not force and old is not None and r.modified is not None and old[0] is not None and _utc(old[0]) == _utc(r.modified) and old[1] == r.vuln_key:
             continue
         todo.append(r)
         keys.add(r.vuln_key)
@@ -121,6 +122,35 @@ async def restore_previous(db: AsyncSession, row: VdbSource) -> set[str]:
     return keys
 
 
+def record_scores(r: VdbRecord) -> list[dict]:
+    """Оценки записи; у записи из прежней версии (без списка) — единственная оценка по сохранённым баллу и вектору, если версию методики можно определить."""
+    if r.scores:
+        return r.scores
+    s = legacy_score(r.source, r.score, r.vector, r.modified) if r.score is not None else None
+    return [s] if s else []
+
+
+async def upgrade_scores(db: AsyncSession) -> int:
+    """Однократно после обновления: превратить балл и вектор прежних записей в список оценок (версия по вектору) и пересчитать сводку. Безопасно повторять: запись с готовым списком не меняется.
+    scores_at не ставится — отсутствующие оценки NVD дозагрузит следующая загрузка источника. Возвращает число обновлённых записей."""
+    n, last = 0, 0
+    while True:
+        rows = (await db.execute(select(VdbRecord).where(VdbRecord.id > last).order_by(VdbRecord.id).limit(1000))).scalars().all()
+        if not rows:
+            break
+        last = rows[-1].id
+        keys = set()
+        for r in rows:
+            if not r.scores and r.score is not None:
+                s = legacy_score(r.source, r.score, r.vector, r.modified)
+                r.scores, r.score = ([s] if s else []), (r.score if s else None)      # версию методики определить нельзя — оценка недостоверна и не показывается
+                keys.add(r.vuln_key)
+                n += 1
+        await db.flush()
+        await refresh_vulns(db, keys)
+    return n
+
+
 async def refresh_vulns(db: AsyncSession, keys: set[str] | list[str]) -> None:
     """Пересчитать сводку по уязвимостям: объединяет записи активных поколений всех источников (опасность — максимальная, подтверждённая эксплуатация — если есть в любом источнике)."""
     keys = list(keys)
@@ -141,13 +171,14 @@ async def refresh_vulns(db: AsyncSession, keys: set[str] | list[str]) -> None:
         for k, rs in by.items():
             rs.sort(key=lambda r: SOURCE_PRIORITY.index(r.source) if r.source in SOURCE_PRIORITY else 9)
             main = next((r for r in rs if r.title), rs[0])
-            scores = [r.score for r in rs if r.score is not None]
+            best = pick_primary([s for r in rs for s in record_scores(r)])
+            rank = SEV_RANK.get(best["severity"], 0) if best else max((SEV_RANK.get(r.severity, 0) for r in rs), default=0)   # нет числовой оценки — уровень, названный источником
             fixes = [r.fix_available for r in rs if r.fix_available is not None]
             pubs = [_utc(r.published) for r in rs if r.published]
             mods = [_utc(r.modified) for r in rs if r.modified]
             ids = {k, *(r.ext_id for r in rs), *(a for r in rs for a in r.aliases)}
-            rows.append(dict(vuln_key=k, title=main.title[:500], sev_rank=max((SEV_RANK.get(r.severity, 0) for r in rs), default=0), score=max(scores) if scores else None,
-                             exploited=any(r.exploited for r in rs), has_fix=any(fixes) if fixes else None, published=min(pubs) if pubs else None, modified=max(mods) if mods else None,
+            rows.append(dict(vuln_key=k, title=main.title[:500], sev_rank=rank, score=best["score"] if best else None,
+                             score_version=best["version"] if best else "", score_source=best["source"] if best else "", exploited=any(r.exploited for r in rs), has_fix=any(fixes) if fixes else None, published=min(pubs) if pubs else None, modified=max(mods) if mods else None,
                              sources=",".join(sorted({r.source for r in rs})), ids_text=" ".join(sorted(ids)).lower(), products_text="; ".join(prods.get(k, [])).lower()[:4000],
                              description=(next((r.description for r in rs if r.description), ""))[:3000]))
         if rows:

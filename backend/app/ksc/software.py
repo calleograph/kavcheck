@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 
+from ..search import mssql_like
 from . import queries as q
 from . import versions
 from .driver import KscError, SourceClient
@@ -15,15 +16,11 @@ MAX_PRODUCTS_PER_RULE = 20_000
 
 def products_where(*, qtext: str = "", publisher: str = "", version: str = "", platform: str = "", installed_only: bool = True) -> tuple[str, dict]:
     where, params = [], {}
-    if qtext:
-        where.append("p.wstrDisplayName LIKE %(q)s")
-        params["q"] = f"%{qtext}%"
-    if publisher:
-        where.append("p.wstrPublisher LIKE %(pub)s")
-        params["pub"] = f"%{publisher}%"
-    if version:
-        where.append("p.wstrDisplayVersion LIKE %(ver)s")
-        params["ver"] = f"{version}%"
+    for text, sql, name, mode in ((qtext, "p.wstrDisplayName", "q", "contains"), (publisher, "p.wstrPublisher", "pub", "contains"), (version, "p.wstrDisplayVersion", "ver", "prefix")):
+        like = mssql_like(text, mode)
+        if like:
+            where.append(f"{sql} LIKE %({name})s")
+            params[name] = like
     if platform in ("windows", "linux"):
         where.append("(p.nPlatformTypeMask & %(pm)s) <> 0")
         params["pm"] = 1 if platform == "windows" else 2

@@ -580,6 +580,10 @@ button.action-row { width: calc(100% + 20px); border: 0; background: none; text-
 .sev.crit { background: var(--danger-bg); color: var(--danger-text); }
 .sev.high { background: var(--warn-bg); color: var(--warn-text); }
 .sev.warn { background: var(--sunken); color: var(--ink-2); }
+.sev.med { background: var(--accent-soft); color: var(--accent); }
+.sev.low { background: var(--ok-bg); color: var(--ok-text); }
+.sev.na { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
+.sev .mark { margin-left: 2px; font-weight: 600; }
 .sev.zero { background: transparent; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }
 td .sev-row { flex-wrap: nowrap; }
 .tag-input { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-height: 36px; padding: 4px 6px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius); cursor: text; transition: border-color var(--t-fast), box-shadow var(--t-fast); }
@@ -994,8 +998,35 @@ pre.notes-pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
 .nav-badge { margin-left: auto; min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--danger); color: #fff; font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 .vdb-count { display: inline-flex; gap: 4px; align-items: center; text-decoration: none; }
 .table td .vdb-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 560px; white-space: normal; line-height: 1.35; }
-.table.virt td:nth-child(2):has(.vdb-title) { min-width: 340px; }
+.table.virt td:nth-child(2):has(.vdb-title) { min-width: 250px; }
 .table td .strong-link.mono { white-space: nowrap; }
 .nav-badge { min-width: 16px; padding: 0 5px; font-size: 10px; line-height: 16px; flex-shrink: 0; }
 .sev-row.wrap, .table td .sev + .badge.kev { margin-left: 2px; }
 .chip.tiny { white-space: nowrap; display: inline-block; margin-bottom: 2px; }
+
+/* Оценка CVSS и подсказка про поиск со звёздочкой */
+.cvss { display: inline-flex; align-items: baseline; gap: 5px; font-variant-numeric: tabular-nums; white-space: nowrap; border-left: 3px solid var(--line-strong); padding-left: 7px; }
+.cvss b { font-size: var(--fs-md); font-weight: 600; color: var(--ink); }
+.cvss i { font-style: normal; font-size: var(--fs-xs); color: var(--muted); }
+.cvss.crit { border-color: var(--danger); } .cvss.high { border-color: var(--warn); } .cvss.med { border-color: var(--accent); } .cvss.low { border-color: var(--ok); }
+.cvss.zero, .cvss.na { border-color: var(--line); }
+.cvss.na { font-size: var(--fs-xs); color: var(--muted); }
+.mask-hint { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); z-index: 31; }
+.input-icon > input:has(~ .mask-hint) { padding-right: 34px; }
+.mask-btn { width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--muted); font: 600 15px/1 var(--mono, monospace); cursor: pointer; }
+.mask-btn:hover, .mask-btn[aria-expanded="true"] { background: var(--sunken); color: var(--ink); }
+.mask-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(320px, 86vw); padding: 12px 14px; background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(20, 24, 29, .16); font-size: var(--fs-sm); text-align: left; font-weight: 400; }
+.mask-pop p { margin: 0 0 8px; } .mask-pop p:last-child { margin: 8px 0 0; }
+.mask-pop dl { margin: 0; display: grid; gap: 4px; } .mask-pop dl > div { display: grid; grid-template-columns: 112px 1fr; gap: 8px; align-items: baseline; } .mask-pop dt { font-weight: 600; } .mask-pop dd { margin: 0; color: var(--ink-2); }
+.cvss-box { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.cvss-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.cvss-big { font-size: 28px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.cvss-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; font-size: var(--fs-sm); } .cvss-facts dt { color: var(--muted); } .cvss-facts dd { margin: 0; overflow-wrap: anywhere; }
+.vdb-prods { max-width: 220px; overflow-wrap: anywhere; }
+.kev-line { margin-top: 4px; }
+@media (max-width: 1600px) { .hide-md { display: none; } }
+@media (max-width: 1300px) { .hide-lg { display: none; } }
+.sm-stack { display: none; }
+@media (max-width: 700px) { .sm-stack { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; } .table.virt td:nth-child(2):has(.vdb-title) { min-width: 0; } }
+.gs-note { padding: 8px 12px 4px; margin-top: 4px; border-top: 1px solid var(--line); color: var(--muted); font-size: var(--fs-xs); list-style: none; }
+.badge.wrap { white-space: normal; max-width: 150px; line-height: 1.25; padding-block: 3px; }

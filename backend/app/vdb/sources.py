@@ -9,10 +9,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..models import VdbRecord, VdbSource
+from ..models import VdbRecord, VdbSource, utcnow
 from . import parsers, store
 from .fetch import FetchError, Http
 from .normalize import Rec
@@ -50,11 +50,11 @@ class RunCtx:
     new_cursor: dict | None = None
     generation: int = 1
 
-    async def save(self, recs: list[Rec], *, refresh: bool = True) -> None:
+    async def save(self, recs: list[Rec], *, refresh: bool = True, force: bool = False) -> None:
         """Записать пачку: в активное поколение (инкрементальные источники — с пересчётом сводки) либо в подготавливаемое (refresh=False)."""
         self.fetched += len(recs)
         async with self.sm() as db:
-            n, keys = await store.save_batch(db, self.generation, recs)
+            n, keys = await store.save_batch(db, self.generation, recs, force=force)
             if refresh and keys:
                 await store.refresh_vulns(db, keys)
             await db.commit()
@@ -195,6 +195,45 @@ async def run_nvd(ctx: RunCtx) -> None:
         await ctx.sleep(delay)
     if kev[limit:]:
         await ctx.progress(f"NVD: сведения по {len(kev) - limit} эксплуатируемым CVE будут догружены следующими запусками")
+    await _nvd_rescore(ctx, delay)
+
+
+async def _nvd_rescore(ctx: RunCtx, delay: float, max_pages: int = 40) -> None:
+    """Повторное получение оценок CVSS: записи NVD, сохранённые прежней версией без списка оценок (scores_at пуст), заменяются целиком (ключ ext_id — дублей нет).
+    Окно по дате публикации читается страницами (до 2000 записей на запрос), но сохраняются только записи, которые уже есть в локальной базе: чужие CVE из окна не загружаются.
+    Если в окне ждут обновления лишь несколько записей, они запрашиваются по одной. За запуск не больше `max_pages` запросов, остальное — в следующий раз.
+    Записи, которых NVD уже не отдаёт (отозваны), помечаются проверенными, чтобы их не запрашивать снова."""
+    pub = VdbRecord.published
+    cond = (VdbRecord.source == "nvd", VdbRecord.scores_at.is_(None), pub.is_not(None))
+    pages = 0
+    while pages < max_pages:
+        async with ctx.sm() as db:
+            lo = (await db.execute(select(func.min(pub)).join(VdbSource, store.active(VdbRecord)).where(*cond))).scalar_one()
+            if lo is None:
+                return
+            lo = (lo if lo.tzinfo else lo.replace(tzinfo=timezone.utc)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end = min(lo + NVD_WINDOW, ctx.now)
+            ids = select(VdbRecord.id).join(VdbSource, store.active(VdbRecord)).where(*cond, pub >= lo, pub < end + timedelta(days=1))
+            pending = set((await db.execute(select(VdbRecord.ext_id).where(VdbRecord.id.in_(ids)))).scalars().all())
+        if len(pending) <= 8:
+            for cid in sorted(pending):
+                doc = await ctx.http.json(NVD_URL, {"cveId": cid})
+                recs = [r for r in (parsers.parse_nvd(i) for i in (doc or {}).get("vulnerabilities") or []) if r is not None and r.ext_id in pending]
+                if recs:
+                    await ctx.save(recs, force=True)
+                pages += 1
+                await ctx.sleep(delay)
+        else:
+            async for _tot, items in _nvd_pages(ctx, {"pubStartDate": _nvd_dt(lo), "pubEndDate": _nvd_dt(end)}, delay):
+                pages += 1
+                recs = [r for r in (parsers.parse_nvd(i) for i in items) if r is not None and r.ext_id in pending]
+                if recs:
+                    await ctx.save(recs, force=True)
+                await ctx.progress(f"NVD: повторное получение оценок CVSS, окно {lo:%Y-%m-%d}…{end:%Y-%m-%d}")
+                await ctx.sleep(delay)
+        async with ctx.sm() as db:      # окно прочитано целиком: оставшиеся без оценок записи NVD больше не отдаёт
+            await db.execute(update(VdbRecord).where(VdbRecord.id.in_(ids)).values(scores_at=utcnow()))
+            await db.commit()
 
 
 # ------------------------------------------------------------------------------------------------ OSV

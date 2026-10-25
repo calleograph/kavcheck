@@ -4,7 +4,7 @@ import { ConfirmDialog } from "../../components/Dialogs";
 import { Icon } from "../../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, type Chunk } from "../../components/Infinite";
 import { useToast } from "../../components/Toast";
-import { Empty, SkelRows } from "../../components/ui";
+import { Empty, SkelRows, MaskHint } from "../../components/ui";
 import { fmt } from "../../util";
 
 const LEVEL: Record<string, [string, string]> = { debug: ["отладка", "outline"], info: ["сведения", ""], warn: ["предупреждение", "warn"], error: ["ошибка", "err"] };
@@ -27,7 +27,7 @@ export function JournalAdmin() {
   return (
     <>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Сообщение, событие, пользователь, источник" aria-label="Поиск по журналу" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Сообщение, событие, пользователь, источник" aria-label="Поиск по журналу" /><MaskHint /></div>
         <select value={range} onChange={(e) => setRange(e.target.value)} aria-label="Период" className="w-auto">{RANGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}<option value="custom">свой период…</option></select>
         {range === "custom" && <><input type="datetime-local" className="w-auto" value={since} onChange={(e) => setSince(e.target.value)} aria-label="С" />
           <input type="datetime-local" className="w-auto" value={until} onChange={(e) => setUntil(e.target.value)} aria-label="По" /></>}
@@ -68,7 +68,7 @@ export function AuditAdmin() {
   return (
     <>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Кто, что или объект" aria-label="Поиск" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Кто, что или объект" aria-label="Поиск" /><MaskHint /></div>
         <input className="mono w-md" value={action} onChange={(e) => setAction(e.target.value)} placeholder="report." aria-label="Действие начинается с" />
         <p className="note">Хранится отдельно от журнала событий. Пароли и секреты не записываются; у проверок подключения указана длительность.</p>
       </div>

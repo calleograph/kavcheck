@@ -5,7 +5,7 @@ import { NoSource, type Ctx } from "../App";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { Icon } from "../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
-import { Dock, Empty, PageHead, SkelRows, SortTh, Tabs } from "../components/ui";
+import { Dock, Empty, PageHead, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
 import { CatalogView, PublishersView } from "./CatalogPage";
 import { fmtDate, num, plural } from "../util";
 
@@ -56,7 +56,7 @@ function Registry({ ctx }: { ctx: Ctx }) {
   return (
     <>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Название или часть названия" aria-label="Поиск по названию" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Название или часть названия" aria-label="Поиск по названию" /><MaskHint /></div>
         <input value={publisher} onChange={(e) => setPublisher(e.target.value)} placeholder="Производитель" aria-label="Производитель" className="w-md" />
         <input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Версия начинается с" aria-label="Версия" className="w-md" />
         <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Платформа" className="w-auto"><option value="">Все платформы</option><option value="windows">Windows</option><option value="linux">Linux</option></select>

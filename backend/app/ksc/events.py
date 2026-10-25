@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from ..search import mssql_like
 from . import queries as q
 from .driver import SourceClient
 from .hosts import _utc, ip_str
@@ -99,9 +100,10 @@ def where(*, days: int, types: list[str], host_id: int | None, qtext: str, threa
     if host_id:
         parts.append("e.nHostId = %(host)s")
         params["host"] = int(host_id)
-    if qtext.strip():
+    like = mssql_like(qtext)
+    if like:
         parts.append("(h.wstrDisplayName LIKE %(q)s OR e.wstrPar2 LIKE %(q)s OR e.wstrPar5 LIKE %(q)s OR e.wstrPar1 LIKE %(q)s OR e.wstrPar7 LIKE %(q)s)")
-        params["q"] = f"%{qtext.strip()}%"
+        params["q"] = like
     if threat.strip():
         parts.append("(e.wstrPar5 = %(threat)s OR (e.strEventType = 'GNRL_EV_ATTACK_DETECTED' AND e.wstrPar1 = %(threat)s))")
         params["threat"] = threat.strip()

@@ -15,7 +15,7 @@ from app.models import CatalogProduct, CatalogState, VdbFinding, VdbMapping, Vdb
 from app.vdb import match as M
 from app.vdb import parsers, store
 from app.vdb.fetch import Http
-from app.vdb.normalize import Aff, Rec, parse_cpe, parse_purl
+from app.vdb.normalize import Aff, Rec, make_score, parse_cpe, parse_purl
 from app.vdb.sync import VdbSync, analyze
 from tests.conftest import login
 
@@ -175,15 +175,16 @@ def rec(source, ext, key=None, **kw):
 async def test_store_idempotent_merge_and_swap(app):
     async with app.state.session_maker() as db:
         await store.ensure_sources(db)
-        n, keys = await store.save_batch(db, 1, [rec("nvd", "CVE-1", severity="high", score=8.1, title="t")])
-        n2, _ = await store.save_batch(db, 1, [rec("nvd", "CVE-1", severity="high", score=8.1, title="t")])
+        nvd_score = make_score("3.1", 8.1, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N", source="nvd", kind="primary")
+        n, keys = await store.save_batch(db, 1, [rec("nvd", "CVE-1", severity="high", score=8.1, scores=[nvd_score], title="t")])
+        n2, _ = await store.save_batch(db, 1, [rec("nvd", "CVE-1", severity="high", score=8.1, scores=[nvd_score], title="t")])
         assert n == 1 and n2 == 1                                                # даты изменения нет — запись обновляется, но дубля не появляется
         assert int((await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.ext_id == "CVE-1"))).scalar_one()) == 1
-        await store.save_batch(db, 1, [rec("kev", "CVE-1", exploited=True), rec("bdu", "BDU:1", "CVE-1", severity="critical", score=9.8, fix_available=True)])
+        await store.save_batch(db, 1, [rec("kev", "CVE-1", exploited=True), rec("bdu", "BDU:1", "CVE-1", severity="critical", score=9.8, scores=[make_score("3.0", 9.8, source="bdu", kind="primary")], fix_available=True)])
         await store.refresh_vulns(db, {"CVE-1"})
         await db.commit()
         v = await db.get(VdbVuln, "CVE-1")
-        assert v.exploited and v.sev_rank == 4 and v.score == 9.8 and v.sources == "bdu,kev,nvd" and "bdu:1" in v.ids_text
+        assert v.exploited and (v.sev_rank, v.score, v.score_version, v.score_source) == (3, 8.1, "3.1", "nvd") and v.sources == "bdu,kev,nvd" and "bdu:1" in v.ids_text
         src = await db.get(VdbSource, "kev")
         old = src.active_generation
         gen = await store.next_generation(db, "kev")

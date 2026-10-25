@@ -17,6 +17,7 @@ from ..ksc import queries as q
 from ..ksc import versions
 from ..ksc.driver import KscError, Session
 from ..ksc.grouping import Rule
+from ..search import matcher
 from .builder import Cancelled, _hosts, _installs
 
 Progress = Callable[[str], None]
@@ -182,7 +183,7 @@ def build_source(s: Session, *, source_name: str, items: list[dict], rules: dict
     hosts = _hosts(s, host_ids, cancelled)
     groups = {int(r["group_id"]): {"name": r["name"], "parent_id": r["parent_id"]} for r in s.query(q.GROUPS_ALL, max_rows=100_000)} if host_ids else {}
     releases = H.releases_sync(s, host_ids) if host_ids else {}
-    gc = (group_contains or "").lower()
+    gc = matcher(group_contains)
     rows: list[dict] = []
     hidden: set[int] = set()
     not_computers = 0
@@ -192,7 +193,7 @@ def build_source(s: Session, *, source_name: str, items: list[dict], rules: dict
             not_computers += 1
             continue
         hr = H.host_row(h, groups, now, releases.get(int(h["host_id"])))
-        if gc and gc not in hr["group"].lower():
+        if gc and not gc(hr["group"]):
             continue
         if not include_inactive and active_days is not None and (hr["days_since_connection"] is None or hr["days_since_connection"] > active_days):
             hidden.add(hr["host_id"])

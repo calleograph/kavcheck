@@ -11,6 +11,7 @@ from ..ksc import queries as q
 from ..ksc import versions
 from ..ksc.driver import KscError, Session
 from ..ksc.grouping import Rule
+from ..search import matcher
 
 Progress = Callable[[str], None]
 CancelCheck = Callable[[], bool]
@@ -123,7 +124,7 @@ def build_software(conn: Session, params: dict, rule: Rule | None, *, max_rows: 
     releases = H.releases_sync(conn, host_ids) if host_ids else {}
     active_days = params.get("active_days")
     include_inactive = bool(params.get("include_inactive"))
-    group_contains = (params.get("group_contains") or "").lower()
+    group_contains = matcher(params.get("group_contains"))
     rows, excluded_inactive, excluded_missing = [], set(), 0
     for i in installs:
         h = hosts.get(int(i["host_id"]))
@@ -132,7 +133,7 @@ def build_software(conn: Session, params: dict, rule: Rule | None, *, max_rows: 
             continue
         p = by_id[int(i["product_id"])]
         hr = H.host_row(h, groups, now, releases.get(int(h["host_id"])))
-        if group_contains and group_contains not in hr["group"].lower():
+        if group_contains and not group_contains(hr["group"]):
             continue
         if not include_inactive and active_days is not None and (hr["days_since_connection"] is None or hr["days_since_connection"] > active_days):
             excluded_inactive.add(hr["host_id"])

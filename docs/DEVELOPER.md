@@ -43,6 +43,10 @@ Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=
 
 Знания о структуре KSC — `docs/ksc/`.
 
+## Поиск со звёздочкой
+
+Все текстовые поиски идут через `backend/app/search.py`. `clean` — проверка и нормализация запроса (предел 200 знаков, не больше 6 звёздочек, иначе `MaskError` → ответ 422); `mssql_like(текст, mode)` — шаблон для `LIKE %(p)s` в SQL Server (`%`, `_`, `[` экранируются скобками); `column_like`/`any_of` — условия для внутренней базы (PostgreSQL, SQLite); `matcher`/`any_field` — тот же поиск для списков в памяти. Обычный текст — «содержит» (или «начинается с» при `mode="prefix"`), текст со звёздочкой — вся строка целиком. В полях запросов схем (`api/schemas.py`) используйте тип `MaskText`. На стороне интерфейса — `src/mask.ts` и `MaskHint`. Новое поле поиска: взять условие из `search.py`, добавить тест в `tests/test_search.py` и, для KSC, в `tests/test_ksc_live.py`.
+
 ## Добавить отчёт
 
 1. `reports/builder.py`: `build_<kind>(conn, params, …) -> (rows, summary)`; колонки `<KIND>_COLUMNS`.

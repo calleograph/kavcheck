@@ -6,7 +6,7 @@ import { Fetched, OnlineBadge } from "../components/Common";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
-import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum } from "../components/ui";
+import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum, MaskHint } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
 
 export const PROBLEM_TONE: Record<ProblemKey, "err" | "warn"> = { no_av: "err", rtp_off: "err", infected: "err", license: "err", bases_old: "warn", scan_old: "warn", reboot: "warn" };
@@ -122,7 +122,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
       <div className="section-head" id="prot-hosts"><h2>Компьютеры</h2>{!list.initial && <span className="count">{num(list.total)}</span>}<div className="spacer" />
         {canReport && <button className="btn" onClick={() => setReport("all")} disabled={list.initial || !list.total}><Icon name="file" />{problem && problem !== "ok" ? `Отчёт: ${pTitle}` : "Отчёт по этому списку"}</button>}</div>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер или IP-адрес" aria-label="Компьютер" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер или IP-адрес" aria-label="Компьютер" /><MaskHint /></div>
         <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа" aria-label="Группа администрирования" />
         <Segmented label="Показать" value={problem === "ok" ? "ok" : problem ? "problem" : ""} onChange={(v) => setParams({ problem: v === "ok" ? "ok" : "" })}
           options={[["", "Все"], ["ok", "Без проблем"], ...(problem && problem !== "ok" ? [["problem", pTitle] as [string, string]] : [])]} />

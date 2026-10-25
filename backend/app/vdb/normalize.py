@@ -5,8 +5,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "": 0}
-SEV_RU = {"critical": "Критическая", "high": "Высокая", "medium": "Средняя", "low": "Низкая", "": "Нет оценки"}
+SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "": 0, "none": 0}
+SEV_RU = {"critical": "Критическая", "high": "Высокая", "medium": "Средняя", "low": "Низкая", "none": "Нет (None)", "": "Нет данных"}
+# Основная оценка CVSS (порядок выбора): 1) CVSS 3.x и 4.0 важнее 2.0; 2) оценка аналитиков NVD или БДУ (primary) важнее оценки поставщика (CNA) и вычисленной по вектору;
+# 3) из равных — более новая методика (4.0 → 3.1 → 3.0); 4) затем источник (NVD → БДУ → OSV).
+VERSION_RANK = {"4.0": 4, "3.1": 3, "3.0": 2, "2.0": 1}
+SCORE_SOURCES = ("nvd", "bdu", "osv")
 STOP = {"the", "for", "of", "and", "inc", "llc", "ltd", "corp", "corporation", "gmbh", "co", "company", "group", "foundation", "project", "team", "software", "systems",
         "windows", "win", "win32", "win64", "x64", "x86", "amd64", "i386", "64", "32", "bit", "64bit", "32bit", "edition", "version", "update", "runtime", "release",
         "ооо", "зао", "ао", "компания", "и"}
@@ -28,10 +32,53 @@ def tokens(s: str) -> list[str]:
     return out
 
 
-def sev_from_score(score: float | None) -> str:
+def sev_from_score(score: float | None, version: str = "3.1") -> str:
+    """Уровень по оценке: CVSS 3.x и 4.0 — None 0.0, Low 0.1–3.9, Medium 4.0–6.9, High 7.0–8.9, Critical 9.0–10.0; CVSS 2.0 не имеет уровней None и Critical (High — от 7.0). Нет оценки — пустая строка."""
     if score is None:
         return ""
-    return "critical" if score >= 9 else "high" if score >= 7 else "medium" if score >= 4 else "low" if score > 0 else ""
+    if score <= 0:
+        return "none"
+    if version == "2.0":
+        return "high" if score >= 7 else "medium" if score >= 4 else "low"
+    return "critical" if score >= 9 else "high" if score >= 7 else "medium" if score >= 4 else "low"
+
+
+def cvss_version(vector: str, default: str = "") -> str:
+    """Версия методики по вектору: префикс `CVSS:3.1/`; вектор CVSS 2.0 без префикса (`AV:N/AC:L/Au:N/…`). Неизвестная — `default`."""
+    m = re.match(r"CVSS:(\d\.\d)/", vector or "")
+    if m:
+        return m.group(1) if m.group(1) in VERSION_RANK else default
+    if re.search(r"(^|/)Au:[NSM]", vector or ""):
+        return "2.0"
+    return "3.0" if re.search(r"(^|/)PR:[NLH]/UI:[NR]", vector or "") else default      # БДУ даёт векторы CVSS 3.0 без префикса
+
+
+def make_score(version: str, score, vector: str = "", *, source: str, origin: str = "", kind: str = "", updated: datetime | None = None) -> dict | None:
+    """Одна оценка CVSS для хранения. Недостоверные значения (не число, вне 0–10, неизвестная методика) отбрасываются — ноль вместо отсутствующей оценки не подставляется."""
+    try:
+        val = round(float(score), 1)
+    except (TypeError, ValueError):
+        return None
+    version = cvss_version(vector, version) or version
+    if version not in VERSION_RANK or not 0 <= val <= 10:
+        return None
+    return {"version": version, "score": val, "vector": (vector or "")[:200], "severity": sev_from_score(val, version), "source": source, "origin": origin[:80], "kind": kind,
+            "updated": updated.isoformat() if updated else None}
+
+
+def score_key(s: dict):
+    src = SCORE_SOURCES.index(s["source"]) if s.get("source") in SCORE_SOURCES else len(SCORE_SOURCES)
+    return (s["version"] == "2.0", s.get("kind") != "primary", -VERSION_RANK.get(s["version"], 0), src, -s["score"])
+
+
+def pick_primary(scores: list[dict]) -> dict | None:
+    """Основная оценка из всех известных (правило — у VERSION_RANK); остальные остаются в списке и показываются в карточке."""
+    return min(scores, key=score_key) if scores else None
+
+
+def legacy_score(source: str, score, vector: str, updated: datetime | None) -> dict | None:
+    """Оценка записи, загруженной до появления списка оценок: версия — по вектору (NVD без префикса — CVSS 2.0), источник оценки — сама запись."""
+    return make_score("", score, vector, source=source, kind="primary" if source == "nvd" else "", updated=updated)
 
 
 def parse_dt(v) -> datetime | None:
@@ -87,6 +134,14 @@ def platform_of(target_sw: str) -> str:
     return "plugin:" + t
 
 
+def set_scores(rec: "Rec", scores: list[dict | None]) -> None:
+    """Записать все оценки и по основной из них заполнить score/vector/severity записи; без числовых оценок остаётся уровень, который назвал источник (severity)."""
+    rec.scores = [s for s in scores if s]
+    main = pick_primary(rec.scores)
+    if main:
+        rec.score, rec.vector, rec.severity = main["score"], main["vector"], main["severity"]
+
+
 @dataclass
 class Aff:
     vendor: str = ""
@@ -118,6 +173,7 @@ class Rec:
     severity: str = ""
     score: float | None = None
     vector: str = ""
+    scores: list[dict] = field(default_factory=list)      # все оценки CVSS записи (см. make_score); score/vector — основная из них
     published: datetime | None = None
     modified: datetime | None = None
     exploited: bool = False

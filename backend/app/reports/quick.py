@@ -22,6 +22,7 @@ from ..ksc import protection as P
 from ..ksc import queries as q
 from ..ksc import vulns as V
 from ..ksc.driver import KscError, SourceClient
+from ..search import any_field, matcher
 
 QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns")
 KIND_TITLE = {"quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам"}
@@ -146,12 +147,12 @@ async def build_vulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         hosts[hid]["is_slave"] = bool(r.get("is_slave"))
     keep, info = apply_scope({h: v for h, v in hosts.items() if not (ctx.exclude_slaves and v["is_slave"])}, p, ctx)
     not_computers = len({h for h, v in hosts.items() if ctx.exclude_slaves and v["is_slave"]})
-    needle, gneedle = (p.get("q") or "").strip().lower(), (p.get("group_contains") or "").strip().lower()
+    needle, gneedle = any_field(p.get("q")), matcher(p.get("group_contains"))
     used = [r for r in raw if int(r["host_id"]) in keep]
     if needle:
-        used = [r for r in used if needle in f"{hosts[int(r['host_id'])]['name']} {hosts[int(r['host_id'])]['fqdn']} {hosts[int(r['host_id'])]['ip']}".lower()]
+        used = [r for r in used if needle(*(hosts[int(r["host_id"])][k] for k in ("name", "fqdn", "ip")))]
     if gneedle:
-        used = [r for r in used if gneedle in hosts[int(r["host_id"])]["group"].lower()]
+        used = [r for r in used if gneedle(hosts[int(r["host_id"])]["group"])]
     names = await V.names_for(client, sorted({int(r["descr_id"]) for r in used}))
     rows: list[dict] = []
     for r in used:

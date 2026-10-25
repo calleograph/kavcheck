@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from ..search import mssql_like
 from . import queries as q
 
 ACTIVITY = [(1, "≤1 сут"), (3, "≤3 сут"), (7, "≤7 сут"), (14, "≤14 сут"), (30, "≤30 сут")]
@@ -65,15 +66,12 @@ def hosts_where(*, qtext: str = "", group_contains: str = "", os_contains: str =
     where, params = [], {}
     if exclude_slaves:
         where.append("h.bIsSlaveServer = 0")
-    if qtext:
-        where.append("(h.wstrDisplayName LIKE %(q)s OR h.wstrDnsName LIKE %(q)s)")
-        params["q"] = f"%{qtext}%"
-    if group_contains:
-        where.append("g.wstrName LIKE %(g)s")
-        params["g"] = f"%{group_contains}%"
-    if os_contains:
-        where.append("h.wstrOSName LIKE %(os)s")
-        params["os"] = f"%{os_contains}%"
+    for text, sql, name in ((qtext, "(h.wstrDisplayName LIKE %(q)s OR h.wstrDnsName LIKE %(q)s)", "q"), (group_contains, "g.wstrName LIKE %(g)s", "g"),
+                            (os_contains, "h.wstrOSName LIKE %(os)s", "os")):
+        like = mssql_like(text)
+        if like:
+            where.append(sql)
+            params[name] = like
     if active_days is not None and not inactive_only:
         where.append("h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())")
         params["days"] = int(active_days)

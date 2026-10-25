@@ -144,8 +144,20 @@ class VdbSync:
                 file.unlink(missing_ok=True)
         await self.analysis_tick()
 
+    async def upgrade_scores(self) -> int:
+        async with self._sm() as db:
+            n = await store.upgrade_scores(db)
+            await db.commit()
+        if n:
+            log.info("Оценки CVSS преобразованы для %s записей", n)
+        return n
+
     async def loop(self) -> None:
         await asyncio.sleep(10)
+        try:
+            await self.upgrade_scores()
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось преобразовать прежние оценки CVSS")
         while True:
             try:
                 await self.tick()

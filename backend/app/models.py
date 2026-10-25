@@ -453,6 +453,8 @@ class VdbRecord(Base):
     severity: Mapped[str] = mapped_column(String(10), nullable=False, default="")         # critical | high | medium | low | ""
     score: Mapped[float | None] = mapped_column(Float)
     vector: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    scores: Mapped[list] = mapped_column(JSONType, nullable=False, default=list, server_default="[]")   # все оценки CVSS записи: версия, балл, вектор, уровень, источник, дата (vdb/normalize.make_score)
+    scores_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                       # когда оценки получены разбором с их списком; пусто — запись из прежней версии, оценки дозагружаются
     published: Mapped[datetime | None] = mapped_column(UTCDateTime)
     modified: Mapped[datetime | None] = mapped_column(UTCDateTime)
     exploited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)       # подтверждённая эксплуатация (CISA KEV)
@@ -500,7 +502,9 @@ class VdbVuln(Base):
     vuln_key: Mapped[str] = mapped_column(String(80), primary_key=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     sev_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)  # 4 critical … 1 low, 0 — нет оценки
-    score: Mapped[float | None] = mapped_column(Float)
+    score: Mapped[float | None] = mapped_column(Float, index=True)                        # основная оценка CVSS 0.0–10.0; пусто — достоверной оценки нет
+    score_version: Mapped[str] = mapped_column(String(4), nullable=False, default="", server_default="")   # методика основной оценки: 4.0 | 3.1 | 3.0 | 2.0
+    score_source: Mapped[str] = mapped_column(String(16), nullable=False, default="", server_default="")   # источник основной оценки: nvd | bdu | osv
     exploited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     has_fix: Mapped[bool | None] = mapped_column(Boolean)
     published: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)

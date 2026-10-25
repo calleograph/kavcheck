@@ -102,6 +102,7 @@ export function GlobalSearch({ sourceId }: { sourceId: string | null }) {
           {!hosts.length && !products.length && <li className="gs-empty" role="presentation">{busy ? "Поиск…" : "Точных совпадений нет — поищите в разделах:"}</li>}
           {(hosts.length > 0 || products.length > 0) && <li className="gs-sep" role="presentation" />}
           {hits.slice(firstProduct + products.length).map((h, i) => option(h, firstProduct + products.length + i))}
+          <li className="gs-note" role="presentation">Звёздочка * заменяет любые символы: <span className="mono">SRV-*</span>, <span className="mono">*-DB</span>, <span className="mono">*SQL*</span></li>
         </ul>)}
     </div>
   );

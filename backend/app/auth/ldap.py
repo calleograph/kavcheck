@@ -17,6 +17,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from ..search import clean, is_mask
+
 LDAP_MATCHING_RULE_IN_CHAIN = "1.2.840.113556.1.4.1941"
 _UAC_DISABLED = 0x2
 
@@ -592,13 +594,14 @@ def search_groups(cfg: LdapConfig, query: str, limit: int = 20) -> list[dict]:
     """Группы каталога по части названия — для выбора DN в правилах доступа (сервисная учётная запись, только чтение)."""
     from ldap3 import SUBTREE  # noqa: PLC0415
 
-    q = escape_filter(query.strip())
-    if len(q) < 2:
+    t = clean(query)
+    if len(t.replace("*", "")) < 2:
         return []
+    q = "*".join(escape_filter(p) for p in t.split("*")) if is_mask(t) else f"*{escape_filter(t)}*"
     svc = _service(cfg)
     try:
         classes = "(|(objectClass=group)(objectClass=groupOfNames)(objectClass=groupOfUniqueNames)(objectClass=posixGroup))"
-        svc.search(cfg.base_dn, f"(&{classes}(|(cn=*{q}*)(sAMAccountName=*{q}*)(displayName=*{q}*)))", search_scope=SUBTREE,
+        svc.search(cfg.base_dn, f"(&{classes}(|(cn={q})(sAMAccountName={q})(displayName={q})))", search_scope=SUBTREE,
                    attributes=["cn", "description"], size_limit=limit)
         out = []
         for e in svc.response or []:

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..config import Settings
 from ..ksc import catalog_build as CB
 from ..ksc.driver import KscError, Session
+from .. import search as msearch
 from ..models import CatalogOverride, CatalogProduct, CatalogState, KscSource, utcnow
 from .audit import Journal
 from .settings import SettingsService
@@ -255,6 +256,15 @@ def product_out(p: CatalogProduct, *, all_hosts: bool, full: bool = False) -> di
     return out
 
 
+def text_conds(q: str) -> list:
+    """Условия поиска по каталогу. Обычный текст — все слова (в любом порядке) встречаются в названии, производителе или ключе. Маска со звёздочкой — вся строка
+    целиком сопоставляется с названием, производителем или ключом продукта (`Chrome*`, `*SQL*`, `Microsoft*Server*`)."""
+    q = msearch.clean(q)
+    if msearch.is_mask(q):
+        return [or_(*(msearch.column_like(c, q) for c in (CatalogProduct.name, CatalogProduct.publisher, CatalogProduct.key)))]
+    return [CatalogProduct.search.like(msearch.local_like(w), escape="\\") for w in q.split()[:5]]
+
+
 async def query(db: AsyncSession, source_id: uuid.UUID, *, q: str = "", publisher_key: str = "", platform: str = "", sort: str = "hosts", desc: bool = True,
                 all_hosts: bool = False, components: bool = False, offset: int = 0, limit: int = 50, roots: bool = False, family: str = "") -> dict:
     """roots — только основные продукты семейств (компоненты раскрываются запросом family); family — продукты одного семейства без основного."""
@@ -264,9 +274,7 @@ async def query(db: AsyncSession, source_id: uuid.UUID, *, q: str = "", publishe
         conds += [CatalogProduct.family_key == family, CatalogProduct.key != family]
     elif roots:
         conds.append(or_(CatalogProduct.family_key == CatalogProduct.key, CatalogProduct.family_key == ""))
-    if q.strip():
-        for word in q.strip().lower().split()[:5]:
-            conds.append(CatalogProduct.search.like(f"%{word}%"))
+    conds += text_conds(q)
     if publisher_key:
         conds.append(CatalogProduct.publisher_key == publisher_key)
     if platform in ("windows", "linux"):
@@ -290,8 +298,10 @@ async def query(db: AsyncSession, source_id: uuid.UUID, *, q: str = "", publishe
 async def publishers(db: AsyncSession, source_id: uuid.UUID, *, q: str = "", all_hosts: bool = False, offset: int = 0, limit: int = 50) -> dict:
     hosts_col = CatalogProduct.hosts_all if all_hosts else CatalogProduct.hosts_active
     conds = [CatalogProduct.source_id == source_id, hosts_col > 0, CatalogProduct.component.is_(False), CatalogProduct.publisher_key != ""]
-    if q.strip():
-        conds.append(or_(func.lower(CatalogProduct.publisher).like(f"%{q.strip().lower()}%"), CatalogProduct.search.like(f"%{q.strip().lower()}%")))
+    if msearch.is_mask(q):
+        conds += text_conds(q)
+    elif msearch.clean(q):
+        conds.append(or_(msearch.column_like(CatalogProduct.publisher, q), CatalogProduct.search.like(msearch.local_like(q), escape="\\")))
     grp = (select(CatalogProduct.publisher_key, func.max(CatalogProduct.publisher).label("publisher"), func.count().label("products"),
                   func.max(hosts_col).label("max_hosts"), func.sum(hosts_col).label("sum_hosts"))
            .where(*conds).group_by(CatalogProduct.publisher_key))
@@ -311,8 +321,7 @@ async def product(db: AsyncSession, source_id: uuid.UUID, key: str) -> CatalogPr
 async def search_keys(db: AsyncSession, source_ids: list[uuid.UUID], q: str, limit: int = 20) -> list[dict]:
     """Поиск продукта для конструктора отчётов: по всем выбранным источникам, ключ одинаков во всех источниках."""
     conds = [CatalogProduct.source_id.in_(source_ids), CatalogProduct.hosts_all > 0]
-    for word in q.strip().lower().split()[:5]:
-        conds.append(CatalogProduct.search.like(f"%{word}%"))
+    conds += text_conds(q)
     rows = (await db.execute(select(CatalogProduct.key, func.max(CatalogProduct.name), func.max(CatalogProduct.publisher), func.sum(CatalogProduct.hosts_active),
                                     func.sum(CatalogProduct.hosts_all), func.max(CatalogProduct.latest_version), func.max(cast(CatalogProduct.component, Integer)))
                              .where(*conds).group_by(CatalogProduct.key).order_by(func.sum(CatalogProduct.hosts_active).desc()).limit(limit))).all()

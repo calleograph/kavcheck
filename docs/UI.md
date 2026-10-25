@@ -73,6 +73,8 @@
 |---|---|
 | Заголовок страницы и её действия | `PageHead` |
 | Ключевые числа | `.meters` с `.meter` (`.meter-btn` — фильтр, `.meter-link` — переход) |
+| Поле поиска со звёздочкой | `.input-icon` + `MaskHint` (`components/ui.tsx`): кнопка «*» с подсказкой и примерами; фильтры по уже загруженным данным — `maskMatcher` (`src/mask.ts`), те же правила, что на сервере |
+| Оценка CVSS | `CvssCell` (балл и версия, цветовая полоса уровня) и `LevelBadge` (уровень) в `components/VdbBits.tsx`; нет оценки — «Нет данных» |
 | Фильтры над таблицей | `.toolbar`: поиск `.grow`, поля `.w-md`, `Segmented`, переключатель; активные фильтры — `.chip` в `.toolbar-foot` |
 | Таблица | `.table-scroll` + `.table`; `is-busy` — идёт загрузка; `.hide-sm` — столбец скрывается до 700 px; `SortTh` — сортировка |
 | Длинный список | `useInfinite` + `VirtualRows` + `ListFoot` (`components/Infinite.tsx`); фильтры — `useKept` |

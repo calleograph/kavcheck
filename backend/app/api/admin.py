@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth.deps import SessionUser, get_db, require_admin
 from ..ksc import schema as ksc_schema
 from ..ksc.grouping import BUILTIN_RULES, validate_rule
+from ..search import any_of
 from ..models import AuditLog, EventLog, GroupingRule, KscSource, ReportJob, User, utcnow
 from ..services import local_admin as la
 from ..services.audit import write_audit
@@ -35,9 +36,8 @@ def user_out(u: User) -> dict:
 @router.get("/users")
 async def users(q: str = Query("", max_length=100), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     stmt = select(User).order_by(User.display_name)
-    if q.strip():
-        like = f"%{q.strip().lower()}%"
-        stmt = stmt.where(func.lower(User.display_name).like(like) | func.lower(User.username).like(like))
+    if any_of(q, User.display_name, User.username) is not None:
+        stmt = stmt.where(any_of(q, User.display_name, User.username))
     return {"items": [user_out(u) for u in (await db.execute(stmt)).scalars().all()]}
 
 
@@ -292,9 +292,8 @@ async def catalog_rebuild(source_id: uuid.UUID, su: SessionUser = Depends(requir
 async def audit(q: str = Query("", max_length=200), action: str = Query("", max_length=80), since: datetime | None = None, until: datetime | None = None,
                 offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     stmt = select(AuditLog)
-    if q.strip():
-        like = f"%{q.strip().lower()}%"
-        stmt = stmt.where(func.lower(AuditLog.actor).like(like) | func.lower(AuditLog.action).like(like) | func.lower(AuditLog.target_id).like(like))
+    if any_of(q, AuditLog.actor, AuditLog.action, AuditLog.target_id) is not None:
+        stmt = stmt.where(any_of(q, AuditLog.actor, AuditLog.action, AuditLog.target_id))
     if action:
         stmt = stmt.where(AuditLog.action.like(f"{action}%"))
     if since:
@@ -313,9 +312,8 @@ async def journal(q: str = Query("", max_length=200), level: str = Query("", pat
                   offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     """Журнал событий с фильтрами: период (готовый или произвольный since/until), уровень, компонент (category), текст."""
     stmt = select(EventLog)
-    if q.strip():
-        like = f"%{q.strip().lower()}%"
-        stmt = stmt.where(func.lower(func.coalesce(EventLog.message, "")).like(like) | func.lower(func.coalesce(EventLog.user, "")).like(like) | func.lower(EventLog.event).like(like) | func.lower(func.coalesce(EventLog.source, "")).like(like))
+    if any_of(q, EventLog.message, EventLog.user, EventLog.event, EventLog.source) is not None:
+        stmt = stmt.where(any_of(q, EventLog.message, EventLog.user, EventLog.event, EventLog.source))
     if level == "warn":
         stmt = stmt.where(EventLog.level.in_(("warn", "error")))
     elif level:

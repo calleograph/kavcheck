@@ -55,7 +55,10 @@ export interface VulnDescr { descr_id: number; kla_id: string; severity: "critic
 export interface VulnListSummary { vulns: number; critical: number; high: number; warning: number; patchable: number; activity_days: number; fetched_at: string }
 export type VdbStatus = "confirmed" | "potential" | "clarify" | "fixed" | "insufficient";
 export interface VdbFinding { status: VdbStatus; status_ru: string; installs: number; hosts_max: number; new: boolean; first_seen_at: string | null; products: { key: string; name: string; versions: string[]; installs: number; hosts: number }[] }
-export interface VdbVulnRow { key: string; title: string; severity: string; severity_ru: string; sev_rank: number; score: number | null; exploited: boolean; has_fix: boolean | null; published: string | null; modified: string | null;
+/** Одна оценка CVSS: версия методики, балл 0.0–10.0, вектор, уровень, кто выставил (origin_label), источник данных, ссылка на первоисточник и дата обновления записи. */
+export interface VdbScore { version: string; score: number; vector: string; severity: string; severity_ru: string; source: string; source_title: string; origin: string; origin_label: string; kind: string;
+  updated: string | null; url: string; primary?: boolean }
+export interface VdbVulnRow { key: string; title: string; severity: string; severity_ru: string; severity_basis: "cvss" | "source" | ""; sev_rank: number; score: number | null; score_version: string; score_source: string; exploited: boolean; has_fix: boolean | null; published: string | null; modified: string | null;
   sources: string[]; ids: string[]; products: string[]; description: string; finding?: VdbFinding }
 export interface VdbRunRow { started_at: string | null; finished_at: string | null; trigger: string; status: string; fetched: number; changed: number; duration_ms: number | null; error: string | null }
 export interface VdbSourceInfo { key: string; title: string; url: string; terms: string; mode: "full" | "incremental"; enabled: boolean; interval_hours: number; settings: Record<string, unknown>; secret_set: boolean;
@@ -63,11 +66,11 @@ export interface VdbSourceInfo { key: string; title: string; url: string; terms:
   requested: boolean; can_restore: boolean; upload: boolean; runs: VdbRunRow[] }
 export interface VdbAffectedRow { vendor: string; product: string; ecosystem: string; cpe: string; purl: string; platform: string; exact: string; from: string; from_incl: boolean; to: string; to_incl: boolean; fixed: string;
   all_versions: boolean; version_text: string; conditional: boolean }
-export interface VdbRecordOut { source: string; title: string; ext_id: string; aliases: string[]; severity: string; severity_ru: string; score: number | null; vector: string; published: string | null; modified: string | null;
+export interface VdbRecordOut { source: string; scores: VdbScore[]; title: string; ext_id: string; aliases: string[]; severity: string; severity_ru: string; score: number | null; vector: string; published: string | null; modified: string | null;
   exploited: boolean; fix_available: boolean | null; fix_text: string; status: string; title_text: string; description: string; refs: { url: string; tags: string[] }[]; extra: Record<string, unknown>;
   affected: VdbAffectedRow[]; affected_total: number }
 export interface VdbMatchOut { product_key: string; product: string; version: string; status: VdbStatus; status_ru: string; basis: string; confidence: string; hosts: number; installs: number; claims: { source: string; status_ru: string; basis: string }[] }
-export interface VdbCard extends VdbVulnRow { records: VdbRecordOut[]; differences: { field: string; values: Record<string, string | number> }[]; infrastructure: { catalog: boolean; matches: VdbMatchOut[] } | null }
+export interface VdbCard extends VdbVulnRow { cvss: { primary: VdbScore; all: VdbScore[] } | null; records: VdbRecordOut[]; differences: { field: string; values: Record<string, string | number> }[]; infrastructure: { catalog: boolean; matches: VdbMatchOut[] } | null }
 export interface VdbMapping { id: string; vendor_key: string; product_key: string; catalog_key: string; action: "map" | "exclude"; note: string | null; created_by: string | null; created_at: string }
 export interface VdbCounts { total: number; new: number; new_exploited: number; new_critical: number; new_serious: number }
 export interface Template { id: string; name: string; kind: Job["kind"]; params: ReportParams & Partial<AuditParams>; shared: boolean; owner_id: string | null; created_at: string }

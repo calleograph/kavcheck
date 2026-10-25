@@ -6,7 +6,7 @@ import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
 import { Icon } from "../components/Icons";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
-import { Empty, PageHead, Segmented, SkelRows } from "../components/ui";
+import { Empty, PageHead, Segmented, SkelRows, MaskHint } from "../components/ui";
 import { fmt, num } from "../util";
 
 const PERIODS: [string, string][] = [["1", "Сутки"], ["7", "7 суток"], ["30", "30 суток"]];
@@ -124,7 +124,7 @@ export function EventList({ ctx, days, hostId, group, threat, onGroup, onThreat 
   return (
     <>
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={hostId ? "Угроза, объект или пользователь" : "Компьютер, угроза, объект или пользователь"} aria-label="Поиск событий" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={hostId ? "Угроза, объект или пользователь" : "Компьютер, угроза, объект или пользователь"} aria-label="Поиск событий" /><MaskHint /></div>
         <Segmented<EvFilter> label="Результат" value={group} onChange={onGroup} options={GROUP_OPTS} />
         {canReport && <button className="btn" onClick={() => setReport("all")} disabled={list.initial || !list.total}><Icon name="file" />Отчёт по списку</button>}
         {threat && <div className="toolbar-foot"><span className="chip">Угроза: <b className="mono">{threat}</b><button type="button" className="link-btn" onClick={() => onThreat("")}>сбросить</button></span></div>}

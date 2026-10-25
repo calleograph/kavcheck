@@ -256,3 +256,45 @@ def test_version_conditions_end_to_end(case):
         if not include_inactive:
             assert len(rows) == installs == summ["rows"], case
         assert all(r["condition"] == audit.item_condition(items[0]) for r in rows)             # условие в строках — ровно заданное
+
+
+# ------------------------------------------------------------------------------------------------ поиск со звёздочкой на SQL Server
+def _host_names(**filters) -> set[str]:
+    client = SourceClient(params(), name="test")
+    where, p = H.hosts_where(exclude_slaves=False, **filters)
+    rows = asyncio.run(client.run(q.HOSTS_PAGE.format(where=where, order=H.hosts_order("name", False)), {**p, "offset": 0, "limit": 50}, max_rows=50))
+    return {r["name"] for r in rows}
+
+
+def test_mask_hosts_begin_middle_end_multiple():
+    assert _host_names(qtext="*SQL*") == {"SQL-CL-01"} and _host_names(qtext="sql*") == {"SQL-CL-01"} and _host_names(qtext="SQL") == {"SQL-CL-01"}      # регистр не важен
+    assert _host_names(qtext="web-*") == {"web-01.example.local", "web-02.example.local"}
+    assert _host_names(qtext="*-01") == {"SQL-CL-01", "web-01.example.local", "app-01.example.local"}        # поиск идёт и по DNS-имени (web-01)
+    assert _host_names(qtext="*.example.local") == {"web-01.example.local", "web-02.example.local", "app-01.example.local", "old-srv.example.local"}
+    assert _host_names(qtext="w*-0*1*") >= {"web-01.example.local", "ws-001"} and _host_names(qtext="ws-*-1") == set()
+    assert _host_names(qtext="*") == _host_names() and len(_host_names()) == 9 and _host_names(qtext="   ") == _host_names()          # «*» и пустой запрос — без отбора
+
+
+def test_mask_special_characters_are_literal():
+    for bad in ("ws_001", "ws-00%", "ws-0[0]1", "ws-0[0-9]1", "%", "_", "[", "ws-001'--", "ws-001; DROP TABLE x"):
+        assert _host_names(qtext=bad) == set(), bad                      # %, _ и [ из запроса — обычные символы, а не шаблон LIKE
+    assert _host_names(qtext="ws-00_*") == set()
+
+
+def test_mask_group_and_os_filters():
+    assert _host_names(os_contains="Microsoft Windows 1*") >= {"ws-001", "ws-002"} and "ksc-server" not in _host_names(os_contains="Microsoft Windows 1*")
+    assert _host_names(os_contains="Windows 1*") == set()                      # маска сопоставляется со всей строкой: «Windows 1*» не найдёт «Microsoft Windows 11»
+    assert _host_names(os_contains="*Server 2019") == {"SQL-CL-01"}
+
+
+def test_mask_registry_and_vulnerabilities():
+    client = SourceClient(params(), name="test")
+    names = lambda **kw: {p["name"] for p in asyncio.run(software.registry_page(client, offset=0, limit=200, installed_only=False, **kw))["items"]}    # noqa: E731
+    assert names(qtext="php*-cli") == {"php7.4-cli", "php8.1-cli", "php-cli"} and names(qtext="PHP7.4-*") == {"php7.4-cli", "php7.4-fpm", "php7.4-xdebug"}
+    assert names(qtext="*xdebug") == {"php7.4-xdebug"} and names(qtext="php7.4") >= {"php7.4-cli"}                                                         # без звёздочки — по части строки
+    assert names(qtext="php*", publisher="Ubuntu*") == {"php", "php8.3-fpm"}
+    assert {p["version"] for p in asyncio.run(software.registry_page(client, offset=0, limit=50, version="8.1", installed_only=False))["items"]} >= {"8.1.27-1+0~20231221.46+debian11~1.gbp8e7a4e"}
+    got = {v["cve"] for v in asyncio.run(vulns.page(client, offset=0, limit=50, cve="CVE-2024-*"))["items"]}
+    assert {"CVE-2024-0001", "CVE-2024-0002"} <= got and all(c.startswith("CVE-2024-") for c in got) and "CVE-2023-9999" not in got
+    assert {v["cve"] for v in asyncio.run(vulns.page(client, offset=0, limit=50, cve="*9999"))["items"]} == {"CVE-2023-9999"}
+    assert {v["cve"] for v in asyncio.run(vulns.page(client, offset=0, limit=50, cve="*2023*9"))["items"]} == {"CVE-2023-9999"}
