@@ -378,3 +378,61 @@ async def test_restart_clears_running_status_and_orphan_generations(app):
     async with app.state.session_maker() as db:
         left = (await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.source == "kev", VdbRecord.generation == active + 5))).scalar_one()
         assert left == 0
+
+
+async def test_low_disk_space_stops_scheduled_load_with_clear_message(app, monkeypatch):
+    from app.vdb import sync as sync_mod  # noqa: PLC0415
+
+    await init(app)
+    called = []
+    monkeypatch.setattr(sync_mod.shutil, "disk_usage", lambda p: type("U", (), {"free": 100 << 20, "total": 1 << 40, "used": 0})())
+    assert not await make_sync(app, lambda r: called.append(1) or httpx.Response(200, json=KEV)).run_source("kev", "schedule")
+    s = await src(app, "kev")
+    assert s.status == "error" and "Недостаточно места" in s.last_error and not called
+
+
+async def test_big_sources_do_not_keep_previous_copy_but_kev_does(app, tmp_path):
+    await init(app)
+    f = tmp_path / "up.zip"
+    f.write_bytes(bdu_zip())
+    sync = make_sync(app, lambda r: httpx.Response(200, json=KEV))
+    for _ in range(3):
+        assert await sync.run_source("bdu", "file", file=f) and await sync.run_source("kev", "manual")
+    async with app.state.session_maker() as db:
+        gens = {k: sorted((await db.execute(select(VdbRecord.generation).where(VdbRecord.source == k).distinct())).scalars().all()) for k in ("bdu", "kev")}
+        bdu, kev = await db.get(VdbSource, "bdu"), await db.get(VdbSource, "kev")
+    assert gens["bdu"] == [bdu.active_generation] and bdu.prev_generation is None            # одна копия: диск не растёт при каждом обновлении
+    assert len(gens["kev"]) == 2 and kev.prev_generation is not None                         # KEV крошечный: предыдущая копия хранится для отката
+
+
+async def test_withdrawn_records_are_removed_on_update(app):
+    await init(app, nvd={"years_back": 1})
+    mode = {"rejected": False}
+
+    def handler(r):
+        u = str(r.url)
+        if "/feeds/json/cve/2.0/" in u:
+            doc = json.loads(json.dumps(NVD))
+            if mode["rejected"] and u.endswith("modified.json.gz") or (mode["rejected"] and u.endswith("modified.meta")):
+                doc["vulnerabilities"] = [{"cve": {"id": "CVE-2024-3094", "vulnStatus": "Rejected", "descriptions": []}}]
+            return nvd_feed(u, doc)
+        return httpx.Response(200, json={"vulnerabilities": []})
+    sync = make_sync(app, handler)
+    assert await sync.run_source("nvd", "manual") and await count(app, "nvd") == 3
+    mode["rejected"] = True
+    assert await sync.run_source("nvd", "manual")
+    assert await count(app, "nvd") == 2
+    async with app.state.session_maker() as db:
+        assert (await db.get(VdbVuln, "CVE-2024-3094")) is None            # отозванная запись пропала и из сводки
+
+
+async def test_sync_all_and_storage_info(app, client):
+    await init(app)
+    await login(client, "admin", "Admin-Passw0rd-123")
+    await client.put("/api/v1/vdb/sources/nvd", json={"enabled": True})
+    r = (await client.post("/api/v1/vdb/sync-all")).json()
+    assert "nvd" in r["queued"] and "kev" in r["queued"] and "bdu" not in r["queued"]          # только включённые
+    st = (await client.get("/api/v1/vdb/sources")).json()["storage"]
+    assert st["free_bytes"] > 0 and st["tmp_bytes"] == 0 and "db_bytes" in st
+    await login(client, "viewer", "Viewer-Passw0rd-123")
+    assert (await client.post("/api/v1/vdb/sync-all")).status_code == 403

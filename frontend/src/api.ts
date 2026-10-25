@@ -191,7 +191,8 @@ export const api = {
     one: (id: number) => req<{ host: Host; activity_days: number; fetched_at: string; software: { install_id: number; product_id: number; name: string; version: string; publisher: string; install_date: string | null }[]; kaspersky: { product_code: string; product: string; build: string; state: string; av_bases_date: string | null; is_av: boolean; has_rtp: boolean }[] }>("GET", `/hosts/${id}`),
   },
   vdb: {
-    sources: () => req<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[] }>("GET", "/vdb/sources"),
+    sources: () => req<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[]; storage: { db_bytes: number | null; tmp_bytes: number; free_bytes: number } }>("GET", "/vdb/sources"),
+    syncAll: () => req<{ queued: string[] }>("POST", "/vdb/sync-all"),
     updateSource: (key: string, body: { enabled?: boolean; interval_hours?: number; settings?: Record<string, unknown>; api_key?: string }) => req<VdbSourceInfo>("PUT", `/vdb/sources/${key}`, body),
     sync: (key: string) => req<{ requested: boolean }>("POST", `/vdb/sources/${key}/sync`),
     restore: (key: string) => req<VdbSourceInfo>("POST", `/vdb/sources/${key}/restore`),

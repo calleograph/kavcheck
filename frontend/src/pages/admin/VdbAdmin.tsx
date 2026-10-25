@@ -4,14 +4,15 @@ import { ConfirmDialog } from "../../components/Dialogs";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
 import { Empty, SkelRows } from "../../components/ui";
-import { fmt, num } from "../../util";
+import { bytes, fmt, num } from "../../util";
 
 const INTERVALS: [number, string][] = [[1, "каждый час"], [6, "каждые 6 часов"], [12, "каждые 12 часов"], [24, "раз в сутки"], [72, "раз в 3 суток"], [168, "раз в неделю"]];
 const STATUS: Record<string, [string, string]> = { never: ["не загружался", "warn"], running: ["идёт загрузка", "accent"], ok: ["загружен", "ok"], error: ["ошибка", "err"] };
 
 /** Источники базы уязвимостей: включение, расписание, параметры, ручной запуск, состояние и история загрузок; решения по сопоставлению продуктов. */
 export default function VdbAdmin() {
-  const [d, setD] = useState<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[] } | null>(null);
+  const [d, setD] = useState<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[]; storage: { db_bytes: number | null; tmp_bytes: number; free_bytes: number } } | null>(null);
+  const [toast, show] = useToast();
   const [err, setErr] = useState("");
   const load = useCallback(() => api.vdb.sources().then((x) => { setD(x); setErr(""); }).catch((e) => setErr((e as ApiError).message)), []);
   useEffect(() => { void load(); }, [load]);
@@ -22,6 +23,10 @@ export default function VdbAdmin() {
     <div className="stack">
       <div className="alert info"><Icon name="info" /><div className="alert-body">В локальной базе <b>{num(d.vulns)}</b> уязвимостей. Загрузкой занимается фоновая служба: ручной запуск ставит источник в очередь, выполнение — в течение минуты.
         При ошибке очередной загрузки остаётся последняя корректная копия; полные выгрузки (CISA KEV, БДУ) заменяют данные только после проверки целостности, предыдущая копия хранится для отката.</div></div>
+      <div className="row">
+        <button className="btn" disabled={!d.items.some((s) => s.enabled && s.status !== "running")} onClick={async () => { try { const r = await api.vdb.syncAll(); show(r.queued.length ? `В очередь поставлено источников: ${r.queued.length}` : "Нет включённых источников"); void load(); } catch (e) { show((e as ApiError).message, "error"); } }}><Icon name="refresh" />Обновить все сейчас</button>
+        <span className="muted small">Расписание работает само (у каждого источника — свой интервал). Занято базой уязвимостей: <b>{d.storage.db_bytes != null ? bytes(d.storage.db_bytes) : "—"}</b>; временных файлов загрузки: <b>{bytes(d.storage.tmp_bytes)}</b> (удаляются после каждой загрузки); свободно на диске: <b>{bytes(d.storage.free_bytes)}</b>.
+          Данные не накапливаются: устаревшие поколения и отозванные записи удаляются, у крупных источников хранится одна копия.</span>{toast}</div>
       {d.items.some((s) => !s.enabled) && <EnableAll items={d.items} onChanged={load} />}
       {d.items.map((s) => <SourceCard key={s.key} s={s} ecosystems={d.ecosystems} onChanged={load} />)}
       <Mappings />

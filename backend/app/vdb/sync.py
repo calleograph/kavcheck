@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import time
 import uuid
@@ -25,6 +26,7 @@ from .fetch import FetchError, Http, builtin_ca, make_ssl
 log = logging.getLogger("app.vdb")
 STALE = timedelta(hours=3)
 BACKLOG_DAYS = 90
+MIN_FREE_MB = int(os.environ.get("VDB_MIN_FREE_MB", "1024"))
 UPLOAD_DIR = "vdb"
 
 
@@ -53,6 +55,16 @@ class VdbSync:
     async def run_source(self, key: str, trigger: str = "schedule", file: Path | None = None) -> bool:
         """Загрузить источник. Возвращает True при успехе. Ошибка не затрагивает действующие данные: последняя корректная база остаётся в работе."""
         if key in self._running or key not in S.SOURCES:
+            return False
+        free_mb = shutil.disk_usage(self._settings.data_dir).free >> 20
+        if free_mb < MIN_FREE_MB:               # плановая загрузка не должна добивать диск: останавливаемся заранее и говорим об этом
+            msg = f"Недостаточно места на диске: свободно {free_mb} МБ, для загрузки нужно не менее {MIN_FREE_MB} МБ. Освободите место (старые резервные копии, образы Docker) и нажмите «Обновить сейчас»"
+            async with self._sm() as db:
+                row = await db.get(VdbSource, key)
+                if row is not None:
+                    row.status, row.last_error, row.progress, row.requested_at, row.last_started_at = "error", msg, None, None, utcnow()
+                    await db.commit()
+            await self._journal.emit("system", "vdb_sync_failed", level="error", message=f"{S.INFO[key]['title']}: {msg}", data={"source": key, "trigger": trigger})
             return False
         self._running.add(key)
         started = time.perf_counter()

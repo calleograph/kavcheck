@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import case, delete, func, or_, select, update
+from sqlalchemy import case, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, current_source, get_db, require_admin, require_analyst, require_user
@@ -44,7 +44,7 @@ def source_out(r: VdbSource, runs: list[VdbRun] | None = None) -> dict:
 
 
 @router.get("/sources")
-async def sources(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+async def sources(request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(VdbSource).order_by(VdbSource.key))).scalars().all()
     out = []
     for r in rows:
@@ -53,7 +53,35 @@ async def sources(su: SessionUser = Depends(require_user), db: AsyncSession = De
         runs = (await db.execute(select(VdbRun).where(VdbRun.source == r.key).order_by(VdbRun.id.desc()).limit(8))).scalars().all()
         out.append(source_out(r, list(runs)))
     total = int((await db.execute(select(func.count()).select_from(VdbVuln))).scalar_one())
-    return {"items": out, "vulns": total, "ecosystems": list(ECOSYSTEMS)}
+    return {"items": out, "vulns": total, "ecosystems": list(ECOSYSTEMS), "storage": await _storage(db, request)}
+
+
+async def _storage(db: AsyncSession, request: Request) -> dict:
+    """Занятое место: таблицы базы уязвимостей (PostgreSQL), временные файлы загрузок, свободно на томе данных."""
+    import shutil  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    data = Path(request.app.state.settings.data_dir)
+    db_bytes = None
+    if db.bind.dialect.name == "postgresql":
+        db_bytes = int((await db.execute(text("SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0) FROM pg_class c WHERE c.relkind = 'r' AND c.relname LIKE 'vdb\\_%'"))).scalar_one())
+    tmp = data / "vdb" / "tmp"
+    tmp_bytes = sum(f.stat().st_size for f in tmp.rglob("*") if f.is_file()) if tmp.is_dir() else 0
+    return {"db_bytes": db_bytes, "tmp_bytes": tmp_bytes, "free_bytes": shutil.disk_usage(data).free}
+
+
+@router.post("/sync-all", status_code=202)
+async def sync_all(su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """«Обновить все сейчас»: ставит в очередь все включённые источники, которые не загружаются в данный момент."""
+    rows = (await db.execute(select(VdbSource).where(VdbSource.enabled.is_(True)))).scalars().all()
+    queued = []
+    for r in rows:
+        if r.key in S.INFO and r.status != "running":
+            r.requested_at = utcnow()
+            queued.append(r.key)
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="vdb.source.sync_all", target_type="vdb_source", target_id="*", details={"sources": queued})
+    await db.commit()
+    return {"queued": queued}
 
 
 class SourceIn(BaseModel):

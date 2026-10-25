@@ -96,7 +96,7 @@ class IntegrityError(Exception):
     """Загруженная выгрузка не прошла проверку целостности: активные данные не заменены."""
 
 
-async def swap_generation(db: AsyncSession, row: VdbSource, new_gen: int) -> tuple[int, set[str]]:
+async def swap_generation(db: AsyncSession, row: VdbSource, new_gen: int, keep_prev: bool = True) -> tuple[int, set[str]]:
     """Подменить активное поколение источника новым после проверки (непустое и не меньше половины прежнего); прежнее остаётся для отката, более старые удаляются."""
     n_new = int((await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.source == row.key, VdbRecord.generation == new_gen))).scalar_one())
     n_old = int((await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.source == row.key, VdbRecord.generation == row.active_generation))).scalar_one()) \
@@ -107,11 +107,22 @@ async def swap_generation(db: AsyncSession, row: VdbSource, new_gen: int) -> tup
         raise IntegrityError(f"В новой выгрузке {n_new} записей против {n_old} в действующей: возможно, файл неполный; данные не заменены")
     old_gen = row.active_generation
     keys = set((await db.execute(select(VdbRecord.vuln_key).where(VdbRecord.source == row.key, VdbRecord.generation.in_([new_gen, old_gen])))).scalars().all())
-    row.prev_generation, row.active_generation, row.records = old_gen, new_gen, n_new
+    row.prev_generation, row.active_generation, row.records = (old_gen if keep_prev else None), new_gen, n_new
     await db.flush()
+    keep = [new_gen, old_gen] if keep_prev else [new_gen]       # предыдущая копия — только если она нужна для отката (у крупных источников удаляется: проверка при замене уже пройдена)
     for model in (VdbAffected, VdbRecord):
-        await db.execute(delete(model).where(model.source == row.key, model.generation.notin_([new_gen, old_gen])))
+        await db.execute(delete(model).where(model.source == row.key, model.generation.notin_(keep)))
     return n_new, keys
+
+
+async def delete_records(db: AsyncSession, source: str, gen: int, ext_ids: list[str]) -> set[str]:
+    """Удалить записи, которые источник отозвал (NVD: Rejected, OSV: withdrawn): иначе они остаются в базе навсегда. Возвращает затронутые ключи для пересчёта сводки."""
+    keys: set[str] = set()
+    for ch in _chunks(list(dict.fromkeys(ext_ids))):
+        keys |= set((await db.execute(select(VdbRecord.vuln_key).where(VdbRecord.source == source, VdbRecord.generation == gen, VdbRecord.ext_id.in_(ch)))).scalars().all())
+        await db.execute(delete(VdbAffected).where(VdbAffected.source == source, VdbAffected.generation == gen, VdbAffected.ext_id.in_(ch)))
+        await db.execute(delete(VdbRecord).where(VdbRecord.source == source, VdbRecord.generation == gen, VdbRecord.ext_id.in_(ch)))
+    return keys
 
 
 async def restore_previous(db: AsyncSession, row: VdbSource) -> set[str]:

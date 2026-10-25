@@ -47,7 +47,7 @@ OSV_DEFAULT = ["Debian", "Alpine", "Red Hat", "AlmaLinux", "Rocky Linux"]       
 INFO = {
     "nvd": {"title": "NVD (NIST)", "url": "https://nvd.nist.gov/", "mode": "incremental", "channels": ["Ленты JSON 2.0 (nvd.nist.gov/feeds)", "API 2.0 (services.nvd.nist.gov)"],
             "terms": "Открытые данные правительства США. Первая загрузка — официальные ленты по годам (сотни мегабайт, потоком), дальше — лента «изменённые» (суточные изменения); запасной канал — API 2.0 (без ключа 5 запросов за 30 с)"},
-    "kev": {"title": "CISA KEV", "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog", "mode": "full", "channels": ["cisa.gov (JSON)", "GitHub cisagov/kev-data (JSON)"],
+    "kev": {"title": "CISA KEV", "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog", "mode": "full", "keep_previous": True, "channels": ["cisa.gov (JSON)", "GitHub cisagov/kev-data (JSON)"],
             "terms": "Каталог CISA публикуется открыто, свободное использование; запасной канал — официальный репозиторий CISA на GitHub"},
     "osv": {"title": "OSV", "url": "https://osv.dev/", "mode": "incremental", "channels": ["Архивы экосистем и modified_id.csv (storage.googleapis.com/osv-vulnerabilities)"],
             "terms": "Открытая выгрузка; данные распространяются на условиях CC-BY 4.0 и лицензий исходных баз. Первая загрузка — архивы выбранных экосистем, дальше — только изменённые записи"},
@@ -108,6 +108,18 @@ class RunCtx:
         self.changed += n
         self.keys |= keys
 
+    async def drop(self, ext_ids: list[str]) -> None:
+        """Записи, отозванные источником (в инкрементальной загрузке): удаляются из действующего поколения, сводка пересчитывается."""
+        if not ext_ids:
+            return
+        async with self.sm() as db:
+            keys = await store.delete_records(db, self.key, self.generation, ext_ids)
+            if keys:
+                await store.refresh_vulns(db, keys)
+            await db.commit()
+        self.changed += len(ext_ids)
+        self.keys |= keys
+
     async def begin_full(self) -> None:
         async with self.sm() as db:
             self.generation = await store.next_generation(db, self.key)
@@ -117,7 +129,7 @@ class RunCtx:
         async with self.sm() as db:
             row = await db.get(VdbSource, self.key)
             try:
-                n, keys = await store.swap_generation(db, row, self.generation)
+                n, keys = await store.swap_generation(db, row, self.generation, keep_prev=INFO[self.key].get("keep_previous", False))
                 await store.refresh_vulns(db, keys)
             except store.IntegrityError:
                 await db.rollback()
@@ -276,11 +288,13 @@ async def _feed_apply(ctx: RunCtx, name: str, *, refresh: bool) -> None:
             raise FetchError(f"Лента {name}: контрольная сумма не совпала с {name}.meta (файл повреждён или обновился во время скачивания)")
         if meta.get("size") and size != int(meta["size"]):
             raise FetchError(f"Лента {name}: размер {size} байт не совпадает с {name}.meta")
-        start, batch = ctx.fetched, []
+        start, batch, rejected = ctx.fetched, [], []
         with gzip.open(gz, "rb") as f:
             for item in iter_array(f, "vulnerabilities"):
                 rec = parsers.parse_nvd(item)
                 if rec is None:
+                    if refresh and str((item.get("cve") or {}).get("vulnStatus") or "").lower() == "rejected":
+                        rejected.append(str((item.get("cve") or {}).get("id") or "").upper())       # в обновлениях: ранее загруженная запись отозвана
                     continue
                 batch.append(rec)
                 if len(batch) >= BATCH:
@@ -289,6 +303,7 @@ async def _feed_apply(ctx: RunCtx, name: str, *, refresh: bool) -> None:
                     await ctx.progress(f"{name}: записей {ctx.fetched}")
         if batch:
             await ctx.save(batch, refresh=refresh)
+        await ctx.drop(rejected)
         if ctx.fetched == start and not name.endswith("modified"):
             raise FetchError(f"Лента {name} не содержит записей")
     finally:
@@ -520,6 +535,8 @@ async def _osv_archives(ctx: RunCtx) -> None:
                 if doc is None and eco:
                     doc = await ctx.http.json(f"{OSV_API}/vulns/{quote(rid)}", ok404=True)       # запасной путь для одной записи
                 rec = parsers.parse_osv(doc) if doc else None
+                if doc and doc.get("withdrawn"):
+                    await ctx.drop([str(doc.get("id") or rid)])           # запись отозвана источником
                 if rec:
                     newest = max(newest, str(doc.get("modified") or ""))
                     await ctx.save([rec])
