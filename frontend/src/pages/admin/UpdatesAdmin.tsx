@@ -12,6 +12,7 @@ const REASON: Record<string, string> = { docker_hub: "Недоступен Docke
   network: "Обрыв или недоступность сети", disk: "Не хватает места на диске", build: "Ошибка сборки образов", migration: "Ошибка миграции базы", health: "Новая версия не прошла проверку работоспособности", timeout_total: "Превышено время операции",
   timeout_stall: "Зависание операции", interrupted: "Обновление было прервано", generic: "Ошибка обновления" };
 const CAN_BUILD = ["registry", "image_missing", "docker_hub"];
+const PHASE: Record<string, string> = { pulling: "Загрузка готовых образов", building: "Локальная сборка образов", backup: "Резервное копирование", migrating: "Миграции базы", restarting: "Перезапуск и проверка работоспособности", preflight: "Проверки перед обновлением", code: "Переход кода на релиз", cleanup: "Очистка старых образов", helper: "Обновление помощника", report: "Формирование отчёта" };
 const dur = (s: number) => (s < 60 ? `${s} с` : `${Math.floor(s / 60)} мин ${s % 60} с`);
 const LOG_URL = "/api/v1/admin/updates/log/download";
 const PF: Record<string, [string, string]> = { ok: ["check", "ok-text"], warn: ["alert", "warn-text"], fail: ["xCircle", "bad-text"] };
@@ -54,15 +55,16 @@ export default function UpdatesAdmin() {
         <div className="upd-versions">
           <div><div className="l">Установлено</div><div className="v">{versionLabel(ov.installed.version, ov.installed.commit)}</div><div className="l">сборка {ov.installed.built_at}</div></div>
           <div><div className="l">Последний релиз в GitHub</div><div className="v">{rem?.ok && rem.latest_version ? rem.latest_version : "—"}</div><div className="l">{rem ? `проверено ${ago(rem.age_s)}` : "проверка ещё не выполнялась"}{rem?.published_at ? `, выпущен ${rem.published_at.slice(0, 10)}` : ""}</div></div>
-          <div><div className="l">Помощник обновлений</div><div className="v"><span className="row tight"><span className={`dot ${u?.available ? "ok" : "warn"}`} />{u?.available ? "работает" : "не отвечает"}</span></div><div className="l">{u?.heartbeat_age_s != null ? `пульс ${ago(u.heartbeat_age_s)}` : "нет сведений"}{ov.system.helper_unit === "ok" ? " · служба включена" : ""}</div></div>
+          <div><div className="l">Помощник обновлений</div><div className="v"><span className="row tight"><span className={`dot ${u?.available ? "ok" : "warn"}`} />{u?.available ? (running ? "работает, выполняет операцию" : "работает, ожидает запросов") : "недоступен"}</span></div><div className="l">{u?.heartbeat_age_s != null ? `пульс ${ago(u.heartbeat_age_s)}` : "нет сведений"}{ov.system.helper_unit === "ok" ? " · служба включена" : ""}</div></div>
         </div>
         {!u?.available && (
-          <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Помощник обновлений на сервере не отвечает.</b> Он устанавливается вместе с KAV Checker как служба systemd и запускается сам; если он остановлен, обновление, откат и резервные копии из браузера недоступны. Проверьте и восстановите службу на сервере:
-            <pre className="cmd">{`sudo ./scripts/updater.sh verify\n${ov.commands.install}`}</pre>Без помощника обновляйте на сервере командой <code>{ov.commands.manual}</code>.</div></div>
+          <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Помощник обновлений недоступен.</b> {u?.down_reason}
+            <pre className="cmd">{`sudo ./scripts/updater.sh doctor --yes`}</pre>Команда проверит службу (автозапуск, перезапуск при сбоях, Docker, права каталога) и сама восстановит её; при необходимости переустановка: <code>{ov.commands.install}</code>. Без помощника обновляйте на сервере командой <code>{ov.commands.manual}</code>.</div></div>
         )}
+        {ov.doctor && !ov.doctor.ok && u?.available && <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Самодиагностика службы нашла проблемы:</b><ul>{ov.doctor.items.filter((i) => !i.ok).map((i) => <li key={i.key}>{i.message}</li>)}</ul></div></div>}
         {u?.available && u.api_outdated && <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Помощник устарел</b> (версия обмена {u.updater_api}, нужна {u.api_expected}): в нём нет восстановления после сбоев и контроля зависаний. Он обновится сам после следующего обновления; сейчас выполните на сервере <code>{ov.commands.install}</code>.</div></div>}
         {u?.available && ov.system.helper_unit === "incomplete" && <div className="alert warn mt"><Icon name="alert" /><div className="alert-body">Служба помощника установлена не полностью (нет автозапуска или перезапуска при сбоях). Выполните на сервере <code>{ov.commands.install}</code>.</div></div>}
-        {ov.system.update_mode && <p className="muted small mt-sm">Способ обновления: <b>{ov.system.update_mode === "build" ? "локальная сборка образов" : `готовые образы из ${ov.system.registry || "реестра"}`}</b>.{ov.system.update_mode !== "build" && (ov.system.allow_build ? " Если образы недоступны, будет выполнена локальная сборка (разрешена в настройках)." : " Локальная сборка запускается только по вашей кнопке.")}{ov.system.npm_mirror ? " Зеркало npm настроено." : ""}</p>}
+        {ov.system.update_mode && <p className="muted small mt-sm">Способ обновления: <b>{ov.system.update_mode === "build" ? "локальная сборка образов" : `готовые образы из ${ov.system.registry || "реестра"}`}</b>.{ov.system.update_mode !== "build" && " Локальная сборка запускается только по вашей кнопке."}{ov.system.npm_mirror ? " Зеркало npm настроено." : ""}</p>}
         {rem && !rem.ok && <div className="alert error mt"><Icon name="alert" /><div className="alert-body"><b>Не удалось проверить наличие новых версий.</b> Если у сервера нет доступа к GitHub, обновляйте его из заранее скопированного репозитория.{rem.error && <details className="disclosure"><summary>Техническая причина</summary><span className="mono small">{rem.error}</span></details>}</div></div>}
         {rem?.ok && !rem.behind && <div className="alert ok mt"><Icon name="checkCircle" /><div className="alert-body">Установлена последняя версия.</div></div>}
         {rem?.ok && rem.behind && (
@@ -95,8 +97,8 @@ export default function UpdatesAdmin() {
       {(running || ranHere) && (
         <div className="card">
           <div className="card-head"><h2>{ACTION[u?.action ?? ""] ?? "Выполнение"}</h2>
-            {running && <span className="badge accent"><span className="spin sm" />выполняется{elapsed ? ` · ${dur(elapsed)}` : ""}</span>}
-            {interrupted && <span className="badge err">прервано (помощник остановлен)</span>}
+            {running && <span className="badge accent"><span className="spin sm" />{(u?.phase && PHASE[u.phase]) || "выполняется"}{elapsed ? ` · ${dur(elapsed)}` : ""}</span>}
+            {interrupted && <span className="badge err">прервано{u?.available ? " (процесс операции завершился)" : " (помощник остановлен)"}</span>}
             {finished && u?.result === "ok" && <span className="badge ok">завершено</span>}{finished && u?.result === "failed" && <span className="badge err">остановлено, код {u.exit_code}{elapsed ? ` · ${dur(elapsed)}` : ""}</span>}
             {u?.by && <span className="muted small">запустил {u.by}</span>}<div className="spacer" />{logLink}
             <label className="check inline-check"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />Следить за концом</label></div>

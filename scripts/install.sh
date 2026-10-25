@@ -34,9 +34,12 @@ if [ "$BUILD" -eq 0 ] && [ -n "$TAG_AT_HEAD" ] && pick_registry "$TAG_AT_HEAD"; 
   if run_guarded "загрузка образов" "$T_PULL" "$S_PULL" "${DCB[@]}" pull backend web; then GOT=1
   else warn "Готовые образы получить не удалось ($(diag_advice "$(guard_fail_code registry)"))"; fi
 fi
+if [ "$GOT" -eq 0 ] && [ "$BUILD" -eq 0 ]; then
+  die "Готовые образы получить не удалось (код на теге релиза: ${TAG_AT_HEAD:-нет}). Установка без сборки: git checkout vX.Y.Z && scripts/install.sh. Локальная сборка (нужны Docker Hub, npm и pip или их зеркала) — только явно: scripts/install.sh --build"
+fi
 if [ "$GOT" -eq 0 ]; then
-  [ "$BUILD" -eq 1 ] || warn "Выполняется локальная сборка образов: нужны Docker Hub, npm и pip (или их зеркала). Для установки без сборки используйте тег релиза: git checkout vX.Y.Z && scripts/install.sh"
   adopt_mirrors
+  pick_npm_registries; pick_pip_indexes; export NPM_REGISTRIES PIP_INDEX_URLS
   REG_NPM="${NPM_REGISTRY:-https://registry.npmjs.org}"
   if ! curl -fsS -m 20 -o /dev/null "${REG_NPM%/}/typescript"; then
     warn "Реестр npm $REG_NPM не ответил за 20 с: сборка интерфейса может не пройти."
@@ -60,7 +63,7 @@ printf '%s version=%s commit=%s image_tag=%s\n' "$(date -Is)" "$APP_VERSION" "$A
 state_set current_version "$APP_VERSION"; state_set current_commit "$APP_GIT_COMMIT"; state_set current_tag "$IMAGE_TAG"
 ok "KAV Checker запущен: http://${WEB_BIND_ADDR}:${WEB_PORT} (публичный адрес ${APP_PUBLIC_URL} — через ваш reverse proxy)."
 # Помощник обновлений: служба systemd (автозапуск, перезапуск при сбоях) устанавливается и включается сразу — кнопка «Обновить» в браузере работает без дополнительных действий
-if [ "$(id -u)" -eq 0 ]; then "$REPO_ROOT/scripts/updater.sh" ensure --env "$ENV_FILE" || warn "Помощник обновлений не установлен: sudo ./scripts/updater.sh install --yes"
-elif sudo -n true 2>/dev/null; then sudo -n "$REPO_ROOT/scripts/updater.sh" ensure --env "$ENV_FILE" || warn "Помощник обновлений не установлен: sudo ./scripts/updater.sh install --yes"
-elif [ -t 0 ] && command -v sudo >/dev/null; then sudo "$REPO_ROOT/scripts/updater.sh" ensure --env "$ENV_FILE" || warn "Помощник обновлений не установлен: sudo ./scripts/updater.sh install --yes"
+if [ "$(id -u)" -eq 0 ]; then "$SCRIPTS_DIR/updater.sh" ensure --env "$ENV_FILE" || warn "Помощник обновлений не установлен: sudo ./scripts/updater.sh install --yes"
+elif sudo -n true 2>/dev/null; then sudo -n "$SCRIPTS_DIR/updater.sh" ensure --env "$ENV_FILE" || warn "Помощник обновлений не установлен: sudo ./scripts/updater.sh install --yes"
+elif [ -t 0 ] && command -v sudo >/dev/null; then sudo "$SCRIPTS_DIR/updater.sh" ensure --env "$ENV_FILE" || warn "Помощник обновлений не установлен: sudo ./scripts/updater.sh install --yes"
 else warn "Помощник обновлений не установлен (нужны права root): sudo ./scripts/updater.sh install --yes — без него кнопка «Обновить» в браузере недоступна"; fi

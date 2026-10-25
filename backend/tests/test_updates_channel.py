@@ -1,6 +1,8 @@
 """Обмен с помощником обновлений: прерванное действие не показывается как «Выполняется», устаревший помощник, скачивание журнала для диагностики, запрос локальной сборки."""
 import json
 import time
+
+import pytest
 from pathlib import Path
 
 from app.services.updates import Channel
@@ -13,7 +15,7 @@ def put(d: Path, name: str, data) -> None:
 
 
 def status(**kw) -> dict:
-    return {"ts": time.time(), "pid": 1, "updater_api": 2, "state": "idle", "action": "", "step_no": 0, "step_total": 11, "step_name": "", "started_at": 0, "finished_at": 0, "last_output_at": 0, **kw}
+    return {"ts": time.time(), "pid": 1, "updater_api": 3, "state": "idle", "action": "", "step_no": 0, "step_total": 11, "step_name": "", "started_at": 0, "finished_at": 0, "last_output_at": 0, **kw}
 
 
 def test_stale_busy_status_is_interrupted_not_running(tmp_path):
@@ -68,7 +70,7 @@ async def test_local_build_needs_separate_confirmation_and_is_passed_to_helper(a
     req = (d / "request.txt").read_text()
     assert "action=update" in req and "mode=build" in req and "target=v0.5.0" in req
     ov = (await client.get("/api/v1/admin/updates")).json()
-    assert ov["updater"]["api_expected"] == 2 and ov["can_act"] is False          # запрос уже ожидает выполнения
+    assert ov["updater"]["api_expected"] == 3 and ov["can_act"] is False          # запрос уже ожидает выполнения
 
 
 async def test_overview_shows_interrupted_helper_state(app, client):
@@ -76,4 +78,50 @@ async def test_overview_shows_interrupted_helper_state(app, client):
     put(d, "status.json", status(ts=time.time() - 900, state="updating", action="update"))
     await login(client, "admin", "Admin-Passw0rd-123")
     ov = (await client.get("/api/v1/admin/updates")).json()
-    assert ov["updater"]["state"] == "interrupted" and ov["updater"]["available"] is False and ov["can_act"] is False and any("не отвечает" in x for x in ov["reasons"])
+    assert ov["updater"]["state"] == "interrupted" and ov["updater"]["available"] is False and ov["can_act"] is False and len(ov["reasons"]) == 1 and "Пульс помощника" in ov["reasons"][0]
+
+
+def hb(**kw) -> dict:
+    return {"ts": time.time(), "pid": 7, "updater_api": 3, "boot_id": "", "started_at": time.time() - 100, "script_sha": "x", "op_alive": False, "stopped": False, "unit": "kavcheck-updater-demo", **kw}
+
+
+def test_heartbeat_is_independent_of_operation_progress(tmp_path):
+    """Долгая сборка без вывода: операция «выполняется», помощник «доступен» — без противоречий и без предупреждения «не запущен»."""
+    put(tmp_path, "heartbeat.json", hb(op_alive=True))
+    put(tmp_path, "operation.json", status(ts=time.time() - 900, state="updating", action="update", started_at=time.time() - 600, last_output_at=time.time() - 500))
+    st = Channel(str(tmp_path)).status()
+    assert st["available"] and not st["interrupted"] and st["state"] == "updating" and st["down_reason"] == "" and st["stalled_s"] >= 400
+
+
+def test_dead_operation_process_is_interrupted_even_if_helper_is_alive(tmp_path):
+    put(tmp_path, "heartbeat.json", hb(op_alive=False))
+    put(tmp_path, "operation.json", status(state="updating", action="update", started_at=time.time() - 300))
+    st = Channel(str(tmp_path)).status()
+    assert st["available"] and st["interrupted"] and st["state"] == "interrupted"
+
+
+def test_fresh_operation_start_is_not_flagged_before_pid_is_published(tmp_path):
+    put(tmp_path, "heartbeat.json", hb(op_alive=False))
+    put(tmp_path, "operation.json", status(state="updating", action="update", started_at=time.time() - 3))
+    assert not Channel(str(tmp_path)).status()["interrupted"]
+
+
+@pytest.mark.parametrize("age,extra,expect", [(600, {}, "не обновлялся"), (60, {"stopped": True}, "остановлена"), (90, {"boot_id": "другая-загрузка"}, "перезагружался")])
+def test_down_reason_is_specific(tmp_path, age, extra, expect):
+    put(tmp_path, "heartbeat.json", hb(ts=time.time() - age, **extra))
+    st = Channel(str(tmp_path)).status()
+    assert not st["available"] and expect in st["down_reason"]
+
+
+def test_stopped_flag_makes_helper_unavailable_immediately(tmp_path):
+    put(tmp_path, "heartbeat.json", hb(stopped=True))
+    assert not Channel(str(tmp_path)).status()["available"]
+
+
+async def test_overview_gives_one_reason_not_contradictions(app, client):
+    d = Path(app.state.settings.data_dir) / "updater"
+    put(d, "heartbeat.json", hb(op_alive=True))
+    put(d, "operation.json", status(state="updating", action="update", started_at=time.time() - 60, last_output_at=time.time() - 5))
+    await login(client, "admin", "Admin-Passw0rd-123")
+    ov = (await client.get("/api/v1/admin/updates")).json()
+    assert ov["updater"]["available"] and ov["updater"]["state"] == "updating" and ov["can_act"] is False and len(ov["reasons"]) == 1 and "выполняется" in ov["reasons"][0]

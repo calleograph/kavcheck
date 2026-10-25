@@ -4,7 +4,7 @@
 
 # ------------------------------------------------------------------------------------------------ источник образов
 # Готовые образы релиза — основной способ обновления. Репозиторий образов: IMAGE_REGISTRY из .env, иначе IMAGE_REPO с «/», иначе ghcr.io/<владелец>/<репозиторий>
-# по GITHUB_REPO или по адресу remote origin. Локальная сборка — только по --build, UPDATE_MODE=build или UPDATE_ALLOW_BUILD=1.
+# по GITHUB_REPO или по адресу remote origin. Локальная сборка — ТОЛЬКО по явному выбору (--build, UPDATE_MODE=build, кнопка «Собрать локально»): скрытого перехода на сборку нет.
 origin_slug() {
   local u; u="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null)"
   sed -nE 's#^(https?://([^/@]+@)?|git@|ssh://git@)github\.com[:/]([^/]+/[^/]+)$#\3#; s#\.git/?$##p' <<<"$u" | head -1
@@ -27,16 +27,17 @@ REGISTRY_PICKED=""; REGISTRY_ERR=""
 pick_registry() {
   local r out; REGISTRY_PICKED=""; REGISTRY_ERR=""
   for r in $(registry_candidates); do
-    if out="$(timeout "${UPD_TIMEOUT_NET:-60}" docker manifest inspect "${r}-backend:$1" 2>&1)"; then REGISTRY_PICKED="$r"; return 0; fi
+    if out="$(timeout "${UPD_TIMEOUT_NET:-60}" docker manifest inspect $(is_local_host "${r%%/*}" && echo --insecure) "${r}-backend:$1" 2>&1)"; then REGISTRY_PICKED="$r"; return 0; fi
     REGISTRY_ERR="${REGISTRY_ERR:+$REGISTRY_ERR; }$r: ${out:0:140}"
   done
   return 1
 }
+is_local_host() { [[ "$1" =~ ^(localhost|127\.[0-9.]+|\[::1\])(:[0-9]+)?$ ]]; }       # локальный реестр (отладка, закрытые контуры) допускается без TLS
+registry_scheme() { is_local_host "$1" && echo http || echo https; }
 registry_host() { local r; r="$(registry_repo)"; echo "${r%%/*}"; }
 update_mode() { # pull | build — как получать образы нового релиза
   case "${UPDATE_MODE:-auto}" in build) echo build ;; *) echo pull ;; esac
 }
-build_allowed() { [ "${UPDATE_ALLOW_BUILD:-0}" = 1 ] || [ "${UPDATE_MODE:-auto}" = build ]; }
 
 # ------------------------------------------------------------------------------------------------ сторож
 # run_guarded ЭТАП ВСЕГО_СЕК БЕЗ_ВЫВОДА_СЕК КОМАНДА… — команда выполняется в собственной группе процессов; вывод показывается сразу и сохраняется в $GUARD_OUT.
@@ -156,3 +157,34 @@ adopt_mirrors() {
   return 0
 }
 http_code() { curl -sS -m "${1:-20}" -o /dev/null -w '%{http_code}' "$2" 2>/dev/null || echo 000; }
+
+# ------------------------------------------------------------------------------------------------ источники зависимостей для локальной сборки
+# Доступность одного адреса не означает, что реестр исправен (бывают HTTP 504 на части пакетов): проверяется реальное получение нескольких пакетов из package-lock.json.
+# Реестры задаются списком (NPM_REGISTRIES или NPM_REGISTRY, затем официальный), исправные идут первыми; в Dockerfile каждый пробуется ограниченное число раз с тайм-аутом.
+list_words() { tr ',;' '  ' <<<"$*" | xargs -n1 2>/dev/null | sed 's#/*$##' | awk 'NF && !seen[$0]++'; }
+npm_probe() { # npm_probe РЕЕСТР — 0, если 4 разных пакета из package-lock.json скачиваются целиком
+  local reg="$1" url n=0 total=0 lock="$REPO_ROOT/frontend/package-lock.json" urls
+  urls="$(grep -o '"resolved": "https://registry.npmjs.org/[^"]*"' "$lock" 2>/dev/null | cut -d'"' -f4 | awk 'NR%97==1' | head -4)"
+  [ -n "$urls" ] || urls="https://registry.npmjs.org/typescript/-/typescript-5.0.0.tgz"
+  for url in $urls; do
+    total=$((total + 1)); local u="${reg%/}/${url#https://registry.npmjs.org/}"
+    local code; code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' -r 0-4095 "$u" 2>/dev/null)"
+    case "$code" in 200|206) n=$((n + 1)) ;; esac
+  done
+  [ "$n" -eq "$total" ]
+}
+pick_npm_registries() {
+  local cand good="" bad="" r
+  cand="$(list_words "${NPM_REGISTRIES:-} ${NPM_REGISTRY:-}" https://registry.npmjs.org)"
+  for r in $cand; do
+    if npm_probe "$r"; then good="$good $r"; info "npm: $r — пакеты скачиваются"; else bad="$bad $r"; warn "npm: $r — часть пакетов недоступна (таймаут или ошибка сервера); будет пробоваться последним"; fi
+  done
+  NPM_REGISTRIES="$(echo $good $bad)"
+}
+pip_probe() { [ "$(curl -sS -m 30 -o /dev/null -w '%{http_code}' "${1%/}/fastapi/" 2>/dev/null)" = 200 ]; }
+pick_pip_indexes() {
+  local cand good="" bad="" r
+  cand="$(list_words "${PIP_INDEX_URLS:-} ${PIP_INDEX_URL:-}" https://pypi.org/simple)"
+  for r in $cand; do if pip_probe "$r"; then good="$good $r"; else bad="$bad $r"; warn "pip: $r недоступен; будет пробоваться последним"; fi; done
+  PIP_INDEX_URLS="$(echo $good $bad)"
+}

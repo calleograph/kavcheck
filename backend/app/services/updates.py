@@ -15,8 +15,9 @@ import time
 import uuid
 from pathlib import Path
 
-HEARTBEAT_MAX_AGE = 40
-UPDATER_API = 2                 # версия обмена с помощником (scripts/updater.sh); у более старого помощника нет восстановления и контроля зависаний
+HEARTBEAT_MAX_AGE = 40          # помощники прежних версий: пульс — в status.json (раз в 3 с в покое)
+HEARTBEAT_NEW_MAX_AGE = 20      # heartbeat.json пишется отдельным циклом раз в 4 с
+UPDATER_API = 3                 # версия обмена с помощником (scripts/updater.sh); у более старого помощника нет восстановления и контроля зависаний
 STALL_WARN_S = 300              # столько секунд без вывода в журнале — показываем предупреждение «нет прогресса»
 URL_CRED = re.compile(r"(https?://)[^/@\s:]+(?::[^/@\s]*)?@")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -26,6 +27,13 @@ BUSY_STATES = ("updating", "rolling_back", "backing_up", "restoring", "recoverin
 BACKUP_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}\.dump$")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
 VERSION_RE = re.compile(r"^v?\d+\.\d+\.\d+$")
+
+
+def _boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return ""
 
 
 class Channel:
@@ -40,19 +48,47 @@ class Channel:
             return None
 
     def status(self) -> dict:
-        st = self._json("status.json") or {}
-        ts = float(st.get("ts") or 0)
-        age = time.time() - ts if ts else None
-        available = age is not None and age <= HEARTBEAT_MAX_AGE
-        state = st.get("state")
-        # помощник остановлен, а в статусе осталось «Выполняется»: это прерванное действие, а не работающее
-        interrupted = not available and state in BUSY_STATES
-        if interrupted:
-            st = {**st, "state": "interrupted", "result": "failed"}
-        out_at = float(st.get("last_output_at") or 0)
-        stalled = available and state in BUSY_STATES and out_at and time.time() - out_at > STALL_WARN_S
-        return {**st, "available": available, "heartbeat_age_s": None if age is None else int(age), "request_pending": (self.dir / "request.txt").exists(),
-                "interrupted": interrupted, "stalled_s": int(time.time() - out_at) if stalled else None, "api_outdated": available and int(st.get("updater_api") or 1) < UPDATER_API}
+        """Состояние помощника — три независимых сведения: «пульс» (heartbeat.json — помощник жив), «операция» (operation.json — что он делает) и «процесс операции» (op_alive в пульсе).
+        Помощники прежних версий пишут одну status.json: пульс тогда берётся из неё. «Выполняется» без живого помощника или без живого процесса операции — это «прервано»."""
+        hb = self._json("heartbeat.json")
+        op = self._json("operation.json") or self._json("status.json") or {}
+        now = time.time()
+        ts = float((hb or op).get("ts") or 0)
+        age = now - ts if ts else None
+        available = age is not None and age <= (HEARTBEAT_MAX_AGE if not hb else HEARTBEAT_NEW_MAX_AGE) and not (hb or {}).get("stopped")
+        state = op.get("state")
+        busy = state in BUSY_STATES
+        started = float(op.get("started_at") or 0)
+        op_dead = bool(hb) and available and hb.get("op_alive") is False and busy and ts - started > 20
+        interrupted = busy and (not available or op_dead)
+        st = {**op, "state": "interrupted", "result": "failed"} if interrupted else dict(op)
+        out_at = float(op.get("last_output_at") or 0)
+        stalled = available and busy and not interrupted and out_at and now - out_at > STALL_WARN_S
+        boot = _boot_id()
+        boot_changed = bool(hb and hb.get("boot_id") and boot and hb["boot_id"] != boot)
+        return {**st, "available": available, "heartbeat_age_s": None if age is None else int(age), "request_pending": (self.dir / "request.txt").exists(), "interrupted": interrupted,
+                "stalled_s": int(now - out_at) if stalled else None, "api_outdated": available and int((hb or op).get("updater_api") or 1) < UPDATER_API, "updater_api": (hb or op).get("updater_api"),
+                "helper_pid": (hb or {}).get("pid"), "boot_changed": boot_changed, "down_reason": "" if available else self._down_reason(hb, op, age, boot_changed),
+                "operation_alive": None if not hb else hb.get("op_alive")}
+
+    @staticmethod
+    def _down_reason(hb: dict | None, op: dict, age: float | None, boot_changed: bool) -> str:
+        """Почему помощник недоступен — конкретная причина по последнему пульсу."""
+        if not hb and not op:
+            return "Помощник ещё ни разу не запускался: установите его на сервере (sudo ./scripts/updater.sh install --yes)."
+        when = time.strftime("%H:%M", time.localtime(float((hb or op).get("ts") or 0)))
+        if hb and hb.get("stopped"):
+            return f"Служба помощника была остановлена в {when} (systemctl stop/restart или остановка сервера) и ещё не запустилась. Проверьте: sudo systemctl status {hb.get('unit') or 'kavcheck-updater-<проект>'}."
+        if boot_changed:
+            return f"Сервер перезагружался после последнего пульса ({when}), а служба помощника не запустилась. Проверьте автозапуск: sudo ./scripts/updater.sh doctor"
+        mins = int((age or 0) // 60)
+        return f"Пульс помощника не обновлялся {mins} мин (последний в {when}): процесс завершён аварийно или завис. Служба должна перезапуститься сама; если нет — sudo ./scripts/updater.sh doctor --yes"
+
+    def doctor(self) -> dict | None:
+        r = self._json("doctor.json")
+        if r and r.get("checked_at"):
+            r["age_s"] = int(time.time() - float(r["checked_at"]))
+        return r
 
     def remote(self) -> dict | None:
         r = self._json("remote.json")

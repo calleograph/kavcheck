@@ -24,19 +24,19 @@ async def overview(request: Request, su: SessionUser = Depends(require_admin)):
     ch = channel(request)
     st = ch.status()
     remote = ch.remote()
-    reasons = []
+    reasons = []      # одна понятная причина, без противоречий: недоступен помощник ИЛИ идёт операция ИЛИ запрос ждёт
     if not st["available"]:
-        reasons.append("Помощник обновлений на сервере не отвечает. Служба должна запускаться сама: проверьте sudo ./scripts/updater.sh verify (при необходимости sudo ./scripts/updater.sh install --yes)")
-    if st.get("state") in upd.BUSY_STATES:
-        reasons.append("Сейчас уже выполняется обновление, откат или резервное копирование.")
-    if st["request_pending"]:
+        reasons.append(st["down_reason"])
+    elif st.get("state") in upd.BUSY_STATES:
+        reasons.append("Сейчас выполняется обновление, откат или резервное копирование — дождитесь завершения.")
+    elif st["request_pending"]:
         reasons.append("Запрос уже передан помощнику и ожидает выполнения.")
     return {"installed": {"version": s.app_version, "commit": s.app_git_commit, "built_at": s.app_built_at},
             "updater": {k: st.get(k) for k in ("available", "heartbeat_age_s", "state", "action", "request_id", "step_no", "step_total", "step_name", "started_at", "finished_at", "exit_code", "result", "request_pending", "by", "target",
-                                               "last_output_at", "stalled_s", "interrupted", "api_outdated", "updater_api", "mode")} | {"api_expected": upd.UPDATER_API, "now": int(time.time())},
+                                               "last_output_at", "stalled_s", "interrupted", "api_outdated", "updater_api", "mode", "op_id", "phase", "down_reason", "boot_changed", "helper_pid", "operation_alive")} | {"api_expected": upd.UPDATER_API, "now": int(time.time())},
             "system": {k: (ch._json("system.json") or {}).get(k) for k in ("update_mode", "registry", "allow_build", "npm_mirror", "pip_mirror", "helper_unit")},  # noqa: SLF001
             "remote": remote, "history": ch.history(), "backups": ch.backups(), "can_act": not reasons, "reasons": reasons,
-            "preflight": ch.preflight(), "report": ch.report(),
+            "preflight": ch.preflight(), "report": ch.report(), "doctor": ch.doctor(),
             "commands": {"install": "sudo ./scripts/updater.sh install --yes", "manual": "sudo ./scripts/update.sh", "rollback": "sudo ./scripts/rollback.sh"}}
 
 

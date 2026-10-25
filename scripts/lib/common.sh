@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Общие функции скриптов KAV Checker: загрузка .env, обёртка docker compose, вывод, состояние обновления.
 set -o pipefail
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Скрипты могут выполняться из копии каталога scripts/ целевого релиза (update.sh распаковывает её из git и запускает): SCRIPTS_DIR — где лежат скрипты, REPO_ROOT — установленный
+# репозиторий (код, compose, миграции), его переопределяет KC_REPO_ROOT. Так обновление всегда выполняет логику НОВОГО релиза, а не старой установленной версии.
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="${KC_REPO_ROOT:-$(cd "$SCRIPTS_DIR/.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 DRY_RUN="${DRY_RUN:-0}"
 source "$(dirname "${BASH_SOURCE[0]}")/guard.sh"
@@ -36,6 +39,16 @@ kill_oneoff() { # разовые контейнеры `compose run`, остав�
 is_local_repo() { [[ "${IMAGE_REPO:-kavcheck}" != */* ]]; }
 local_build_repo() { echo "${COMPOSE_PROJECT_NAME:-kavcheck}"; }
 version_file_read() { tr -d '[:space:]' < "$REPO_ROOT/VERSION" 2>/dev/null; }
+# Какая версия РАБОТАЕТ сейчас: ответ приложения, иначе запись о последнем обновлении, иначе файл VERSION. Файл VERSION показывает только извлечённый код и может расходиться
+# с запущенными образами (например, код уже на новом теге, а контейнеры ещё старые).
+installed_version() {
+  local v; v="$(curl -fsS -m 8 "http://${WEB_BIND_ADDR:-127.0.0.1}:${WEB_PORT:-8080}/api/v1/version" 2>/dev/null | sed -n 's/.*"version":"\([0-9][^"]*\)".*/\1/p')"
+  [ -n "$v" ] && [ "$v" != "0.0.0" ] && { echo "$v"; return; }
+  v="$(state_get current_version)"; [ -n "$v" ] && { echo "$v"; return; }
+  version_file_read
+}
+# Коммит запущенной версии: тег vX.Y.Z, если он есть, иначе текущий HEAD.
+installed_head() { git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/v$1^{commit}" 2>/dev/null || git -C "$REPO_ROOT" rev-parse HEAD; }
 host_version_info() { # APP_VERSION/APP_GIT_COMMIT/APP_BUILT_AT для сборки образов
   export APP_VERSION="$(version_file_read)"
   export APP_GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
@@ -97,7 +110,7 @@ preflight() { # PF_MODE=pull|build — какой источник образо�
     reg="$(registry_repo)"; host="${reg%%/*}"
     if [ -z "$reg" ]; then pf_add registry fail "Не определён репозиторий готовых образов: укажите IMAGE_REGISTRY (например ghcr.io/владелец/kavcheck) или GITHUB_REPO в .env"
     else
-      code="$(http_code 20 "https://$host/v2/")"
+      code="$(http_code 20 "$(registry_scheme "$host")://$host/v2/")"
       if [ "$code" = 000 ]; then pf_add registry fail "Реестр образов $host недоступен с сервера (нет соединения за 20 с): проверьте сеть, DNS и прокси. Прежняя версия продолжает работать"
       elif pick_registry "${target:-$IMAGE_TAG}"; then pf_add registry ok "Готовые образы ${REGISTRY_PICKED}-*:${target:-$IMAGE_TAG} опубликованы и доступны"
       elif grep -qiE 'no such manifest|manifest unknown|not found|denied|unauthorized' <<<"$REGISTRY_ERR"; then pf_add registry fail "Образов релиза ${target:-$IMAGE_TAG} в реестре нет (${REGISTRY_ERR:0:200}): публикация релиза ещё не завершилась? Проверьте IMAGE_REGISTRY/GITHUB_REPO в .env; повторите позже или выберите локальную сборку"
@@ -202,7 +215,7 @@ cleanup_images() { # cleanup_images ТЕКУЩИЙ_РЕПО:ТЕГ ПРЕДЫД�
     done
   done
   docker image prune -f --filter "label=kavcheck.component" >/dev/null 2>&1
-  local g; g="$(free_gb "$(docker_root)")"
-  if [ -n "$g" ] && [ "$g" -lt "${UPD_MIN_FREE_GB:-3}" ]; then docker builder prune -f --filter until=168h >/dev/null 2>&1 && action_log "очищен кэш сборки Docker старше 7 суток (мало места: $g ГБ)"; fi
+  local g; g="$(free_gb "$(docker_root)")"      # общий кэш сборки Docker принадлежит всему серверу (другим проектам тоже): автоматически не чистится
+  [ -n "$g" ] && [ "$g" -lt "${UPD_MIN_FREE_GB:-3}" ] && warn "На диске Docker мало места ($g ГБ). Освободите его вручную (docker system df); автоматическая очистка общего кэша сборки не выполняется"
   ls -1t "$ENV_FILE".backup-* 2>/dev/null | tail -n +6 | xargs -r rm -f
 }

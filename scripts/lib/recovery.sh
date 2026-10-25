@@ -6,11 +6,17 @@
 #   deploying             новая версия запускалась: если она уже работала (healthy_seen) — оставить и завершить; если нет — база из копии и прежняя версия;
 #   verified|cleanup      новая версия проверена → считать обновление выполненным.
 # Результат в RECOVER_RESULT: rolled_back | finalized | manual (нужно вмешательство; автоматически ничего опасного не делается).
-RECOVER_RESULT=""; RECOVER_ADVICE=""
+RECOVER_RESULT=""; RECOVER_ADVICE=""; RECOVER_SCHEMA=""
 recover_start_old() { # вернуть код, .env и запустить контейнеры прежней версии
   local old_tag old_repo prev_head
   old_tag="$(marker_get old_tag)"; old_repo="$(marker_get old_repo)"; prev_head="$(marker_get prev_head)"
   [ -n "$old_tag" ] && [ -n "$prev_head" ] || return 1
+  # прежняя версия не должна запускаться на несовместимой схеме базы: ревизия базы должна быть известна её миграциям
+  dc up -d postgres >/dev/null 2>&1 && wait_healthy 90 postgres
+  local dbrev; dbrev="$(dc exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc 'SELECT version_num FROM alembic_version' 2>/dev/null | tr -d '[:space:]')"
+  if [ -n "$dbrev" ] && ! git -C "$REPO_ROOT" grep -q "revision = \"$dbrev\"" "$prev_head" -- backend/migrations/versions 2>/dev/null; then
+    RECOVER_SCHEMA="$dbrev"; return 3
+  fi
   [ "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" = "$prev_head" ] || git -C "$REPO_ROOT" checkout -q --detach "$prev_head" || return 1
   export IMAGE_TAG="$old_tag" IMAGE_REPO="$old_repo"
   env_put IMAGE_TAG "$old_tag"; env_put IMAGE_REPO "$old_repo"
@@ -35,7 +41,9 @@ recover_update() { # recover_update — после неудачи или пре�
       if [ -n "$backup" ] && restore_db_exact "$backup" && recover_start_old; then RECOVER_RESULT=rolled_back; RECOVER_ADVICE="Миграция была прервана: база возвращена к копии перед обновлением, работает прежняя версия $old_ver."
       else RECOVER_RESULT=manual; RECOVER_ADVICE="Миграция прервана, а база не восстановлена автоматически: выполните scripts/restore.sh ${backup:-<копия>}, затем scripts/rollback.sh. Повторное обновление автоматически не запускается."; fi ;;
     *)
-      if recover_start_old; then RECOVER_RESULT=rolled_back; RECOVER_ADVICE="Работает прежняя версия $old_ver; данные не менялись."
+      recover_start_old; local rc=$?
+      if [ "$rc" -eq 0 ]; then RECOVER_RESULT=rolled_back; RECOVER_ADVICE="Работает прежняя версия $old_ver; данные не менялись."
+      elif [ "$rc" -eq 3 ]; then RECOVER_RESULT=manual; RECOVER_ADVICE="База данных уже на ревизии $RECOVER_SCHEMA, которой не знает прежняя версия $old_ver: запускать её небезопасно. Восстановите копию, снятую перед обновлением (${backup:-см. DATA_ROOT/backups}): scripts/restore.sh, затем scripts/rollback.sh."
       else RECOVER_RESULT=manual; RECOVER_ADVICE="Прежняя версия не запущена автоматически: выполните sudo ./scripts/rollback.sh или ./scripts/ctl.sh up."; fi ;;
   esac
 }

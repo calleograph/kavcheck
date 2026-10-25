@@ -54,7 +54,7 @@ services:
     image: ${IMAGE_REPO:-kavcheck}-backend:${IMAGE_TAG:?}
     build:
       context: ../backend
-      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}", PIP_INDEX_URL: "${PIP_INDEX_URL:-}" }
+      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}", PIP_INDEX_URL: "${PIP_INDEX_URL:-}", PIP_INDEX_URLS: "${PIP_INDEX_URLS:-}" }
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     depends_on:
@@ -91,7 +91,7 @@ services:
     image: ${IMAGE_REPO:-kavcheck}-web:${IMAGE_TAG:?}
     build:
       context: ../frontend
-      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}", NPM_REGISTRY: "${NPM_REGISTRY:-}" }
+      args: { APP_VERSION: "${APP_VERSION:-0.0.0}", APP_GIT_COMMIT: "${APP_GIT_COMMIT:-unknown}", APP_BUILT_AT: "${APP_BUILT_AT:-unknown}", NPM_REGISTRY: "${NPM_REGISTRY:-}", NPM_REGISTRIES: "${NPM_REGISTRIES:-}" }
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     depends_on:

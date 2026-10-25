@@ -19,7 +19,7 @@ mk() { # песочница: SB, W (рабочая копия), S (состоя�
   git init -q "$M"; ( cd "$M" && mkdir -p backend/migrations/versions deployment && cp -r "$ROOT/scripts" . && cp "$ROOT/deployment/compose.yml" deployment/ && echo 0.1.0 > VERSION \
     && echo 'revision = "r1"' > backend/migrations/versions/0001.py && git add -A && git commit -qm v1 && git tag v0.1.0 && git remote add origin "$SB/origin.git" && git push -q origin HEAD:master --tags )
   git clone -q "$SB/origin.git" "$W"
-  ( cd "$M" && echo 0.2.0 > VERSION && echo 'revision = "r2"' > backend/migrations/versions/0002.py && git add -A && git commit -qm v2 && git tag v0.2.0 && git push -q origin HEAD:master --tags )
+  ( cd "$M" && echo 0.2.0 > VERSION && echo 'revision = "r2"' > backend/migrations/versions/0002.py && sed -i '/^set -uo pipefail/a echo "CORE-FROM-TARGET-RELEASE"' scripts/update-core.sh && git add -A && git commit -qm v2 && git tag v0.2.0 && git push -q origin HEAD:master --tags )
   cat > "$W/.env" <<EOF
 COMPOSE_PROJECT_NAME=kctest
 DATA_ROOT=$D
@@ -83,10 +83,14 @@ if scn "5. Обрыв сети при загрузке образов: диаг�
   upd FAKE_PULL=timeout; rc=$?
   t "обновление остановлено" [ "$rc" -ne 0 ]; t "причина registry" [ "$(rj reason_code)" = registry ]; t "сборка не запускалась" bash -c "! [ -e '$S/BUILD_CALLED' ]"; common_fail; fin; fi
 
-if scn "6. Образы недоступны, но администратор разрешил резервную сборку (UPDATE_ALLOW_BUILD=1)"; then mk
+if scn "6. Сборка не включается скрыто: даже при UPDATE_ALLOW_BUILD=1 и недоступных образах — остановка"; then mk
   upd FAKE_PULL=timeout UPDATE_ALLOW_BUILD=1 FAKE_REGISTRY=down; rc=$?
-  t "обновление выполнено локальной сборкой" [ "$rc" -eq 0 ]; t "сборка запускалась" [ -e "$S/BUILD_CALLED" ]; t "в журнале предупреждение о переходе на сборку" grep -q 'резервн' "$SB/out.log"
-  t "режим build в отчёте" [ "$(rj mode)" = build ]; t "запущен локальный образ нового коммита" bash -c "[ '$(tag)' != local1 ] && [ '$(tag)' != v0.2.0 ]"; fin; fi
+  t "обновление остановлено" [ "$rc" -ne 0 ]; t "сборка НЕ запускалась" bash -c "! [ -e '$S/BUILD_CALLED' ]"; common_fail; fin; fi
+
+if scn "6b. Явная локальная сборка (--build): источники зависимостей проверяются, сборка выполняется, режим build в отчёте"; then mk
+  updx -- --build; rc=$?
+  t "обновление выполнено" [ "$rc" -eq 0 ]; t "сборка запускалась" [ -e "$S/BUILD_CALLED" ]; t "режим build в отчёте" [ "$(rj mode)" = build ]; t "проверены источники npm и pip" grep -q "npm: https://registry.npmjs.org" "$SB/out.log"
+  t "этап назван «локальная сборка»" grep -q "Образы релиза: локальная сборка" "$SB/out.log"; fin; fi
 
 if scn "7. Явная локальная сборка: Docker Hub недоступен"; then mk
   updx FAKE_BUILD=hub FAKE_HUB=down -- --build; rc=$?
@@ -149,7 +153,7 @@ if scn "17. Остановка помощника во время обновле
   printf 'id=aabbccddeeff0022\naction=update\ntarget=v0.2.0\nmode=\nby=tester\nat=%s\n' "$(date +%s)" > "$D/updater/request.txt"
   for _ in $(seq 1 60); do grep -q 'hang: migrate' "$S/calls.log" 2>/dev/null && break; sleep 1; done
   t "обновление дошло до миграции" grep -q '^stage=migrating' "$D/state/update.inprogress"
-  kill -9 -- "-$upid" 2>/dev/null; pkill -9 -f 'sleep 6001'; pkill -9 -f "$W/scripts/update.sh"; wait "$upid" 2>/dev/null
+  op="$(cat "$D/updater/.op.pid" 2>/dev/null)"; kill -9 -- "-$upid" 2>/dev/null; [ -n "$op" ] && kill -9 -- "-$op" 2>/dev/null; pkill -9 -f 'sleep 6001'; wait "$upid" 2>/dev/null
   t "в status.json остался «updating» (помощник убит)" grep -q '"state":"updating"' "$D/updater/status.json"
   ( cd "$W" && PATH="$SB/bin:$PATH" FAKE_STATE="$S" ENV_FILE="$W/.env" exec setsid "$W/scripts/updater.sh" run --env "$W/.env" >"$SB/updater2.log" 2>&1 ) & upid=$!
   for _ in $(seq 1 60); do [ ! -e "$D/state/update.inprogress" ] && grep -q '"state":"idle"' "$D/updater/status.json" 2>/dev/null && break; sleep 1; done
@@ -171,6 +175,43 @@ if scn "19. Два обновления одновременно: второе �
   for _ in $(seq 1 30); do [ -e "$D/state/update.inprogress" ] && break; sleep 1; done; sleep 3
   upd; rc=$?; t "второй запуск отклонён блокировкой" [ "$rc" -ne 0 ]; t "первое продолжает работать" kill -0 "$p1"
   kill -9 -- "-$p1" 2>/dev/null; pkill -9 -f 'sleep 6001'; wait "$p1" 2>/dev/null; fin; fi
+
+
+if scn "20. Обновление исполняет скрипты ЦЕЛЕВОГО релиза, а не установленной версии"; then mk
+  upd; rc=$?
+  t "обновление выполнено" [ "$rc" -eq 0 ]; t "в журнале строка из update-core.sh целевого релиза" grep -q CORE-FROM-TARGET-RELEASE "$SB/out.log"
+  t "скрипты запущены из распакованной копии" grep -q "state/run/" "$SB/out.log"; t "установленный (старый) update-core.sh этой строки не содержит" bash -c "! git -C '$W' show v0.1.0:scripts/update-core.sh | grep -q CORE-FROM-TARGET-RELEASE"; fin; fi
+
+if scn "21. Пульс помощника независим от операции: обновляется во время долгой операции без вывода"; then mk
+  ( cd "$W" && PATH="$SB/bin:$PATH" FAKE_STATE="$S" ENV_FILE="$W/.env" FAKE_PULL=hang UPD_STALL_PULL=900 UPD_STALL_TOTAL=900 exec setsid "$W/scripts/updater.sh" run --env "$W/.env" >"$SB/updater.log" 2>&1 ) & upid=$!
+  for _ in $(seq 1 30); do [ -f "$D/updater/heartbeat.json" ] && break; sleep 1; done
+  printf 'id=aabbccddeeff0033\naction=update\ntarget=v0.2.0\nmode=\nby=tester\nat=%s\n' "$(date +%s)" > "$D/updater/request.txt"
+  for _ in $(seq 1 60); do grep -q 'hang: pull' "$S/calls.log" 2>/dev/null && break; sleep 1; done
+  hbts() { python3 -c "import json;print(json.load(open('$D/updater/heartbeat.json'))['ts'])"; }
+  a="$(hbts)"; sleep 9; b="$(hbts)"
+  t "во время операции без вывода пульс обновляется" bash -c "[ '$b' -gt '$a' ]"
+  t "операция выполняется (состояние updating, процесс жив)" bash -c "python3 -c \"import json;o=json.load(open('$D/updater/operation.json'));h=json.load(open('$D/updater/heartbeat.json'));assert o['state']=='updating' and h['op_alive'] is True and o['op_id'] and o['phase']=='pulling'\""
+  kill -9 "$upid"; sleep 7; c="$(hbts)"; sleep 6; d="$(hbts)"
+  t "после аварийного завершения помощника пульс не поддерживается «осиротевшим» циклом" [ "$c" = "$d" ]
+  op="$(cat "$D/updater/.op.pid" 2>/dev/null)"; [ -n "$op" ] && kill -9 -- "-$op" 2>/dev/null; fin; fi
+
+if scn "22. Откат безопасен для схемы: прежняя версия не запускается на неизвестной ей ревизии базы"; then mk
+  upd; B="$(ls "$D"/backups/*-pre-0.1.0.dump | head -1)"; echo r9 > "$S/dbrev"
+  { echo pid=999999; echo started=$(date +%s); echo old_ver=0.1.0; echo new_ver=0.2.0; echo old_tag=local1; echo old_repo=kavcheck; echo "prev_head=$(git -C "$W" rev-parse v0.1.0)"; echo stage=stopped; echo "backup=$B"; echo target=v0.2.0; } > "$D/state/update.inprogress"
+  rec; rc=$?
+  t "восстановление сообщило о ручном вмешательстве" [ "$rc" -eq 2 ]; t "прежняя версия НЕ запущена на чужой схеме (работает новая, базы не тронуты)" bash -c "[ '$(tag)' = v0.2.0 ] && [ '$(dbrev)' = r9 ]"
+  t "совет называет ревизию и копию" grep -q 'r9' "$D/updater/report.json"; fin; fi
+
+if scn "23. Повторное обновление после сбоя — без ручного снятия блокировок и перезапуска"; then mk
+  upd FAKE_PULL=hang UPD_STALL_PULL=4; rc=$?
+  t "первая попытка остановлена" [ "$rc" -ne 0 ]; no_sleepers
+  upd; rc=$?
+  t "вторая попытка сразу успешна" [ "$rc" -eq 0 ]; t "версия v0.2.0" [ "$(tag)" = v0.2.0 ]; t "блокировка свободна, метки нет" bash -c "flock -n '$D/state/update.lock' true && [ ! -e '$D/state/update.inprogress' ]"; fin; fi
+
+if scn "24. Самодиагностика: doctor сообщает конкретные причины"; then mk
+  out="$(cd "$W" && env PATH="$SB/bin:$PATH" FAKE_STATE="$S" ENV_FILE="$W/.env" "$W/scripts/updater.sh" doctor --env "$W/.env" 2>&1)"; rc=$?
+  t "doctor без пульса: код 1 и причина «Пульс не обновлялся»" bash -c "[ $rc -eq 1 ] && grep -q 'Пульс не обновлялся' '$D/updater/doctor.json'"
+  t "в doctor.json права каталога и Docker проверены" bash -c "grep -q data_perm '$D/updater/doctor.json' && grep -q '\"key\":\"docker\",\"ok\":true' '$D/updater/doctor.json'"; fin; fi
 
 printf '\nИтого: %s проверок пройдено, %s не пройдено\n' "$PASS" "$FAILS"
 [ "$FAILS" -eq 0 ]

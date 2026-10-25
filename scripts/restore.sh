@@ -14,7 +14,7 @@ take_lock
 if [ "$YES" -ne 1 ]; then read -r -p "Восстановить базу из $FILE? Текущие данные будут ЗАМЕНЕНЫ (прежняя база сохранится под другим именем). [y/N] " a; [ "$a" = y ] || die "Отменено."; fi
 action_reset
 dc up -d postgres >/dev/null; wait_healthy 60 postgres
-"$REPO_ROOT/scripts/backup.sh" --env "$ENV_FILE" --label pre-restore >/dev/null && ok "Перед восстановлением снята копия текущей базы (метка pre-restore)" || die "Не удалось снять копию текущей базы — восстановление не начато"
+"$SCRIPTS_DIR/backup.sh" --env "$ENV_FILE" --label pre-restore >/dev/null && ok "Перед восстановлением снята копия текущей базы (метка pre-restore)" || die "Не удалось снять копию текущей базы — восстановление не начато"
 restore_db_exact "$FILE" before_restore || { dc up -d >/dev/null; die "Восстановление не выполнено; база оставлена как была, сервисы запущены"; }
 # старые отложенные базы: оставить две последние каждого вида
 for kind in before_restore failed; do
