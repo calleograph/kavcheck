@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 # real.sh — интеграционные испытания обновления на НАСТОЯЩЕМ Docker и systemd (служба пользователя): отдельный проект и порты, рабочая установка не затрагивается.
-#   tests/updater/real.sh           (нужны docker, доступ к ghcr.io и Docker Hub для образа registry:2, systemd --user; код должен быть закоммичен — берётся из git HEAD)
-# Что происходит: локальный реестр образов (registry:2) получает копию релиза v0.6.1 как «новую версию»; установка стартует на образах v0.5.0, помеченных как локально собранные
+#   tests/updater/real.sh           (нужны docker, доступ к ghcr.io, systemd --user; код должен быть закоммичен — берётся из git HEAD)
+# Что происходит: «новая версия» — реальные образы релиза v0.6.1 из ghcr.io (тег v0.6.1 в локальном origin песочницы указывает на текущий код); установка стартует на образах v0.5.0, помеченных как локально собранные
 # (IMAGE_REPO=kavcheck — состояние, из-за которого раньше обновление запускало сборку); помощник работает службой systemd (Restart=always); обновления запускаются через API
 # приложения, как кнопкой в интерфейсе. Сценарии: недоступный реестр, ошибка миграции, «перезагрузка» во время миграции, повтор без ручных действий, обновление, падение помощника,
 # перезапуск backend, откат на несовместимую схему.
 set -u
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; P="kcreal$$"; PORT="${KC_REAL_PORT:-28090}"; RPORT="${KC_REAL_REGPORT:-25050}"; W="$(mktemp -d /tmp/kcreal.XXXXXX)"
-APP="$W/app"; ENVF="$APP/.env"; D="$W/data"; REG="127.0.0.1:$RPORT/kc/kavcheck"; UNIT="$P-updater"; PASS=0; FAILS=0; CJ="$W/cj"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; P="kcreal$$"; PORT="${KC_REAL_PORT:-28090}"; W="$(mktemp -d /tmp/kcreal.XXXXXX)"
+APP="$W/app"; ENVF="$APP/.env"; D="$W/data"; REG="ghcr.io/calleograph/kavcheck"; UNIT="$P-updater"; PASS=0; FAILS=0; CJ="$W/cj"
 t() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then PASS=$((PASS + 1)); printf '  \033[32m✓\033[0m %s\n' "$d"; else FAILS=$((FAILS + 1)); printf '  \033[31m✗\033[0m %s\n' "$d"; fi; }
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 dc() { docker compose -p "$P" --project-directory "$APP/deployment" --env-file "$ENVF" -f "$APP/deployment/compose.yml" "$@"; }
 cleanup() {
   systemctl --user stop "$UNIT" >/dev/null 2>&1; systemctl --user reset-failed "$UNIT" >/dev/null 2>&1
-  [ -f "$ENVF" ] && dc down -v >/dev/null 2>&1; docker rm -f "$P-registry" >/dev/null 2>&1
-  docker run --rm -v "$W:/w" --entrypoint sh postgres:16-alpine -c 'rm -rf /w/data' >/dev/null 2>&1; rm -rf "$W"
-  for i in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "^(kavcheck-real-|127.0.0.1:$RPORT/)"); do docker rmi "$i" >/dev/null 2>&1; done
+  [ -f "$ENVF" ] && dc down -v >/dev/null 2>&1;   docker run --rm -v "$W:/w" --entrypoint sh postgres:16-alpine -c 'rm -rf /w/data' >/dev/null 2>&1; rm -rf "$W"
+  docker rmi kavcheck-backend:real5 kavcheck-web:real5 >/dev/null 2>&1
 }
 [ -n "${KEEP:-}" ] || trap cleanup EXIT
 api() { python3 - "$@" <<'PY'
@@ -48,18 +47,17 @@ wait_idle() { # дождаться окончания операции (сост
 running_version() { curl -fsS -m 5 "http://127.0.0.1:$PORT/api/v1/version" | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])" 2>/dev/null; }
 psql_() { dc exec -T postgres psql -U kc -d kc -tAc "$1"; }
 report() { python3 -c "import json;print(json.load(open('$D/updater/report.json')).get('$1',''))"; }
-trigger() { api POST /admin/updates/run '{"confirm":true,"target":"v9.9.1"}' >/dev/null; sleep 4; }
+trigger() { api POST /admin/updates/run '{"confirm":true,"target":"v0.6.1"}' >/dev/null; sleep 4; }
 dock_build_calls() { docker ps -a --format '{{.Names}}' | grep -c buildkit; }
 
 say "Подготовка: реестр образов, образы, репозиторий, установка на «локальных» образах v0.5.0"
-docker run -d --name "$P-registry" -p "127.0.0.1:$RPORT:5000" registry:2 >/dev/null || { echo "Не удалось запустить registry:2"; exit 2; }
-for s in backend web; do
+for s in backend web; do        # «установленные» образы v0.5.0 помечены как локально собранные (IMAGE_REPO=kavcheck); образы нового релиза на сервере отсутствуют — их скачивает обновление
   docker pull -q "ghcr.io/calleograph/kavcheck-$s:v0.5.0" >/dev/null && docker tag "ghcr.io/calleograph/kavcheck-$s:v0.5.0" "kavcheck-$s:real5"
-  docker pull -q "ghcr.io/calleograph/kavcheck-$s:v0.6.1" >/dev/null && docker save "ghcr.io/calleograph/kavcheck-$s:v0.6.1" | docker load -q >/dev/null && docker tag "ghcr.io/calleograph/kavcheck-$s:v0.6.1" "$REG-$s:v9.9.1" && docker push -q "$REG-$s:v9.9.1" >/dev/null
+  docker rmi "ghcr.io/calleograph/kavcheck-$s:v0.6.1" >/dev/null 2>&1
 done
-docker rmi "$REG-backend:v9.9.1" "$REG-web:v9.9.1" >/dev/null 2>&1        # новых образов на сервере нет: их должно скачать обновление
-git clone -q --bare "$ROOT" "$W/origin.git" && git clone -q "$W/origin.git" "$APP" && git -C "$APP" checkout -q --detach "$(git -C "$ROOT" rev-parse HEAD)"
-( cd "$W" && git clone -q "$W/origin.git" maker && cd maker && git -c user.name=t -c user.email=t@example.org checkout -q "$(git -C "$ROOT" rev-parse HEAD)" && echo 9.9.1 > VERSION && git -c user.name=t -c user.email=t@example.org commit -qam "release 9.9.1" && git tag v9.9.1 && git push -q origin HEAD:refs/heads/rel --tags )
+# Реальные образы релиза 0.6.1 лежат в ghcr.io, поэтому «новая версия» — тег v0.6.1 в ЛОКАЛЬНОМ origin песочницы, переставленный на текущий код (со скриптами обновления нового образца).
+git clone -q --bare "$ROOT" "$W/origin.git" && git clone -q "$W/origin.git" "$APP" && git -C "$APP" checkout -q --detach "$(git -C "$ROOT" rev-parse HEAD)" && git -C "$APP" tag -d v0.6.1 >/dev/null
+( cd "$W" && git clone -q "$W/origin.git" maker && cd maker && git -c user.name=t -c user.email=t@example.org checkout -q "$(git -C "$ROOT" rev-parse HEAD)" && echo 0.6.1 > VERSION && git -c user.name=t -c user.email=t@example.org commit -qam "release 0.6.1 (sandbox)" --allow-empty && git tag -f v0.6.1 >/dev/null && git push -q -f origin HEAD:refs/heads/rel v0.6.1 )
 mkdir -p "$D"/{postgres,reports,backups,updater,state}; chmod 1777 "$D/updater"; chmod 777 "$D/reports"
 cp "$ROOT/.env.example" "$ENVF"; sed -i "s#^COMPOSE_PROJECT_NAME=.*#COMPOSE_PROJECT_NAME=$P#; s#^DATA_ROOT=.*#DATA_ROOT=$D#; s#^WEB_PORT=.*#WEB_PORT=$PORT#; s#^POSTGRES_DB=.*#POSTGRES_DB=kc#; s#^POSTGRES_USER=.*#POSTGRES_USER=kc#; s#^POSTGRES_PASSWORD=.*#POSTGRES_PASSWORD=pw-$P#; s#^APP_MASTER_KEY=.*#APP_MASTER_KEY=$(openssl rand -base64 32)#; s#^APP_PUBLIC_URL=.*#APP_PUBLIC_URL=http://127.0.0.1:$PORT#; s#^IMAGE_REPO=.*#IMAGE_REPO=kavcheck#; s#^IMAGE_TAG=.*#IMAGE_TAG=real5#; s#^IMAGE_REGISTRY=.*#IMAGE_REGISTRY=$REG#; s#^GITHUB_REPO=.*#GITHUB_REPO=acme/kavcheck#; s#^COOKIE_SECURE=.*#COOKIE_SECURE=false#" "$ENVF"
 dc up -d postgres >/dev/null; for _ in $(seq 1 40); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$(dc ps -q postgres)" 2>/dev/null)" = healthy ] && break; sleep 2; done
