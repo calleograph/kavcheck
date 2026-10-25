@@ -9,6 +9,9 @@ import { Icon } from "../components/Icons";
 import { useToast } from "../components/Toast";
 import { Empty, PageHead, SkelRows, SortTh, Spectrum, MaskHint } from "../components/ui";
 import { fmt, num } from "../util";
+import { QuickReportPanel } from "../components/QuickReport";
+import { ZonePicker } from "../components/ZoneBits";
+import { DEFAULT_ZONE_CATS } from "./zoneCats";
 import { AuditBuilder, AuditResult, draftFromItem, emptyDraft, itemSummary, type Draft, type PreviewState } from "./AuditBuilder";
 import { JOB_STATUS } from "./DashboardPage";
 import { getSelection, selLabel } from "../selection";
@@ -23,6 +26,8 @@ export function describe(p: Record<string, unknown>): string {
   if (n("vp_ids") || n("product_names")) parts.push(`программ: ${n("vp_ids") + n("product_names")}`);
   if (n("host_ids")) parts.push(`компьютеров: ${n("host_ids")}`);
   if (n("event_ids")) parts.push(`событий: ${n("event_ids")}`);
+  if (n("zone_ids")) parts.push(`зон: ${n("zone_ids")}`);
+  if (typeof p.zone === "string" && p.zone) parts.push("зона");
   if (typeof p.problem === "string" && p.problem) parts.push(`проблема: ${p.problem}`);
   if (p.online_only) parts.push("только в сети");
   if (p.rule) parts.push(`правило «${p.rule}»`);
@@ -66,6 +71,7 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
   const [delJob, setDelJob] = useState<Job | null>(null);
   const [delCheck, setDelCheck] = useState<SavedCheck | null>(null);
   const [allSources, setAllSources] = useState(false);
+  const [zonePick, setZonePick] = useState(false); const [zoneIds, setZoneIds] = useState<string[] | null>(null);
   const [preview, setPreview] = useState<PreviewState>(null);
   const [toast, show] = useToast();
   const canEdit = ctx.me.user.role !== "viewer";
@@ -122,6 +128,8 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
             <h2>Другие отчёты</h2>
             <button type="button" className="action-row" disabled={!canEdit} onClick={() => quick({ inactive_only: true, include_inactive: true }, "Компьютеры без связи с KSC")}>
               <span className="a-ic"><Icon name="clock" /></span><span className="a-main"><b>Компьютеры без связи с KSC</b><span>Агент не подключался дольше {ctx.me.activity_days} сут</span></span><Icon name="chevronR" className="a-go" /></button>
+            <button type="button" className="action-row" disabled={!canEdit} onClick={() => setZonePick(true)}>
+              <span className="a-ic"><Icon name="grid" /></span><span className="a-main"><b>Состояние безопасности зоны</b><span>Сводка, проблемные компьютеры и подробности по выбранным зонам</span></span><Icon name="chevronR" className="a-go" /></button>
             <button type="button" className="action-row" disabled={!canEdit} onClick={() => quick({}, "Активные компьютеры")}>
               <span className="a-ic"><Icon name="monitor" /></span><span className="a-main"><b>Активные компьютеры</b><span>Имя, IP, ОС, группа, последнее подключение</span></span><Icon name="chevronR" className="a-go" /></button>
           </div>
@@ -136,6 +144,9 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
       {delJob && <ConfirmDialog title="Удалить отчёт?" confirmLabel="Удалить отчёт" body={<p>Файлы отчёта «{delJob.title}» будут удалены без возможности восстановления.</p>} onClose={() => setDelJob(null)} onConfirm={async () => { await api.reports.remove(delJob.id); loadJobs(); }} />}
       {delCheck && <ConfirmDialog title="Удалить проверку?" confirmLabel="Удалить" body={<p>Проверка «{delCheck.name}» будет удалена. Сформированные по ней отчёты останутся.</p>} onClose={() => setDelCheck(null)}
         onConfirm={async () => { await api.checks.remove(delCheck.id); if (editing?.id === delCheck.id) newCheck(); loadChecks(); }} />}
+      {zonePick && <ZonePicker onClose={() => setZonePick(false)} onPick={(ids) => { setZonePick(false); setZoneIds(ids); }} />}
+      {zoneIds && <QuickReportPanel kind="quick_zone" title="Состояние безопасности зон" lede="Тот же отчёт, что отправляется по расписанию" options={{ zone: true }} activityDays={ctx.me.activity_days} canReport={canEdit}
+        params={{ zone_ids: zoneIds, categories: DEFAULT_ZONE_CATS, level: "management" }} onClose={() => { setZoneIds(null); loadJobs(); }} />}
       {toast}
     </section>
   );
@@ -152,7 +163,7 @@ function JobsTable({ jobs, canEdit, onChanged, onDelete, show }: { jobs: Job[] |
               <td><span className={`badge ${c}`}>{j.status === "running" && <span className="spin sm" />}{l}</span>{j.status === "running" && j.progress && <span className="sub">{j.progress}</span>}{j.error && <span className="sub bad-text">{j.error}</span>}</td>
               <td className="num">{num(j.rows)}</td><td className="small">{j.created_by}</td><td className="nowrap small">{fmt(j.created_at)}</td>
               <td className="actions">
-                {j.status === "done" && <><a className="btn mini" href={api.reports.downloadUrl(j.id, "xlsx")}><Icon name="download" size={15} />XLSX</a><a className="btn mini ghost" href={api.reports.downloadUrl(j.id, "csv")}>CSV</a></>}
+                {j.status === "done" && <><a className="btn mini" href={api.reports.downloadUrl(j.id, "xlsx")}><Icon name="download" size={15} />XLSX</a>{(j.kind.startsWith("quick_") || j.kind === "version_audit") && <a className="btn mini ghost" href={api.reports.downloadUrl(j.id, "html")}>HTML</a>}<a className="btn mini ghost" href={api.reports.downloadUrl(j.id, "csv")}>CSV</a></>}
                 {canEdit && (j.status === "queued" || j.status === "running") && <button className="btn mini ghost" onClick={async () => { await api.reports.cancel(j.id); onChanged(); show("Формирование отменяется"); }}><Icon name="stop" size={14} />Отменить</button>}
                 {canEdit && j.status !== "running" && j.status !== "queued" && <><button className="btn mini ghost icon" title="Повторить с теми же условиями" aria-label={`Повторить отчёт ${j.title}`} onClick={async () => { await api.reports.rerun(j.id); onChanged(); show("Отчёт поставлен в очередь"); }}><Icon name="refresh" size={15} /></button>
                   <button className="btn mini ghost danger icon" aria-label={`Удалить отчёт ${j.title}`} onClick={() => onDelete(j)}><Icon name="trash" size={15} /></button></>}</td></tr>); })}

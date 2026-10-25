@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
+import { Modal } from "./Dialogs";
 
 let cache: { id: string; name: string }[] | null = null;
 let pending: Promise<{ id: string; name: string }[]> | null = null;
@@ -25,4 +26,18 @@ export function HostZones({ sourceId, hostId }: { sourceId: string | null | unde
     {d.zones.map((z) => <Link key={z.id} className="zone-chip" to={`/zones/${z.id}`} title={z.responsible.length ? `Ответственные: ${z.responsible.join(", ")}` : "Ответственные не назначены"}>{z.name}{z.responsible.length ? ` · ${z.responsible[0]}${z.responsible.length > 1 ? ` +${z.responsible.length - 1}` : ""}` : ""}</Link>)}
     {d.conflict && <span className="zone-chip warn" title={`Подходит также: ${d.candidates.map((c) => c.name).join(", ")}`}>спорный</span>}
   </span>;
+}
+
+/** Выбор зон для отчёта «Состояние безопасности зоны» из раздела «Отчёты»: список зон флажками и переход к настройке отчёта. */
+export function ZonePicker({ onPick, onClose }: { onPick: (ids: string[]) => void; onClose: () => void }) {
+  const [items, setItems] = useState<{ id: string; name: string }[] | null>(null);
+  const [sel, setSel] = useState<string[]>([]);
+  useEffect(() => { void loadZones().then(setItems); }, []);
+  return (
+    <Modal title="Отчёт по зоне ответственности" onClose={onClose} guard={false} lede="Выберите одну или несколько зон: в отчёт войдут компьютеры этих зон из всех доступных источников KSC."
+      footer={<><button className="btn ghost" onClick={onClose}>Отмена</button><button className="btn primary" disabled={!sel.length} onClick={() => onPick(sel)}>Далее</button></>}>
+      {!items ? <span className="spin accent" /> : items.length <= 1 && !items.some((z) => z.id !== "none") ? <p className="muted">Зон ещё нет. Создайте их в Администрировании → «Зоны ответственности».</p> : (
+        <div className="check-grid">{items.map((z) => <label key={z.id} className="check"><input type="checkbox" checked={sel.includes(z.id)} onChange={() => setSel(sel.includes(z.id) ? sel.filter((x) => x !== z.id) : [...sel, z.id])} />{z.name}</label>)}</div>)}
+    </Modal>
+  );
 }

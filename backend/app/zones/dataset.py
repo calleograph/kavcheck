@@ -88,20 +88,22 @@ def short_text(h: dict) -> str:
 
 
 def assemble(raw: Raw, zindex: ZoneIndex, tindex: T.TriageIndex, *, ext_rows: list[dict] | None = None, source_id: str, source_name: str, now: datetime, activity_days: int, include_inactive: bool, online_only: bool,
-             bases_days: int = 3, scan_days: int = 30, zone_activity: dict[str, int] | None = None, min_sev: str = "") -> dict:
+             bases_days: int = 3, scan_days: int = 30, zone_activity: dict[str, int] | None = None, min_sev: str = "", only=None) -> dict:
     """Компьютеры источника с зонами, проблемами и разобранными по решениям обнаружениями.
     Возвращает {hosts, hidden, total_all}: hosts — в области (по активности и сети), у каждого vulns.current/accepted/excluded и сводка по уровням."""
     records = annotate(raw.base, zindex, source_id)
+    if only is not None:                         # отчёт или страница по выбранным зонам: остальные компьютеры источника не разбираются
+        records = [r for r in records if only(r)]
     by_host: dict[int, dict[str, list[dict]]] = {}
     zones_of = {r["host_id"]: r["zones"] for r in records}
     names_of = {r["host_id"]: r["name"] for r in records}
-    vr = [{**r, "zones": zones_of.get(r["host_id"], [])} for r in raw.vuln_rows]
+    vr = [{**r, "zones": zones_of[r["host_id"]]} for r in raw.vuln_rows if r["host_id"] in zones_of]
     for bucket, rows in T.split(vr, tindex).items():
         for r in rows:
             by_host.setdefault(r["host_id"], {"current": [], "accepted": [], "excluded": []})[bucket].append(r)
     ext_by: dict[int, dict[str, list[dict]]] = {}
     if ext_rows is not None:
-        er = [{**r, "zones": zones_of.get(r["host_id"], []), "product": r.get("program"), "name": names_of.get(r["host_id"], ""), "ids_list": (r.get("ids") or "").split()[:20]} for r in ext_rows]
+        er = [{**r, "zones": zones_of[r["host_id"]], "product": r.get("program"), "name": names_of.get(r["host_id"], ""), "ids_list": (r.get("ids") or "").split()[:20]} for r in ext_rows if r["host_id"] in zones_of]
         for bucket, rows in T.split(er, tindex, key_fields=("vuln_key", "ids_list")).items():
             for r in rows:
                 ext_by.setdefault(r["host_id"], {"current": [], "accepted": [], "excluded": []})[bucket].append(r)

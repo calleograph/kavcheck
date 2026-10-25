@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
 from ..ksc.driver import KscError
-from ..models import KscSource, Zone, ZoneContact
+from ..models import KscSource, VulnTriage, Zone, ZoneContact, ZonePin, ZoneRule
 from ..reports import quick
 from ..services.cache import TtlCache
 from ..services.settings import SettingsService
@@ -24,6 +27,7 @@ from . import service as S
 from . import triage as T
 
 UNASSIGNED = "none"
+log = logging.getLogger("app.zones")
 
 
 class ZoneData:
@@ -91,28 +95,48 @@ class ZoneData:
         with_ext = "ext_vulns" in cats or params.get("with_ext", False)
         now = datetime.now(timezone.utc)
         parts, srcs = [], await self.active_sources(db, source_ids, allowed)
+        want = set(zone_ids or [])
+        only = None if zone_ids is None else (lambda r: ((not r["zones"]) if UNASSIGNED in want and not r["zones"] else bool(set(r["zones"]) & want)))
+        zrev = await self._zone_rev(db)
+        pkey = json.dumps({k: v for k, v in params.items() if not k.startswith("_")}, sort_keys=True, default=str)
         for src in srcs:
             raw = await self.raw(db, src, refresh=refresh, progress=progress, cancelled=cancelled)
-            tindex = await T.load(db, src.id, now)
-            ext_rows, ext_notes = None, []
-            if with_ext:                         # внешние базы — только для компьютеров выбранных зон, а не для всего источника
-                want = set(zone_ids or [])
-                ids = sorted({r["host_id"] for r in ZM.annotate(raw.base, zindex, str(src.id))
-                              if zone_ids is None or ((not r["zones"]) if UNASSIGNED in want and not r["zones"] else bool(set(r["zones"]) & want))})
-                if len(ids) > ext_cap:
-                    ext_notes = [f"Потенциальные совпадения с внешними базами не рассчитаны: в выбранных зонах {len(ids)} компьютеров (предел для этого вида — {ext_cap}). Сформируйте отчёт по меньшим зонам."]
-                else:
-                    ext_rows, ext_notes = await self.ext_for(db, src, ids, progress=progress, cancelled=cancelled, refresh=refresh)
-            part = D.assemble(raw, zindex, tindex, ext_rows=ext_rows, source_id=str(src.id), source_name=src.name, now=now, activity_days=int(general.activity_days),
-                              include_inactive=bool(params.get("include_inactive")) or "inactive" in cats, online_only=bool(params.get("online_only")), bases_days=int(params.get("bases_days") or 3),
-                              scan_days=int(params.get("scan_days") or 30), zone_activity=zones_days, min_sev=params.get("severity") or "")
-            part["notes"] += ext_notes
-            part.update(source=src.name, source_id=str(src.id), at=raw.at)
-            if await T.mark_stale(db, tindex):
-                await db.commit()
+            trev = (await db.execute(select(func.count(VulnTriage.id), func.max(VulnTriage.updated_at)).where(VulnTriage.source_id == src.id))).one()
+            vrev = await vdb_store.revision(db, src.id) if with_ext else ""
+
+            async def make(src=src, raw=raw):
+                t0 = time.monotonic()
+                tindex = await T.load(db, src.id, now)
+                ext_rows, ext_notes = None, []
+                if with_ext:                     # внешние базы — только для компьютеров выбранных зон, а не для всего источника
+                    ids = sorted({r["host_id"] for r in ZM.annotate(raw.base, zindex, str(src.id)) if only is None or only(r)})
+                    if len(ids) > ext_cap:
+                        ext_notes = [f"Потенциальные совпадения с внешними базами не рассчитаны: в выбранных зонах {len(ids)} компьютеров (предел для этого вида — {ext_cap}). Сформируйте отчёт по меньшим зонам."]
+                    else:
+                        ext_rows, ext_notes = await self.ext_for(db, src, ids, progress=progress, cancelled=cancelled, refresh=refresh)
+                t1 = time.monotonic()
+                part = D.assemble(raw, zindex, tindex, ext_rows=ext_rows, source_id=str(src.id), source_name=src.name, now=now, activity_days=int(general.activity_days),
+                                  include_inactive=bool(params.get("include_inactive")) or "inactive" in cats, online_only=bool(params.get("online_only")), bases_days=int(params.get("bases_days") or 3),
+                                  scan_days=int(params.get("scan_days") or 30), zone_activity=zones_days, min_sev=params.get("severity") or "", only=only)
+                part["notes"] += ext_notes
+                part.update(source=src.name, source_id=str(src.id), at=raw.at)
+                log.info("Зоны: набор источника собран", extra={"source": src.name, "hosts": len(part["hosts"]), "ext_s": round(t1 - t0, 1), "assemble_s": round(time.monotonic() - t1, 1)})
+                if await T.mark_stale(db, tindex):
+                    await db.commit()
+                return part
+
+            # собранный набор кэшируется: страницы, фильтры и отчёты по тем же зонам не повторяют разбор десятков тысяч компьютеров; решения, зоны и данные KSC меняют ключ
+            key = (str(src.id), "zpart", raw.at.isoformat(), zrev, str(tuple(trev)), vrev, pkey, tuple(sorted(zone_ids or [])), "ext" if with_ext else "")
+            part, _ = await self.cache.get(key, min(self.cfg.cache_ttl_seconds, 300), make, refresh=refresh)
             parts.append(part)
         _ = zdefs
         return parts, srcs
+
+    async def _zone_rev(self, db: AsyncSession) -> str:
+        z = (await db.execute(select(func.count(Zone.id), func.max(Zone.updated_at)))).one()
+        r = (await db.execute(select(func.count(ZoneRule.id)))).scalar_one()
+        p = (await db.execute(select(func.count(ZonePin.id), func.max(ZonePin.created_at)))).one()
+        return f"{tuple(z)}|{r}|{tuple(p)}"
 
     async def host_ids(self, db: AsyncSession, src: KscSource, zone: str) -> set[int]:
         """Идентификаторы компьютеров источника, принадлежащих зоне («none» — без ответственного): общий фильтр «Зона» разделов и отчётов."""
