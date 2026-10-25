@@ -165,6 +165,8 @@ def parse_osv(doc: dict) -> Rec | None:
 # ------------------------------------------------------------------------------------------------ БДУ ФСТЭК
 _BDU_SEV = (("критич", "critical"), ("высок", "high"), ("средн", "medium"), ("низк", "low"))
 _VER_FULL = [
+    (re.compile(r"^от\s*([^\s,;]+)\s*до\s*([^\s,;]+?)(?:\s+(включительно))?$", re.I), "from_to"),            # «от 0.0.0 до 1.16.4» (конец не входит), «… включительно» (входит)
+    (re.compile(r"^(\d+(?:\.\d+)*)\s+(?:LTS|ESM)$"), "exact"),                                                  # Ubuntu «10.04 LTS»
     (re.compile(r"^(?:до|ранее|менее|<)\s*([^\s,;]+)\s*(включительно)?$", re.I), "end"),
     (re.compile(r"^([^\s,;]+)\s*(?:и (?:более )?(?:ранн\w+|ниже)|и ранее)(?:\s+верси\w+)?$", re.I), "end_incl"),
     (re.compile(r"^([^\s,;]+)\s*(?:и (?:более )?(?:поздн\w+|выше)|и новее)(?:\s+верси\w+)?$", re.I), "start_incl"),
@@ -196,6 +198,8 @@ def _bdu_versions(text: str) -> list[dict]:
                 out.append({"start": m.group(1), "start_incl": True, "open": True})
             elif kind == "range":
                 out.append({"start": m.group(1), "start_incl": True, "end": m.group(2), "end_incl": True})
+            elif kind == "from_to":
+                out.append({"start": m.group(1), "start_incl": True, "end": m.group(2), "end_incl": bool(m.group(3))})
             else:
                 out.append({"exact": m.group(1)})
             break

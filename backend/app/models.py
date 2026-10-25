@@ -421,6 +421,8 @@ class VdbSource(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
     records: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cursor: Mapped[dict | None] = mapped_column(JSONType)                                 # NVD: до какой даты изменений загружено; OSV: обработанные идентификаторы
+    channel: Mapped[str] = mapped_column(String(24), nullable=False, default="", server_default="")   # канал, которым получены действующие данные
+    diag: Mapped[list | None] = mapped_column(JSONType)                                   # попытки последней загрузки: [{channel, ok, error, ms, bytes}]
 
 
 class VdbRun(Base):
@@ -437,6 +439,8 @@ class VdbRun(Base):
     changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
+    channel: Mapped[str] = mapped_column(String(24), nullable=False, default="", server_default="")
+    attempts: Mapped[list | None] = mapped_column(JSONType)
 
 
 class VdbRecord(Base):

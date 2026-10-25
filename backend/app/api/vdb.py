@@ -23,7 +23,7 @@ from ..services.catalog import text_conds
 from ..vdb.sync import analyze, upload_path
 
 router = APIRouter(prefix="/vdb", tags=["vdb"])
-ECOSYSTEMS = ("Debian", "Ubuntu", "Alpine", "AlmaLinux", "Rocky Linux", "Red Hat", "SUSE", "openSUSE", "Mageia", "Chainguard", "Wolfi")
+ECOSYSTEMS = S.OSV_ECOSYSTEMS
 MAX_UPLOAD = 400 * 1024 * 1024
 
 
@@ -38,8 +38,9 @@ def source_out(r: VdbSource, runs: list[VdbRun] | None = None) -> dict:
     return {"key": r.key, "title": info["title"], "url": info["url"], "terms": info["terms"], "mode": info["mode"], "enabled": r.enabled, "interval_hours": r.interval_hours,
             "settings": st, "secret_set": bool(r.secret_enc), "status": r.status, "progress": r.progress, "last_started_at": _iso(r.last_started_at), "last_ok_at": _iso(r.last_ok_at),
             "last_duration_ms": r.last_duration_ms, "last_error": r.last_error, "records": r.records, "requested": r.requested_at is not None, "can_restore": r.prev_generation is not None,
-            "upload": r.key == "bdu", "runs": [{"started_at": _iso(x.started_at), "finished_at": _iso(x.finished_at), "trigger": x.trigger, "status": x.status, "fetched": x.fetched,
-                                                "changed": x.changed, "duration_ms": x.duration_ms, "error": x.error} for x in (runs or [])]}
+            "upload": r.key == "bdu", "channel": r.channel, "channels": info["channels"], "attempts": r.diag or [],
+            "runs": [{"started_at": _iso(x.started_at), "finished_at": _iso(x.finished_at), "trigger": x.trigger, "status": x.status, "fetched": x.fetched, "changed": x.changed,
+                      "duration_ms": x.duration_ms, "error": x.error, "channel": x.channel, "attempts": x.attempts or []} for x in (runs or [])]}
 
 
 @router.get("/sources")
@@ -64,23 +65,25 @@ class SourceIn(BaseModel):
 
 def _clean_settings(key: str, cur: dict, new: dict) -> dict:
     out = dict(cur)
-    if key == "nvd" and "history_days" in new:
-        out["history_days"] = max(7, min(3650, int(new["history_days"])))
+    if key == "nvd":
+        if "years_back" in new:
+            out["years_back"] = max(1, min(30, int(new["years_back"])))
+        if "history_days" in new:
+            out["history_days"] = max(7, min(3650, int(new["history_days"])))
     if key == "osv":
         if "ecosystems" in new:
-            out["ecosystems"] = [e for e in new["ecosystems"] if e in ECOSYSTEMS][:10]
-        if "enrich" in new:
-            out["enrich"] = bool(new["enrich"])
-        if "max_per_run" in new:
-            out["max_per_run"] = max(10, min(3000, int(new["max_per_run"])))
+            out["ecosystems"] = [e for e in dict.fromkeys(new["ecosystems"]) if e in ECOSYSTEMS][:20]
+        if "all_ecosystems" in new:
+            out["all_ecosystems"] = bool(new["all_ecosystems"])
     if key == "bdu":
         if "url" in new:
             u = str(new["url"]).strip()
             if not u.lower().startswith("https://") or len(u) > 400:
                 raise HTTPException(status_code=422, detail="Адрес выгрузки БДУ должен начинаться с https://")
             out["url"] = u
-        if "verify_tls" in new:
-            out["verify_tls"] = bool(new["verify_tls"])
+        for flag in ("verify_tls", "builtin_ca"):
+            if flag in new:
+                out[flag] = bool(new[flag])
     if key == "kev" and "url" in new and str(new["url"]).strip():
         u = str(new["url"]).strip()
         if not u.lower().startswith("https://"):
@@ -98,6 +101,8 @@ async def update_source(key: str, body: SourceIn, request: Request, su: SessionU
     if body.enabled is not None and body.enabled != r.enabled:
         r.enabled = body.enabled
         changed.append("enabled")
+        if r.enabled and r.last_ok_at is None and r.status != "running":
+            r.requested_at = utcnow()                    # включение — одна кнопка: первая загрузка ставится в очередь сразу
     if body.interval_hours is not None:
         r.interval_hours = body.interval_hours
         changed.append("interval_hours")
@@ -208,7 +213,7 @@ def _text_cond(term: str):
 @router.get("/vulns")
 async def vulns(q: str = Query("", max_length=200), min_severity: str = Query("", pattern=r"^(|critical|high|medium|low)$"), exploited: bool = False, has_fix: bool | None = None,
                 score_min: float | None = Query(None, ge=0, le=10), score_max: float | None = Query(None, ge=0, le=10), no_score: bool = False,
-                source: str = Query("", pattern=r"^(|nvd|kev|osv|bdu)$"), published_from: str = Query("", max_length=10), published_to: str = Query("", max_length=10),
+                version: str = Query("", max_length=60), source: str = Query("", pattern=r"^(|nvd|kev|osv|bdu)$"), published_from: str = Query("", max_length=10), published_to: str = Query("", max_length=10),
                 modified_from: str = Query("", max_length=10), affects: bool = False,
                 sort: str = Query("priority", pattern=r"^(priority|published|modified|score|key)$"), desc: bool = True, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
                 su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
@@ -238,10 +243,12 @@ async def vulns(q: str = Query("", max_length=200), min_severity: str = Query(""
         if not sid:
             raise HTTPException(status_code=409, detail="Источник KSC не выбран")
         stmt = stmt.where(VdbFinding.vuln_key.is_not(None))
-    total = int((await db.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))).scalar_one())
     d = (lambda c: c.desc()) if desc else (lambda c: c.asc())
     order = {"priority": [VdbVuln.exploited.desc(), VdbVuln.sev_rank.desc(), VdbVuln.published.desc()], "published": [d(VdbVuln.published)], "modified": [d(VdbVuln.modified)],
              "score": [d(VdbVuln.score).nulls_last()], "key": [d(VdbVuln.vuln_key)]}[sort]
+    if version.strip():
+        return await _by_version(db, stmt.order_by(*order, VdbVuln.vuln_key), q, version.strip(), offset, limit)
+    total = int((await db.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))).scalar_one())
     rows = (await db.execute(stmt.order_by(*order, VdbVuln.vuln_key).offset(offset).limit(limit))).all()
     items = [_vuln_out(v, f if isinstance(f, VdbFinding) else None) for v, f in rows]
     return {"items": items, "total": total, "offset": offset, "limit": limit}
@@ -255,6 +262,34 @@ def _score_out(s: dict, ext: dict[str, str]) -> dict:
     eid = ext.get(src, "")
     url = {"nvd": f"https://nvd.nist.gov/vuln/detail/{eid}", "bdu": f"https://bdu.fstec.ru/vul/{eid.split(':', 1)[-1]}", "osv": f"https://osv.dev/vulnerability/{eid}"}.get(src, "") if eid else ""
     return {**s, "severity_ru": SEV_RU.get(s["severity"], ""), "source_title": S.INFO[src]["title"] if src in S.INFO else src, "origin_label": origin, "url": url}
+
+
+VERSION_CANDIDATES = 2000
+
+
+async def _by_version(db: AsyncSession, stmt, q: str, version: str, offset: int, limit: int) -> dict:
+    """Какие уязвимости программы затрагивают указанную версию: кандидаты по названию (самые приоритетные, до 2000) → диапазоны версий источников (те же правила, что при сопоставлении
+    с KSC). «yes» — версия в затронутом диапазоне; «unknown» — границы источника нельзя сравнить (потенциальное совпадение, требуется уточнение)."""
+    if not any(c.isdigit() for c in version):
+        raise HTTPException(status_code=422, detail="Версия должна содержать цифры, например 1.18.0")
+    words = [w for w in (norm(x) for x in clean(q).replace("*", " ").split()) if w][:4]
+    if not words:
+        raise HTTPException(status_code=422, detail="Версию можно проверить только вместе с названием программы: введите его в поле поиска")
+    cands = (await db.execute(stmt.limit(VERSION_CANDIDATES))).all()
+    affs = await M.affected_for(db, [v.vuln_key for v, _ in cands])
+    best: dict[str, str] = {}
+    rank = {"yes": 2, "unknown": 1}
+    for a in affs:
+        hay = " ".join((a.vendor_key, a.product_key, norm(a.pkg_name)))
+        if not all(w in hay for w in words):
+            continue
+        res, _why = M.verdict(version, "dpkg" if a.ecosystem.startswith(("Debian", "Ubuntu")) else "numeric", a)
+        if rank.get(res, 0) > rank.get(best.get(a.vuln_key, ""), 0):
+            best[a.vuln_key] = res
+    hits = [(v, f) for v, f in cands if v.vuln_key in best]
+    hits.sort(key=lambda x: -rank[best[x[0].vuln_key]])
+    items = [{**_vuln_out(v, f if isinstance(f, VdbFinding) else None), "version_match": best[v.vuln_key]} for v, f in hits[offset:offset + limit]]
+    return {"items": items, "total": len(hits), "offset": offset, "limit": limit, "approximate": len(cands) >= VERSION_CANDIDATES, "version": version}
 
 
 @router.get("/vulns/{key}")

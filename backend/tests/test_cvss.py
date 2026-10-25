@@ -3,12 +3,13 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
-from app.models import VdbRecord, VdbSource, VdbVuln
+from app.models import VdbRecord, VdbSource, VdbVuln, utcnow
 from app.vdb import parsers, store
 from app.vdb.fetch import Http
 from app.vdb.normalize import Rec, make_score, pick_primary, sev_from_score
 from app.vdb.sync import VdbSync
 from tests.conftest import login
+from tests.vdbmock import nvd_feed
 
 V31 = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
 V2 = "AV:N/AC:L/Au:N/C:P/I:P/A:P"
@@ -168,13 +169,16 @@ async def test_nvd_rescore_big_window_saves_only_known_records(app):
     async with app.state.session_maker() as db:
         await store.ensure_sources(db)
         src = await db.get(VdbSource, "nvd")
-        src.settings, src.cursor = {"history_days": 30}, {"last_mod": datetime.now(timezone.utc).isoformat()}
+        src.settings, src.cursor = {"history_days": 30}, {"last_mod": datetime.now(timezone.utc).isoformat(), "feed": "feeds", "years_from": 2024}
+        src.records, src.last_ok_at = 12, utcnow()
         await store.save_batch(db, 1, [Rec(source="nvd", ext_id=f"CVE-2099-02{i:02d}", vuln_key=f"CVE-2099-02{i:02d}", title="t", published=pub) for i in range(12)])
         for r in (await db.execute(select(VdbRecord))).scalars().all():
             r.scores_at = None
         await db.commit()
 
     def handler(req: httpx.Request) -> httpx.Response:
+        if "/feeds/json/cve/2.0/" in str(req.url):
+            return nvd_feed(str(req.url), {"vulnerabilities": []})
         if "pubStartDate" in str(req.url):          # окно возвращает 12 известных записей и 3 чужие
             ids = [f"CVE-2099-02{i:02d}" for i in range(12)] + ["CVE-2099-9001", "CVE-2099-9002", "CVE-2099-9003"]
             return httpx.Response(200, json={"vulnerabilities": [nvd_item(i, {"cvssMetricV31": [metric("3.1", 7.5, V31)]}) for i in ids], "totalResults": len(ids)})
@@ -197,7 +201,8 @@ async def test_nvd_rescore_refetches_missing_scores_without_duplicates(app):
     async with app.state.session_maker() as db:
         await store.ensure_sources(db)
         src = await db.get(VdbSource, "nvd")
-        src.settings, src.cursor = {"history_days": 30}, {"last_mod": datetime.now(timezone.utc).isoformat()}      # обычная загрузка по изменениям пуста: проверяем только повторное получение
+        src.settings, src.cursor = {"history_days": 30}, {"last_mod": datetime.now(timezone.utc).isoformat(), "feed": "feeds", "years_from": 2024}      # обычная загрузка по изменениям пуста: проверяем только повторное получение
+        src.records, src.last_ok_at = 2, utcnow()
         await store.save_batch(db, 1, [Rec(source="nvd", ext_id="CVE-2099-0100", vuln_key="CVE-2099-0100", title="t", published=pub),
                                        Rec(source="nvd", ext_id="CVE-2099-0101", vuln_key="CVE-2099-0101", title="отозвана", published=pub)])
         for r in (await db.execute(select(VdbRecord))).scalars().all():
@@ -209,6 +214,8 @@ async def test_nvd_rescore_refetches_missing_scores_without_duplicates(app):
 
     def handler(req: httpx.Request) -> httpx.Response:
         calls.append(str(req.url))
+        if "/feeds/json/cve/2.0/" in str(req.url):
+            return nvd_feed(str(req.url), {"vulnerabilities": []})
         if "cveId=CVE-2099-0100" in str(req.url):   # ждущих записей мало — запрос по одной CVE; отозванную (0101) NVD не отдаёт
             return httpx.Response(200, json={"vulnerabilities": [nvd_item("CVE-2099-0100", {"cvssMetricV31": [metric("3.1", 9.8, V31)]})], "totalResults": 1})
         if "pubStartDate" in str(req.url):          # окно по дате публикации: чужие CVE из окна в базу не попадают

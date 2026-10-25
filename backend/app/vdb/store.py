@@ -81,7 +81,10 @@ def _utc(d: datetime) -> datetime:
 
 
 async def next_generation(db: AsyncSession, source: str) -> int:
-    return int((await db.execute(select(func.coalesce(func.max(VdbRecord.generation), 0)).where(VdbRecord.source == source))).scalar_one()) + 1
+    """Номер нового поколения — всегда больше действующего и предыдущего, поэтому загрузка (в том числе первая) не видна, пока не проверена и не подменила действующее."""
+    row = await db.get(VdbSource, source)
+    top = int((await db.execute(select(func.coalesce(func.max(VdbRecord.generation), 0)).where(VdbRecord.source == source))).scalar_one())
+    return max(top, row.active_generation if row else 0, (row.prev_generation or 0) if row else 0) + 1
 
 
 async def discard_generation(db: AsyncSession, source: str, gen: int) -> None:
@@ -205,8 +208,8 @@ async def revision(db: AsyncSession, source_id) -> str:
     return "|".join([",".join(f"{k}:{t.isoformat() if t else ''}:{g}:{int(e)}" for k, t, g, e in srcs), f"{maps[0]}:{maps[1]}", str(built)])
 
 
-DEFAULTS = {"kev": (True, 12, {}), "nvd": (False, 6, {"history_days": 365}), "osv": (False, 24, {"ecosystems": ["Debian"], "enrich": True}),
-            "bdu": (False, 24, {"url": "https://bdu.fstec.ru/files/documents/vulxml.zip", "verify_tls": True})}
+DEFAULTS = {"kev": (True, 12, {}), "nvd": (False, 6, {"years_back": 3}), "osv": (False, 24, {"ecosystems": ["Debian", "Alpine", "Red Hat", "AlmaLinux", "Rocky Linux"]}),
+            "bdu": (False, 24, {"url": "https://bdu.fstec.ru/files/documents/vulxml.zip", "verify_tls": True, "builtin_ca": True})}
 
 
 async def ensure_sources(db: AsyncSession) -> None:

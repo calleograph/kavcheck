@@ -22,11 +22,29 @@ export default function VdbAdmin() {
     <div className="stack">
       <div className="alert info"><Icon name="info" /><div className="alert-body">В локальной базе <b>{num(d.vulns)}</b> уязвимостей. Загрузкой занимается фоновая служба: ручной запуск ставит источник в очередь, выполнение — в течение минуты.
         При ошибке очередной загрузки остаётся последняя корректная копия; полные выгрузки (CISA KEV, БДУ) заменяют данные только после проверки целостности, предыдущая копия хранится для отката.</div></div>
+      {d.items.some((s) => !s.enabled) && <EnableAll items={d.items} onChanged={load} />}
       {d.items.map((s) => <SourceCard key={s.key} s={s} ecosystems={d.ecosystems} onChanged={load} />)}
       <Mappings />
     </div>
   );
 }
+
+/** Включение всех источников одной кнопкой: настройки по умолчанию, первая загрузка ставится в очередь сама (помощник и учётные данные не нужны). */
+function EnableAll({ items, onChanged }: { items: VdbSourceInfo[]; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false); const [toast, show] = useToast();
+  const go = async () => {
+    setBusy(true);
+    try { for (const s of items.filter((x) => !x.enabled)) await api.vdb.updateSource(s.key, { enabled: true }); show("Источники включены, первая загрузка поставлена в очередь"); onChanged(); }
+    catch (e) { show((e as ApiError).message, "error"); } finally { setBusy(false); }
+  };
+  return <div className="alert warn"><Icon name="database" /><div className="alert-body"><b>Не все источники включены.</b> Включите NVD, OSV, БДУ и CISA KEV одной кнопкой: приложение само выполнит первую загрузку (NVD и OSV — сотни мегабайт, потоком, на небольшом сервере — десятки минут), построит поиск и будет обновлять данные по расписанию.
+    <div className="mt-sm"><button className="btn primary" onClick={go} aria-busy={busy}><Icon name="upload" />Включить все источники и загрузить</button></div></div>{toast}</div>;
+}
+
+const CHANNEL_NAME: Record<string, string> = { feeds: "ленты JSON 2.0", api: "API", archives: "архивы экосистем", site: "сайт bdu.fstec.ru", file: "файл, загруженный вручную", cisa: "cisa.gov", github: "GitHub cisagov/kev-data", supplement: "дополнения" };
+const YEARS: [number, string][] = [[1, "текущий год"], [2, "2 года"], [3, "3 года"], [5, "5 лет"], [10, "10 лет"], [30, "всё (с 2002 года)"]];
+const ECO_MB: Record<string, number> = { Debian: 75, Ubuntu: 755, Alpine: 4, "Red Hat": 26, AlmaLinux: 6, "Rocky Linux": 5, SUSE: 46, openSUSE: 21, Linux: 56, Go: 12, PyPI: 35, npm: 209, Maven: 10, NuGet: 3, Packagist: 10, RubyGems: 5, "crates.io": 3 };
+const COMMON_ECO = ["Debian", "Ubuntu", "Alpine", "Red Hat", "AlmaLinux", "Rocky Linux", "SUSE", "openSUSE", "Linux", "Go", "PyPI", "npm", "Maven", "NuGet", "Packagist", "RubyGems", "crates.io"];
 
 function SourceCard({ s, ecosystems, onChanged }: { s: VdbSourceInfo; ecosystems: string[]; onChanged: () => void }) {
   const [enabled, setEnabled] = useState(s.enabled); const [hours, setHours] = useState(s.interval_hours); const [st, setSt] = useState<Record<string, unknown>>(s.settings);
@@ -53,9 +71,15 @@ function SourceCard({ s, ecosystems, onChanged }: { s: VdbSourceInfo; ecosystems
         <div><span className="l">Последняя успешная загрузка</span><b>{s.last_ok_at ? fmt(s.last_ok_at) : "—"}</b></div>
         <div><span className="l">Записей</span><b>{num(s.records)}</b></div>
         <div><span className="l">Длительность</span><b>{s.last_duration_ms != null ? `${(s.last_duration_ms / 1000).toFixed(1)} с` : "—"}</b></div>
-        <div><span className="l">Режим</span><b>{s.mode === "full" ? "полная выгрузка, замена после проверки" : "только изменившиеся записи"}</b></div>
+        <div><span className="l">Канал</span><b>{s.channel ? CHANNEL_NAME[s.channel] ?? s.channel : "—"}</b></div>
+        <div><span className="l">Режим</span><b>{s.mode === "full" ? "полная выгрузка, замена после проверки" : "первая загрузка — замена после проверки, затем только изменения"}</b></div>
       </div>
-      {s.status === "running" && <div className="alert info" role="status"><span className="spin accent" /><div className="alert-body">{s.progress ?? "Выполняется загрузка…"}</div></div>}
+      {s.status === "running" && <div className="alert info" role="status"><span className="spin accent" /><div className="alert-body"><b>Этап:</b> {s.progress ?? "Выполняется загрузка…"}{s.last_started_at && <span className="muted small"> · идёт {Math.max(0, Math.round((Date.now() - new Date(s.last_started_at).getTime()) / 1000))} с</span>}</div></div>}
+      {s.enabled && s.requested && s.status !== "running" && <div className="alert info" role="status"><Icon name="clock" /><div className="alert-body">Загрузка в очереди: фоновая служба начнёт её в течение минуты.</div></div>}
+      {s.attempts.length > 0 && <details className="disclosure" open={!!s.last_error}><summary>Попытки последней загрузки ({s.attempts.length})</summary>
+        <div className="table-scroll"><table className="table compact"><thead><tr><th>Канал</th><th>Результат</th><th className="num">Записей</th><th className="num">с</th><th>Причина</th></tr></thead>
+          <tbody>{s.attempts.map((a, i) => <tr key={i}><td>{a.title}</td><td>{a.ok ? <span className="badge ok">успех</span> : <span className="badge err">ошибка</span>}</td><td className="num">{num(a.records)}</td><td className="num">{(a.ms / 1000).toFixed(1)}</td><td className="small">{a.error || "—"}</td></tr>)}</tbody></table></div>
+        <p className="muted small">Каналы пробуются по порядку: при ошибке первого загрузка продолжается вторым; действующая база заменяется только после полной проверки.</p></details>}
       {s.last_error && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body"><b>Последняя ошибка:</b> {s.last_error}{s.records > 0 && <> Используется последняя корректная копия ({num(s.records)} записей).</>}</div></div>}
       <div className="form">
         <div className="cols">
@@ -63,18 +87,21 @@ function SourceCard({ s, ecosystems, onChanged }: { s: VdbSourceInfo; ecosystems
           <label>Обновлять<select value={hours} onChange={(e) => setHours(Number(e.target.value))}>{INTERVALS.map(([h, l]) => <option key={h} value={h}>{l}</option>)}{!INTERVALS.some(([h]) => h === hours) && <option value={hours}>каждые {hours} ч</option>}</select></label>
         </div>
         {s.key === "nvd" && <div className="cols">
-          <label>Глубина первой загрузки, дней<input type="number" min={7} max={3650} value={Number(st.history_days ?? 365)} onChange={(e) => set("history_days", Number(e.target.value))} /><span className="help">Записи за больший срок можно найти по номеру CVE: недостающие эксплуатируемые догружаются автоматически</span></label>
-          <label>Ключ API NVD {s.secret_set && !clearKey && <span className="badge ok">задан</span>}<input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} placeholder={s.secret_set ? "оставьте пустым, чтобы не менять" : "необязательно"} />
-            <span className="help">Без ключа NVD разрешает 5 запросов за 30 секунд, с ключом — 50: первая загрузка быстрее. {s.secret_set && <button type="button" className="link-btn" onClick={() => setClearKey(!clearKey)}>{clearKey ? "Не удалять ключ" : "Удалить ключ"}</button>}</span></label></div>}
+          <label>Глубина истории<select value={Number(st.years_back ?? 3)} onChange={(e) => set("years_back", Number(e.target.value))}>{YEARS.map(([y, l]) => <option key={y} value={y}>{l}</option>)}</select>
+            <span className="help">Первая загрузка — официальные ленты по годам (потоком, без сотен тысяч запросов): год ≈ 25–30 МБ в сжатом виде; файл скачивается, проверяется по контрольной сумме NIST, разбирается потоком (память не растёт с размером) и сразу удаляется. Более старые эксплуатируемые CVE догружаются по одной. Глубину можно увеличить позже: недостающие годы будут добавлены.</span></label>
+          <label>Ключ API NVD (запасной канал) {s.secret_set && !clearKey && <span className="badge ok">задан</span>}<input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} placeholder={s.secret_set ? "оставьте пустым, чтобы не менять" : "необязательно"} />
+            <span className="help">Нужен только запасному каналу API 2.0: без ключа NVD разрешает 5 запросов за 30 секунд, с ключом — 50. {s.secret_set && <button type="button" className="link-btn" onClick={() => setClearKey(!clearKey)}>{clearKey ? "Не удалять ключ" : "Удалить ключ"}</button>}</span></label></div>}
         {s.key === "osv" && <>
-          <fieldset className="qr-sections"><legend>Экосистемы пакетов Linux для проверки</legend><div className="row wrap">{ecosystems.map((e) => <label key={e} className="check"><input type="checkbox" checked={eco.includes(e)}
-            onChange={(ev) => set("ecosystems", ev.target.checked ? [...eco, e] : eco.filter((x) => x !== e))} />{e}</label>)}</div>
-            <span className="help">Версии пакетов Linux из каталога сверяются с исправлениями дистрибутива — это учитывает переносимые исправления. Выбирайте дистрибутивы, которые используются в организации.</span></fieldset>
-          <label className="check"><input type="checkbox" className="switch" checked={st.enrich !== false} onChange={(e) => set("enrich", e.target.checked)} /><span className="check-body">Дополнять сведения OSV для эксплуатируемых и критических CVE</span></label>
+          <fieldset className="qr-sections"><legend>Экосистемы OSV</legend><div className="row wrap">{[...COMMON_ECO.filter((e) => ecosystems.includes(e)), ...ecosystems.filter((e) => !COMMON_ECO.includes(e))].map((e) => <label key={e} className="check"><input type="checkbox" checked={eco.includes(e)} disabled={!!st.all_ecosystems}
+            onChange={(ev) => set("ecosystems", ev.target.checked ? [...eco, e] : eco.filter((x) => x !== e))} />{e}{ECO_MB[e] && <span className="muted small"> {ECO_MB[e]} МБ</span>}</label>)}</div>
+            <span className="help">Для каждой выбранной экосистемы скачивается архив (Debian ≈ 80 МБ), затем — только изменённые записи (modified_id.csv). Linux-пакеты сверяются с исправлениями дистрибутива, включая переносимые. Архив удаляется сразу после разбора; на диске нужно места не меньше размера самого большого архива.</span></fieldset>
+          <label className="check"><input type="checkbox" className="switch" checked={!!st.all_ecosystems} onChange={(e) => set("all_ecosystems", e.target.checked)} /><span className="check-body">Вся база OSV одним архивом (≈ 2,8 ГБ; нужно не менее 4 ГБ свободного места, загрузка и разбор — около часа)</span></label>
         </>}
         {s.key === "bdu" && <>
           <label>Адрес XML-выгрузки<input className="mono" value={String(st.url ?? "")} onChange={(e) => set("url", e.target.value)} /><span className="help">Если сервер не имеет доступа к сайту БДУ, скачайте выгрузку вручную и загрузите файл ниже.</span></label>
-          <label className="check"><input type="checkbox" className="switch" checked={st.verify_tls !== false} onChange={(e) => set("verify_tls", e.target.checked)} /><span className="check-body">Проверять сертификат сайта (корневые сертификаты — «LDAPS → Сертификаты CA»)</span></label>
+          <label className="check"><input type="checkbox" className="switch" checked={st.verify_tls !== false} onChange={(e) => set("verify_tls", e.target.checked)} /><span className="check-body">Проверять сертификат сайта</span></label>
+          <label className="check"><input type="checkbox" className="switch" checked={st.builtin_ca !== false} onChange={(e) => set("builtin_ca", e.target.checked)} disabled={st.verify_tls === false} /><span className="check-body">Доверять корневому и промежуточному сертификатам Минцифры России (поставляются с приложением; применяются только к этому источнику)</span></label>
+          <p className="muted small">Сертификат bdu.fstec.ru выдан удостоверяющим центром Минцифры, которого нет в системных хранилищах, а сервер не присылает промежуточный сертификат — без этих сертификатов проверка TLS не проходит. Дополнительные сертификаты можно добавить в «LDAPS → Сертификаты CA». Сайт может быть недоступен из-за границы: тогда скачайте файл на другом компьютере и загрузите его кнопкой ниже.</p>
         </>}
         <div className="form-actions">
           <button type="button" className="btn primary" onClick={save} aria-busy={saving} disabled={!dirty}><span>Сохранить</span></button>
@@ -86,8 +113,8 @@ function SourceCard({ s, ecosystems, onChanged }: { s: VdbSourceInfo; ecosystems
         </div>
       </div>
       {s.runs.length > 0 && <details className="disclosure"><summary>История загрузок</summary>
-        <div className="table-scroll"><table className="table compact"><thead><tr><th>Начало</th><th>Запуск</th><th>Результат</th><th className="num">Получено</th><th className="num">Изменено</th><th className="num">с</th></tr></thead>
-          <tbody>{s.runs.map((r, i) => <tr key={i}><td className="nowrap">{fmt(r.started_at)}</td><td>{{ schedule: "по расписанию", manual: "вручную", file: "из файла" }[r.trigger] ?? r.trigger}</td>
+        <div className="table-scroll"><table className="table compact"><thead><tr><th>Начало</th><th>Запуск</th><th>Канал</th><th>Результат</th><th className="num">Получено</th><th className="num">Изменено</th><th className="num">с</th></tr></thead>
+          <tbody>{s.runs.map((r, i) => <tr key={i}><td className="nowrap">{fmt(r.started_at)}</td><td>{{ schedule: "по расписанию", manual: "вручную", file: "из файла" }[r.trigger] ?? r.trigger}</td><td className="small">{r.channel ? CHANNEL_NAME[r.channel] ?? r.channel : "—"}</td>
             <td>{r.status === "ok" ? <span className="badge ok">успех</span> : r.status === "running" ? <span className="badge accent">идёт</span> : <span className="badge err" title={r.error ?? ""}>ошибка</span>}{r.error && <span className="sub small">{r.error.slice(0, 120)}</span>}</td>
             <td className="num">{num(r.fetched)}</td><td className="num">{num(r.changed)}</td><td className="num">{r.duration_ms != null ? (r.duration_ms / 1000).toFixed(1) : "—"}</td></tr>)}</tbody></table></div></details>}
       {confirm && <ConfirmDialog title="Вернуть предыдущую копию?" confirmLabel="Вернуть" danger={false} body={<p>Действующие данные источника «{s.title}» будут заменены предыдущей полной копией; текущая останется как резервная.</p>}

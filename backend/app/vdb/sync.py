@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -13,13 +14,13 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
-from ..models import CaCertificate, CatalogProduct, CatalogState, KscSource, VdbFinding, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
+from ..models import CaCertificate, CatalogState, KscSource, VdbAffected, VdbFinding, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
 from ..services.settings import SettingsService
 from ..services.audit import Journal
 from . import match as M
 from . import sources as S
 from . import store
-from .fetch import FetchError, Http, make_ssl
+from .fetch import FetchError, Http, builtin_ca, make_ssl
 
 log = logging.getLogger("app.vdb")
 STALE = timedelta(hours=3)
@@ -45,7 +46,9 @@ class VdbSync:
         if self._http_factory:
             return self._http_factory(key)
         pems = [c.pem for c in (await db.execute(select(CaCertificate))).scalars().all()] if key == "bdu" else []
-        return Http(verify=make_ssl(pems, bool((row.settings or {}).get("verify_tls", True))))
+        if key == "bdu" and (row.settings or {}).get("builtin_ca", True):
+            pems = builtin_ca("russian_trusted_chain") + pems         # сертификаты Минцифры — только для соединений с БДУ
+        return Http(verify=make_ssl(pems, bool((row.settings or {}).get("verify_tls", True))), timeout=90)
 
     async def run_source(self, key: str, trigger: str = "schedule", file: Path | None = None) -> bool:
         """Загрузить источник. Возвращает True при успехе. Ошибка не затрагивает действующие данные: последняя корректная база остаётся в работе."""
@@ -62,6 +65,8 @@ class VdbSync:
                 settings, cursor = dict(row.settings or {}), dict(row.cursor or {})
                 secret = self._svc.decrypt(row.secret_enc, f"vdb.{key}") if row.secret_enc else ""
                 row.status, row.last_started_at, row.progress, row.requested_at = "running", utcnow(), "запуск", None
+                has_data = row.records > 0 and row.last_ok_at is not None
+                generation = row.active_generation
                 run = VdbRun(source=key, trigger=trigger, mode=S.INFO[key]["mode"])
                 db.add(run)
                 await db.flush()
@@ -74,7 +79,7 @@ class VdbSync:
                     await db2.execute(update(VdbSource).where(VdbSource.key == key).values(progress=text[:300]))
                     await db2.commit()
 
-            ctx = S.RunCtx(self._sm, key, settings, secret, cursor, http, progress, file=file, linux_packages=self._linux_packages, sleep=self._sleep)
+            ctx = S.RunCtx(self._sm, key, settings, secret, cursor, http, progress, file=file, sleep=self._sleep, data_dir=Path(self._settings.data_dir), has_data=has_data, generation=generation, force=trigger == "manual")
             error = ""
             try:
                 await S.SOURCES[key](ctx)
@@ -83,42 +88,32 @@ class VdbSync:
             except Exception as exc:  # noqa: BLE001
                 log.exception("Сбой загрузки источника %s", key)
                 error = f"Внутренняя ошибка: {type(exc).__name__}"
+                await ctx.discard()
             finally:
+                ctx.cleanup()
                 await http.close()
             ms = int((time.perf_counter() - started) * 1000)
             async with self._sm() as db:
                 row = await db.get(VdbSource, key)
                 if ctx.new_cursor is not None:
                     row.cursor = {**(row.cursor or {}), **ctx.new_cursor} if not error or "pub_loaded_until" in ctx.new_cursor else row.cursor
+                row.diag = ctx.attempts or None
                 if error:
                     row.status, row.last_error, row.progress = "error", error[:1500], None
                 else:
-                    row.status, row.last_ok_at, row.last_error, row.progress = "ok", utcnow(), None, None
+                    row.status, row.last_ok_at, row.last_error, row.progress, row.channel = "ok", utcnow(), None, None, ctx.channel
                     row.records = int((await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.source == key, VdbRecord.generation == row.active_generation))).scalar_one())
                 row.last_duration_ms = ms
-                await store.finish_run(db, run_id, finished_at=utcnow(), status="error" if error else "ok", fetched=ctx.fetched, changed=ctx.changed, duration_ms=ms, error=error[:1500] or None)
+                await store.finish_run(db, run_id, finished_at=utcnow(), status="error" if error else "ok", fetched=ctx.fetched, changed=ctx.changed, duration_ms=ms, error=error[:1500] or None, channel=ctx.channel, attempts=ctx.attempts or None)
                 await store.prune_runs(db, key)
                 await db.commit()
             await self._journal.emit("system", "vdb_sync_done" if not error else "vdb_sync_failed", level="info" if not error else "error", message=f"{S.INFO[key]['title']}: "
                                      + (f"записей получено {ctx.fetched}, изменено {ctx.changed}" if not error else error[:300]), duration_ms=ms, data={"source": key, "trigger": trigger})
-            if not error and ctx.keys:
-                await self.analyze_keys(ctx.keys)
+            if not error and ctx.keys and len(ctx.keys) <= 3000:
+                await self.analyze_keys(ctx.keys)               # больше — полный пересчёт по изменению ревизии данных (analysis_tick)
             return not error
         finally:
             self._running.discard(key)
-
-    async def _linux_packages(self) -> list[tuple[str, str]]:
-        """Пакеты Linux из каталогов активных источников KSC: (имя пакета, версия) — для проверки по OSV."""
-        out: set[tuple[str, str]] = set()
-        async with self._sm() as db:
-            for p in (await db.execute(select(CatalogProduct).where(CatalogProduct.hosts_active > 0))).scalars().all():
-                if not p.platforms & 2:
-                    continue
-                for v in p.versions or []:
-                    if v.get("platform", 0) & 2 and v.get("hosts_active") and v.get("raw"):
-                        for name in [n[0] if isinstance(n, list) else n for n in (v.get("names") or [])][:3] or [p.key]:
-                            out.add((str(name), str(v["raw"][0])))
-        return list(out)
 
     # ------------------------------------------------------------------------------------------ расписание
     async def tick(self) -> None:
@@ -132,7 +127,8 @@ class VdbSync:
                     continue
                 if r.key in self._running or r.status == "running":
                     continue
-                due = r.requested_at is not None or (r.enabled and (r.last_started_at is None or now - _utc(r.last_started_at) >= timedelta(hours=max(1, r.interval_hours))))
+                wait = timedelta(minutes=30) if r.status == "error" else timedelta(hours=max(1, r.interval_hours))       # после ошибки — повтор через 30 минут, а не через сутки
+                due = r.requested_at is not None or (r.enabled and (r.last_started_at is None or now - _utc(r.last_started_at) >= wait))
                 if due and (r.enabled or r.requested_at is not None):
                     todo.append((r.key, "manual" if r.requested_at else "schedule"))
             await db.commit()
@@ -152,8 +148,42 @@ class VdbSync:
             log.info("Оценки CVSS преобразованы для %s записей", n)
         return n
 
+    def purge_tmp(self) -> int:
+        """Остатки прерванных загрузок (перезапуск, сбой питания) во временном каталоге на томе данных; запущенных загрузок при старте нет."""
+        n = 0
+        d = Path(self._settings.data_dir) / UPLOAD_DIR / "tmp"
+        if d.is_dir():
+            for x in d.iterdir():
+                shutil.rmtree(x, ignore_errors=True) if x.is_dir() else x.unlink(missing_ok=True)
+                n += 1
+        return n
+
+    async def recover_interrupted(self) -> int:
+        """После перезапуска службы загрузок не идёт ни одна: «выполняется» — след прерванной загрузки. Статус снимается сразу (а не через часы), недозагруженные поколения
+        удаляются, действующие данные не затрагиваются (они меняются только при успешной проверке)."""
+        n = 0
+        async with self._sm() as db:
+            for r in (await db.execute(select(VdbSource))).scalars().all():
+                if r.status == "running":
+                    r.status, r.last_error, r.progress, n = "error", "Загрузка прервана (перезапуск службы); будет повторена автоматически", None, n + 1
+                keep = [g for g in (r.active_generation, r.prev_generation) if g is not None]
+                for model in (VdbAffected, VdbRecord):
+                    await db.execute(delete(model).where(model.source == r.key, model.generation.notin_(keep)))
+            await db.commit()
+        return n
+
     async def loop(self) -> None:
         await asyncio.sleep(10)
+        try:
+            if await self.recover_interrupted():
+                log.warning("Прерванные загрузки базы уязвимостей помечены как ошибка")
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось обработать прерванные загрузки")
+        try:
+            if self.purge_tmp():
+                log.info("Удалены остатки прерванных загрузок")
+        except OSError:
+            log.exception("Не удалось очистить временные файлы загрузок")
         try:
             await self.upgrade_scores()
         except Exception:  # noqa: BLE001

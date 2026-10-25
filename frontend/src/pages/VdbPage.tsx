@@ -64,13 +64,14 @@ function SearchView({ ctx }: { ctx: Ctx }) {
   const [sev, setSev] = useKept<Sev>("vdb.sev", ""); const [kev, setKev] = useKept("vdb.kev", false); const [fix, setFix] = useKept("vdb.fix", false);
   const [mine, setMine] = useKept("vdb.mine", false); const [source, setSource] = useKept("vdb.source", "");
   const [pf, setPf] = useKept("vdb.pf", ""); const [pt, setPt] = useKept("vdb.pt", ""); const [mf, setMf] = useKept("vdb.mf", "");
+  const [version, setVersion] = useKept("vdb.version", ""); const [appliedV, setAppliedV] = useState(version);
   const [range, setRange] = useKept("vdb.range", ""); const [lo, setLo] = useKept("vdb.lo", ""); const [hi, setHi] = useKept("vdb.hi", "");
   const [sort, setSort] = useKept("vdb.sort", "priority"); const [desc, setDesc] = useKept("vdb.desc", true);
   const sel = useRowSel<string>(); const [report, setReport] = useState<Report | null>(null);
   const canReport = ctx.me.user.role !== "viewer";
-  useEffect(() => { const t = window.setTimeout(() => setApplied(q), 350); return () => window.clearTimeout(t); }, [q]);
-  const list = useInfinite<VdbVulnRow>(`vdb:${sid}`, [applied, sev, kev, fix, mine, source, pf, pt, mf, sort, desc, range, lo, hi],
-    (offset, limit) => api.vdb.list({ q: applied, min_severity: sev, ...scoreParams(range, lo, hi), exploited: kev || undefined, has_fix: fix || undefined, affects: mine || undefined, source, published_from: pf, published_to: pt, modified_from: mf, sort, desc, offset, limit }) as unknown as Promise<Chunk<VdbVulnRow>>);
+  useEffect(() => { const t = window.setTimeout(() => { setApplied(q); setAppliedV(version); }, 350); return () => window.clearTimeout(t); }, [q, version]);
+  const list = useInfinite<VdbVulnRow>(`vdb:${sid}`, [applied, appliedV, sev, kev, fix, mine, source, pf, pt, mf, sort, desc, range, lo, hi],
+    (offset, limit) => api.vdb.list({ q: applied, version: appliedV.trim() || undefined, min_severity: sev, ...scoreParams(range, lo, hi), exploited: kev || undefined, has_fix: fix || undefined, affects: mine || undefined, source, published_from: pf, published_to: pt, modified_from: mf, sort, desc, offset, limit }) as unknown as Promise<Chunk<VdbVulnRow>>);
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(true); } };
   const open = sp.get("v");
   const keys = list.items.map((v) => v.key);
@@ -78,6 +79,7 @@ function SearchView({ ctx }: { ctx: Ctx }) {
     <>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="CVE-2024-…, CVE-2026-*, BDU:…, программа, производитель или текст описания" aria-label="Поиск уязвимости" /><MaskHint /></div>
+        <input className="w-md" value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Версия программы" aria-label="Версия программы" title="Введите название программы в поле поиска и версию здесь: найдутся уязвимости, затрагивающие эту версию" />
         <Segmented<Sev> label="Уровень опасности" value={sev} onChange={setSev} options={SEV_OPTS} />
         <label className="field">CVSS<select value={range} onChange={(e) => { setRange(e.target.value); setLo(""); setHi(""); }}>{CVSS_RANGES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
         <div className="toolbar-row">
@@ -107,7 +109,7 @@ function SearchView({ ctx }: { ctx: Ctx }) {
               <VirtualRows list={list} colSpan={9} estimate={64} row={(v) => (
                 <tr className={`clickable ${sel.has(v.key) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("input, button, a")) setSp((p) => { p.set("v", v.key); return p; }); }}>
                   <td className="check"><input type="checkbox" aria-label={`Выбрать ${v.key}`} checked={sel.has(v.key)} onChange={() => sel.toggle(v.key)} /></td>
-                  <td><button type="button" className="link-btn strong-link mono" onClick={() => setSp((p) => { p.set("v", v.key); return p; })}>{v.key}</button>
+                  <td><button type="button" className="link-btn strong-link mono" onClick={() => setSp((p) => { p.set("v", v.key); return p; })}>{v.key}</button>{v.version_match && <span className={`badge ${v.version_match === "yes" ? "err" : "warn"} new-dot`}>{v.version_match === "yes" ? "затрагивает версию" : "версия требует уточнения"}</span>}
                     <span className="sub vdb-title">{v.title || v.description}</span>{v.ids.length > 1 && <span className="sub mono small">{v.ids.filter((i) => i !== v.key).slice(0, 3).join(", ")}</span>}</td>
                   <td className="nowrap"><CvssCell v={v} /><span className="sm-stack"><LevelBadge v={v} />{v.exploited && <Kev />}</span></td>
                   <td className="hide-sm"><LevelBadge v={v} />{v.exploited && <span className="block kev-line"><Kev /></span>}</td>

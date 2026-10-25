@@ -1,32 +1,58 @@
-"""Загрузчики источников: NVD (API 2.0, инкрементально по дате изменения), CISA KEV (полный каталог), OSV (по CVE и по пакетам каталога), БДУ ФСТЭК (XML-выгрузка).
-Каждый загрузчик — `async def run(ctx)`; общие операции записи (поколения, сводка) — в `RunCtx`. Новый источник: функция здесь, запись в `SOURCES`, строка `vdb_sources`."""
+"""Загрузчики источников: NVD (официальные ленты JSON 2.0 по годам и «изменённые», запасной канал — API 2.0), CISA KEV (cisa.gov, запасной — GitHub cisagov/kev-data),
+OSV (официальные архивы по экосистемам и modified_id.csv), БДУ ФСТЭК (XML-выгрузка с сайта по проверенному TLS либо файл, загруженный вручную).
+
+Каждый источник — список каналов; при ошибке канала пробуется следующий, все попытки (канал, результат, время, причина) сохраняются для диагностики.
+Первоначальная загрузка и пересборка пишутся в новое «поколение» и становятся действующими только после проверки (`finish_full`): непустая и не меньше половины прежней.
+Последующие обновления — по изменившимся записям в действующее поколение (каждая запись целиком, в своей транзакции). Скачанные файлы — потоково во временный
+каталог на томе данных, свободное место проверяется до скачивания, файлы удаляются сразу после разбора. Новый источник: каналы здесь, запись в `SOURCES`/`INFO`, строка `vdb_sources`."""
 from __future__ import annotations
 
 import asyncio
+import gzip
+import json
+import shutil
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
+from urllib.parse import quote
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models import VdbRecord, VdbSource, utcnow
 from . import parsers, store
-from .fetch import FetchError, Http
+from .fetch import FetchError, Http, tempdir
 from .normalize import Rec
+from .stream import iter_array, sha256_stream
 
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-OSV_URL = "https://api.osv.dev/v1"
+NVD_FEEDS = "https://nvd.nist.gov/feeds/json/cve/2.0"
+KEV_URLS = (("cisa", "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"),
+            ("github", "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json"))
+OSV_BUCKET = "https://storage.googleapis.com/osv-vulnerabilities"
+OSV_API = "https://api.osv.dev/v1"
 BDU_URL = "https://bdu.fstec.ru/files/documents/vulxml.zip"
 NVD_WINDOW = timedelta(days=119)           # предел NVD — 120 суток на запрос по датам
+FEED_HORIZON = timedelta(days=7)            # лента «изменённые» хранит последние 8 суток
+OSV_INCR_MAX = 4000                          # изменённых записей одной экосистемы за запуск; больше — перезагрузка архивом
+BATCH = 400
+PARSER_REV = 2            # растёт при улучшении разбора БДУ: следующая загрузка перечитывает выгрузку, даже если файл на сайте не менялся
+OSV_ECOSYSTEMS = ("AlmaLinux", "Alpaquita", "Alpine", "Android", "Azure Linux", "BellSoft Hardened Containers", "Bitnami", "CRAN", "Chainguard", "CleanStart", "Debian", "Echo", "GHC",
+                  "GIT", "GSD", "GitHub Actions", "Go", "Hackage", "Hex", "Julia", "Linux", "Mageia", "Maven", "MinimOS", "NuGet", "OSS-Fuzz", "Packagist", "Pub", "PyPI", "Red Hat",
+                  "Rocky Linux", "Root", "RubyGems", "SUSE", "SwiftURL", "TuxCare", "Ubuntu", "VSCode", "Wolfi", "crates.io", "npm", "opam", "openEuler", "openSUSE")
+OSV_DEFAULT = ["Debian", "Alpine", "Red Hat", "AlmaLinux", "Rocky Linux"]       # ≈120 МБ архивов; Ubuntu (≈750 МБ) включается отдельно
 INFO = {
-    "nvd": {"title": "NVD (NIST)", "url": "https://nvd.nist.gov/", "mode": "incremental", "terms": "Открытые данные правительства США; API 2.0: до 5 запросов за 30 с без ключа, до 50 — с ключом"},
-    "kev": {"title": "CISA KEV", "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog", "mode": "full", "terms": "Каталог CISA публикуется открыто, свободное использование"},
-    "osv": {"title": "OSV", "url": "https://osv.dev/", "mode": "incremental", "terms": "Открытый API; данные распространяются на условиях CC-BY 4.0 и лицензий исходных баз"},
-    "bdu": {"title": "БДУ ФСТЭК России", "url": "https://bdu.fstec.ru/", "mode": "full", "terms": "XML-выгрузка с сайта; условия использования — по тексту на bdu.fstec.ru (приложение хранит ссылку на первоисточник); сертификат сайта выдан российским УЦ — добавьте его в «LDAPS → Сертификаты CA»"},
+    "nvd": {"title": "NVD (NIST)", "url": "https://nvd.nist.gov/", "mode": "incremental", "channels": ["Ленты JSON 2.0 (nvd.nist.gov/feeds)", "API 2.0 (services.nvd.nist.gov)"],
+            "terms": "Открытые данные правительства США. Первая загрузка — официальные ленты по годам (сотни мегабайт, потоком), дальше — лента «изменённые» (суточные изменения); запасной канал — API 2.0 (без ключа 5 запросов за 30 с)"},
+    "kev": {"title": "CISA KEV", "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog", "mode": "full", "channels": ["cisa.gov (JSON)", "GitHub cisagov/kev-data (JSON)"],
+            "terms": "Каталог CISA публикуется открыто, свободное использование; запасной канал — официальный репозиторий CISA на GitHub"},
+    "osv": {"title": "OSV", "url": "https://osv.dev/", "mode": "incremental", "channels": ["Архивы экосистем и modified_id.csv (storage.googleapis.com/osv-vulnerabilities)"],
+            "terms": "Открытая выгрузка; данные распространяются на условиях CC-BY 4.0 и лицензий исходных баз. Первая загрузка — архивы выбранных экосистем, дальше — только изменённые записи"},
+    "bdu": {"title": "БДУ ФСТЭК России", "url": "https://bdu.fstec.ru/", "mode": "full", "channels": ["Выгрузка vulxml.zip с сайта bdu.fstec.ru", "Файл, загруженный вручную"],
+            "terms": "XML-выгрузка с сайта (≈34 МБ в архиве); условия использования — по тексту на bdu.fstec.ru, приложение хранит ссылку на первоисточник. Сертификат сайта выдан УЦ Минцифры России: его корневой и промежуточный сертификаты поставляются с приложением и применяются только к этому источнику"},
 }
 
 
@@ -41,14 +67,35 @@ class RunCtx:
     progress: Callable[[str], Awaitable[None]]
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     file: Path | None = None
-    linux_packages: Callable[[], Awaitable[list[tuple[str, str]]]] | None = None
     sleep: Callable[[float], Awaitable] = asyncio.sleep
+    data_dir: Path | None = None
+    has_data: bool = False                  # в действующем поколении уже есть записи источника
+    force: bool = False                     # ручной запуск («Обновить сейчас»): условные запросы не используются
     fetched: int = 0
     changed: int = 0
     keys: set[str] = field(default_factory=set)
     mode: str = "incremental"
     new_cursor: dict | None = None
-    generation: int = 1
+    generation: int = 1                     # поколение, в которое пишутся записи (у инкрементальной загрузки — действующее)
+    channel: str = ""
+    attempts: list[dict] = field(default_factory=list)
+    _tmp: Path | None = None
+    _swapped: bool = False
+
+    def dl_progress(self, what: str):
+        async def cb(done: int, total: int) -> None:
+            await self.progress(f"{what}: скачано {done >> 20} из {total >> 20} МБ" if total else f"{what}: скачано {done >> 20} МБ")
+        return cb
+
+    def tmp(self) -> Path:
+        if self._tmp is None:
+            self._tmp = tempdir((self.data_dir / "vdb" / "tmp") if self.data_dir else None)
+        return self._tmp
+
+    def cleanup(self) -> None:
+        if self._tmp is not None:
+            shutil.rmtree(self._tmp, ignore_errors=True)
+            self._tmp = None
 
     async def save(self, recs: list[Rec], *, refresh: bool = True, force: bool = False) -> None:
         """Записать пачку: в активное поколение (инкрементальные источники — с пересчётом сводки) либо в подготавливаемое (refresh=False)."""
@@ -64,7 +111,7 @@ class RunCtx:
     async def begin_full(self) -> None:
         async with self.sm() as db:
             self.generation = await store.next_generation(db, self.key)
-        self.mode = "full"
+        self.mode, self._swapped = "full", False
 
     async def finish_full(self) -> None:
         async with self.sm() as db:
@@ -74,63 +121,74 @@ class RunCtx:
                 await store.refresh_vulns(db, keys)
             except store.IntegrityError:
                 await db.rollback()
-                async with self.sm() as db2:
-                    await store.discard_generation(db2, self.key, self.generation)
-                    await db2.commit()
+                await self.discard()
                 raise
             await db.commit()
-        self.changed, self.keys = n, keys
+        self.changed, self.keys, self._swapped, self.has_data = n, keys, True, True
+
+    async def discard(self) -> None:
+        """Отбросить недозагруженное поколение: действующие данные не затрагиваются."""
+        if self.mode == "full" and not self._swapped:
+            async with self.sm() as db:
+                await store.discard_generation(db, self.key, self.generation)
+                await db.commit()
+            self._swapped = True
+
+
+# ------------------------------------------------------------------------------------------------ каналы
+Channel = tuple[str, str, Callable[[RunCtx], Awaitable[None]]]
+
+
+async def run_channels(ctx: RunCtx, channels: list[Channel]) -> None:
+    """Пробует каналы по очереди; результат каждой попытки сохраняется в ctx.attempts. Недозагруженное поколение отбрасывается, действующие данные остаются."""
+    errors: list[str] = []
+    for key, title, fn in channels:
+        t0, start = time.perf_counter(), ctx.fetched
+        ctx.channel = key
+        await ctx.progress(f"канал «{title}»")
+        try:
+            await fn(ctx)
+        except (FetchError, store.IntegrityError, zipfile.BadZipFile, ValueError, OSError) as exc:
+            await ctx.discard()
+            ctx.cleanup()
+            msg = str(exc) if isinstance(exc, (FetchError, store.IntegrityError)) else f"{type(exc).__name__}: {str(exc)[:200]}"
+            ctx.attempts.append({"channel": key, "title": title, "ok": False, "error": msg[:600], "ms": int((time.perf_counter() - t0) * 1000), "records": ctx.fetched - start})
+            errors.append(f"{title}: {msg}")
+            ctx.fetched = start
+            continue
+        ctx.cleanup()
+        ctx.attempts.append({"channel": key, "title": title, "ok": True, "error": "", "ms": int((time.perf_counter() - t0) * 1000), "records": ctx.fetched - start})
+        return
+    raise FetchError("Данные не получены ни одним каналом. " + " | ".join(errors))
 
 
 # ------------------------------------------------------------------------------------------------ CISA KEV
+def _kev_channel(name: str, default_url: str) -> Callable[[RunCtx], Awaitable[None]]:
+    async def run(ctx: RunCtx) -> None:
+        url = (ctx.settings.get("url") if name == "cisa" else "") or default_url
+        await ctx.begin_full()
+        await ctx.progress("загрузка каталога CISA KEV")
+        doc = await ctx.http.json(url)
+        if not isinstance(doc, dict) or "vulnerabilities" not in doc:
+            raise FetchError("Ответ не похож на каталог CISA KEV (нет списка vulnerabilities)")
+        recs = list(parsers.parse_kev(doc))
+        if not recs:
+            raise FetchError("В каталоге нет ни одной записи: файл неполный")
+        for i in range(0, len(recs), 500):
+            await ctx.save(recs[i:i + 500], refresh=False)
+        await ctx.progress("проверка целостности и замена данных")
+        await ctx.finish_full()
+        ctx.new_cursor = {"catalog_version": doc.get("catalogVersion"), "released": doc.get("dateReleased")}
+    return run
+
+
 async def run_kev(ctx: RunCtx) -> None:
-    await ctx.begin_full()
-    await ctx.progress("загрузка каталога CISA KEV")
-    doc = await ctx.http.json(ctx.settings.get("url") or KEV_URL)
-    if not isinstance(doc, dict) or "vulnerabilities" not in doc:
-        raise FetchError("Ответ CISA KEV не похож на каталог (нет списка vulnerabilities)")
-    recs = list(parsers.parse_kev(doc))
-    for i in range(0, len(recs), 500):
-        await ctx.save(recs[i:i + 500], refresh=False)
-    await ctx.finish_full()
-    ctx.new_cursor = {"catalog_version": doc.get("catalogVersion"), "released": doc.get("dateReleased")}
+    await run_channels(ctx, [(n, t, _kev_channel(n, u)) for (n, u), t in zip(KEV_URLS, INFO["kev"]["channels"])])
 
 
 # ------------------------------------------------------------------------------------------------ БДУ ФСТЭК
-async def run_bdu(ctx: RunCtx) -> None:
-    await ctx.begin_full()
-    tmp = ctx.file
-    if tmp is None:
-        from .fetch import tempdir  # noqa: PLC0415
-
-        tmp = tempdir() / "bdu.bin"
-        await ctx.progress("скачивание выгрузки БДУ")
-        size = await ctx.http.download(ctx.settings.get("url") or BDU_URL, tmp)
-        await ctx.progress(f"выгрузка получена: {size // 1024} КБ")
-    try:
-        stream = _open_xml(tmp)
-        batch: list[Rec] = []
-        for rec in parsers.parse_bdu(stream):
-            batch.append(rec)
-            if len(batch) >= 400:
-                await ctx.save(batch, refresh=False)
-                await ctx.progress(f"разобрано записей БДУ: {ctx.fetched}")
-                batch = []
-        if batch:
-            await ctx.save(batch, refresh=False)
-    except (zipfile.BadZipFile, ValueError) as exc:
-        raise FetchError(f"Файл выгрузки БДУ повреждён или имеет неверный формат ({type(exc).__name__})") from None
-    except Exception as exc:  # noqa: BLE001 — xml.etree.ParseError
-        if type(exc).__name__ == "ParseError":
-            raise FetchError("Файл выгрузки БДУ не является корректным XML") from None
-        raise
-    await ctx.progress("проверка целостности и замена данных")
-    await ctx.finish_full()
-
-
 def _open_xml(path: Path):
-    head = path.read_bytes()[:4]
-    if head[:2] == b"PK":
+    if path.read_bytes()[:2] == b"PK":
         z = zipfile.ZipFile(path)
         names = [n for n in z.namelist() if n.lower().endswith(".xml")]
         if not names:
@@ -139,9 +197,131 @@ def _open_xml(path: Path):
     return path.open("rb")
 
 
+async def _bdu_parse(ctx: RunCtx, path: Path) -> None:
+    if path.read_bytes()[:2] == b"PK":
+        try:
+            bad = zipfile.ZipFile(path).testzip()
+        except zipfile.BadZipFile as exc:
+            raise FetchError(f"Файл выгрузки БДУ повреждён ({exc})") from None
+        if bad:
+            raise FetchError(f"Файл выгрузки БДУ повреждён (запись {bad})")
+    await ctx.begin_full()
+    batch: list[Rec] = []
+    try:
+        with _open_xml(path) as stream:
+            for rec in parsers.parse_bdu(stream):
+                batch.append(rec)
+                if len(batch) >= BATCH:
+                    await ctx.save(batch, refresh=False)
+                    await ctx.progress(f"разбор выгрузки БДУ: записей {ctx.fetched}")
+                    batch = []
+    except Exception as exc:  # noqa: BLE001 — xml.etree.ParseError
+        if type(exc).__name__ == "ParseError":
+            raise FetchError("Файл выгрузки БДУ не является корректным XML (обрыв или повреждение)") from None
+        raise
+    if batch:
+        await ctx.save(batch, refresh=False)
+    await ctx.progress("проверка целостности и замена данных")
+    await ctx.finish_full()
+
+
+async def _bdu_site(ctx: RunCtx) -> None:
+    url = ctx.settings.get("url") or BDU_URL
+    cur = ctx.cursor or {}
+    dest = ctx.tmp() / "bdu.zip"
+    await ctx.progress("скачивание выгрузки БДУ")
+    cond = ctx.has_data and not ctx.force and cur.get("rev") == PARSER_REV          # ручной запуск и новая версия разбора — выгрузка читается заново
+    got = await ctx.http.download(url, dest, etag=cur.get("etag", "") if cond else "", last_modified=cur.get("last_modified", "") if cond else "", progress=ctx.dl_progress("выгрузка БДУ"))
+    if got.not_modified:                # на сайте нет новой выгрузки: действующая копия актуальна
+        await ctx.progress("выгрузка на сайте не изменилась")
+        return
+    await ctx.progress(f"выгрузка получена: {got.size // 1024} КБ")
+    await _bdu_parse(ctx, dest)
+    ctx.new_cursor = {"etag": got.etag, "last_modified": got.last_modified, "size": got.size, "rev": PARSER_REV}
+
+
+async def _bdu_file(ctx: RunCtx) -> None:
+    if ctx.file is None:
+        raise FetchError("Файл выгрузки не загружен: загрузите XML или ZIP из БДУ")
+    await _bdu_parse(ctx, ctx.file)
+
+
+async def run_bdu(ctx: RunCtx) -> None:
+    if ctx.file is not None:            # администратор загрузил файл сам: сайт не опрашивается
+        await run_channels(ctx, [("file", INFO["bdu"]["channels"][1], _bdu_file)])
+    else:
+        await run_channels(ctx, [("site", INFO["bdu"]["channels"][0], _bdu_site)])
+
+
 # ------------------------------------------------------------------------------------------------ NVD
 def _nvd_dt(d: datetime) -> str:
     return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
+
+
+def _parse_meta(text: str) -> dict:
+    return {k.strip(): v.strip() for k, _, v in (ln.partition(":") for ln in text.splitlines() if ":" in ln)}
+
+
+async def _feed_apply(ctx: RunCtx, name: str, *, refresh: bool) -> None:
+    """Лента NVD: скачивание, проверка размера и SHA-256 распакованного потока по файлу .meta (до разбора — повреждённые данные не применяются), потоковый разбор."""
+    meta_r = await ctx.http.get(f"{NVD_FEEDS}/{name}.meta")
+    meta = _parse_meta(meta_r.text) if meta_r is not None else {}
+    gz = ctx.tmp() / f"{name}.json.gz"
+    await ctx.progress(f"{name}: скачивание")
+    await ctx.http.download(f"{NVD_FEEDS}/{name}.json.gz", gz, progress=ctx.dl_progress(name))
+    try:
+        with gzip.open(gz, "rb") as f:
+            digest, size = sha256_stream(f)
+        if meta.get("sha256") and digest != meta["sha256"].upper():
+            raise FetchError(f"Лента {name}: контрольная сумма не совпала с {name}.meta (файл повреждён или обновился во время скачивания)")
+        if meta.get("size") and size != int(meta["size"]):
+            raise FetchError(f"Лента {name}: размер {size} байт не совпадает с {name}.meta")
+        start, batch = ctx.fetched, []
+        with gzip.open(gz, "rb") as f:
+            for item in iter_array(f, "vulnerabilities"):
+                rec = parsers.parse_nvd(item)
+                if rec is None:
+                    continue
+                batch.append(rec)
+                if len(batch) >= BATCH:
+                    await ctx.save(batch, refresh=refresh)
+                    batch = []
+                    await ctx.progress(f"{name}: записей {ctx.fetched}")
+        if batch:
+            await ctx.save(batch, refresh=refresh)
+        if ctx.fetched == start and not name.endswith("modified"):
+            raise FetchError(f"Лента {name} не содержит записей")
+    finally:
+        gz.unlink(missing_ok=True)
+
+
+async def _nvd_feeds(ctx: RunCtx) -> None:
+    """Ленты JSON 2.0: первая загрузка — годы за `years_back` (по умолчанию 3) в новое поколение; обновления — лента «изменённые» (если с прошлой загрузки ≤ 7 суток),
+    иначе ленты текущего года и года прошлой загрузки; увеличенная глубина истории догружает более ранние годы."""
+    years_back = max(1, min(30, int(ctx.settings.get("years_back") or 3)))
+    now = ctx.now
+    first = now.year - years_back + 1
+    cur = ctx.cursor or {}
+    last_mod = datetime.fromisoformat(cur["last_mod"]) if cur.get("last_mod") and cur.get("feed") == "feeds" else None
+    have_from = int(cur.get("years_from") or 0)
+    if not ctx.has_data or last_mod is None:
+        await ctx.begin_full()
+        for y in range(first, now.year + 1):
+            await _feed_apply(ctx, f"nvdcve-2.0-{y}", refresh=False)
+        await ctx.progress("проверка целостности и построение сводки")
+        await ctx.finish_full()
+        years_from = first
+        await _feed_apply(ctx, "nvdcve-2.0-modified", refresh=True)         # изменения после сборки годовых лент
+    else:
+        years_from = min(have_from or first, first)
+        for y in range(first, have_from or first):
+            await _feed_apply(ctx, f"nvdcve-2.0-{y}", refresh=True)
+        if now - last_mod <= FEED_HORIZON:
+            await _feed_apply(ctx, "nvdcve-2.0-modified", refresh=True)
+        else:
+            for y in range(max(first, last_mod.year), now.year + 1):
+                await _feed_apply(ctx, f"nvdcve-2.0-{y}", refresh=True)
+    ctx.new_cursor = {"last_mod": now.isoformat(), "years_from": years_from, "feed": "feeds"}
 
 
 async def _nvd_pages(ctx: RunCtx, params: dict, delay: float):
@@ -156,13 +336,14 @@ async def _nvd_pages(ctx: RunCtx, params: dict, delay: float):
         await ctx.sleep(delay)
 
 
-async def run_nvd(ctx: RunCtx) -> None:
+async def _nvd_api(ctx: RunCtx) -> None:
+    """Запасной канал: API 2.0 — окна по дате изменения (после первой загрузки) или публикации (первая загрузка за history_days). Скорость ограничена правилами NVD."""
     delay = 0.8 if ctx.secret else 6.5
     if ctx.secret:
         ctx.http._c.headers["apiKey"] = ctx.secret  # noqa: SLF001
     cur = ctx.cursor or {}
     now = ctx.now
-    if cur.get("last_mod"):
+    if cur.get("last_mod") and ctx.has_data:
         since, field_ = datetime.fromisoformat(cur["last_mod"]), "lastMod"
     elif cur.get("pub_loaded_until"):          # прерванная первоначальная загрузка продолжается с последнего загруженного окна
         since, field_ = datetime.fromisoformat(cur["pub_loaded_until"]), "pub"
@@ -171,18 +352,21 @@ async def run_nvd(ctx: RunCtx) -> None:
     t = since
     while t < now:
         end = min(t + NVD_WINDOW, now)
-        total = 0
         async for tot, items in _nvd_pages(ctx, {f"{field_}StartDate": _nvd_dt(t), f"{field_}EndDate": _nvd_dt(end)}, delay):
             recs = [r for r in (parsers.parse_nvd(i) for i in items) if r is not None]
-            total = tot
             await ctx.save(recs)
-            await ctx.progress(f"NVD: {ctx.fetched} из ~{total} записей окна {t:%Y-%m-%d}…{end:%Y-%m-%d}")
+            await ctx.progress(f"NVD API: {ctx.fetched} из ~{tot} записей окна {t:%Y-%m-%d}…{end:%Y-%m-%d}")
             await ctx.sleep(delay)
         t = end
-        ctx.new_cursor = {"last_mod": end.isoformat()} if field_ == "lastMod" else {"pub_loaded_until": end.isoformat()}
-    # после первой (по датам публикации) загрузки дальше идём по дате изменения от момента её начала
-    ctx.new_cursor = {"last_mod": now.isoformat()}
-    # дополнение: эксплуатируемые уязвимости (KEV), которых ещё нет в NVD-данных, — по одной (ограниченным числом за запуск)
+        ctx.new_cursor = {"last_mod": end.isoformat(), "feed": "api"} if field_ == "lastMod" else {"pub_loaded_until": end.isoformat()}
+    ctx.new_cursor = {"last_mod": now.isoformat(), "feed": "api"}
+
+
+async def _nvd_kev_supplement(ctx: RunCtx) -> None:
+    """Эксплуатируемые уязвимости (KEV), которых нет в данных NVD (старше глубины истории), — по одной через API (ограниченным числом за запуск)."""
+    delay = 0.8 if ctx.secret else 6.5
+    if ctx.secret:
+        ctx.http._c.headers["apiKey"] = ctx.secret  # noqa: SLF001
     limit = 400 if ctx.secret else 20
     async with ctx.sm() as db:
         have = set((await db.execute(select(VdbRecord.vuln_key).join(VdbSource, store.active(VdbRecord)).where(VdbRecord.source == "nvd"))).scalars().all())
@@ -195,7 +379,6 @@ async def run_nvd(ctx: RunCtx) -> None:
         await ctx.sleep(delay)
     if kev[limit:]:
         await ctx.progress(f"NVD: сведения по {len(kev) - limit} эксплуатируемым CVE будут догружены следующими запусками")
-    await _nvd_rescore(ctx, delay)
 
 
 async def _nvd_rescore(ctx: RunCtx, delay: float, max_pages: int = 40) -> None:
@@ -236,45 +419,118 @@ async def _nvd_rescore(ctx: RunCtx, delay: float, max_pages: int = 40) -> None:
             await db.commit()
 
 
+async def run_nvd(ctx: RunCtx) -> None:
+    await run_channels(ctx, [("feeds", INFO["nvd"]["channels"][0], _nvd_feeds), ("api", INFO["nvd"]["channels"][1], _nvd_api)])
+    try:      # дополнения не должны отменять уже успешную загрузку
+        await _nvd_kev_supplement(ctx)
+        await _nvd_rescore(ctx, 0.8 if ctx.secret else 6.5)
+    except FetchError as exc:
+        ctx.attempts.append({"channel": "supplement", "title": "Дополнение: эксплуатируемые CVE и оценки CVSS", "ok": False, "error": str(exc)[:300], "ms": 0, "records": 0})
+
+
 # ------------------------------------------------------------------------------------------------ OSV
+def _eco_url(eco: str, tail: str) -> str:
+    return f"{OSV_BUCKET}/{quote(eco)}/{tail}" if eco else f"{OSV_BUCKET}/{tail}"
+
+
+async def _osv_zip(ctx: RunCtx, eco: str) -> str:
+    """Архив экосистемы (или всей базы) → записи нового поколения; архив удаляется после разбора. Возвращает самую позднюю дату изменения записей."""
+    name = eco or "вся база"
+    dest = ctx.tmp() / "osv.zip"
+    await ctx.progress(f"OSV {name}: скачивание архива")
+    got = await ctx.http.download(_eco_url(eco, "all.zip"), dest, progress=ctx.dl_progress(f"OSV {name}"))
+    await ctx.progress(f"OSV {name}: архив получен ({got.size >> 20} МБ), разбор")
+    newest, batch = "", []
+    with zipfile.ZipFile(dest) as z:
+        bad = z.testzip()
+        if bad is not None:
+            raise FetchError(f"Архив OSV {name} повреждён (запись {bad})")
+        for info in z.infolist():
+            if not info.filename.endswith(".json"):
+                continue
+            with z.open(info) as f:
+                doc = json.load(f)
+            newest = max(newest, str(doc.get("modified") or ""))
+            rec = parsers.parse_osv(doc)
+            if rec is None:
+                continue
+            batch.append(rec)
+            if len(batch) >= BATCH:
+                await ctx.save(batch, refresh=False)
+                batch = []
+                await ctx.progress(f"OSV {name}: разобрано записей {ctx.fetched}")
+    if batch:
+        await ctx.save(batch, refresh=False)
+    dest.unlink(missing_ok=True)
+    return newest
+
+
+async def _osv_modified(ctx: RunCtx, eco: str, since: str) -> list[str]:
+    """Идентификаторы записей экосистемы, изменённых после `since`: modified_id.csv идёт от новых к старым и читается потоком до первой старой строки."""
+    ids: list[str] = []
+    url = _eco_url(eco, "modified_id.csv")
+    try:
+        async with ctx.http._c.stream("GET", url) as r:  # noqa: SLF001
+            if r.status_code >= 400:
+                raise FetchError(f"{url.split('/')[2]}: HTTP {r.status_code}")
+            async for line in r.aiter_lines():
+                ts, _, rid = line.partition(",")
+                if not rid:
+                    continue
+                if ts <= since:
+                    break
+                ids.append(rid.strip())
+                if len(ids) > OSV_INCR_MAX:
+                    break
+    except FetchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise FetchError(f"{url.split('/')[2]}: {type(exc).__name__}: {str(exc)[:160]}") from None
+    return ids
+
+
+async def _osv_archives(ctx: RunCtx) -> None:
+    ecos = [e for e in (ctx.settings.get("ecosystems") or OSV_DEFAULT) if e in OSV_ECOSYSTEMS]
+    targets = [""] if ctx.settings.get("all_ecosystems") else ecos
+    if not targets:
+        raise FetchError("Не выбрана ни одна экосистема OSV")
+    cur = dict(ctx.cursor or {})
+    marks: dict[str, str] = dict(cur.get("modified") or {})
+    pending: dict[str, list[str]] | None = None
+    if ctx.has_data and sorted(cur.get("targets") or []) == sorted(targets) and all(marks.get(e) for e in targets):
+        pending = {}
+        for eco in targets:
+            ids = await _osv_modified(ctx, eco, marks[eco])
+            if len(ids) > OSV_INCR_MAX:             # слишком много изменений (долгий перерыв): проще и надёжнее перезагрузить архив
+                pending = None
+                break
+            pending[eco] = ids
+    if pending is None:
+        await ctx.begin_full()
+        marks = {}
+        for eco in targets:
+            marks[eco] = await _osv_zip(ctx, eco)
+        await ctx.progress("проверка целостности и построение сводки")
+        await ctx.finish_full()
+    else:
+        for eco, ids in pending.items():
+            newest = marks.get(eco, "")
+            for n, rid in enumerate(ids):
+                doc = await ctx.http.json(_eco_url(eco, f"{quote(rid)}.json"), ok404=True)
+                if doc is None and eco:
+                    doc = await ctx.http.json(f"{OSV_API}/vulns/{quote(rid)}", ok404=True)       # запасной путь для одной записи
+                rec = parsers.parse_osv(doc) if doc else None
+                if rec:
+                    newest = max(newest, str(doc.get("modified") or ""))
+                    await ctx.save([rec])
+                if n % 50 == 0:
+                    await ctx.progress(f"OSV {eco or 'вся база'}: обновлено {n + 1} из {len(ids)}")
+            marks[eco] = newest
+    ctx.new_cursor = {"modified": marks, "targets": targets}
+
+
 async def run_osv(ctx: RunCtx) -> None:
-    """OSV: (1) уточнение по CVE, уже известным локальной базе (эксплуатируемые и серьёзные), (2) уязвимости пакетов Linux из каталога для выбранных экосистем (исправления дистрибутива)."""
-    cap = int(ctx.settings.get("max_per_run") or 300)
-    got: set[str] = set()
-    async with ctx.sm() as db:
-        have = set((await db.execute(select(VdbRecord.ext_id).join(VdbSource, store.active(VdbRecord)).where(VdbRecord.source == "osv"))).scalars().all())
-    ecos = [e for e in ctx.settings.get("ecosystems") or [] if e]
-    if ctx.linux_packages and ecos:
-        pkgs = sorted(set(await ctx.linux_packages()))[:5000]
-        await ctx.progress(f"OSV: проверка {len(pkgs)} пакетов Linux, экосистемы: {', '.join(ecos)}")
-        queries = [(p, v, e) for e in ecos for p, v in pkgs]
-        ids: dict[str, str] = {}
-        for i in range(0, len(queries), 500):
-            part = queries[i:i + 500]
-            doc = await ctx.http.post_json(f"{OSV_URL}/querybatch", {"queries": [{"package": {"name": p, "ecosystem": e}, "version": v} for p, v, e in part]})
-            for res in doc.get("results") or []:
-                for v in res.get("vulns") or []:
-                    ids[v["id"]] = v.get("modified", "")
-            await ctx.sleep(0.2)
-        todo = [i for i in ids if i not in have][:cap]
-        for n, vid in enumerate(todo):
-            d = await ctx.http.json(f"{OSV_URL}/vulns/{vid}", ok404=True)
-            rec = parsers.parse_osv(d) if d else None
-            if rec:
-                got.add(vid)
-                await ctx.save([rec])
-            if n % 20 == 0:
-                await ctx.progress(f"OSV: загружено {n + 1} из {len(todo)} описаний пакетов")
-    if ctx.settings.get("enrich", True):
-        async with ctx.sm() as db:      # эксплуатируемые и критические CVE без записи OSV
-            q = select(VdbRecord.vuln_key).join(VdbSource, store.active(VdbRecord)).where(VdbRecord.source.in_(("kev", "nvd")), VdbRecord.vuln_key.like("CVE-%")).distinct()
-            keys = [k for k in (await db.execute(q)).scalars().all() if k not in have and k not in got]
-        for k in keys[: max(0, cap - len(got))]:
-            d = await ctx.http.json(f"{OSV_URL}/vulns/{k}", ok404=True)
-            rec = parsers.parse_osv(d) if d else None
-            if rec:
-                await ctx.save([rec])
-            await ctx.sleep(0.1)
+    await run_channels(ctx, [("archives", INFO["osv"]["channels"][0], _osv_archives)])
 
 
 SOURCES: dict[str, Callable[[RunCtx], Awaitable[None]]] = {"kev": run_kev, "bdu": run_bdu, "nvd": run_nvd, "osv": run_osv}

@@ -18,6 +18,7 @@ from app.vdb.fetch import Http
 from app.vdb.normalize import Aff, Rec, make_score, parse_cpe, parse_purl
 from app.vdb.sync import VdbSync, analyze
 from tests.conftest import login
+from tests.vdbmock import nvd_feed, osv_zip
 
 FIX = Path(__file__).parent / "fixtures" / "vdb"
 NVD, KEV, OSV = (json.loads((FIX / n).read_text()) for n in ("nvd.json", "kev.json", "osv.json"))
@@ -208,6 +209,14 @@ def mock_transport(counter: dict):
         counter[u.split("?")[0]] = counter.get(u.split("?")[0], 0) + 1
         if "known_exploited" in u:
             return httpx.Response(200, json=KEV)
+        if "nvd.nist.gov/feeds/json/cve/2.0/" in u:
+            return nvd_feed(u)
+        if "osv-vulnerabilities" in u:
+            if u.endswith("all.zip"):
+                return httpx.Response(200, content=osv_zip([OSV]))
+            if u.endswith("modified_id.csv"):
+                return httpx.Response(200, text="2026-01-01T00:00:00Z,DEBIAN-CVE-2023-4863\n")
+            return httpx.Response(200, json=OSV)
         if "nvd.nist.gov/rest/json/cves" in u:
             if "cveId=" in u:
                 return httpx.Response(200, json={"vulnerabilities": []})
@@ -239,7 +248,7 @@ def make_sync(app, counter=None):
 async def test_sync_all_sources_merge_one_card(app, client):
     async with app.state.session_maker() as db:
         await store.ensure_sources(db)
-        (await db.get(VdbSource, "osv")).settings = {"ecosystems": [], "enrich": True, "max_per_run": 20}
+        (await db.get(VdbSource, "osv")).settings = {"ecosystems": ["Debian"]}
         await db.commit()
     calls: dict = {}
     sync = make_sync(app, calls)

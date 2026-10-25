@@ -59,9 +59,10 @@ export interface VdbFinding { status: VdbStatus; status_ru: string; installs: nu
 export interface VdbScore { version: string; score: number; vector: string; severity: string; severity_ru: string; source: string; source_title: string; origin: string; origin_label: string; kind: string;
   updated: string | null; url: string; primary?: boolean }
 export interface VdbVulnRow { key: string; title: string; severity: string; severity_ru: string; severity_basis: "cvss" | "source" | ""; sev_rank: number; score: number | null; score_version: string; score_source: string; exploited: boolean; has_fix: boolean | null; published: string | null; modified: string | null;
-  sources: string[]; ids: string[]; products: string[]; description: string; finding?: VdbFinding }
-export interface VdbRunRow { started_at: string | null; finished_at: string | null; trigger: string; status: string; fetched: number; changed: number; duration_ms: number | null; error: string | null }
-export interface VdbSourceInfo { key: string; title: string; url: string; terms: string; mode: "full" | "incremental"; enabled: boolean; interval_hours: number; settings: Record<string, unknown>; secret_set: boolean;
+  sources: string[]; ids: string[]; products: string[]; description: string; finding?: VdbFinding; version_match?: "yes" | "unknown" }
+export interface VdbRunRow { started_at: string | null; finished_at: string | null; trigger: string; status: string; fetched: number; changed: number; duration_ms: number | null; error: string | null; channel: string; attempts: VdbAttempt[] }
+export interface VdbAttempt { channel: string; title: string; ok: boolean; error: string; ms: number; records: number }
+export interface VdbSourceInfo { channel: string; channels: string[]; attempts: VdbAttempt[]; key: string; title: string; url: string; terms: string; mode: "full" | "incremental"; enabled: boolean; interval_hours: number; settings: Record<string, unknown>; secret_set: boolean;
   status: "never" | "running" | "ok" | "error"; progress: string | null; last_started_at: string | null; last_ok_at: string | null; last_duration_ms: number | null; last_error: string | null; records: number;
   requested: boolean; can_restore: boolean; upload: boolean; runs: VdbRunRow[] }
 export interface VdbAffectedRow { vendor: string; product: string; ecosystem: string; cpe: string; purl: string; platform: string; exact: string; from: string; from_incl: boolean; to: string; to_incl: boolean; fixed: string;
