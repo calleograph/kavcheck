@@ -271,6 +271,8 @@ def _host_card(d: dict, esc=html.escape) -> str:
         out.append("<h4>Уязвимости, подтверждённые KSC</h4>" + _table(v_cols, d["ksc"]))
     if d["ext"]:
         out.append("<h4>Потенциальные уязвимости по внешним базам (не подтверждены KSC)</h4>" + _table(e_cols, d["ext"]))
+    if d.get("ksc_more") or d.get("ext_more"):
+        out.append(f'<p class="tnote">Показаны самые опасные записи; ещё в карточке не показано: уязвимостей KSC — {d.get("ksc_more", 0)}, потенциальных совпадений — {d.get("ext_more", 0)}. Полный список — в таблицах ниже и в файле Excel.</p>')
     if d["protection"]:
         out.append("<h4>Проблемы защиты</h4>" + _table([{"key": "problem", "title": "Проблема", "type": "text"}, {"key": "detail", "title": "Подробности", "type": "text"}], d["protection"]))
     if d["accepted"]:

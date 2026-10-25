@@ -21,6 +21,9 @@ PROTECTION_KEYS = tuple(P.PROBLEMS)
 SEV_BADGE = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение", "": ""}
 LEVELS = {"management": "для руководства", "technical": "для администраторов"}
 TOP_N = 15
+CARD_KSC = 300           # строк подтверждённых уязвимостей в карточке компьютера (HTML); остальное — в Excel
+CARD_EXT = 40            # потенциальных совпадений в карточке: у давно не обновлявшегося ПО их тысячи
+EXT_TABLE_CAP = 50_000   # строк таблицы потенциальных совпадений в отчёте (самые опасные первыми)
 
 
 def _fmt_dt(v) -> str:
@@ -131,6 +134,9 @@ def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: d
     sev_order = {"Критическая": 3, "Высокая": 2, "Предупреждение": 1}
     v_rows.sort(key=lambda r: (-sev_order.get(r["severity_ru"], 0), r["vuln"], r["name"].lower()))
     ext_rows.sort(key=lambda r: (-int(bool(r["kev"])), -sev_order.get(r["severity_ru"], 0), r["vuln"], r["name"].lower()))
+    ext_total = len(ext_rows)
+    if ext_total > EXT_TABLE_CAP:
+        ext_rows = ext_rows[:EXT_TABLE_CAP]
     exc_rows.sort(key=lambda r: (r["name"].lower(), r["vuln"]))
     acc_rows.sort(key=lambda r: (r["name"].lower(), r["vuln"]))
     # ---- показатели
@@ -188,6 +194,8 @@ def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: d
     if stat["excluded"] or stat["accepted"]:
         notes.append(f"Исключено из показателей как ложные или неактуальные обнаружения: {stat['excluded']}; принятых рисков: {stat['accepted']} (учтены отдельно). Исходные сведения сохранены в базе KAV Checker.")
     notes += notes_src
+    if ext_total > EXT_TABLE_CAP:
+        notes.append(f"Потенциальных совпадений с внешними базами найдено {ext_total}; в таблицу включены первые {EXT_TABLE_CAP} (самые опасные). Показатели по компьютерам подсчитаны по полному результату.")
     if unassigned:
         notes.append("Отчёт по компьютерам «Без ответственного»: они не подходят ни под одну зону. Добавьте сети или группы в нужную зону либо закрепите компьютер вручную.")
     if any(h["zone_conflict"] for h in hosts_all):
@@ -196,7 +204,8 @@ def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: d
     if level == "technical":
         for h, r in zip(probs, rows):
             det.append({"anchor": r["anchor"], "name": h["name"], "ip": h["ip"], "os": r["os"], "summary": h["summary"], "max_sev": r["max_sev"], "source": h["source"], "zone": r["zone"],
-                        "last_connected": h["last_connected"], "online": r["online"], "ksc": [_vrow(h, x, "ksc") for x in h["rows"]["ksc"]["current"]], "ext": [_vrow(h, x, "ext") for x in h["rows"]["ext"]["current"]],
+                        "last_connected": h["last_connected"], "online": r["online"], "ksc": [_vrow(h, x, "ksc") for x in h["rows"]["ksc"]["current"][:CARD_KSC]], "ext": sorted((_vrow(h, x, "ext") for x in h["rows"]["ext"]["current"]), key=lambda r: (-int(bool(r["kev"])), -sev_order.get(r["severity_ru"], 0)))[:CARD_EXT],
+                        "ksc_more": max(0, len(h["rows"]["ksc"]["current"]) - CARD_KSC), "ext_more": max(0, len(h["rows"]["ext"]["current"]) - CARD_EXT),
                         "protection": [{"problem": P.PROBLEMS[k][0], "detail": _detail(h, k, bases_days, scan_days)} for k in h["problems"]],
                         "accepted": [_vrow(h, x, o) for o in ("ksc", "ext") for x in h["rows"][o]["accepted"]], "excluded": [_vrow(h, x, o) for o in ("ksc", "ext") for x in h["rows"][o]["excluded"]] if params.get("show_excluded") else []})
     return {"title": f"Состояние безопасности: {title_zone}", "subtitle": f"Отчёт {LEVELS.get(level, '')}", "kind": "quick_zone", "level": level, "generated_at": generated_at.isoformat(timespec="seconds"), "source": ", ".join(p["source"] for p in parts if p.get("source")), "conditions": conds, "meta": meta, "metrics": metrics, "severity": severity,
