@@ -1073,3 +1073,6 @@ pre.notes-pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 14px; max-height: 220px; overflow: auto; padding: 4px 2px; }
 .logo-prev { max-height: 44px; max-width: 180px; display: block; border: 1px solid var(--line); border-radius: var(--radius-xs); padding: 4px; background: #fff; }
 .org-prev { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; background: var(--surface-2); } .org-prev .on { font-weight: 650; }
+.zones-table { table-layout: auto; } .zones-table td, .zones-table th { vertical-align: top; } .zones-table td:first-child { min-width: 190px; } .zones-table .resp { max-width: 190px; }
+.zones-table td .state-bar { width: 100%; min-width: 80px; }
+.zones-table th, .zones-table td { padding-left: 7px; padding-right: 7px; }

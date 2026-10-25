@@ -88,6 +88,34 @@ def _autosize(ws, columns: list[tuple[str, str]], rows: list[dict]) -> None:
         ws.column_dimensions[get_column_letter(i)].width = min(60, max(10, width))
 
 
+def org_header(ws, org: dict | None, title: str = "") -> int:
+    """Шапка организации на листе Excel (пустые поля не выводятся). Возвращает число добавленных строк."""
+    from openpyxl.styles import Font  # noqa: PLC0415
+
+    o = org or {}
+    lines = [(o.get("short_name") or o.get("full_name") or "", Font(bold=True, size=12)), ((o.get("full_name") or "") if o.get("short_name") else "", None), (o.get("unit") or "", None),
+             (o.get("classification") or "", Font(italic=True))]
+    n = 0
+    for text, font in lines:
+        if text:
+            ws.append([text])
+            if font:
+                ws.cell(row=ws.max_row, column=1).font = font
+            n += 1
+    if n and title:
+        ws.append([title])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True, size=13)
+        ws.append([])
+        n += 2
+    return n
+
+
+def org_footer(ws, org: dict | None) -> None:
+    for x in ((org or {}).get("footnote"), (org or {}).get("signature"), (org or {}).get("contact_email"), (org or {}).get("contacts")):
+        if x:
+            ws.append([x])
+
+
 def _write_audit(path: Path, rows: list[dict], summary: dict, meta: dict) -> None:
     """Проверка версий: «Итог» (программа × источник), «Компьютеры» (что обновить и где), «Версии», «Найденные пакеты» (что найдено и что подходит под условие), «Параметры»."""
     from openpyxl import Workbook  # noqa: PLC0415
@@ -95,12 +123,14 @@ def _write_audit(path: Path, rows: list[dict], summary: dict, meta: dict) -> Non
 
     from .audit import AUDIT_COLUMNS  # noqa: PLC0415
 
+    org = meta.pop("_org", None)
     wb = Workbook()
     it = wb.active
     it.title = "Итог"
+    org_header(it, org, meta.get("Отчёт") or "")
     sources = [s["source"] for s in summary.get("sources", [])]
     it.append(["Программа", "Условие проверки", "Целевая версия", "Компьютеров (уникальных)", *[f"{s}: компьютеров" for s in sources], "Пояснение"])
-    for c in it[1]:
+    for c in it[it.max_row]:
         c.font = Font(bold=True)
     for p in summary.get("programs", []):
         by = {b["source"]: b["hosts"] for b in p.get("by_source", [])}
@@ -144,9 +174,11 @@ def _write_audit(path: Path, rows: list[dict], summary: dict, meta: dict) -> Non
     fs.auto_filter.ref = fs.dimensions
     for col, w in zip("ABCDEFGH", (24, 30, 26, 40, 24, 22, 20, 12)):
         fs.column_dimensions[col].width = w
-    m = wb.create_sheet("Параметры")
+    m = wb.create_sheet("Параметры отчёта")
     for k, v in meta.items():
         m.append([k, _text(v) if not isinstance(v, (int, float)) else v])
+    m.append([])
+    org_footer(m, org)
     m.column_dimensions["A"].width, m.column_dimensions["B"].width = 44, 110
     wb.save(path)
 
@@ -158,18 +190,20 @@ def write_xlsx(path: Path, kind: str, rows: list[dict], summary: dict, meta: dic
     if kind == "version_audit":
         _write_audit(path, rows, summary, meta)
         return
+    org = meta.pop("_org", None)
     columns = SOFTWARE_COLUMNS if kind == "software_hosts" else HOST_COLUMNS
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Установки" if kind == "software_hosts" else "Компьютеры"
-    ws.append([t for _, t in columns])
-    for r in rows:
-        ws.append([_cell(r.get(k)) for k, _ in columns])
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-    for i, (k, t) in enumerate(columns, 1):
-        width = max([len(t)] + [len(_text(r.get(k))) for r in rows[:2000]]) + 2
-        ws.column_dimensions[get_column_letter(i)].width = min(60, max(10, width))
+    sm = wb.active
+    sm.title = "Сводка"                                  # сначала краткие итоги, затем разбивка по версиям и компьютерам, подробный перечень установок — ниже
+    org_header(sm, org, meta.get("Отчёт") or "")
+    for k in ("Источник KSC", "Данные получены (UTC)", "Сформировал"):
+        if meta.get(k):
+            sm.append([k, _text(meta[k])])
+    sm.append(["Строк в подробном листе", len(rows)])
+    sm.append(["Уникальных компьютеров", len({r["host_id"] for r in rows})])
+    if kind == "software_hosts":
+        sm.append(["Веток / версий", len(summary.get("branches", []))])
+    sm.column_dimensions["A"].width, sm.column_dimensions["B"].width = 44, 70
     if kind == "software_hosts":
         vs = wb.create_sheet("Версии")
         vs.append(["Ветка", "Установок", "Уникальных компьютеров", "Пакеты"])
@@ -188,8 +222,19 @@ def write_xlsx(path: Path, kind: str, rows: list[dict], summary: dict, meta: dic
         for sheet in (vs, hs):
             sheet.freeze_panes = "A2"
             sheet.auto_filter.ref = sheet.dimensions
-    m = wb.create_sheet("Параметры")
+    ws = wb.create_sheet("Установки" if kind == "software_hosts" else "Компьютеры")
+    ws.append([t for _, t in columns])
+    for r in rows:
+        ws.append([_cell(r.get(k)) for k, _ in columns])
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    for i, (k, t) in enumerate(columns, 1):
+        width = max([len(t)] + [len(_text(r.get(k))) for r in rows[:2000]]) + 2
+        ws.column_dimensions[get_column_letter(i)].width = min(60, max(10, width))
+    m = wb.create_sheet("Параметры отчёта")
     for k, v in meta.items():
         m.append([k, _text(v) if not isinstance(v, (int, float)) else v])
+    m.append([])
+    org_footer(m, org)
     m.column_dimensions["A"].width, m.column_dimensions["B"].width = 40, 100
     wb.save(path)

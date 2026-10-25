@@ -68,7 +68,7 @@ def test_version_range_and_export(tmp_path):
     from openpyxl import load_workbook  # noqa: PLC0415
 
     wb = load_workbook(tmp_path / "r.xlsx")
-    assert wb.sheetnames == ["Установки", "Версии", "Компьютеры", "Параметры"]
+    assert wb.sheetnames == ["Сводка", "Версии", "Компьютеры", "Установки", "Параметры отчёта"]
     assert wb["Установки"].max_row == len(rows) + 1
     assert export.read_jsonl(tmp_path / "rows.jsonl", 1, 1)[0]["app_name"] == rows[1]["app_name"]
     assert (tmp_path / "r.csv").read_text(encoding="utf-8-sig").startswith("Компьютер;FQDN;IP-адрес")

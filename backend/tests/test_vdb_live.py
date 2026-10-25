@@ -89,7 +89,7 @@ async def test_report_files_match_preview(client, app):
     assert done["status"] == "done" and done["rows"] == pv["total"] and [m["value"] for m in done["summary"]["metrics"]] == [m["value"] for m in pv["doc"]["metrics"]]
     d = job_dir(app.state.settings, uuid.UUID(job["id"]))
     wb = load_workbook(d / "report.xlsx", read_only=True)
-    assert wb.sheetnames[:2] == ["Сводка", "Обнаружения"] and {"Компьютеры", "Программы", "Уязвимости", "Параметры"} <= set(wb.sheetnames)
+    assert wb.sheetnames == ["Сводка", "Компьютеры", "Уязвимости", "Программы", "Обнаружения", "Параметры отчёта"]
     rows = list(wb["Обнаружения"].iter_rows(values_only=True))
     assert rows[0][:7] == ("Опасность", "Уязвимость", "Идентификаторы", "Название", "Эксплуатация (CISA KEV)", "Результат сопоставления", "Основание")
     assert len(rows) - 1 == pv["total"] and {r[5] for r in rows[1:]} == {"Подтверждено источником"}

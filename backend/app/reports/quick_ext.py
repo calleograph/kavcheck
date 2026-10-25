@@ -210,44 +210,65 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                                                                     col("sources", "Источники"), col("fix", "Исправление")], "rows": vuln_rows}]}
 
 
-async def ext_rows_for_hosts(client: SourceClient, ctx: Ctx, host_ids: list[int], *, statuses: tuple[str, ...] = M.AFFECTED, chunk: int = 400) -> tuple[list[dict], list[str]]:
-    """Потенциальные совпадения с внешними базами для выбранных компьютеров (страницы и отчёты по зонам).
-    Не обходит весь источник: сопоставление «уязвимость × версия каталога» строится по известным находкам источника, затем читаются установки только выбранных компьютеров.
-    Строки — как в build_extvulns, без полей компьютера (имя, адрес добавляет вызывающий по host_id). Возвращает (строки, замечания)."""
+class ExtIndex:
+    """Сопоставление «установленная запись реестра → потенциальные уязвимости» для источника: считается один раз на состояние баз (≈ секунды на крупной базе) и используется всеми зонами и отчётами."""
+
+    def __init__(self, by_pid: dict[int, list[M.Match]], srcs: dict[str, set[str]], notes: list[str]):
+        self.by_pid, self.srcs, self.notes = by_pid, srcs, notes
+
+
+async def build_ext_index(ctx: Ctx, statuses: tuple[str, ...] = M.AFFECTED) -> ExtIndex:
     if ctx.sm is None or ctx.source_id is None:
-        return [], ["Внешние базы недоступны: нет доступа к локальной базе уязвимостей"]
+        return ExtIndex({}, {}, ["Внешние базы недоступны: нет доступа к локальной базе уязвимостей"])
     async with ctx.sm() as db:
         prods, maps = await M.load_context(db, ctx.source_id)
         if not prods:
-            return [], ["Каталог программ источника ещё не построен: потенциальные совпадения с внешними базами не рассчитаны"]
+            return ExtIndex({}, {}, ["Каталог программ источника ещё не построен: потенциальные совпадения с внешними базами не рассчитаны"])
         keys = list((await db.execute(select(VdbFinding.vuln_key).where(VdbFinding.source_id == ctx.source_id))).scalars().all())
         affs = await M.affected_for(db, keys)
-        matches = [m for m in M.matches_from(M.Matcher(prods, maps), affs) if m.status in statuses]
-        meta = {v.vuln_key: v for i in range(0, len(keys), 400) for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_(keys[i:i + 400])))).scalars().all()}
-        srcs: dict[str, set[str]] = {}
-        for a in affs:
-            srcs.setdefault(a.vuln_key, set()).add(a.source)
+    matches = [m for m in M.matches_from(M.Matcher(prods, maps), affs) if m.status in statuses]
     by_pid: dict[int, list[M.Match]] = {}
     for m in matches:
         for pid in m.product_ids:
             by_pid.setdefault(int(pid), []).append(m)
-    out: list[dict] = []
+    srcs: dict[str, set[str]] = {}
+    for a in affs:
+        srcs.setdefault(a.vuln_key, set()).add(a.source)
+    return ExtIndex(by_pid, srcs, [])
+
+
+async def ext_rows_for_hosts(client: SourceClient, ctx: Ctx, host_ids: list[int], *, index: ExtIndex | None = None, chunk: int = 400) -> tuple[list[dict], list[str]]:
+    """Потенциальные совпадения с внешними базами для выбранных компьютеров (страницы и отчёты по зонам).
+    Не обходит весь источник: сопоставление «уязвимость × версия каталога» берётся из индекса источника, затем читаются установки только выбранных компьютеров.
+    Строки — как в build_extvulns, без полей компьютера (имя, адрес добавляет вызывающий по host_id). Возвращает (строки, замечания)."""
+    index = index or await build_ext_index(ctx)
+    if index.notes:
+        return [], index.notes
+    hits: list[tuple[dict, M.Match]] = []
     seen: set[tuple] = set()
     for i in range(0, len(host_ids), chunk):
         if ctx.cancelled():
             raise RuntimeError("cancelled")
         for r in await client.run(q.INSTALLS_FOR_HOSTS.format(ids=q.ids_list(host_ids[i:i + chunk])), max_rows=2_000_000):
-            for m in by_pid.get(int(r["product_id"]), ()):
+            for m in index.by_pid.get(int(r["product_id"]), ()):
                 k = (r["host_id"], r["product_id"], m.vuln_key)
-                if k in seen:
-                    continue
-                seen.add(k)
-                v = meta.get(m.vuln_key)
-                rank = v.sev_rank if v else 0
-                out.append({"host_id": int(r["host_id"]), "vuln_key": m.vuln_key, "ids": (v.ids_text.upper() if v else m.vuln_key)[:120], "title": (v.title if v else "")[:200],
-                            "severity": "critical" if (v and v.exploited) or rank >= 4 else _level(rank), "rank": rank, "severity_ru": SEV_RU[next((k2 for k2, r2 in SEV_RANK.items() if r2 == rank), "")],
-                            "kev": "да" if v and v.exploited else "", "status": m.status, "status_ru": M.STATUS_RU[m.status], "basis": m.basis, "program": m.product_name, "installed_version": r.get("version") or "",
-                            "sources": ", ".join(sorted(srcs.get(m.vuln_key, set()))), "fix": "есть сведения об исправлении" if v and v.has_fix else "нет сведений", "product_id": int(r["product_id"]),
-                            "score": v.score if v else None, "app_name": r.get("name") or "", "publisher": r.get("publisher") or ""})
-        ctx.progress(f"внешние базы: {len(out)} совпадений, компьютеров проверено {min(i + chunk, len(host_ids))} из {len(host_ids)}")
+                if k not in seen:
+                    seen.add(k)
+                    hits.append((r, m))
+        ctx.progress(f"внешние базы: совпадений {len(hits)}, компьютеров проверено {min(i + chunk, len(host_ids))} из {len(host_ids)}")
+    need = sorted({m.vuln_key for _, m in hits})
+    meta: dict[str, VdbVuln] = {}
+    async with ctx.sm() as db:
+        for i in range(0, len(need), 400):
+            for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_(need[i:i + 400])))).scalars().all():
+                meta[v.vuln_key] = v
+    out: list[dict] = []
+    for r, m in hits:
+        v = meta.get(m.vuln_key)
+        rank = v.sev_rank if v else 0
+        out.append({"host_id": int(r["host_id"]), "vuln_key": m.vuln_key, "ids": (v.ids_text.upper() if v else m.vuln_key)[:120], "title": (v.title if v else "")[:200],
+                    "severity": "critical" if (v and v.exploited) or rank >= 4 else _level(rank), "rank": rank, "severity_ru": SEV_RU[next((k2 for k2, r2 in SEV_RANK.items() if r2 == rank), "")],
+                    "kev": "да" if v and v.exploited else "", "status": m.status, "status_ru": M.STATUS_RU[m.status], "basis": m.basis, "program": m.product_name, "installed_version": r.get("version") or "",
+                    "sources": ", ".join(sorted(index.srcs.get(m.vuln_key, set()))), "fix": "есть сведения об исправлении" if v and v.has_fix else "нет сведений", "product_id": int(r["product_id"]),
+                    "score": v.score if v else None, "app_name": r.get("name") or "", "publisher": r.get("publisher") or ""})
     return out, []

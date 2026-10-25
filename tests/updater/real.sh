@@ -6,7 +6,7 @@
 # приложения, как кнопкой в интерфейсе. Сценарии: недоступный реестр, ошибка миграции, «перезагрузка» во время миграции, повтор без ручных действий, обновление, падение помощника,
 # перезапуск backend, откат на несовместимую схему.
 set -u
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; P="kcreal$$"; PORT="${KC_REAL_PORT:-28090}"; W="$(mktemp -d /tmp/kcreal.XXXXXX)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; START_HEAD="$(git -C "$ROOT" rev-parse HEAD)"; P="kcreal$$"; PORT="${KC_REAL_PORT:-28090}"; W="$(mktemp -d /tmp/kcreal.XXXXXX)"
 APP="$W/app"; ENVF="$APP/.env"; D="$W/data"; REG="ghcr.io/calleograph/kavcheck"; UNIT="$P-updater"; PASS=0; FAILS=0; CJ="$W/cj"
 t() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then PASS=$((PASS + 1)); printf '  \033[32m✓\033[0m %s\n' "$d"; else FAILS=$((FAILS + 1)); printf '  \033[31m✗\033[0m %s\n' "$d"; diag "$d"; fi; }
 diag() { # при провале проверки: состояние, из-за которого она не прошла (в $W/diag.log и в конец вывода при DIAG=1)
@@ -84,7 +84,7 @@ sed -i "s#^IMAGE_REGISTRY=.*#IMAGE_REGISTRY=$REG#" "$ENVF"
 say "R2. Ошибка миграции (настоящая): база возвращается к копии, прежняя версия работает, данные целы"
 psql_ "ALTER TABLE vdb_sources ADD COLUMN channel text" >/dev/null; trigger; wait_idle 500
 t "обновление остановлено, причина — миграция" bash -c "[ '$(report result)' = failed ] && [ '$(report reason_code)' = migration ]"
-t "работает 0.5.0; образы нового релиза скачаны, но не запущены" bash -c "[ '$(running_version)' = 0.5.0 ] && grep -q '^IMAGE_TAG=real5' '$ENVF' && [ '$(git -C "$APP" rev-parse HEAD)' = '$(git -C "$ROOT" rev-parse HEAD)' ]"
+t "работает 0.5.0; образы нового релиза скачаны, но не запущены" bash -c "[ '$(running_version)' = 0.5.0 ] && grep -q '^IMAGE_TAG=real5' '$ENVF' && [ '$(git -C "$APP" rev-parse HEAD)' = '$START_HEAD' ]"
 t "база восстановлена из копии (лишнего столбца нет), пользователь admin на месте" bash -c "[ -z \"\$(docker exec \$(docker compose -p $P --project-directory $APP/deployment --env-file $ENVF -f $APP/deployment/compose.yml ps -q postgres) psql -U kc -d kc -tAc \"select 1 from information_schema.columns where table_name='vdb_sources' and column_name='channel'\")\" ] && [ '$(psql_ "select count(*) from users where username='admin'")' = 1 ]"
 t "вход в приложение работает" bash -c "[ -n '$(api POST /auth/login '{"login":"admin","password":"Real-Test-Pass-2026"}' | jq_ csrf_token)' ]"
 

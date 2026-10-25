@@ -60,8 +60,8 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
     <div className="toolbar">
       <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Зона или ответственный" aria-label="Поиск зоны" /><MaskHint /></div>
       <Segmented label="Состояние" value={state} onChange={setState} options={[["", "Все"], ["critical", "Критические"], ["vulns", "Уязвимости"], ["protection", "Защита"], ["ok", "Без проблем"]]} />
-      <div className="spacer" />{data?.fetched_at && <Fetched at={data.fetched_at} />}
-      <button className="btn" onClick={() => setForce(force + 1)}><Icon name="refresh" /><span>Обновить</span></button>
+      <div className="spacer" />
+      <button className="btn" onClick={() => setForce(force + 1)} title={data?.fetched_at ? `Данные получены ${fmt(data.fetched_at)}` : undefined}><Icon name="refresh" /><span>Обновить</span></button>
     </div>
     {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
     {data && data.totals.conflicts > 0 && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Компьютеров, подходящих нескольким зонам: <b>{num(data.totals.conflicts)}</b>. Они показаны в каждой зоне.{" "}
@@ -72,14 +72,14 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
         <Empty icon="grid" title="Зоны ещё не созданы" action={ctx.me.user.is_admin ? <Link className="btn primary" to="/admin?tab=zones"><Icon name="plus" />Создать зоны</Link> : undefined}>
           Зона — группа компьютеров по сетям или группам KSC с назначенными ответственными. Все компьютеры сейчас в категории «Без ответственного»: {num(data.totals.unassigned)}. Зоны можно создать вручную или загрузить из CSV.</Empty>
       ) : (
-        <table className="table">
-          <thead><tr><SortTh k="name" label="Зона" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">Ответственные</th><SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" /><th className="num">Активных за {data.activity_days} сут</th>
-            <th className="num hide-sm">В сети</th><SortTh k="critical" label="Критические" sort={sort} desc={desc} onSort={onSort} className="num" /><th className="num hide-sm">Др. уязвимости</th><SortTh k="protection" label="Защита" sort={sort} desc={desc} onSort={onSort} className="num" />
+        <table className="table compact zones-table">
+          <thead><tr><SortTh k="name" label="Зона" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">Ответственные</th><SortTh k="hosts" label="Всего" sort={sort} desc={desc} onSort={onSort} className="num" /><th className="num" title={`Связывались с KSC за ${data.activity_days} сут`}>Активных</th>
+            <th className="num hide-sm" title="Флаг KSC «видимо в сети» сейчас">В сети</th><SortTh k="critical" label="Критич." sort={sort} desc={desc} onSort={onSort} className="num" /><th className="num hide-sm" title="Высокие и предупреждения, без критических">Др. уязв.</th><SortTh k="protection" label="Защита" sort={sort} desc={desc} onSort={onSort} className="num" />
             <SortTh k="problems" label="Проблемных" sort={sort} desc={desc} onSort={onSort} className="num" /><th className="hide-sm">Состояние</th></tr></thead>
           <tbody>{data.items.map((z) => (
             <tr key={z.id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/zones/${z.id}`); }}>
               <td><Link to={`/zones/${z.id}`} className="strong-link">{z.name}</Link>{!z.enabled && <span className="badge outline"> выключена</span>}{z.conflicts > 0 && <span className="zone-chip warn" title="Есть спорные компьютеры"> {z.conflicts} спорных</span>}<span className="sub">{z.description || z.purpose}</span></td>
-              <td className="small hide-sm">{z.responsible.length ? z.responsible.join(", ") : z.id === "none" ? "—" : <span className="warn-text">не назначены</span>}</td>
+              <td className="small hide-sm resp">{z.responsible.length ? <>{z.responsible[0].replace(/\s*\(.*\)$/, "")}{z.responsible.length > 1 ? ` +${z.responsible.length - 1}` : ""}<span className="sub" title={z.responsible.join(", ")}>{(z.responsible[0].match(/\((.*)\)$/) ?? [])[1] ?? ""}</span></> : z.id === "none" ? "—" : <span className="warn-text">не назначены</span>}</td>
               <td className="num">{num(z.stats.total)}</td><td className="num">{num(z.stats.active)}</td><td className="num hide-sm">{num(z.stats.online)}</td>
               <td className="num">{z.stats.critical ? <b className="bad-text">{num(z.stats.critical)}</b> : <span className="muted">0</span>}</td>
               <td className="num hide-sm">{num(z.stats.other_vulns)}</td><td className="num">{z.stats.protection ? <b className="warn-text">{num(z.stats.protection)}</b> : <span className="muted">0</span>}</td>

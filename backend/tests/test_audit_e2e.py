@@ -78,7 +78,8 @@ async def test_preview_report_and_exports_agree(client, app, case):
     assert all(r[head.index("Условие проверки")] == cond for r in data[1:])
     wb = load_workbook(job_dir(app.state.settings, uuid.UUID(job["id"])) / "report.xlsx", read_only=True)
     summary = list(wb["Итог"].iter_rows(values_only=True))
-    assert summary[0][:3] == ("Программа", "Условие проверки", "Целевая версия") and summary[1][1] == cond and summary[1][3] == len(hosts)
+    h = next(i for i, r in enumerate(summary) if r[0] == "Программа")                                 # над таблицей может быть шапка организации
+    assert summary[h][:3] == ("Программа", "Условие проверки", "Целевая версия") and summary[h + 1][1] == cond and summary[h + 1][3] == len(hosts)
     sheet = list(wb["Компьютеры"].iter_rows(values_only=True))
     assert len(sheet) - 1 == s["rows"] and {r[sheet[0].index("HostId")] for r in sheet[1:]} == hosts
 

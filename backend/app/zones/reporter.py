@@ -60,17 +60,22 @@ class ZoneData:
         return raw
 
     async def ext_for(self, db: AsyncSession, src: KscSource, host_ids: list[int], *, progress=lambda _t: None, cancelled=lambda: False, refresh: bool = False) -> tuple[list[dict], list[str]]:
-        """Потенциальные совпадения с внешними базами для компьютеров (кэш на срок cache_ttl_seconds; меняется при обновлении баз, каталога и решений по сопоставлению)."""
-        from ..reports.quick_ext import ext_rows_for_hosts  # noqa: PLC0415
+        """Потенциальные совпадения с внешними базами для компьютеров. Индекс сопоставления кэшируется по источнику и состоянию баз (обновление баз, каталога, решения по сопоставлению меняют отпечаток)."""
+        from ..reports.quick_ext import build_ext_index, ext_rows_for_hosts  # noqa: PLC0415
 
         general, rcfg, org = await self.svc.get(db, "general"), await self.svc.get(db, "reports"), await self.org(db)
         rev = await vdb_store.revision(db, src.id)
+        ctx, client = self.ctx(src, general, rcfg, org)
+        ctx.progress, ctx.cancelled = progress, cancelled
+
+        async def make_index():
+            return await build_ext_index(ctx)
+
+        index, _ = await self.cache.get((str(src.id), "zextidx", rev), max(self.cfg.cache_ttl_seconds, 1800), make_index, refresh=refresh)
         key = (str(src.id), "zext", rev, hashlib.sha1(",".join(map(str, host_ids)).encode()).hexdigest())
 
         async def make():
-            ctx, client = self.ctx(src, general, rcfg, org)
-            ctx.progress, ctx.cancelled = progress, cancelled
-            return await ext_rows_for_hosts(client, ctx, host_ids)
+            return await ext_rows_for_hosts(client, ctx, host_ids, index=index)
 
         val, _ = await self.cache.get(key, self.cfg.cache_ttl_seconds, make, refresh=refresh)
         return val

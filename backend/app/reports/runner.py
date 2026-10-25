@@ -82,6 +82,7 @@ class Runner:
             src = await db.get(KscSource, job.source_id)
             rcfg: ReportsSettings = await self._svc.get(db, "reports")  # type: ignore[assignment]
             rule_row = (await db.execute(select(GroupingRule).where(GroupingRule.key == job.params.get("rule")))).scalar_one_or_none() if job.params.get("rule") else None
+            org = (await self._svc.get(db, "organization")).model_dump()
         if src is None:
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
@@ -117,7 +118,7 @@ class Runner:
             meta = {"Отчёт": job.title, "Вид": job.kind, "Источник KSC": job.source_name, "Данные получены (UTC)": summary.get("fetched_at"), "Сформировал": job.created_by,
                     "Параметры": job.params, "Строк": summary.get("rows"), "Уникальных компьютеров": summary.get("hosts"),
                     "Исключено компьютеров без связи": summary.get("excluded_inactive_hosts"), "Порог активности, сут": summary.get("active_days"),
-                    "Время": "все даты в UTC", "Версии": "Версия — версия пакета/программы из инвентаризации KSC; сравниваемая версия — без эпохи и ревизии; ветка — major.minor. "
+                    "_org": org, "Время": "все даты в UTC", "Версии": "Версия — версия пакета/программы из инвентаризации KSC; сравниваемая версия — без эпохи и ревизии; ветка — major.minor. "
                                                        "Версия пакета не обязательно равна версии работающей программы."}
             await asyncio.to_thread(self._write, d, job.kind, rows, summary, meta)
             await self._set(job.id, status="done", finished_at=utcnow(), rows=len(rows), summary=summary, progress="готово",
@@ -325,7 +326,7 @@ class Runner:
             d = job_dir(self._cfg, job.id)
             d.mkdir(parents=True, exist_ok=True)
             meta = {"Отчёт": job.title, "Вид": "Проверка версий программ", "Источники KSC": ", ".join(s.name for s in srcs), "Данные получены (UTC)": summary.get("fetched_at"),
-                    "Сформировал": job.created_by, "Программы и условия": "; ".join(f"{p['program']}: {p['condition']}" + (f" → {p['target_version']}" if p["target_version"] else "")
+                    "_org": org, "Сформировал": job.created_by, "Программы и условия": "; ".join(f"{p['program']}: {p['condition']}" + (f" → {p['target_version']}" if p["target_version"] else "")
                                                                         for p in summary["programs"]),
                     "Строк": summary.get("rows"), "Компьютеров (по источникам)": summary.get("hosts"),
                     "Скрыто давно не подключавшихся компьютеров": summary.get("hidden_inactive_hosts"),

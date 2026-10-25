@@ -405,6 +405,7 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
     key = {"risk": lambda r: (r["stats"]["critical"], r["problem_hosts"], r["stats"]["protection"]), "name": lambda r: r["name"].lower(), "hosts": lambda r: r["stats"]["total"],
            "problems": lambda r: r["problem_hosts"], "critical": lambda r: r["stats"]["critical"], "protection": lambda r: r["stats"]["protection"]}[sort]
     rows.sort(key=key, reverse=desc if sort != "name" else not desc)
+    rows.sort(key=lambda r: r["id"] == UNASSIGNED)             # «Без ответственного» — всегда последней
     totals_hosts = len(hosts)
     uniq = len({(h["source_id"], h["host_id"]) for h in hosts})
     return {"items": rows, "totals": {"zones": len(infos), "hosts": totals_hosts, "unique_hosts": uniq, "unassigned": len(by_zone[UNASSIGNED]), "conflicts": sum(1 for h in hosts if h["zone_conflict"])},
