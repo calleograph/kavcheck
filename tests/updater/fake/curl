@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Подставной curl для тестов обновления: доступность реестров и ответы приложения задаются переменными FAKE_*.
-S="${FAKE_STATE:?}"; url=""; want=0
+S="${FAKE_STATE:-$(cat "$(dirname "$0")/state-dir" 2>/dev/null)}"; url=""; want=0
 for a in "$@"; do case "$a" in -w) want=1 ;; http*) url="$a" ;; esac; done
 code=200; ok=1
 case "$url" in

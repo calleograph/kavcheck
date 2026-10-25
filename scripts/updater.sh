@@ -77,7 +77,7 @@ run_action() {
   local pid rc pos=0 size line t0 now reason="" total="${UPD_TIMEOUT_TOTAL:-5400}" stall="${UPD_STALL_TOTAL:-1500}" v
   local -a pass=()
   # скрипты запускаются в чистом окружении; пробрасываются только настройки прокси и сертификатов и переменные из UPD_PASS_ENV (проверки и нестандартные среды)
-  for v in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy SSL_CERT_FILE KC_NO_SYSTEMD $UPD_PASS_ENV; do [ -n "${!v:-}" ] && pass+=("$v=${!v}"); done
+  for v in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy SSL_CERT_FILE KC_NO_SYSTEMD ${UPD_PASS_ENV:-}; do [ -n "${!v:-}" ] && pass+=("$v=${!v}"); done
   LOG="$logf"; STATE="$st"; STARTED="$(date +%s)"; OP_ID="$STARTED-$REQ"; OP_PID=0; FINISHED=0; EXIT=null; RESULT=""; STEP_NO=0; STEP_NAME="запуск"; LAST_OUT="$STARTED"; write_status
   [ "$logf" = "$CH/update.log" ] && [ -s "$logf" ] && mv -f "$logf" "$CH/update.prev.log"
   : > "$logf"; chmod 644 "$logf"; printf '=== %s запущен %s (запросил: %s) ===\n' "$ACTION" "$(date '+%F %T')" "${BY:-?}" >> "$logf"
@@ -113,7 +113,7 @@ handle_request() {
   owner="$(stat -c %u "$f" 2>/dev/null || echo -1)"
   if [ -L "$f" ] || ! [[ "$owner" =~ ^(0|$(id -u)|10001)$ ]]; then warn "Запрос отклонён: символьная ссылка или посторонний владелец (uid $owner)"; rm -f "$f"; return 0; fi
   mode="$(sed -n 's/^mode=//p' "$f" | head -1)"; rid="$(sed -n 's/^id=//p' "$f" | head -1)"; action="$(sed -n 's/^action=//p' "$f" | head -1)"; target="$(sed -n 's/^target=//p' "$f" | head -1)"; by="$(sed -n 's/^by=//p' "$f" | head -1)"; at="$(sed -n 's/^at=//p' "$f" | head -1)"
-  rm -f "$f"
+  mv -f "$f" "$CH/.request.running" 2>/dev/null || rm -f "$f"
   [[ "$rid" =~ ^[a-f0-9]{8,32}$ ]] && [[ "$at" =~ ^[0-9]+$ ]] || { warn "Запрос отклонён: некорректный формат"; return 0; }
   [ $(( $(date +%s) - at )) -le 600 ] || { warn "Запрос $rid устарел"; return 0; }
   [[ "$by" =~ ^[A-Za-z0-9._-]{0,60}$ ]] || by="?"
@@ -132,12 +132,20 @@ handle_request() {
              run_action restoring "$CH/update.log" restore.sh "${BACKUP_DIR:-$DATA_ROOT/backups}/$target" --yes --env "$ENV_FILE" || true ;;
     *) warn "Неизвестное действие: $action" ;;
   esac
+  rm -f "$CH/.request.running"
 }
 cmd_run() {
+  set +u          # демон: пропущенная настройка не должна завершать службу (проверено на настоящем systemd: «unbound variable» ронял помощника на первом запросе)
   mkdir -p "$DATA_ROOT/state"; exec 9>"$DATA_ROOT/state/updater.lock"; flock -n 9 || die "Помощник уже запущен для проекта $COMPOSE_PROJECT_NAME"
   info "Помощник обновлений запущен: проект $COMPOSE_PROJECT_NAME, каталог $CH, uid $(id -u), API $UPDATER_API"
   hb_loop "$$" 9>&- & HB_PID=$!
   trap 'STATE=stopped; write_status; kill "$HB_PID" 2>/dev/null; write_heartbeat true; exit 0' INT TERM
+  # запрос, который обрабатывался в момент аварии, не должен пропадать молча: об этом сообщается в отчёте
+  if [ -f "$CH/.request.running" ]; then
+    action_reset; action_log "помощник аварийно завершился во время обработки запроса «$(sed -n 's/^action=//p' "$CH/.request.running" | head -1)»; запрос не выполнен"
+    report_write failed "обработка запроса" "$(version_file_read)" "?" "Помощник аварийно завершился во время обработки запроса и был перезапущен службой. Запрос не выполнен; повторите его. Причина — в журнале службы: journalctl -u $UNIT -n 100" interrupted
+    history_append "$(sed -n 's/^action=//p' "$CH/.request.running" | head -1)" failed "$(version_file_read)" "?" crash; rm -f "$CH/.request.running"
+  fi
   # статус «Выполняется» от прежнего процесса недействителен: сначала проверяем прерванное обновление и только потом принимаем запросы
   STATE=recovering; ACTION=recover; STEP_NAME="проверка после запуска"; write_status
   if [ -f "$(marker_file)" ]; then

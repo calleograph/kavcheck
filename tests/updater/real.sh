@@ -55,7 +55,7 @@ say "Подготовка: реестр образов, образы, репоз
 docker run -d --name "$P-registry" -p "127.0.0.1:$RPORT:5000" registry:2 >/dev/null || { echo "Не удалось запустить registry:2"; exit 2; }
 for s in backend web; do
   docker pull -q "ghcr.io/calleograph/kavcheck-$s:v0.5.0" >/dev/null && docker tag "ghcr.io/calleograph/kavcheck-$s:v0.5.0" "kavcheck-$s:real5"
-  docker pull -q "ghcr.io/calleograph/kavcheck-$s:v0.6.1" >/dev/null && docker tag "ghcr.io/calleograph/kavcheck-$s:v0.6.1" "$REG-$s:v9.9.1" && docker push -q "$REG-$s:v9.9.1" >/dev/null
+  docker pull -q "ghcr.io/calleograph/kavcheck-$s:v0.6.1" >/dev/null && docker save "ghcr.io/calleograph/kavcheck-$s:v0.6.1" | docker load -q >/dev/null && docker tag "ghcr.io/calleograph/kavcheck-$s:v0.6.1" "$REG-$s:v9.9.1" && docker push -q "$REG-$s:v9.9.1" >/dev/null
 done
 docker rmi "$REG-backend:v9.9.1" "$REG-web:v9.9.1" >/dev/null 2>&1        # новых образов на сервере нет: их должно скачать обновление
 git clone -q --bare "$ROOT" "$W/origin.git" && git clone -q "$W/origin.git" "$APP" && git -C "$APP" checkout -q --detach "$(git -C "$ROOT" rev-parse HEAD)"
@@ -64,7 +64,7 @@ mkdir -p "$D"/{postgres,reports,backups,updater,state}; chmod 1777 "$D/updater";
 cp "$ROOT/.env.example" "$ENVF"; sed -i "s#^COMPOSE_PROJECT_NAME=.*#COMPOSE_PROJECT_NAME=$P#; s#^DATA_ROOT=.*#DATA_ROOT=$D#; s#^WEB_PORT=.*#WEB_PORT=$PORT#; s#^POSTGRES_DB=.*#POSTGRES_DB=kc#; s#^POSTGRES_USER=.*#POSTGRES_USER=kc#; s#^POSTGRES_PASSWORD=.*#POSTGRES_PASSWORD=pw-$P#; s#^APP_MASTER_KEY=.*#APP_MASTER_KEY=$(openssl rand -base64 32)#; s#^APP_PUBLIC_URL=.*#APP_PUBLIC_URL=http://127.0.0.1:$PORT#; s#^IMAGE_REPO=.*#IMAGE_REPO=kavcheck#; s#^IMAGE_TAG=.*#IMAGE_TAG=real5#; s#^IMAGE_REGISTRY=.*#IMAGE_REGISTRY=$REG#; s#^GITHUB_REPO=.*#GITHUB_REPO=acme/kavcheck#; s#^COOKIE_SECURE=.*#COOKIE_SECURE=false#" "$ENVF"
 dc up -d postgres >/dev/null; for _ in $(seq 1 40); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$(dc ps -q postgres)" 2>/dev/null)" = healthy ] && break; sleep 2; done
 dc run --rm --no-deps backend alembic upgrade head >/dev/null 2>&1; dc up -d >/dev/null 2>&1; for _ in $(seq 1 60); do [ "$(running_version)" = 0.5.0 ] && break; sleep 2; done
-dc exec -T backend python -m app.cli create-admin --username admin --password 'Real-Test-Pass-2026' >/dev/null 2>&1
+dc exec -T backend python -m app.cli create-admin --username admin --password 'Real-Test-Pass-2026' >/dev/null 2>&1; psql_ "UPDATE users SET must_change_password = false WHERE username = 'admin'" >/dev/null
 api POST /auth/login '{"login":"admin","password":"Real-Test-Pass-2026"}' >/dev/null
 t "установлена версия 0.5.0 на локальных образах (IMAGE_REPO=kavcheck)" bash -c "[ '$(running_version)' = 0.5.0 ] && grep -q '^IMAGE_REPO=kavcheck' '$ENVF'"
 systemd-run --user --quiet --collect --unit="$UNIT" -p Restart=always -p RestartSec=3 -p KillMode=control-group -E KC_NO_SYSTEMD=1 -E "PATH=$PATH" "$APP/scripts/updater.sh" run --env "$ENVF"

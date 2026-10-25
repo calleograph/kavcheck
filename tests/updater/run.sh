@@ -15,7 +15,7 @@ t() { # t ОПИСАНИЕ КОМАНДА… — проверка
 scn() { CUR="$1"; [ -z "$ONLY" ] || [[ "$1" == *"$ONLY"* ]] || return 1; printf '\n\033[1m%s\033[0m\n' "$1"; return 0; }
 mk() { # песочница: SB, W (рабочая копия), S (состояние docker), D (DATA_ROOT)
   SB="$(mktemp -d)"; S="$SB/state"; D="$SB/data"; W="$SB/work"; M="$SB/maker"; mkdir -p "$S" "$SB/bin" "$D"/{state,updater,backups,postgres,reports}
-  cp "$HERE"/fake/docker "$HERE"/fake/curl "$SB/bin/"; git init -q --bare "$SB/origin.git"
+  cp "$HERE"/fake/docker "$HERE"/fake/curl "$SB/bin/"; echo "$S" > "$SB/bin/state-dir"; git init -q --bare "$SB/origin.git"
   git init -q "$M"; ( cd "$M" && mkdir -p backend/migrations/versions deployment && cp -r "$ROOT/scripts" . && cp "$ROOT/deployment/compose.yml" deployment/ && echo 0.1.0 > VERSION \
     && echo 'revision = "r1"' > backend/migrations/versions/0001.py && git add -A && git commit -qm v1 && git tag v0.1.0 && git remote add origin "$SB/origin.git" && git push -q origin HEAD:master --tags )
   git clone -q "$SB/origin.git" "$W"
@@ -212,6 +212,25 @@ if scn "24. Самодиагностика: doctor сообщает конкре
   out="$(cd "$W" && env PATH="$SB/bin:$PATH" FAKE_STATE="$S" ENV_FILE="$W/.env" "$W/scripts/updater.sh" doctor --env "$W/.env" 2>&1)"; rc=$?
   t "doctor без пульса: код 1 и причина «Пульс не обновлялся»" bash -c "[ $rc -eq 1 ] && grep -q 'Пульс не обновлялся' '$D/updater/doctor.json'"
   t "в doctor.json права каталога и Docker проверены" bash -c "grep -q data_perm '$D/updater/doctor.json' && grep -q '\"key\":\"docker\",\"ok\":true' '$D/updater/doctor.json'"; fin; fi
+
+
+if scn "25. Помощник в чистом окружении службы (как в systemd): запрос обновления выполняется без переменных теста"; then mk
+  ( cd "$W" && exec setsid env -i PATH="$SB/bin:/usr/local/bin:/usr/bin:/bin" HOME="$SB" KC_NO_SYSTEMD=1 "$W/scripts/updater.sh" run --env "$W/.env" >"$SB/updater.log" 2>&1 ) & upid=$!
+  for _ in $(seq 1 30); do [ -f "$D/updater/heartbeat.json" ] && break; sleep 1; done
+  printf 'id=aabbccddeeff0044\naction=update\ntarget=v0.2.0\nmode=\nby=tester\nat=%s\n' "$(date +%s)" > "$D/updater/request.txt"
+  for _ in $(seq 1 60); do [ "$(python3 -c "import json;print(json.load(open('$D/updater/operation.json')).get('result',''))" 2>/dev/null)" = ok ] && break; sleep 2; done
+  t "помощник не упал (тот же процесс отвечает)" kill -0 "$upid"; t "обновление выполнено" [ "$(rj result)" = ok ]; t "версия v0.2.0" [ "$(tag)" = v0.2.0 ]
+  t "в журнале службы нет «unbound variable»" bash -c "! grep -q 'unbound variable' '$SB/updater.log'"
+  kill -TERM -- "-$upid" 2>/dev/null; wait "$upid" 2>/dev/null; fin; fi
+
+if scn "26. Авария помощника при обработке запроса: запрос не теряется молча, отчёт говорит об этом"; then mk
+  ( cd "$W" && exec setsid env -i PATH="$SB/bin:/usr/local/bin:/usr/bin:/bin" HOME="$SB" KC_NO_SYSTEMD=1 "$W/scripts/updater.sh" run --env "$W/.env" >"$SB/updater.log" 2>&1 ) & upid=$!
+  for _ in $(seq 1 30); do [ -f "$D/updater/heartbeat.json" ] && break; sleep 1; done
+  kill -9 "$upid"; sleep 1; printf 'id=aabbccddeeff0055\naction=update\ntarget=v0.2.0\nmode=\nby=tester\nat=%s\n' "$(date +%s)" > "$D/updater/.request.running"
+  ( cd "$W" && exec setsid env -i PATH="$SB/bin:/usr/local/bin:/usr/bin:/bin" HOME="$SB" KC_NO_SYSTEMD=1 "$W/scripts/updater.sh" run --env "$W/.env" >"$SB/updater2.log" 2>&1 ) & upid=$!
+  for _ in $(seq 1 30); do [ "$(rj result)" = failed ] && break; sleep 1; done
+  t "отчёт: запрос не выполнен из-за аварии помощника" bash -c "[ '$(rj reason_code)' = interrupted ] && grep -q 'аварийно' '$D/updater/report.json'"; t "служебный файл запроса снят" bash -c "[ ! -e '$D/updater/.request.running' ]"
+  kill -TERM -- "-$upid" 2>/dev/null; wait "$upid" 2>/dev/null; fin; fi
 
 printf '\nИтого: %s проверок пройдено, %s не пройдено\n' "$PASS" "$FAILS"
 [ "$FAILS" -eq 0 ]
