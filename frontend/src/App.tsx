@@ -164,7 +164,7 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
           <div className="nav-list">
             <NavIndicator deps={[pathname, search, adminOpen]} />
             <div className="nav-label">Аудит</div>
-            {NAV.map((n) => <NavLink key={n.to} to={n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.to === "/vdb" && vdbNew > 0 && <span className="nav-badge" title="Новых серьёзных уязвимостей, затрагивающих установленное ПО">{vdbNew}</span>}</NavLink>)}
+            {NAV.map((n) => <NavLink key={n.to} to={n.to === "/vdb" && vdbNew > 0 ? "/vdb?tab=mine" : n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.to === "/vdb" && vdbNew > 0 && <span className="nav-badge" title="Новых уязвимостей с высокой и критической опасностью или признаком эксплуатации, затрагивающих установленное ПО">{vdbNew}</span>}</NavLink>)}
             {me.user.is_admin && <>
               <button type="button" className="nav-label nav-toggle" aria-expanded={adminOpen} onClick={toggleAdmin}>Администрирование<Icon name="chevronD" size={14} /></button>
               {adminOpen && ADMIN_TABS.map((t) => {
@@ -220,7 +220,7 @@ export default function App() {
   const logout = async () => { await api.logout().catch(() => undefined); setCsrf(""); setMe(null); navigate("/"); };
   const pick = async (id: string) => { try { await api.selectSource(id); setCurrentId(id); setSourceId(id); } catch { /* ошибка покажется на странице */ } };
 
-  if (me === undefined) return <div className="center"><span className="spin" aria-label="Загрузка" /></div>;
+  if (me === undefined) return <div className="center"><span className="spin" role="status" aria-label="Загрузка" /></div>;
   if (me === null) return <LoginPage onLogin={onLogin} />;
   if (me.must_change_password) return <ChangePasswordPage onDone={() => api.me().then((m) => { setCsrf(m.csrf_token); setMe(m); })} onLogout={logout} />;
   if (me.must_enroll_totp) return <main className="forced-shell"><SecurityPage me={me} forced onLogout={logout} onEnrolled={() => api.me().then((m) => { setCsrf(m.csrf_token); setMe(m); })} /></main>;
@@ -228,7 +228,7 @@ export default function App() {
   const ctx: Ctx = { me, sources, current, reloadSources };
   return (
     <Shell me={me} version={version} onLogout={logout} sources={sources} current={current} onPick={pick}>
-      <Suspense fallback={<div className="center"><span className="spin" aria-label="Загрузка" /></div>}>
+      <Suspense fallback={<div className="center"><span className="spin" role="status" aria-label="Загрузка" /></div>}>
         <Routes>
           <Route path="/" element={<DashboardPage key={currentId} ctx={ctx} />} />
           <Route path="/software" element={<SoftwarePage key={currentId} ctx={ctx} />} />

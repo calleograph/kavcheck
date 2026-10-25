@@ -26,10 +26,11 @@ export function useVdbCounts(keys: string[], enabled: boolean): Record<string, V
   const sig = keys.join(",");
   useEffect(() => {
     if (!enabled || !keys.length) return;
-    const need = keys.filter((k) => !(k in c)).slice(0, 200);
+    const need = keys.filter((k) => !(k in c));
     if (!need.length) return;
     let live = true;
-    api.vdb.counts(need).then((r) => { if (live) setC((p) => ({ ...p, ...r.items })); }).catch(() => undefined);
+    // ключи пакетов длинные: порциями по 40, чтобы адрес запроса не превышал предел сервера
+    for (let i = 0; i < need.length; i += 40) api.vdb.counts(need.slice(i, i + 40)).then((r) => { if (live) setC((p) => ({ ...p, ...r.items })); }).catch(() => undefined);
     return () => { live = false; };
   }, [sig, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
   return c;

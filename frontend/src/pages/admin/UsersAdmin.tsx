@@ -94,13 +94,13 @@ export default function UsersAdmin({ ctx }: { ctx: Ctx }) {
       <div className="table-scroll">
         {!items ? <SkelRows cols={6} /> : (
           <table className="table">
-            <thead><tr><th>Пользователь</th><th>Вход</th><th>Роль</th><th>Источники</th><th>2FA</th><th>Последний вход</th><th>Статус</th><th><span className="sr-only">Действия</span></th></tr></thead>
+            <thead><tr><th>Пользователь</th><th className="hide-sm">Вход</th><th>Роль</th><th className="hide-sm">Источники</th><th className="hide-sm">2FA</th><th className="hide-sm">Последний вход</th><th className="hide-sm">Статус</th><th><span className="sr-only">Действия</span></th></tr></thead>
             <tbody>{items.map((u) => { const [rl, rc] = ROLE[u.role]; return (
-              <tr key={u.id}><td><b>{u.display_name}</b><span className="sub mono">{u.username}{u.email ? `, ${u.email}` : ""}</span></td><td>{u.auth_source === "local" ? "Локальный" : "Домен (LDAPS)"}</td><td><span className={`badge ${rc}`}>{rl}</span></td>
-                <td className="small">{u.role === "admin" || u.all_sources ? "Все" : u.source_ids.map((id) => ctx.sources.find((s) => s.id === id)?.name ?? "удалённый").join(", ") || <span className="warn-text">нет доступа</span>}</td>
-                <td>{u.totp_enabled ? <span className="badge ok">включена</span> : <span className="faint small">нет</span>}</td><td className="nowrap">{fmt(u.last_login_at)}</td>
-                <td>{u.is_active ? <span className="badge ok"><span className="dot" />активен</span> : <span className="badge warn">отключён</span>}{u.must_change_password && <span className="sub">сменит пароль при входе</span>}</td>
-                <td className="actions">{u.totp_enabled && <button className="btn mini ghost" onClick={() => setReset(u)} title="Сбросить двухфакторную аутентификацию (потеря телефона)">Сбросить 2FA</button>}
+              <tr key={u.id}><td><b>{u.display_name}</b><span className="sub mono">{u.username}{u.email ? `, ${u.email}` : ""}</span>{!u.is_active && <span className="badge warn only-sm">отключён</span>}</td><td className="hide-sm">{u.auth_source === "local" ? "Локальный" : "Домен (LDAPS)"}</td><td><span className={`badge ${rc}`}>{rl}</span></td>
+                <td className="small hide-sm">{u.role === "admin" || u.all_sources ? "Все" : u.source_ids.map((id) => ctx.sources.find((s) => s.id === id)?.name ?? "удалённый").join(", ") || <span className="warn-text">нет доступа</span>}</td>
+                <td className="hide-sm">{u.totp_enabled ? <span className="badge ok">включена</span> : <span className="faint small">нет</span>}</td><td className="nowrap hide-sm">{fmt(u.last_login_at)}</td>
+                <td className="hide-sm">{u.is_active ? <span className="badge ok"><span className="dot" />активен</span> : <span className="badge warn">отключён</span>}{u.must_change_password && <span className="sub">сменит пароль при входе</span>}</td>
+                <td className="actions">{u.totp_enabled && <button className="btn mini ghost hide-sm" onClick={() => setReset(u)} title="Сбросить двухфакторную аутентификацию (потеря телефона)">Сбросить 2FA</button>}
                   <button className="btn mini ghost icon" aria-label={`Изменить ${u.username}`} onClick={() => { setErr(""); setEdit({ ...u }); }}><Icon name="edit" size={15} /></button>{u.id !== ctx.me.user.id && <button className="btn mini ghost danger icon" aria-label={`Удалить ${u.username}`} onClick={() => setDel(u)}><Icon name="trash" size={15} /></button>}</td></tr>); })}
               {!items.length && <tr><td colSpan={8}><Empty icon="users" title="Никого не найдено">Измените поиск.</Empty></td></tr>}
             </tbody>

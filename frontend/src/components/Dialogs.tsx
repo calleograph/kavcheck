@@ -4,20 +4,23 @@ import { Icon } from "./Icons";
 
 /** Модальное окно: фокус внутрь и возврат, Escape и щелчок по фону закрывают, Tab не уходит за пределы окна; появление и закрытие анимированы. */
 /** side — боковая панель справа на всю высоту (списки по щелчку на числе или версии); scrollRef — её прокручиваемая область. */
-export function Modal({ title, onClose, children, wide, footer, side, scrollRef, lede }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean; footer?: ReactNode;
-  side?: boolean; scrollRef?: RefObject<HTMLDivElement | null>; lede?: ReactNode }) {
+export function Modal({ title, onClose, children, wide, footer, side, scrollRef, lede, guard = true }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean; footer?: ReactNode;
+  side?: boolean; scrollRef?: RefObject<HTMLDivElement | null>; lede?: ReactNode; guard?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const [closing, setClosing] = useState(false);
+  const dirty = useRef(false);          // в форме внутри окна что-то введено: Escape, крестик и щелчок по фону спрашивают подтверждение
+  const [ask, setAsk] = useState(false);
   const close = useCallback(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { onClose(); return; }
     setClosing(true); window.setTimeout(onClose, 150);
   }, [onClose]);
+  const request = useCallback(() => { if (guard && dirty.current) setAsk(true); else close(); }, [guard, close]);
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     const first = ref.current?.querySelector<HTMLElement>("[autofocus], input, select, textarea, button:not(.modal-x)");
     (first ?? ref.current)?.focus();
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); close(); return; }
+      if (e.key === "Escape") { e.stopPropagation(); request(); return; }
       if (e.key !== "Tab" || !ref.current) return;
       const els = Array.from(ref.current.querySelectorAll<HTMLElement>("a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])"));
       if (!els.length) return;
@@ -27,13 +30,13 @@ export function Modal({ title, onClose, children, wide, footer, side, scrollRef,
     document.addEventListener("keydown", key);
     const ov = document.body.style.overflow; document.body.style.overflow = "hidden";
     return () => { document.removeEventListener("keydown", key); document.body.style.overflow = ov; prev?.focus?.(); };
-  }, [close]);
+  }, [request]);
   // портал в body: окно не зависит от того, где объявлено (вложенные формы, карточки с overflow, стек z-index)
   return createPortal(
-    <div className={`modal-back ${side ? "side" : ""} ${closing ? "closing" : ""}`} onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
-      <div className={`modal ${wide ? "wide" : ""} ${side ? "side" : ""}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}
+    <div className={`modal-back ${side ? "side" : ""} ${closing ? "closing" : ""}`} onMouseDown={(e) => { if (e.target === e.currentTarget) request(); }}>
+      <div className={`modal ${wide ? "wide" : ""} ${side ? "side" : ""}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onInput={(e) => { if ((e.target as HTMLElement).closest("form")) dirty.current = true; }}
         ref={(el) => { ref.current = el; if (scrollRef) scrollRef.current = el; }}>
-        <div className="modal-head"><div className="grow"><h2>{title}</h2>{lede && <div className="modal-lede">{lede}</div>}</div><button className="btn ghost icon modal-x" onClick={close} aria-label="Закрыть"><Icon name="close" /></button></div>
+        <div className="modal-head"><div className="grow"><h2>{title}</h2>{lede && <div className="modal-lede">{lede}</div>}</div><button className="btn ghost icon modal-x" onClick={request} aria-label="Закрыть"><Icon name="close" /></button>{ask && <div className="modal-ask" role="alert"><span>Введённые данные не сохранены.</span><button type="button" className="btn mini" onClick={() => setAsk(false)} autoFocus>Продолжить редактирование</button><button type="button" className="btn mini danger" onClick={close}>Закрыть без сохранения</button></div>}</div>
         <div className="modal-body">{children}{footer && <div className="modal-foot">{footer}</div>}</div>
       </div>
     </div>, document.body);
@@ -48,7 +51,7 @@ export function ConfirmDialog({ title, body, confirmLabel, typed, danger = true,
   const [err, setErr] = useState("");
   const go = async () => { setBusy(true); setErr(""); try { await onConfirm(); onClose(); } catch (e) { setErr((e as Error).message || "Не удалось выполнить действие"); setBusy(false); } };
   return (
-    <Modal title={title} onClose={busy ? () => undefined : onClose}
+    <Modal title={title} guard={false} onClose={busy ? () => undefined : onClose}
       footer={<><button className="btn ghost" onClick={onClose} disabled={busy}>Отмена</button>
         <button className={`btn ${danger ? "danger" : "primary"}`} onClick={go} aria-busy={busy} disabled={typed !== undefined && word.trim().toLowerCase() !== typed.toLowerCase()}><span>{confirmLabel}</span></button></>}>
       <div className="muted">{body}</div>

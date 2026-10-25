@@ -39,6 +39,7 @@ sudo ./scripts/updater.sh install --yes   # помощник обновлени�
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | компоненты, данные, безопасность |
 | [docs/DEVELOPER.md](docs/DEVELOPER.md) | для разработчиков: SQL-шаблоны, адаптер KSC, новые отчёты и модули, тесты, выпуск |
 | [docs/UI.md](docs/UI.md) | интерфейс: аудит и единые правила экранов, компонентов, движения и адаптивности |
+| [docs/UX_FULL_AUDIT.md](docs/UX_FULL_AUDIT.md) | второй аудит: пользовательские сценарии, измерения до и после, дефекты и ограничения |
 | [docs/ksc/KNOWLEDGE_MAP.md](docs/ksc/KNOWLEDGE_MAP.md) | техническая карта знаний о структуре базы KSC |
 | [AGENTS.md](AGENTS.md) | правила для ИИ-агентов и новых разработчиков |
 

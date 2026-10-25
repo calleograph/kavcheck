@@ -313,7 +313,7 @@ async def mark_seen(body: SeenIn, su: SessionUser = Depends(require_analyst), sr
 
 # ------------------------------------------------------------------------------------------------ каталог программ, карточка компьютера
 @router.get("/catalog-counts")
-async def catalog_counts(request: Request, keys: str = Query("", max_length=4000), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+async def catalog_counts(request: Request, keys: str = Query("", max_length=12000), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
     """Число известных уязвимостей (по внешним базам) для продуктов каталога: по находкам источника KSC. Подтверждённые KSC уязвимости — отдельно, в разделе «Уязвимости»."""
     want = [k for k in keys.split(",") if k][:200]
     rev = await store.revision(db, src.id)

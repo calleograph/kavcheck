@@ -155,7 +155,7 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
         {(
           <div className="source-checks" role="group" aria-label="Источники KSC">
             {ctx.sources.map((s) => <label key={s.id} className="check"><input type="checkbox" checked={sources.includes(s.id)} onChange={() => setSources((x) => (x.includes(s.id) ? x.filter((y) => y !== s.id) : [...x, s.id]))} />
-              <span className="check-body">{s.name}<span className="help">{s.database} · KSC {s.ksc_version ?? "?"}</span></span></label>)}
+              <span className="check-body">{s.name}<span className="help">{s.database}{s.ksc_version ? ` · KSC ${s.ksc_version}` : ""}</span></span></label>)}
             <span className="help">Одна и та же проверка выполняется в каждом источнике; компьютеры разных источников не объединяются.</span>
           </div>)}
       </fieldset>}

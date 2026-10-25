@@ -52,11 +52,17 @@ export function GlobalSearch({ sourceId }: { sourceId: string | null }) {
     return () => { alive = false; window.clearTimeout(t); };
   }, [term, sourceId]);
 
+  const vulnId = /^(cve|bdu|ghsa)[-:]/i.test(term);   // идентификатор уязвимости: база уязвимостей — первым вариантом
+  const enc = encodeURIComponent(term);
+  const all: Hit[] = [
+    { kind: "all", to: `/hosts?activity=all&q=${enc}`, label: `Все компьютеры с «${term}»` },
+    { kind: "all", to: `/software?q=${enc}`, label: `Все программы с «${term}»` },
+    { kind: "all", to: `/vdb?tab=search&q=${enc}`, label: `Уязвимости с «${term}» в базе уязвимостей` },
+  ];
   const hits: Hit[] = term.length < 2 ? [] : [
     ...hosts.map((host) => ({ kind: "host" as const, host })),
     ...products.map((product) => ({ kind: "product" as const, product })),
-    { kind: "all", to: `/hosts?activity=all&q=${encodeURIComponent(term)}`, label: `Все компьютеры с «${term}»` },
-    { kind: "all", to: `/software?q=${encodeURIComponent(term)}`, label: `Все программы с «${term}»` },
+    ...(vulnId ? [all[2], all[0], all[1]] : all),
   ];
   const go = (h: Hit | undefined) => {
     if (!h) return;
@@ -79,11 +85,11 @@ export function GlobalSearch({ sourceId }: { sourceId: string | null }) {
   const firstProduct = hosts.length;
   return (
     <div className={`gsearch ${wide ? "wide" : ""} ${open && term.length >= 2 ? "open" : ""}`} ref={box}>
-      <button type="button" className="btn ghost icon gs-toggle" aria-label="Поиск компьютера или программы" onClick={() => { setWide(true); window.requestAnimationFrame(() => input.current?.focus()); }}><Icon name="search" size={19} /></button>
+      <button type="button" className="btn ghost icon gs-toggle" aria-label="Поиск компьютера, программы или уязвимости" onClick={() => { setWide(true); window.requestAnimationFrame(() => input.current?.focus()); }}><Icon name="search" size={19} /></button>
       <div className="input-icon gs-field">
         <Icon name="search" size={16} />
-        <input ref={input} value={q} disabled={!sourceId} role="combobox" aria-expanded={open && term.length >= 2} aria-controls={listId} aria-autocomplete="list" aria-label="Поиск компьютера или программы"
-          aria-activedescendant={open && hits[active] ? `${listId}-${active}` : undefined} placeholder="Компьютер или программа" spellCheck={false} autoComplete="off"
+        <input ref={input} value={q} disabled={!sourceId} role="combobox" aria-expanded={open && term.length >= 2} aria-controls={listId} aria-autocomplete="list" aria-label="Поиск компьютера, программы или уязвимости"
+          aria-activedescendant={open && hits[active] ? `${listId}-${active}` : undefined} placeholder="Компьютер, программа или CVE" spellCheck={false} autoComplete="off"
           onFocus={() => setOpen(true)} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onKeyDown={onKey} />
         {busy ? <span className="spin sm gs-kbd" aria-hidden /> : !q && <kbd className="gs-kbd" aria-hidden>/</kbd>}
       </div>

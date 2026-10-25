@@ -61,12 +61,12 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
         {list.initial ? <SkelRows cols={6} /> : (
           <table className="table virt">
             <thead><tr><CheckAll all={sel.allOf(list.items.map((h) => h.host_id))} some={sel.someOf(list.items.map((h) => h.host_id))} onToggle={() => sel.toggleMany(list.items.map((h) => h.host_id))} />
-              <SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
-              <SortTh k="group" label="Группа" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Связь</th><th>Онлайн</th></tr></thead>
+              <SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
+              <SortTh k="group" label="Группа" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><th>Связь</th><th>Онлайн</th></tr></thead>
             <tbody>
               <VirtualRows list={list} colSpan={8} estimate={46} row={(h) => (
-                <tr className={sel.has(h.host_id) ? "sel" : ""}><td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}</td><td className="mono nowrap">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
-                  <td className="nowrap">{fmt(h.last_connected)}</td><td><ActivityBadge days={h.days_since_connection} activityDays={eff} /></td><td><OnlineBadge online={h.online} seen={h.last_visible} /></td></tr>)} />
+                <tr className={sel.has(h.host_id) ? "sel" : ""}><td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}</td><td className="mono nowrap hide-sm">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
+                  <td className="nowrap hide-sm">{fmt(h.last_connected)}</td><td><ActivityBadge days={h.days_since_connection} activityDays={eff} /></td><td><OnlineBadge online={h.online} seen={h.last_visible} /></td></tr>)} />
               {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="monitor" title="Компьютеров не найдено">Измените поиск или фильтр связи с KSC.</Empty></td></tr>}
             </tbody>
           </table>)}
@@ -100,7 +100,9 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   useEffect(() => { if (!ctx.current || !hostId) return; api.hosts.one(Number(hostId)).then((r) => { setD(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)); }, [ctx.current, hostId]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const back = <Link className="back-link" to="/hosts"><Icon name="arrowL" size={15} />Компьютеры</Link>;
-  if (err) return <section><PageHead title="Компьютер" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div></section>;
+  if (err) return <section><PageHead title="Компьютер" back={back} />
+    {/не найден/i.test(err) ? <div className="card"><Empty icon="monitor" title="Компьютер не найден" action={<Link className="btn" to="/hosts">К списку компьютеров</Link>}>Он удалён из KSC или относится к другому источнику — проверьте источник в верхней панели.</Empty></div>
+      : <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}</section>;
   if (!d) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="split even"><div className="card"><SkelRows rows={6} cols={2} /></div><div className="card"><SkelRows rows={3} cols={3} /></div></div></section>;
   const h = d.host;
   const sw = d.software.filter((s) => !filter || `${s.name} ${s.version} ${s.publisher}`.toLowerCase().includes(filter.toLowerCase()));
@@ -120,7 +122,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       <div className="split even">
         <div className="card">
           <h2>Сведения</h2>
-          <dl className="kv">{facts.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
+          <dl className="kv pairs">{facts.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
         </div>
         <div className="stack">
           {st && st.reasons.length > 0 && (

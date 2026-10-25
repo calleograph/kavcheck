@@ -70,8 +70,10 @@ function SearchView({ ctx }: { ctx: Ctx }) {
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="CVE-2024-…, BDU:2024-…, программа, производитель, версия или текст описания" aria-label="Поиск уязвимости" /></div>
         <Segmented<Sev> label="Уровень опасности" value={sev} onChange={setSev} options={SEV_OPTS} />
-        <label className="check inline-check"><input type="checkbox" className="switch" checked={kev} onChange={(e) => setKev(e.target.checked)} />Эксплуатируется (KEV)</label>
-        <label className="check inline-check"><input type="checkbox" className="switch" checked={mine} onChange={(e) => setMine(e.target.checked)} />Затрагивает нашу инфраструктуру</label>
+        <div className="toolbar-row">
+          <label className="check inline-check"><input type="checkbox" className="switch" checked={kev} onChange={(e) => setKev(e.target.checked)} />Эксплуатируется (KEV)</label>
+          <label className="check inline-check"><input type="checkbox" className="switch" checked={mine} onChange={(e) => setMine(e.target.checked)} />Затрагивает нашу инфраструктуру</label>
+        </div>
         <details className="disclosure toolbar-more"><summary>Дополнительно</summary>
           <div className="toolbar-fields">
             <label className="check inline-check"><input type="checkbox" className="switch" checked={fix} onChange={(e) => setFix(e.target.checked)} />Есть исправление</label>
@@ -179,7 +181,7 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
       <div className="meters">
         <div className="meter"><span className="l">Новых</span><span className={`v ${s?.new ? "warn-text" : ""}`}>{s ? num(s.new) : "…"}</span><span className="t">не просмотрены специалистом</span></div>
         <div className="meter"><span className="l">Из них эксплуатируются</span><span className={`v ${s?.new_exploited ? "bad-text" : ""}`}>{s ? num(s.new_exploited) : "…"}</span><span className="t">подтверждено CISA KEV</span></div>
-        <div className="meter"><span className="l">Из них критических</span><span className={`v ${s?.new_critical ? "bad-text" : ""}`}>{s ? num(s.new_critical) : "…"}</span></div>
+        <div className="meter"><span className="l">Из них критических</span><span className={`v ${s?.new_critical ? "bad-text" : ""}`}>{s ? num(s.new_critical) : "…"}</span>{s && <span className="t">критических, высоких и эксплуатируемых — {num(s.new_serious)}, как в меню</span>}</div>
         <div className="meter"><span className="l">Всего затрагивают</span><span className="v">{s ? num(s.total) : "…"}</span><span className="t">по каталогу «{ctx.current?.name}»</span></div>
       </div>
       <div className="toolbar">
@@ -193,20 +195,19 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={5} /> : (
           <table className="table virt">
-            <thead><tr><CheckAll all={sel.allOf(keys)} some={sel.someOf(keys)} onToggle={() => sel.toggleMany(keys)} /><th>Уязвимость</th><th>Опасность</th><th>Результат</th><th>Затронутое ПО</th><th className="hide-sm">Найдена</th><th><span className="sr-only">Действия</span></th></tr></thead>
+            <thead><tr><CheckAll all={sel.allOf(keys)} some={sel.someOf(keys)} onToggle={() => sel.toggleMany(keys)} /><th>Уязвимость</th><th>Опасность</th><th>Результат</th><th>Затронутое ПО</th><th><span className="sr-only">Действия</span></th></tr></thead>
             <tbody>
-              <VirtualRows list={list} colSpan={7} estimate={64} row={(v) => (
+              <VirtualRows list={list} colSpan={6} estimate={64} row={(v) => (
                 <tr className={`clickable ${sel.has(v.key) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("input, button, a")) setSp((p) => { p.set("v", v.key); return p; }); }}>
                   <td className="check"><input type="checkbox" aria-label={`Выбрать ${v.key}`} checked={sel.has(v.key)} onChange={() => sel.toggle(v.key)} /></td>
-                  <td><button type="button" className="link-btn strong-link mono" onClick={() => setSp((p) => { p.set("v", v.key); return p; })}>{v.key}</button>{v.finding?.new && <span className="badge accent new-dot">новая</span>}<span className="sub vdb-title">{v.title || v.description}</span></td>
-                  <td className="nowrap"><SevBadge v={v} />{v.exploited && <> <Kev /></>}</td>
+                  <td><button type="button" className="link-btn strong-link mono" onClick={() => setSp((p) => { p.set("v", v.key); return p; })}>{v.key}</button>{v.finding?.new && <span className="badge accent new-dot">новая</span>}<span className="sub vdb-title">{v.title || v.description}</span><span className="sub small">найдена {fmtDate(v.finding?.first_seen_at)}</span></td>
+                  <td><SevBadge v={v} />{v.exploited && <> <Kev /></>}</td>
                   <td>{v.finding && <StatusBadge s={v.finding.status} label={v.finding.status_ru} />}</td>
-                  <td className="small">{v.finding?.products.slice(0, 3).map((p) => <span key={p.key} className="block">{p.name} <span className="muted mono">{p.versions.slice(0, 2).join(", ")}{p.versions.length > 2 ? "…" : ""}</span></span>)}
+                  <td className="small">{v.finding?.products.slice(0, 3).map((p) => <span key={p.key} className="block">{p.name} <span className="muted mono nowrap">{p.versions.slice(0, 2).join(", ")}{p.versions.length > 2 ? "…" : ""}</span></span>)}
                     <span className="sub">до {num(v.finding?.hosts_max)} комп., {num(v.finding?.installs)} уст.</span></td>
-                  <td className="nowrap small hide-sm">{fmtDate(v.finding?.first_seen_at)}</td>
                   <td className="actions">{canReport && <button type="button" className="btn mini ghost row-act" onClick={() => setReport({ title: `Проверка инфраструктуры: ${v.key}`, keys: [v.key] })}><Icon name="target" size={15} />Проверить</button>}</td>
                 </tr>)} />
-              {!list.items.length && !list.loading && <tr><td colSpan={7}><Empty icon="checkCircle" title="Ничего не найдено">{newOnly ? "Новых уязвимостей, затрагивающих установленное ПО, нет. Выключите «Только новые», чтобы увидеть все." : "По этим условиям уязвимостей, затрагивающих установленное ПО, не найдено."}</Empty></td></tr>}
+              {!list.items.length && !list.loading && <tr><td colSpan={6}><Empty icon="checkCircle" title="Ничего не найдено">{newOnly ? "Новых уязвимостей, затрагивающих установленное ПО, нет. Выключите «Только новые», чтобы увидеть все." : "По этим условиям уязвимостей, затрагивающих установленное ПО, не найдено."}</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>

@@ -362,6 +362,8 @@ async def test_findings_new_serious_and_seen_flow(app, client):
     assert (await client.post("/api/v1/vdb/findings/seen", json={"keys": ["CVE-2099-1"]})).json()["new"] == 0
     cc = (await client.get("/api/v1/vdb/catalog-counts", params={"keys": "google-chrome,php"})).json()["items"]
     assert cc["google-chrome"] == {"total": 1, "kev": 1, "critical": 1, "confirmed": 1} and cc["php"]["total"] == 0
+    long_keys = ",".join(f"pkg:very-long-package-name-{i:04d}-redistributable" for i in range(200))        # ~9 000 знаков: каталог запрашивает ключи порциями, но предел должен это выдерживать
+    assert (await client.get("/api/v1/vdb/catalog-counts", params={"keys": long_keys})).status_code == 200
     pv = (await client.get("/api/v1/vdb/products/google-chrome")).json()
     assert pv["total"] == 1 and pv["items"][0]["versions"] == ["115.0.5790.0"]
     card = (await client.get("/api/v1/vdb/vulns/CVE-2099-1")).json()

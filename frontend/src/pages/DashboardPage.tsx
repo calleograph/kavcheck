@@ -46,6 +46,7 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
     { to: "/reports", icon: "target", title: "Найти устаревшие версии", sub: "Программа из каталога и версия, ниже которой — устаревшая" },
     { to: "/software/p/php", icon: "branch", title: "PHP по веткам", sub: "Ветки и версии PHP, компьютеры с каждой из них" },
     { to: "/vulnerabilities", icon: "bug", title: "Уязвимости, найденные KSC", sub: "Компьютеры с критическими уязвимостями — первыми" },
+    { to: "/vdb?tab=mine", icon: "vault", title: "Новые уязвимости из внешних баз", sub: "NVD, CISA KEV, OSV, БДУ: что затрагивает установленное ПО" },
     { to: "/hosts?activity=inactive", icon: "clock", title: "Компьютеры без связи с KSC", sub: `Агент не подключался дольше ${s?.activity_days ?? "…"} сут` },
   ];
   const protMeters: [string, string, number | string | null, string, string, "prot" | "ev"][] = [

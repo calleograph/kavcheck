@@ -46,7 +46,7 @@ export default function UpdatesAdmin() {
           <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Помощник обновлений не запущен.</b> Он нужен для обновления, отката и резервных копий из браузера. Установите его один раз на сервере — служба выполняет только эти действия:
             <pre className="cmd">{ov.commands.install}</pre>Без помощника обновляйте на сервере командой <code>{ov.commands.manual}</code>.</div></div>
         )}
-        {rem && !rem.ok && <div className="alert error mt"><Icon name="alert" /><div className="alert-body">Не удалось проверить релизы: {rem.error || "нет данных"}. Если у сервера нет доступа к GitHub, обновляйте его из заранее скопированного репозитория.</div></div>}
+        {rem && !rem.ok && <div className="alert error mt"><Icon name="alert" /><div className="alert-body"><b>Не удалось проверить наличие новых версий.</b> Если у сервера нет доступа к GitHub, обновляйте его из заранее скопированного репозитория.{rem.error && <details className="disclosure"><summary>Техническая причина</summary><span className="mono small">{rem.error}</span></details>}</div></div>}
         {rem?.ok && !rem.behind && <div className="alert ok mt"><Icon name="checkCircle" /><div className="alert-body">Установлена последняя версия.</div></div>}
         {rem?.ok && rem.behind && (
           <div className="alert info mt"><Icon name="upload" /><div className="alert-body"><b>Доступна версия {rem.latest_version}</b> (установлена {rem.current_version}).
