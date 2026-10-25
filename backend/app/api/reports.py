@@ -110,7 +110,13 @@ async def list_jobs(source_only: bool = True, offset: int = Query(0, ge=0), limi
 @router.post("", status_code=201)
 async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     params = validate_params(body.kind, body.params)
-    sources = await _sources(db, su, body.source_ids if body.kind == "version_audit" else body.source_ids[:1], su.current_source_id)
+    if body.kind == "quick_zone":      # зона может охватывать несколько источников: без явного выбора — все доступные пользователю
+        from ..services.sources import visible_sources  # noqa: PLC0415
+
+        ids = body.source_ids or [s.id for s in await visible_sources(db, su)]
+        sources = await _sources(db, su, ids, su.current_source_id)
+    else:
+        sources = await _sources(db, su, body.source_ids if body.kind == "version_audit" else body.source_ids[:1], su.current_source_id)
     job = await enqueue(request, db, su, kind=body.kind, title=body.title, params=params, sources=sources)
     return job_out(job)
 

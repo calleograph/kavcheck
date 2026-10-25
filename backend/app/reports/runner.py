@@ -71,6 +71,9 @@ class Runner:
         if job.kind == "version_audit":
             await self._execute_audit(job)
             return
+        if job.kind == "quick_zone":
+            await self._execute_zone(job)
+            return
         if job.kind in quick.QUICK_KINDS:
             await self._execute_quick(job)
             return
@@ -141,6 +144,7 @@ class Runner:
             src = await db.get(KscSource, job.source_id)
             rcfg: ReportsSettings = await self._svc.get(db, "reports")  # type: ignore[assignment]
             general = await self._svc.get(db, "general")
+            org = (await self._svc.get(db, "organization")).model_dump()
         if src is None:
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
@@ -157,7 +161,7 @@ class Runner:
 
         watcher = asyncio.create_task(watch())
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
-                        progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"], sm=self._sm, source_id=src.id)
+                        progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"], sm=self._sm, source_id=src.id, org=org)
         try:
             doc = await quick.build(job.kind, client, {k: v for k, v in (job.params or {}).items() if not k.startswith("_")}, ctx)
             if job.title:
@@ -185,6 +189,53 @@ class Runner:
         finally:
             watcher.cancel()
 
+    async def _execute_zone(self, job: ReportJob) -> None:
+        """Отчёт по зонам ответственности: один документ по всем выбранным источникам, те же выгрузки XLSX, HTML, CSV."""
+        from ..services.sources import SourceRegistry  # noqa: PLC0415
+        from ..zones.reporter import ZoneData  # noqa: PLC0415
+
+        started = utcnow()
+        if getattr(self, "_zones", None) is None:
+            self._zones = ZoneData(self._sm, self._cfg, self._svc, SourceRegistry(self._cfg, self._svc))
+        loop = asyncio.get_running_loop()
+        flag = {"cancel": False}
+
+        async def watch():
+            while True:
+                await asyncio.sleep(2)
+                if await self._cancelled(job.id):
+                    flag["cancel"] = True
+                    return
+
+        watcher = asyncio.create_task(watch())
+        params = {k: v for k, v in (job.params or {}).items() if not k.startswith("_") and k != "active_days"}
+        try:
+            async with self._sm() as db:
+                doc = await self._zones.zone_doc(db, zone_ids=params["zone_ids"], params=params, source_ids=job.source_ids or None,
+                                                 progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"])
+            if job.title and job.title != quick.KIND_TITLE.get(job.kind):
+                doc["title"] = job.title
+            d = job_dir(self._cfg, job.id)
+            d.mkdir(parents=True, exist_ok=True)
+            main = doc["tables"][0]["rows"]
+            await asyncio.to_thread(self._write_quick, d, doc)
+            summary = {**quick.brief(doc), "rows": len(main), "hosts": doc["stats"]["total"], "fetched_at": doc["generated_at"]}
+            await self._set(job.id, status="done", finished_at=utcnow(), rows=len(main), summary=summary, progress="готово", data_fetched_at=datetime.fromisoformat(doc["generated_at"]))
+            await self._journal.emit("report", "report_done", user=job.created_by, source=job.source_name[:120], message=f"{job.title}: проблемных компьютеров {len(main)}",
+                                     duration_ms=int((utcnow() - started).total_seconds() * 1000), data={"job_id": str(job.id), "kind": job.kind})
+        except RuntimeError as exc:
+            if str(exc) != "cancelled":
+                raise
+            await self._set(job.id, status="cancelled", finished_at=utcnow(), progress="отменён")
+        except KscError as exc:
+            await self._set(job.id, status="failed", finished_at=utcnow(), error=exc.message, progress="ошибка")
+            await self._journal.emit("report", "report_failed", level="error", user=job.created_by, source=job.source_name[:120], message=f"{job.title}: {exc.message}", data={"job_id": str(job.id), "code": exc.code})
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Сбой формирования отчёта по зоне", extra={"job_id": str(job.id)})
+            await self._set(job.id, status="failed", finished_at=utcnow(), error=f"Внутренняя ошибка: {type(exc).__name__}", progress="ошибка")
+        finally:
+            watcher.cancel()
+
     @staticmethod
     def _write_quick(d: Path, doc: dict) -> None:
         export.write_jsonl(d / "rows.jsonl", doc["tables"][0]["rows"])
@@ -203,6 +254,7 @@ class Runner:
             rules = {r.key: Rule(r.key, r.name, r.name_like, r.name_regex, r.branch_regex, r.branch_parts, r.exclude_regex)
                      for r in (await db.execute(select(GroupingRule).where(GroupingRule.enabled.is_(True)))).scalars().all()}
             srcs = [s for s in [await db.get(KscSource, i) for i in ids] if s is not None]
+            org = (await self._svc.get(db, "organization")).model_dump()
         if not srcs:
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источники отчёта удалены")
             return
@@ -274,7 +326,7 @@ class Runner:
                     "Сравнение версий": "Пакеты Linux — по версии без эпохи и ревизии (граница с ревизией сравнивается с полной версией), программы Windows — по числовым частям "
                                         "(130 = 130.0.0.0); нестандартная нумерация Java и Python для Windows приводится к обычной."}
             await asyncio.to_thread(self._write, d, job.kind, rows, summary, meta)
-            doc = quick.doc_from_audit(rows, summary, {"title": job.title, "source": job.source_name})
+            doc = quick.doc_from_audit(rows, summary, {"title": job.title, "source": job.source_name, "org": org})
             await asyncio.to_thread(self._write_audit_html, d, doc)
             await self._set(job.id, status="done", finished_at=utcnow(), rows=len(rows), summary=summary, progress="готово",
                             data_fetched_at=datetime.fromisoformat(summary["fetched_at"]).replace(tzinfo=timezone.utc) if summary.get("fetched_at") else utcnow())

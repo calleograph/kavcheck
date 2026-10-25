@@ -254,11 +254,36 @@ class QuickExtVulns(QuickScope):
         return self
 
 
-QUICK_PARAMS = {"quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns}
+class QuickZone(BaseModel):
+    """Состояние безопасности зон ответственности: зоны (или «none» — без ответственного), категории проблем, подробность, критичность и пороги."""
+    zone_ids: list[str] = Field(min_length=1, max_length=100)
+    categories: list[Literal["ksc_vulns", "ksc_critical", "ext_vulns", "no_av", "rtp_off", "bases_old", "infected", "license", "scan_old", "reboot", "inactive"]] = Field(
+        default_factory=lambda: ["ksc_vulns", "ext_vulns", "no_av", "rtp_off", "bases_old", "infected", "inactive"], min_length=1)
+    level: Literal["management", "technical"] = "management"
+    severity: Literal["", "critical", "high"] = ""
+    include_inactive: bool = False
+    online_only: bool = False
+    show_excluded: bool = False
+    bases_days: int = Field(default=3, ge=1, le=90)
+    scan_days: int = Field(default=30, ge=1, le=365)
+    hosts: list[str] = Field(default_factory=list, max_length=500)          # выбранные компьютеры «источник:идентификатор» — отчёт только по ним
+
+    @model_validator(mode="after")
+    def _ids(self):
+        for z in self.zone_ids:
+            if z != "none":
+                try:
+                    uuid.UUID(z)
+                except ValueError:
+                    raise ValueError("Некорректный идентификатор зоны") from None
+        return self
+
+
+QUICK_PARAMS = {"quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns}
 
 
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)

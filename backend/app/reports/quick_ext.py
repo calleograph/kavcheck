@@ -10,7 +10,7 @@ import asyncio
 from sqlalchemy import select
 
 from ..ksc.driver import KscError, Session, SourceClient
-from ..models import VdbSource, VdbVuln
+from ..models import VdbFinding, VdbSource, VdbVuln
 from ..vdb import match as M
 from ..vdb.normalize import SEV_RANK, SEV_RU
 from . import audit
@@ -63,6 +63,8 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         matcher = M.Matcher(prods, maps)
         pkeys = [k for k in p.get("product_keys") or [] if k]
         keys, missing = await resolve_keys(db, p.get("vuln_keys") or [])
+        if p.get("all_known"):              # отчёт по зоне: все известные находки источника (оценка по каталогу), без выбора уязвимостей
+            keys = list((await db.execute(select(VdbFinding.vuln_key).where(VdbFinding.source_id == ctx.source_id))).scalars().all())
         if missing:
             notes.append(f"В локальной базе нет уязвимости с идентификатором: {', '.join(missing)}. Обновите базу (Администрирование → База уязвимостей) или проверьте идентификатор.")
         if pkeys:
@@ -97,6 +99,9 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
             rows_src, summ = await asyncio.to_thread(work)
         if summ.get("excluded_not_computers"):
             notes.append(f"Не вошли записи кластеров и подчинённых серверов (не компьютеры): {summ['excluded_not_computers']}.")
+    only = {int(i) for i in p.get("host_ids") or []}
+    if only:
+        rows_src = [r for r in rows_src if int(r["host_id"]) in only]
     hosts = {}
     for r in rows_src:
         hosts.setdefault(r["host_id"], r)
@@ -136,7 +141,8 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     lv = {k: sum(1 for w in worst.values() if w == k) for k in ("critical", "high", "warning")}
     last_ok = [states[k].last_ok_at for k in states if states[k].enabled and states[k].last_ok_at]
     label = ", ".join(sorted(vulns_u)[:3]) + (f" и ещё {len(vulns_u) - 3}" if len(vulns_u) > 3 else "") if vulns_u else (", ".join(p.get("vuln_keys") or [])[:60] or "по продуктам")
-    conds = [{"label": "Что проверено", "text": ("уязвимости: " + ", ".join((keys or p.get("vuln_keys") or [])[:10])) if keys and not pkeys else
+    conds = [{"label": "Что проверено", "text": f"все известные уязвимости из внешних баз (с находками по каталогу источника): {len(keys)}" if p.get("all_known") else
+             ("уязвимости: " + ", ".join((keys or p.get("vuln_keys") or [])[:10])) if keys and not pkeys else
              ("программы: " + ", ".join(x.name for x in prods if x.key in set(pkeys))[:300]) if pkeys else "—"},
              {"label": "Источники сведений", "text": ", ".join(f"{k.upper()} (обновлено {s.last_ok_at:%d.%m.%Y %H:%M} UTC)" for k, s in sorted(states.items()) if s.enabled and s.last_ok_at) or "локальная база пуста — загрузите источники"},
              {"label": "Статусы сопоставления", "text": ", ".join(M.STATUS_RU[s] for s in M.AFFECTED if s in want)}]

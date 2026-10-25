@@ -551,3 +551,148 @@ class VdbFinding(Base):
     hosts_max: Mapped[int] = mapped_column(Integer, nullable=False, default=0)            # верхняя оценка числа компьютеров (сумма по версиям каталога)
     seen_by: Mapped[str | None] = mapped_column(String(300))
     seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+# ------------------------------------------------------------------------------------------------ зоны ответственности, рассылки, обработка уязвимостей
+class Zone(Base):
+    """Зона ответственности: произвольная группа компьютеров (сети, группы KSC, имена), закреплённая за ответственными. Департамент, филиал, площадка — решает администратор."""
+    __tablename__ = "zones"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)          # устойчивый идентификатор: по нему CSV обновляет зону, а не по названию
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    purpose: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)                # меньше — главнее; при равных приоритетах пересечение остаётся видимым спором
+    activity_days: Mapped[int | None] = mapped_column(Integer)                                 # свой период активности; пусто — общий (30 суток)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String(300))
+
+
+class ZoneRule(Base):
+    """Признак принадлежности: net — сеть/диапазон/адрес, exclude — исключение, group — группа администрирования KSC (маска), name — имя компьютера (маска)."""
+    __tablename__ = "zone_rules"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    zone_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("zones.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)
+    value: Mapped[str] = mapped_column(String(300), nullable=False)
+    note: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class ZoneContact(Base):
+    """Ответственный или получатель отчётов зоны. Учётная запись KAV Checker не нужна — достаточно контактных данных."""
+    __tablename__ = "zone_contacts"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    zone_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("zones.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    position: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    email: Mapped[str] = mapped_column(String(254), nullable=False)
+    role: Mapped[str] = mapped_column(String(12), nullable=False, default="responsible")      # responsible | cc | group
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)               # рассылка конкретному получателю можно отключить
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class ZonePin(Base):
+    """Явное решение по спорному компьютеру: он относится к указанной зоне, даже если подходит под несколько."""
+    __tablename__ = "zone_pins"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), nullable=False)
+    host_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    host_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    zone_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("zones.id", ondelete="CASCADE"), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    __table_args__ = (Index("ux_zone_pins_host", "source_id", "host_id", unique=True),)
+
+
+class ReportSchedule(Base):
+    """Правило автоматической рассылки: какие зоны, какие разделы, как часто. Расписание хранится в базе и переживает перезапуски и обновления."""
+    __tablename__ = "report_schedules"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    zone_ids: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)             # пусто — все зоны
+    include_unassigned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sections: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)             # ksc_vulns, critical_only, ext_vulns, no_av, rtp_off, bases_old, infected, inactive, …
+    filters: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)              # severity, online_only, active_days, include_inactive, source_ids
+    level: Mapped[str] = mapped_column(String(12), nullable=False, default="management")       # management | technical
+    frequency: Mapped[str] = mapped_column(String(8), nullable=False, default="weekly")        # daily | weekly | monthly
+    weekday: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                   # 0 — понедельник
+    monthday: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    at_time: Mapped[str] = mapped_column(String(5), nullable=False, default="08:00")
+    tz: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    attach_html: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    attach_xlsx: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    skip_empty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)           # не отправлять зоне без проблем
+    next_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_period: Mapped[str | None] = mapped_column(String(32))
+    created_by: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class MailOutbox(Base):
+    """Устойчивая очередь и журнал отправки. Одно письмо = одна зона × одно правило × один период (UNIQUE): после перезапуска воркера повторной отправки нет.
+    «accepted» — сервер SMTP принял письмо; это не доставка и не прочтение."""
+    __tablename__ = "mail_outbox"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    schedule_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("report_schedules.id", ondelete="SET NULL"), index=True)
+    zone_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("zones.id", ondelete="SET NULL"))
+    zone_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    period_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False, default="schedule")          # schedule | manual | test
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="queued")          # queued | sending | accepted | failed | skipped
+    subject: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    to_addrs: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    cc_addrs: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    body_path: Mapped[str | None] = mapped_column(String(400))                                  # письмо и вложения, подготовленные заранее (не пересобираются при повторе)
+    stats: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    refused: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)               # адреса, отклонённые сервером SMTP
+    message_id: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False, index=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    __table_args__ = (Index("ux_mail_outbox_period", "schedule_id", "zone_id", "period_key", unique=True),)
+
+
+class VulnTriage(Base):
+    """Решение специалиста по обнаруженной уязвимости. Область действия — всегда явная: по умолчанию «эта уязвимость на этом компьютере»; шире (программа, зона) — только по осознанному выбору.
+    Исходные сведения об уязвимости не удаляются: решение лишь определяет, показывать ли её среди актуальных проблем."""
+    __tablename__ = "vuln_triage"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(8), nullable=False, default="host")              # host | product | zone
+    host_id: Mapped[int | None] = mapped_column(BigInteger)
+    host_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    zone_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("zones.id", ondelete="CASCADE"))
+    vuln_key: Mapped[str] = mapped_column(String(80), nullable=False, index=True)              # CVE-… / BDU:… / KLA…
+    origin: Mapped[str] = mapped_column(String(4), nullable=False, default="ksc")              # ksc | ext
+    product: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    version: Mapped[str] = mapped_column(String(120), nullable=False, default="")              # установленная версия на момент решения (основание)
+    status: Mapped[str] = mapped_column(String(10), nullable=False)                             # review | confirmed | false_positive | obsolete | risk_accepted
+    reason: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    review_until: Mapped[datetime | None] = mapped_column(UTCDateTime)                          # принятый риск: срок пересмотра
+    recheck: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)              # основание изменилось — вернуть на проверку
+    recheck_reason: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    created_by: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    __table_args__ = (Index("ix_vuln_triage_host", "source_id", "host_id", "vuln_key"),)
+
+
+class VulnTriageEvent(Base):
+    """История обработки: кто, когда и что изменил."""
+    __tablename__ = "vuln_triage_events"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    triage_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("vuln_triage.id", ondelete="CASCADE"), nullable=False, index=True)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    actor: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    action: Mapped[str] = mapped_column(String(16), nullable=False)                             # create | status | comment | recheck | expire | delete
+    from_status: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    to_status: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    comment: Mapped[str] = mapped_column(Text, nullable=False, default="")

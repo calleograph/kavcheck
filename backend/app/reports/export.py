@@ -3,13 +3,24 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import date, datetime
 from pathlib import Path
 
 from .builder import HOST_COLUMNS, SOFTWARE_COLUMNS
 
 
+_NUMBER = re.compile(r"^[+-]?\d+([.,]\d+)?$")
+
+
+def safe_text(s: str) -> str:
+    """Защита от формул при открытии в Excel (CSV-инъекция): начало с = + - @ или табуляции экранируется апострофом; числа с знаком не трогаются."""
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") and not _NUMBER.match(s) else s
+
+
 def _cell(v):
+    if isinstance(v, str):
+        return safe_text(v)
     if isinstance(v, datetime):
         return v.replace(tzinfo=None)
     if isinstance(v, date):
@@ -66,7 +77,7 @@ def write_csv(path: Path, rows: list[dict], columns: list[tuple[str, str]]) -> N
         w = csv.writer(f, delimiter=";")
         w.writerow([title for _, title in columns])
         for r in rows:
-            w.writerow([_text(r.get(k)) for k, _ in columns])
+            w.writerow([safe_text(_text(r.get(k))) for k, _ in columns])
 
 
 def _autosize(ws, columns: list[tuple[str, str]], rows: list[dict]) -> None:

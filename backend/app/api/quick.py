@@ -19,7 +19,7 @@ from ..models import KscSource
 from ..reports import quick, quick_export
 from ..vdb import store as vdb_store
 from .catalog import audit_preview
-from .schemas import QUICK_PARAMS, AuditParams
+from .schemas import QUICK_PARAMS, AuditParams, QuickZone as AuditParamsZone
 from .vulns import _ksc, groups_cached, unsupported
 
 router = APIRouter(prefix="/quick", tags=["quick"])
@@ -27,7 +27,7 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
@@ -51,6 +51,18 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         doc = quick.doc_from_audit(rows, merged, {"source": ", ".join(s["source"] for s in merged.get("sources", [])) or src.name})
         doc.update(kind="version_audit", generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), source=src.name)
         return _answer(doc, merged.get("fetched_at"))
+    if body.kind == "quick_zone":
+        try:
+            params = AuditParamsZone.model_validate(body.params).model_dump()
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
+        from .zones import zd  # noqa: PLC0415
+
+        try:
+            doc = await zd(request).zone_doc(db, zone_ids=params["zone_ids"], params=params, source_ids=body.source_ids or None, allowed=lambda s: su.can_use_source(s.id), refresh=body.refresh)
+        except KscError as exc:
+            raise _ksc(exc) from None
+        return _answer(doc, doc.get("generated_at"))
     miss = unsupported(src, FEATURE[body.kind])
     if miss:
         return {"unsupported": miss, "doc": None, "items": [], "total": 0}

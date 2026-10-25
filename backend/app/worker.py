@@ -15,6 +15,9 @@ from .vdb.sync import VdbSync
 from .services.catalog import CatalogScheduler
 from .services.system import heartbeat_loop, install_journal_handler
 from .services.settings import SettingsService
+from .services.sources import SourceRegistry
+from .zones.mailer import Mailer
+from .zones.reporter import ZoneData
 
 log = logging.getLogger("app.worker")
 
@@ -34,6 +37,7 @@ async def main() -> None:
     catalog = CatalogScheduler(sm, settings, svc, journal)
     runner.catalog = catalog
     vdb = VdbSync(sm, settings, svc, journal)
+    mailer = Mailer(sm, settings, svc, ZoneData(sm, settings, svc, SourceRegistry(settings, svc)), journal)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -44,7 +48,7 @@ async def main() -> None:
         return {"version": settings.app_version, "commit": settings.app_git_commit, "reports_running": len(runner._tasks),  # noqa: SLF001
                 "catalog_building": len(catalog._running), "vdb_running": len(vdb._running)}  # noqa: SLF001
 
-    tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"),
+    tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"), asyncio.create_task(mailer.loop(), name="mail"),
              asyncio.create_task(jh.flush_loop(sm), name="journal-flush"), asyncio.create_task(heartbeat_loop(sm, "worker", pulse), name="heartbeat")]
     log.info("Воркер отчётов и каталога запущен", extra={"version": settings.app_version})
     await stop.wait()

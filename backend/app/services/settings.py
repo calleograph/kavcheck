@@ -99,7 +99,73 @@ class AuthSecuritySettings(_Group):
         return {g.strip().lower() for g in re.split(r"[;\n]", self.totp_groups) if g.strip()}
 
 
-GROUPS: dict[str, type[_Group]] = {"general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings}
+class SmtpSettings(_Group):
+    """Отправка отчётов по электронной почте. Пароль хранится зашифрованным и наружу не отдаётся."""
+    SECRETS: ClassVar[tuple[str, ...]] = ("password",)
+    enabled: bool = False
+    host: str = Field(default="", max_length=253)
+    port: int = Field(default=587, ge=1, le=65535)
+    security: Literal["starttls", "ssl", "none"] = "starttls"
+    username: str = Field(default="", max_length=254)
+    password: str = ""
+    from_addr: str = Field(default="", max_length=254)
+    from_name: str = Field(default="KAV Checker", max_length=80)
+    verify_cert: bool = True
+    timeout_s: int = Field(default=20, ge=3, le=120)
+    max_attach_mb: int = Field(default=8, ge=1, le=50)              # вложения больше предела не отправляются, письмо содержит сводку и ссылку на интерфейс
+    retry_max: int = Field(default=5, ge=1, le=20)                  # попыток отправки одного письма
+    retry_minutes: int = Field(default=10, ge=1, le=1440)           # пауза перед первой повторной попыткой (дальше удваивается)
+    alert_email: str = Field(default="", max_length=254)            # куда сообщить администратору о недоставленных отчётах
+    base_url: str = Field(default="", max_length=300)               # адрес KAV Checker для ссылок в письмах (https://…); пусто — без ссылок
+
+    @field_validator("host")
+    @classmethod
+    def _host(cls, v: str) -> str:
+        v = v.strip()
+        if v and not re.fullmatch(r"[A-Za-z0-9._-]{1,253}", v):
+            raise ValueError("host: имя сервера или IP без схемы и слэшей")
+        return v
+
+    @field_validator("from_addr", "alert_email")
+    @classmethod
+    def _mail(cls, v: str) -> str:
+        v = v.strip()
+        if v and not re.fullmatch(r"[^\s@<>()\[\],;:\\\"]+@[^\s@<>()\[\],;:\\\"]+\.[^\s@<>()\[\],;:\\\"]{2,}", v):
+            raise ValueError("адрес электронной почты записан неверно")
+        return v
+
+    @field_validator("base_url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        v = v.strip().rstrip("/")
+        if v and not re.fullmatch(r"https?://[A-Za-z0-9._:\-\[\]]+(/[A-Za-z0-9._~/%\-]*)?", v):
+            raise ValueError("base_url: адрес вида https://kav.example.local")
+        return v
+
+
+class OrganizationSettings(_Group):
+    """Данные организации для шапок и подвалов отчётов (HTML, Excel, печать, письма). Всё необязательно: пустые поля в отчёты не попадают."""
+    full_name: str = Field(default="", max_length=300)
+    short_name: str = Field(default="", max_length=120)
+    unit: str = Field(default="", max_length=200)                   # подразделение или служба, формирующая отчёты
+    contact_email: str = Field(default="", max_length=254)
+    contacts: str = Field(default="", max_length=500)               # телефон, кабинет, часы работы — произвольным текстом
+    classification: str = Field(default="", max_length=80)          # «Для служебного пользования», «Внутренний документ»…
+    footnote: str = Field(default="", max_length=600)               # стандартное примечание в конце отчёта
+    signature: str = Field(default="", max_length=200)              # «Составил: …»
+    logo: str = Field(default="", max_length=400_000)                # data:image/png|jpeg|webp;base64,… (загружается через интерфейс)
+    show_logo: bool = True
+
+    @field_validator("logo")
+    @classmethod
+    def _logo(cls, v: str) -> str:
+        if v and not re.fullmatch(r"data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+", v):
+            raise ValueError("logo: допустимы PNG, JPEG и WebP")
+        return v
+
+
+GROUPS: dict[str, type[_Group]] = {"general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
+                                   "organization": OrganizationSettings}
 
 
 class SettingsService:

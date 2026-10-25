@@ -25,7 +25,7 @@ from ..ksc.driver import KscError, SourceClient
 from ..search import any_field, matcher
 
 QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns")
-KIND_TITLE = {"quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам"}
+KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
 ONLINE_RU = {True: "в сети", False: "не в сети", None: "нет данных"}
@@ -43,6 +43,7 @@ class Ctx:
     protection_loader: Callable | None = None         # асинхронный источник набора «Состояния защиты» (кэш страницы); без него набор читается из KSC
     sm: object | None = None                          # фабрика сессий внутренней базы (отчёты по внешним базам уязвимостей)
     source_id: object | None = None
+    org: dict = field(default_factory=dict)            # данные организации для шапки и подвала (настройки «Организация и оформление отчётов»)
 
 
 def col(key: str, title: str, kind: str = "text") -> dict:
@@ -468,7 +469,7 @@ def doc_from_audit(rows: list[dict], summary: dict, ctx_info: dict) -> dict:
         g["programs"].add(f"{r['program']} {r['app_version']}")
         g["n"] += 1
     host_rows = [{**g, "programs": "; ".join(sorted(g["programs"]))[:500]} for g in sorted(by_host.values(), key=lambda g: g["name"].lower())]
-    return {"title": ctx_info.get("title") or "Проверка версий", "subtitle": "Компьютеры, версия программы на которых соответствует условию проверки", "conditions": conds, "metrics": metrics, "severity": None,
+    return {"kind": "version_audit", "org": ctx_info.get("org") or {}, "title": ctx_info.get("title") or "Проверка версий", "subtitle": "Компьютеры, версия программы на которых соответствует условию проверки", "conditions": conds, "metrics": metrics, "severity": None,
             "notes": notes, "tables": [
                 {"id": "rows", "title": "Компьютеры и установки", "columns": AUDIT_VIEW_COLS, "rows": view, "note": "Одна строка — одна установка, подходящая под условие."},
                 {"id": "programs", "title": "Итог по программам", "columns": [col("program", "Программа"), col("condition", "Условие проверки"), col("target", "Целевая версия", "mono"), col("hosts", "Компьютеров", "num"),
@@ -493,7 +494,7 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
     if kind not in BUILDERS:
         raise KscError("kind", f"Неизвестный вид быстрого отчёта: {kind}")
     doc = await BUILDERS[kind](client, params, ctx)
-    doc.update(kind=kind, generated_at=ctx.now.isoformat(timespec="seconds"), source=ctx.source_name)
+    doc.update(kind=kind, generated_at=ctx.now.isoformat(timespec="seconds"), source=ctx.source_name, org=ctx.org)
     return doc
 
 
