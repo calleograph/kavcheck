@@ -194,7 +194,7 @@ def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: d
                         "last_connected": h["last_connected"], "online": r["online"], "ksc": [_vrow(h, x, "ksc") for x in h["rows"]["ksc"]["current"]], "ext": [_vrow(h, x, "ext") for x in h["rows"]["ext"]["current"]],
                         "protection": [{"problem": P.PROBLEMS[k][0], "detail": _detail(h, k, bases_days, scan_days)} for k in h["problems"]],
                         "accepted": [_vrow(h, x, o) for o in ("ksc", "ext") for x in h["rows"][o]["accepted"]], "excluded": [_vrow(h, x, o) for o in ("ksc", "ext") for x in h["rows"][o]["excluded"]] if params.get("show_excluded") else []})
-    return {"title": f"Состояние безопасности: {title_zone}", "subtitle": f"Отчёт {LEVELS.get(level, '')}", "kind": "quick_zone", "level": level, "conditions": conds, "meta": meta, "metrics": metrics, "severity": severity,
+    return {"title": f"Состояние безопасности: {title_zone}", "subtitle": f"Отчёт {LEVELS.get(level, '')}", "kind": "quick_zone", "level": level, "generated_at": generated_at.isoformat(timespec="seconds"), "source": ", ".join(p["source"] for p in parts if p.get("source")), "conditions": conds, "meta": meta, "metrics": metrics, "severity": severity,
             "notes": notes, "tables": tables, "layout": layout, "host_details": det, "org": org, "stats": {k: v for k, v in stat.items() if k != "problems"}, "base_url": base_url,
             "zone_names": [z["name"] for z in zones] + (["Без ответственного"] if unassigned else [])}
 

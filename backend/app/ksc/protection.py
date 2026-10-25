@@ -54,7 +54,7 @@ def record(h: dict, products: list[dict], groups: dict | None, now: datetime) ->
     row = H.host_row(h, groups, now)
     av = _primary_av(products)
     agent = next((p for p in products if p.get("code") == AGENT), None)
-    return {**{k: row[k] for k in ("host_id", "name", "fqdn", "ip", "os", "platform", "group", "last_connected", "last_visible", "last_info_update", "days_since_connection",
+    return {**{k: row[k] for k in ("host_id", "name", "fqdn", "ip", "os", "os_version", "platform", "group", "last_connected", "last_visible", "last_info_update", "days_since_connection",
                                    "activity", "last_full_scan", "is_slave", "online")},
             "av": {"code": av.get("code") or "", "product": av.get("name") or av.get("code") or "", "build": av.get("build") or "", "state": av.get("state"),
                    "state_label": PRODUCT_STATE.get(av.get("state"), "") if av.get("state") is not None else "", "bases": _utc(av.get("bases")), "has_rtp": bool(av.get("has_rtp"))} if av else None,

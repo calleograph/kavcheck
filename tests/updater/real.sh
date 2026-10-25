@@ -8,7 +8,12 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; P="kcreal$$"; PORT="${KC_REAL_PORT:-28090}"; W="$(mktemp -d /tmp/kcreal.XXXXXX)"
 APP="$W/app"; ENVF="$APP/.env"; D="$W/data"; REG="ghcr.io/calleograph/kavcheck"; UNIT="$P-updater"; PASS=0; FAILS=0; CJ="$W/cj"
-t() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then PASS=$((PASS + 1)); printf '  \033[32m✓\033[0m %s\n' "$d"; else FAILS=$((FAILS + 1)); printf '  \033[31m✗\033[0m %s\n' "$d"; fi; }
+t() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then PASS=$((PASS + 1)); printf '  \033[32m✓\033[0m %s\n' "$d"; else FAILS=$((FAILS + 1)); printf '  \033[31m✗\033[0m %s\n' "$d"; diag "$d"; fi; }
+diag() { # при провале проверки: состояние, из-за которого она не прошла (в $W/diag.log и в конец вывода при DIAG=1)
+  { printf '\n=== %s\n' "$1"; printf 'версия: %s; IMAGE_*: %s\n' "$(running_version)" "$(grep -E '^IMAGE_(REPO|TAG|REGISTRY)=' "$ENVF" | tr '\n' ' ')"; printf 'repo HEAD: %s (ROOT %s)\n' "$(git -C "$APP" rev-parse --short HEAD)" "$(git -C "$ROOT" rev-parse --short HEAD)"
+    printf 'report: '; cat "$D/updater/report.json" 2>/dev/null | head -c 700; printf '\nметка: '; cat "$D/state/update.inprogress" 2>/dev/null | tr '\n' ' '; printf '\nov: '; ov | head -c 900
+    printf '\n--- update.log (хвост)\n'; tail -n 25 "$D/updater/update.log" 2>/dev/null; printf -- '--- образы\n'; docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'kavcheck' | head -20; } >> "$W/diag.log" 2>&1
+}
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 dc() { docker compose -p "$P" --project-directory "$APP/deployment" --env-file "$ENVF" -f "$APP/deployment/compose.yml" "$@"; }
 cleanup() {
@@ -118,4 +123,6 @@ say "R7. Системная проверка файла службы"
 t "systemd-analyze разбирает файл службы без ошибок" bash -c "'$APP/scripts/updater.sh' print-unit --env '$ENVF' > '$W/unit.service' && systemd-analyze verify --user '$W/unit.service' 2>&1 | grep -viE 'ExecStart|not executable|Failed to|file' | grep -ci 'error' | grep -q '^0$'"
 
 printf '\nИтого: %s проверок пройдено, %s не пройдено\n' "$PASS" "$FAILS"
+[ -f "$W/diag.log" ] && { cp "$W/diag.log" "${DIAG_OUT:-/tmp/real-diag.log}"; echo "Диагностика провалов: ${DIAG_OUT:-/tmp/real-diag.log}"; }
+[ "$FAILS" = 0 ]
 [ "$FAILS" -eq 0 ]

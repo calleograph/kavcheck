@@ -83,13 +83,13 @@ async def test_exports_match_preview_and_are_standalone(client, app):
     assert [x["value"] for x in done["summary"]["metrics"]] == [x["value"] for x in pv["doc"]["metrics"]]                              # показатели просмотра и отчёта совпадают
     d = job_dir(app.state.settings, uuid.UUID(job["id"]))
     wb = load_workbook(d / "report.xlsx", read_only=True)
-    assert wb.sheetnames[:2] == ["Сводка", "Обнаружения"] and {"Компьютеры", "Программы", "Уязвимости", "Параметры"} <= set(wb.sheetnames)
+    assert wb.sheetnames == ["Сводка", "Компьютеры", "Уязвимости", "Программы", "Обнаружения", "Параметры отчёта"]       # сводка → компактный список компьютеров → подробности → методика
     rows = list(wb["Обнаружения"].iter_rows(values_only=True))
     assert len(rows) - 1 == 5 and rows[0][:3] == ("Опасность", "Уязвимость (KLA)", "CVE")
     hosts = list(wb["Компьютеры"].iter_rows(values_only=True))
     assert len(hosts) - 1 == 4 and len({r[0] for r in hosts[1:]}) == 4                                                                    # каждый компьютер — одна строка
     summary = [r for r in wb["Сводка"].iter_rows(values_only=True)]
-    assert any(r[0] == "Затронуто компьютеров (уникальных)" and r[1] == 4 for r in summary) and any(r and r[0] == "Достоверность и ограничения" for r in summary)
+    assert any(r[0] == "Затронуто компьютеров (уникальных)" and r[1] == 4 for r in summary) and any(r and r[0] == "Методика, источники и ограничения" for r in wb["Параметры отчёта"].iter_rows(values_only=True))
     html = (d / "report.html").read_text(encoding="utf-8")
     assert html.startswith("<!doctype html>") and "KLA10001" in html and "CVE-2024-0001" in html and "Затронуто компьютеров (уникальных)" in html and "@media print" in html
     assert not re.search(r"<link |<script|src=\"http|href=\"http(?!s://threats)|@import|url\(http", html)                                    # никаких внешних ресурсов и скриптов

@@ -500,4 +500,7 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
 
 def brief(doc: dict) -> dict:
     """Документ без строк таблиц (для хранения в сводке отчёта и ответа предпросмотра): строки основной таблицы — отдельно, остальные — числом."""
-    return {**{k: v for k, v in doc.items() if k != "tables"}, "tables": [{"id": t["id"], "title": t["title"], "columns": t["columns"], "n": len(t["rows"]), "note": t.get("note", "")} for t in doc["tables"]]}
+    out = {k: v for k, v in doc.items() if k not in ("tables", "host_details")}
+    if out.get("org"):
+        out["org"] = {k: v for k, v in out["org"].items() if k != "logo"}          # логотип в сводке отчёта не хранится
+    return {**out, "tables": [{"id": t["id"], "title": t["title"], "columns": t["columns"], "n": len(t["rows"]), "note": t.get("note", "")} for t in doc["tables"]]}

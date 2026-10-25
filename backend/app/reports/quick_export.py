@@ -111,7 +111,8 @@ def write_xlsx(path: Path, doc: dict) -> None:
     for b in blocks:
         if b["entry"].get("inline") or (b["entry"].get("optional") and not b["rows"]):
             continue
-        ws = wb.create_sheet(_sheet_name(XLSX_NAMES.get(b["id"], b["title"]) if doc.get("kind") == "quick_zone" else b["title"], used))
+        derived = bool(b["entry"].get("cols") or b["entry"].get("where"))       # краткий вид таблицы получает название блока, полный — прежнее название таблицы
+        ws = wb.create_sheet(_sheet_name(XLSX_NAMES.get(b["id"], b["title"]) if doc.get("kind") == "quick_zone" else b["title"] if derived else b["table"]["title"], used))
         cols, rows = b["columns"], b["rows"]
         ws.append([c["title"] for c in cols])
         for c in ws[1]:
