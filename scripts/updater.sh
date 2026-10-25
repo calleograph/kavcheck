@@ -162,7 +162,7 @@ cmd_run() {
     if [ "$STATE" = idle ] && [ ! -f "$CH/request.txt" ] && [ "$(sha256sum "$REPO_ROOT/scripts/updater.sh" 2>/dev/null | cut -d' ' -f1)" != "$self" ]; then
       info "Файл помощника изменился (обновление) — перезапуск на новой версии"; kill "$HB_PID" 2>/dev/null; exec 9>&-; exec "$REPO_ROOT/scripts/updater.sh" run --env "$ENV_FILE"
     fi
-    sleep "$INTERVAL"
+    sleep "$INTERVAL" 9>&-         # дочерний sleep не должен держать блокировку после аварийного завершения помощника
   done
 }
 # do_doctor — самодиагностика службы: каждая проверка даёт конкретную причину; результат — $CH/doctor.json (читает интерфейс), код 0 — всё исправно.
