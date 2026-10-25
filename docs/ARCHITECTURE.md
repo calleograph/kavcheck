@@ -46,7 +46,9 @@ services/         настройки (группы), аудит и журнал,
 security/         шифрование секретов, пароли, TOTP, разбор сертификатов
 ksc/              адаптер KSC: driver (pymssql), guard, queries (шаблоны), schema (диагностика/совместимость), versions, catalog и catalog_build (продукты и ветки),
                   software, hosts, dashboard, vulns, protection, events
-reports/          builder и audit (виды отчётов, проверка версий), export (JSONL/CSV/XLSX), runner (воркер)
+reports/          builder и audit (виды отчётов, проверка версий), export (JSONL/CSV/XLSX), runner (воркер), quick/quick_ext (документ отчёта), quick_export и layout (HTML/XLSX, единый порядок таблиц)
+zones/            зоны ответственности: match (принадлежность по сетям/группам, приоритеты), csv_io, service, dataset (набор «компьютер × проблемы»), report (отчёт зоны),
+                  triage (решения по уязвимостям), schedule и mailer (расписания, устойчивая очередь рассылки), reporter (сбор данных и кэш); services/mail — SMTP
 ```
 
 ## Совместимость с версиями KSC

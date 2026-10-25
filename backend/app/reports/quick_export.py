@@ -87,7 +87,7 @@ def write_xlsx(path: Path, doc: dict) -> None:
     put([doc["title"]], font=Font(bold=True, size=14))
     if doc.get("subtitle"):
         put([doc["subtitle"]])
-    put(["Сформирован (UTC)", doc.get("generated_at") or ""])
+    put(["Сформирован (UTC)", _fmt(doc.get("generated_at"), "date")])
     put(["Источник KSC", doc.get("source") or ""])
     for m in doc.get("meta") or []:
         put([m["label"], m["text"]])
@@ -139,7 +139,7 @@ def write_xlsx(path: Path, doc: dict) -> None:
         c.font, c.fill = bold, head_fill
     for c in doc["conditions"]:
         m.append([_cell(c["label"]), _cell(c["text"])])
-    m.append(["Сформирован (UTC)", doc.get("generated_at") or ""])
+    m.append(["Сформирован (UTC)", _fmt(doc.get("generated_at"), "date")])
     m.append(["Вид отчёта", doc.get("kind") or ""])
     if doc.get("notes"):
         m.append([])
