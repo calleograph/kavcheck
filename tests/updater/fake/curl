@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Подставной curl для тестов обновления: доступность реестров и ответы приложения задаются переменными FAKE_*.
+S="${FAKE_STATE:?}"; url=""; want=0
+for a in "$@"; do case "$a" in -w) want=1 ;; http*) url="$a" ;; esac; done
+code=200; ok=1
+case "$url" in
+  *ghcr.io/v2/*) [ "${FAKE_REGISTRY:-up}" = down ] && { code=000; ok=0; } || code=401 ;;
+  *registry-1.docker.io*) [ "${FAKE_HUB:-up}" = down ] && { code=000; ok=0; } || code=401 ;;
+  *auth.docker.io*) [ "${FAKE_HUB:-up}" = down ] && { code=000; ok=0; } ;;
+  *typescript|*fastapi/*) [ "${FAKE_NPM:-up}" = down ] && { code=000; ok=0; } ;;
+  */api/v1/health/ready) [ "${FAKE_HEALTH:-ok}" = bad ] && { code=503; ok=0; } ;;
+  */api/v1/version)
+    tag="$(awk '$1=="backend"{print $3}' "$S/running")"; case "$tag" in v*) ver="${tag#v}" ;; *) ver="$(cat "$S/localver" 2>/dev/null || echo 0.1.0)" ;; esac
+    printf '{"version":"%s"}' "$ver"; exit 0 ;;
+  *api.github.com*) ok=0; code=404 ;;
+esac
+[ "$want" = 1 ] && printf '%s' "$code"
+[ "$ok" = 1 ]

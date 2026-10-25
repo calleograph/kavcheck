@@ -7,6 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 YES=0; SKIP_SCHEMA=0
 while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; shift 2 ;; --yes|-y) YES=1; shift ;; --skip-schema-check) SKIP_SCHEMA=1; shift ;; *) die "Неизвестный аргумент: $1" ;; esac; done
 load_env; validate_project_name; require_vars DATA_ROOT
+take_lock
 PREV_HEAD="$(state_get previous_head)"; PREV_TAG="$(state_get previous_tag)"; PREV_VER="$(state_get previous_version)"; CUR_VER="$(version_file_read)"
 PREV_REPO="$(state_get previous_repo)"; PREV_REPO="${PREV_REPO:-$IMAGE_REPO}"
 [ -n "$PREV_HEAD" ] && [ -n "$PREV_TAG" ] || die "Нет сведений о предыдущей версии (обновление ещё не выполнялось)"
@@ -21,8 +22,8 @@ fi
 if [ "$YES" -ne 1 ]; then read -r -p "Откатить код и образы? [y/N] " a; [ "$a" = y ] || die "Отменено."; fi
 git -C "$REPO_ROOT" checkout -q --detach "$PREV_HEAD" || die "git checkout не удался"
 export IMAGE_TAG="$PREV_TAG" IMAGE_REPO="$PREV_REPO"
-sed -i "s#^IMAGE_TAG=.*#IMAGE_TAG=$PREV_TAG#; s#^IMAGE_REPO=.*#IMAGE_REPO=$PREV_REPO#" "$ENV_FILE"
-dc up -d || die "docker compose up не выполнен"
+env_put IMAGE_TAG "$PREV_TAG"; env_put IMAGE_REPO "$PREV_REPO"
+dc_base; run_guarded "запуск сервисов" "${UPD_TIMEOUT_UP:-300}" "${UPD_TIMEOUT_UP:-300}" "${DCB[@]}" up -d || die "docker compose up не выполнен"
 wait_healthy 180 backend web || { history_append rollback failed "$CUR_VER" "$PREV_VER" "health"; die "После отката сервисы не работоспособны"; }
 printf '%s ROLLBACK from=%s to=%s image_tag=%s\n' "$(date -Is)" "$CUR_VER" "$PREV_VER" "$PREV_TAG" >> "$DATA_ROOT/state/deploy-history.log"
 state_set current_version "$PREV_VER"; state_set current_tag "$PREV_TAG"; state_set result "rolled_back"

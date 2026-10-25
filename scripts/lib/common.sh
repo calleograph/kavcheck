@@ -4,12 +4,15 @@ set -o pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 DRY_RUN="${DRY_RUN:-0}"
+source "$(dirname "${BASH_SOURCE[0]}")/guard.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/recovery.sh"
 
 log()  { printf '%s\n' "$*"; }
-info() { printf '\033[36m•\033[0m %s\n' "$*"; }
-ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
-warn() { printf '\033[33m!\033[0m %s\n' "$*" >&2; }
-fail() { printf '\033[31m✗\033[0m %s\n' "$*" >&2; }
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then C0=$'\033[0m'; C1=$'\033[36m'; C2=$'\033[32m'; C3=$'\033[33m'; C4=$'\033[31m'; else C0=""; C1=""; C2=""; C3=""; C4=""; fi   # цвета только в терминале: в журнале обновления их нет
+info() { printf '%s•%s %s\n' "$C1" "$C0" "$*"; }
+ok()   { printf '%s✓%s %s\n' "$C2" "$C0" "$*"; }
+warn() { printf '%s!%s %s\n' "$C3" "$C0" "$*" >&2; }
+fail() { printf '%s✗%s %s\n' "$C4" "$C0" "$*" >&2; }
 die()  { fail "$*"; exit 1; }
 
 load_env() { # load_env ФАЙЛ — переменные .env в окружение (только строки KEY=VALUE)
@@ -22,7 +25,11 @@ validate_project_name() { [[ "${COMPOSE_PROJECT_NAME:-}" =~ ^[a-z][a-z0-9_-]{0,4
 require_vars() { local v; for v in "$@"; do [ -n "${!v:-}" ] || die "В .env не задано: $v"; done; }
 check_placeholders() { grep -nE '^[A-Z_]+=CHANGE_ME' "$ENV_FILE" && die "В .env остались заглушки CHANGE_ME — заполните их"; return 0; }
 
-dc() { docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$REPO_ROOT/deployment" --env-file "$ENV_FILE" -f "$REPO_ROOT/deployment/compose.yml" "$@"; }
+dc_base() { DCB=(docker compose --progress plain -p "$COMPOSE_PROJECT_NAME" --project-directory "$REPO_ROOT/deployment" --env-file "$ENV_FILE" -f "$REPO_ROOT/deployment/compose.yml"); }
+dc() { dc_base; "${DCB[@]}" "$@"; }
+kill_oneoff() { # разовые контейнеры `compose run`, оставшиеся после остановки зависшей команды
+  docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --filter "label=com.docker.compose.oneoff=True" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1
+}
 
 # Образы: из реестра релизов (IMAGE_REPO с «/», например ghcr.io/владелец/kavcheck) или локальная сборка. Локально собранные образы называются по имени
 # compose-проекта (<проект>-backend:<commit>), чтобы очистка одного экземпляра не задевала образы другого на том же сервере.
@@ -74,8 +81,9 @@ pf_add() { # pf_add КЛЮЧ ok|warn|fail ТЕКСТ
   PF_ITEMS="${PF_ITEMS:+$PF_ITEMS,}{\"key\":\"$1\",\"status\":\"$2\",\"message\":\"$(jstr "$3")\"}"
   case "$2" in ok) ok "$3" ;; warn) warn "$3" ;; *) fail "$3"; PF_FAIL=$((PF_FAIL + 1)) ;; esac
 }
-preflight() {
-  local target="${1:-}" g need="${UPD_MIN_FREE_GB:-3}" reg
+pf_failed() { [[ "$PF_ITEMS" == *"\"key\":\"$1\",\"status\":\"fail\""* ]]; }
+preflight() { # PF_MODE=pull|build — какой источник образов проверяется
+  local target="${1:-}" g need="${UPD_MIN_FREE_GB:-3}" reg host code out img missing=0 mode="${PF_MODE:-pull}"
   PF_ITEMS=""; PF_FAIL=0
   g="$(free_gb "$(docker_root)")"
   if [ -z "$g" ]; then pf_add disk_docker warn "Свободное место для Docker определить не удалось"
@@ -85,16 +93,30 @@ preflight() {
   g="$(free_gb "$DATA_ROOT")"
   if [ -n "$g" ] && [ "$g" -lt 1 ]; then pf_add disk_data fail "Свободно меньше 1 ГБ в $DATA_ROOT: резервная копия базы может не поместиться"; else pf_add disk_data ok "Каталог данных: свободно ${g:-?} ГБ"; fi
   if timeout 25 git -C "$REPO_ROOT" ls-remote --tags origin >/dev/null 2>&1; then pf_add github ok "GitHub доступен (git ls-remote)"; else pf_add github warn "GitHub недоступен: обновиться можно только до уже полученных тегов"; fi
-  if [ "${PF_BUILD:-0}" != 1 ] && ! is_local_repo; then
-    if timeout 30 docker manifest inspect "${IMAGE_REPO}-backend:${target:-$IMAGE_TAG}" >/dev/null 2>&1; then pf_add registry ok "Реестр образов доступен: ${IMAGE_REPO}"
-    else pf_add registry fail "Реестр образов ${IMAGE_REPO} недоступен или нет образа ${target:-$IMAGE_TAG}: обновитесь с локальной сборкой (--build)"; fi
+  if [ "$mode" = pull ]; then
+    reg="$(registry_repo)"; host="${reg%%/*}"
+    if [ -z "$reg" ]; then pf_add registry fail "Не определён репозиторий готовых образов: укажите IMAGE_REGISTRY (например ghcr.io/владелец/kavcheck) или GITHUB_REPO в .env"
+    else
+      code="$(http_code 20 "https://$host/v2/")"
+      if [ "$code" = 000 ]; then pf_add registry fail "Реестр образов $host недоступен с сервера (нет соединения за 20 с): проверьте сеть, DNS и прокси. Прежняя версия продолжает работать"
+      elif pick_registry "${target:-$IMAGE_TAG}"; then pf_add registry ok "Готовые образы ${REGISTRY_PICKED}-*:${target:-$IMAGE_TAG} опубликованы и доступны"
+      elif grep -qiE 'no such manifest|manifest unknown|not found|denied|unauthorized' <<<"$REGISTRY_ERR"; then pf_add registry fail "Образов релиза ${target:-$IMAGE_TAG} в реестре нет (${REGISTRY_ERR:0:200}): публикация релиза ещё не завершилась? Проверьте IMAGE_REGISTRY/GITHUB_REPO в .env; повторите позже или выберите локальную сборку"
+      else pf_add registry fail "Не удалось проверить образы в реестре $host: ${REGISTRY_ERR:0:200}"; fi
+    fi
   else
+    adopt_mirrors
     reg="${NPM_REGISTRY:-https://registry.npmjs.org}"
     if curl -fsS -m 20 -o /dev/null "${reg%/}/typescript"; then pf_add npm ok "Реестр npm доступен: ${reg}"
     else pf_add npm fail "Реестр npm ${reg} недоступен: сборка интерфейса не пройдёт. Укажите зеркало NPM_REGISTRY в .env (например https://npm-mirror.gitverse.ru)"; fi
     reg="${PIP_INDEX_URL:-https://pypi.org/simple}"
     if curl -fsS -m 20 -o /dev/null "${reg%/}/fastapi/"; then pf_add pip ok "Индекс pip доступен: ${reg}"
     else pf_add pip warn "Индекс pip ${reg} недоступен: сборка backend может не пройти. Укажите PIP_INDEX_URL в .env"; fi
+    for img in node:24-alpine python:3.12-slim nginxinc/nginx-unprivileged:1.27-alpine; do docker image inspect "$img" >/dev/null 2>&1 || missing=1; done
+    if [ "$missing" = 1 ]; then
+      code="$(http_code 20 "https://registry-1.docker.io/v2/")"; [ "$code" = 000 ] && out=bad || { code="$(http_code 20 "https://auth.docker.io/token?service=registry.docker.io")"; [ "$code" = 200 ] && out=ok || out=bad; }
+      if [ "$out" = ok ]; then pf_add docker_hub ok "Docker Hub доступен (нужен для базовых образов сборки)"
+      else pf_add docker_hub fail "Docker Hub (registry-1.docker.io, auth.docker.io) недоступен: локальная сборка не получит базовые образы. Используйте готовые образы или настройте зеркало Docker Hub (registry-mirrors)"; fi
+    else pf_add docker_hub ok "Базовые образы сборки уже есть на сервере: Docker Hub не нужен"; fi
   fi
   if dc exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1 \
      && dc exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT version_num FROM alembic_version" >/dev/null 2>&1; then
@@ -104,7 +126,7 @@ preflight() {
     pf_add rollback ok "Откат возможен: образы текущей версии (${IMAGE_TAG}) сохраняются"
   else pf_add rollback warn "Образов текущей версии ${IMAGE_TAG} нет на сервере: автоматический откат будет невозможен"; fi
   mkdir -p "$DATA_ROOT/updater" 2>/dev/null
-  printf '{"checked_at":%s,"target":"%s","ok":%s,"items":[%s]}\n' "$(date +%s)" "$(jstr "$target")" "$([ "$PF_FAIL" -eq 0 ] && echo true || echo false)" "$PF_ITEMS" \
+  printf '{"checked_at":%s,"target":"%s","mode":"%s","ok":%s,"items":[%s]}\n' "$(date +%s)" "$(jstr "$target")" "$mode" "$([ "$PF_FAIL" -eq 0 ] && echo true || echo false)" "$PF_ITEMS" \
     > "$DATA_ROOT/updater/preflight.json.tmp" && mv "$DATA_ROOT/updater/preflight.json.tmp" "$DATA_ROOT/updater/preflight.json"
   [ "$PF_FAIL" -eq 0 ]
 }
@@ -132,12 +154,13 @@ restore_db_exact() {
 # Журнал автоматических действий для отчёта об обновлении (report.json)
 ACTIONS_FILE() { echo "$DATA_ROOT/state/update-actions.log"; }
 action_reset() { mkdir -p "$DATA_ROOT/state"; : > "$(ACTIONS_FILE)"; }
-action_log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >> "$(ACTIONS_FILE)" 2>/dev/null; info "$*"; }
-report_write() { # report_write РЕЗУЛЬТАТ ЭТАП ОТ ДО СОВЕТ
-  local items="" line
+action_log() { mkdir -p "$DATA_ROOT/state" 2>/dev/null; printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >> "$(ACTIONS_FILE)" 2>/dev/null; info "$*"; }
+report_write() { # report_write РЕЗУЛЬТАТ ЭТАП ОТ ДО СОВЕТ [КОД_ПРИЧИНЫ] — result: ok | failed | recovered
+  local items="" line started
   while IFS= read -r line; do items="${items:+$items,}\"$(jstr "$line")\""; done < "$(ACTIONS_FILE)" 2>/dev/null
+  started="$(marker_get started)"; started="${started:-$(date +%s)}"
   mkdir -p "$DATA_ROOT/updater"
-  printf '{"finished_at":%s,"result":"%s","stage":"%s","from_version":"%s","to_version":"%s","advice":"%s","actions":[%s]}\n' "$(date +%s)" "$1" "$(jstr "$2")" "$3" "$4" "$(jstr "$5")" "$items" \
+  printf '{"started_at":%s,"finished_at":%s,"result":"%s","stage":"%s","from_version":"%s","to_version":"%s","advice":"%s","reason_code":"%s","mode":"%s","actions":[%s]}\n' "$started" "$(date +%s)" "$1" "$(jstr "$2")" "$3" "$4" "$(jstr "$5")" "${6:-}" "${UPD_MODE_USED:-}" "$items" \
     > "$DATA_ROOT/updater/report.json.tmp" && mv "$DATA_ROOT/updater/report.json.tmp" "$DATA_ROOT/updater/report.json"
 }
 
@@ -164,14 +187,22 @@ mirror_local_fix() {
   action_log "локальные правки файлов сборки ($changed) сохранены в $patch и заменены версией из репозитория"
 }
 
-# Очистка: образы этого проекта, кроме текущей и предыдущей версии; «висячие» слои только с меткой kavcheck.component; кэш сборки старше недели — только при нехватке места.
-cleanup_images() { # cleanup_images ТЕКУЩИЙ_ТЕГ ПРЕДЫДУЩИЙ_ТЕГ
-  local svc img
-  for svc in backend web; do
-    docker images --format '{{.Repository}}:{{.Tag}}' "${IMAGE_REPO}-${svc}" 2>/dev/null | grep -vE ":(${1}|${2:-__none__})$" | while read -r img; do
-      docker rmi "$img" >/dev/null 2>&1 && action_log "удалён старый образ $img"; done
+# Очистка после УСПЕШНОГО обновления: из образов этого проекта остаются только текущие и предыдущей версии (откат на один релиз); прочие удаляются; «висячие» слои
+# только с меткой kavcheck.component; кэш сборки старше недели — только при нехватке места. До проверки новой версии ничего не удаляется.
+cleanup_images() { # cleanup_images ТЕКУЩИЙ_РЕПО:ТЕГ ПРЕДЫДУЩИЙ_РЕПО:ТЕГ
+  local svc img key keep=" $1 $2 " repo seen=""
+  for repo in "${IMAGE_REPO:-kavcheck}" "${2%%:*}" "$(local_build_repo)"; do
+    case " $seen " in *" $repo "*) continue ;; esac; seen="$seen $repo"
+    for svc in backend web; do
+      docker images --format '{{.Repository}}:{{.Tag}}' "${repo}-${svc}" 2>/dev/null | while read -r img; do
+        key="${img%-${svc}:*}:${img##*:}"
+        case "$keep" in *" $key "*) continue ;; esac
+        docker rmi "$img" >/dev/null 2>&1 && action_log "удалён старый образ $img"
+      done
+    done
   done
   docker image prune -f --filter "label=kavcheck.component" >/dev/null 2>&1
   local g; g="$(free_gb "$(docker_root)")"
   if [ -n "$g" ] && [ "$g" -lt "${UPD_MIN_FREE_GB:-3}" ]; then docker builder prune -f --filter until=168h >/dev/null 2>&1 && action_log "очищен кэш сборки Docker старше 7 суток (мало места: $g ГБ)"; fi
+  ls -1t "$ENV_FILE".backup-* 2>/dev/null | tail -n +6 | xargs -r rm -f
 }

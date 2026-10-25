@@ -1030,3 +1030,5 @@ pre.notes-pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
 @media (max-width: 700px) { .sm-stack { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; } .table.virt td:nth-child(2):has(.vdb-title) { min-width: 0; } }
 .gs-note { padding: 8px 12px 4px; margin-top: 4px; border-top: 1px solid var(--line); color: var(--muted); font-size: var(--fs-xs); list-style: none; }
 .badge.wrap { white-space: normal; max-width: 150px; line-height: 1.25; padding-block: 3px; }
+.alert-act { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.alert:has(.alert-act) { flex-wrap: wrap; }

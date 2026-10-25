@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Подставной docker для тестов обновления: состояние в $FAKE_STATE, поведение — переменными FAKE_* (см. tests/updater/run.sh). Настоящий Docker не нужен.
+S="${FAKE_STATE:?}"; mkdir -p "$S"; touch "$S/images" "$S/running"
+echo "docker $*" >> "$S/calls.log"
+dbrev() { cat "$S/dbrev" 2>/dev/null || echo r1; }
+hang() { echo "hang: $*" >> "$S/calls.log"; exec sleep 6001; }
+running_svc() { grep -q "^$1\( \|$\)" "$S/running"; }
+case "${1:-}" in
+  compose)
+    shift; envf=""
+    while [ $# -gt 0 ]; do case "$1" in --env-file) envf="$2"; shift 2 ;; --progress|-p|--project-directory|-f) shift 2 ;; -*) shift ;; *) break ;; esac; done
+    sub="${1:-}"; shift || true
+    repo="${IMAGE_REPO:-$(sed -n 's/^IMAGE_REPO=//p' "$envf" | tail -1)}"; tag="${IMAGE_TAG:-$(sed -n 's/^IMAGE_TAG=//p' "$envf" | tail -1)}"
+    case "$sub" in
+      pull)
+        case "${FAKE_PULL:-ok}" in
+          ok) for s in backend web; do echo "$repo-$s:$tag" >> "$S/images"; echo "Pulled $repo-$s:$tag"; done ;;
+          timeout) echo "Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp 192.0.2.10:443: i/o timeout" >&2; exit 1 ;;
+          missing) echo "Error response from daemon: manifest unknown: manifest unknown" >&2; exit 1 ;;
+          hang) hang pull ;;
+          slow) for i in 1 2 3 4; do echo "layer $i: Downloading"; sleep 2; done; for s in backend web; do echo "$repo-$s:$tag" >> "$S/images"; done ;;
+        esac ;;
+      build)
+        echo "build" >> "$S/BUILD_CALLED"
+        case "${FAKE_BUILD:-ok}" in
+          ok) for s in backend web; do echo "$repo-$s:$tag" >> "$S/images"; echo "built $repo-$s:$tag"; done ;;
+          hang) echo "#5 [build 3/6] RUN npm ci"; hang build ;;
+          hub) echo "failed to resolve source metadata for docker.io/library/node:24-alpine: Get \"https://auth.docker.io/token\": net/http: request canceled (Client.Timeout exceeded) i/o timeout" >&2; exit 1 ;;
+          npm) echo "npm error code ETIMEDOUT" >&2; echo "npm error network request to https://registry.npmjs.org/x failed" >&2; exit 1 ;;
+        esac ;;
+      up)
+        [ "${FAKE_UP:-ok}" = fail ] && { echo "up failed" >&2; exit 1; }
+        if [ "$*" = "-d postgres" ]; then running_svc postgres || echo "postgres" >> "$S/running"
+        else
+          grep -v '^\(backend\|worker\|web\) ' "$S/running" > "$S/running.n"; for s in backend worker web; do echo "$s $repo $tag" >> "$S/running.n"; done
+          running_svc postgres || echo "postgres" >> "$S/running.n"; mv "$S/running.n" "$S/running"
+        fi ;;
+      stop) for s in "$@"; do case "$s" in -*) ;; *) grep -v "^$s " "$S/running" > "$S/running.n"; mv "$S/running.n" "$S/running" ;; esac; done ;;
+      run)
+        case "${FAKE_MIGRATE:-ok}" in
+          ok) echo "r2" > "$S/dbrev"; echo "Running upgrade r1 -> r2" ;;
+          fail) echo "r2" > "$S/dbrev"; echo "alembic: ERROR ProgrammingError relation already exists" >&2; exit 1 ;;
+          hang) echo "INFO  [alembic.runtime.migration] Running upgrade" ; echo "r2" > "$S/dbrev"; hang migrate ;;
+        esac ;;
+      ps) running_svc "${@: -1}" && echo "cid-${@: -1}"; true ;;
+      exec)
+        shift_args=("$@"); joined="$*"
+        case "$joined" in
+          *pg_isready*) exit 0 ;;
+          *alembic_version*) dbrev ;;
+          *pg_dump*) echo "DUMP rev=$(dbrev)" ;;
+          *pg_restore*) r="$(sed -n 's/^DUMP rev=//p')"; echo "$r" > "$S/dbrev"; echo "restored $r" >> "$S/calls.log" ;;
+          *) exit 0 ;;
+        esac ;;
+      *) exit 0 ;;
+    esac ;;
+  inspect)
+    fmt="$3"; cid="${@: -1}"; svc="${cid#cid-}"
+    [ -n "$cid" ] || exit 1
+    case "$fmt" in
+      *Health.Status*) if grep -q "^$svc" "$S/running"; then if [ "${FAKE_HEALTH:-ok}" = bad ] && [ "$svc" != postgres ]; then echo unhealthy; else echo healthy; fi; else exit 1; fi ;;
+      *State.Running*) grep -q "^$svc" "$S/running" && echo true || echo false ;;
+      *) echo 1000 ;;
+    esac ;;
+  image)
+    case "$2" in
+      inspect) ref="${@: -1}"; case "$ref" in node:*|python:*|nginxinc/*) [ "${FAKE_BASE:-present}" = present ]; exit $? ;; esac; grep -qxF "$ref" "$S/images"; exit $? ;;
+      prune) exit 0 ;;
+    esac ;;
+  images)
+    ref="${@: -1}"; fmt="$3"
+    if [[ "$*" == *'{{.Size}}'* ]]; then sed 's/$/ 10MB/' "$S/images"; else grep "^${ref}:" "$S/images" || true; fi ;;
+  rmi) grep -vxF "$2" "$S/images" > "$S/images.n"; mv "$S/images.n" "$S/images"; echo "rmi $2" >> "$S/calls.log" ;;
+  manifest)
+    [ "${FAKE_REGISTRY:-up}" = down ] && { echo "Get \"https://ghcr.io/v2/\": dial tcp: i/o timeout" >&2; exit 1; }
+    case "${FAKE_MANIFEST:-ok}" in ok) echo '{}' ;; missing) echo "no such manifest: ghcr.io/x" >&2; exit 1 ;; esac ;;
+  info) echo "$S" ;;
+  ps) exit 0 ;;
+  builder) exit 0 ;;
+  *) exit 0 ;;
+esac

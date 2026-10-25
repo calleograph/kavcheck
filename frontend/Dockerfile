@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -5,8 +6,9 @@ COPY package.json package-lock.json ./
 # целостность пакетов по-прежнему проверяется по контрольным суммам (integrity) из package-lock.json.
 ARG NPM_REGISTRY=""
 ENV NPM_CONFIG_FETCH_RETRIES=5 NPM_CONFIG_FETCH_TIMEOUT=120000 NODE_OPTIONS="--dns-result-order=ipv4first"
-RUN if [ -n "$NPM_REGISTRY" ]; then reg="${NPM_REGISTRY%/}"; npm config set registry "$reg/"; sed -i "s#https://registry.npmjs.org/#$reg/#g" package-lock.json; echo "npm: зеркало $reg"; fi; \
-    for i in 1 2 3; do npm ci --no-audit --no-fund && ok=1 && break; echo "npm ci: сбой, повтор $i/3"; sleep $((i * 10)); done; [ "${ok:-0}" = 1 ]
+# Кэш npm сохраняется между сборками (BuildKit), а подробный вывод (--loglevel=http) даёт контролю обновления признак прогресса: без вывода сборка считается зависшей.
+RUN --mount=type=cache,target=/root/.npm if [ -n "$NPM_REGISTRY" ]; then reg="${NPM_REGISTRY%/}"; npm config set registry "$reg/"; sed -i "s#https://registry.npmjs.org/#$reg/#g" package-lock.json; echo "npm: зеркало $reg"; fi; \
+    for i in 1 2 3; do npm ci --no-audit --no-fund --prefer-offline --loglevel=http && ok=1 && break; echo "npm ci: сбой, повтор $i/3"; sleep $((i * 10)); done; [ "${ok:-0}" = 1 ]
 COPY tsconfig.json vite.config.ts index.html ./
 COPY public ./public
 COPY src ./src

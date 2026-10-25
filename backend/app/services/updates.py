@@ -16,9 +16,13 @@ import uuid
 from pathlib import Path
 
 HEARTBEAT_MAX_AGE = 40
+UPDATER_API = 2                 # версия обмена с помощником (scripts/updater.sh); у более старого помощника нет восстановления и контроля зависаний
+STALL_WARN_S = 300              # столько секунд без вывода в журнале — показываем предупреждение «нет прогресса»
+URL_CRED = re.compile(r"(https?://)[^/@\s:]+(?::[^/@\s]*)?@")
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 LOG_CHUNK = 64 * 1024
 ACTIONS = ("check", "update", "rollback", "backup", "ping", "preflight", "restore")
-BUSY_STATES = ("updating", "rolling_back", "backing_up", "restoring")
+BUSY_STATES = ("updating", "rolling_back", "backing_up", "restoring", "recovering")
 BACKUP_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}\.dump$")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
 VERSION_RE = re.compile(r"^v?\d+\.\d+\.\d+$")
@@ -39,7 +43,16 @@ class Channel:
         st = self._json("status.json") or {}
         ts = float(st.get("ts") or 0)
         age = time.time() - ts if ts else None
-        return {**st, "available": age is not None and age <= HEARTBEAT_MAX_AGE, "heartbeat_age_s": None if age is None else int(age), "request_pending": (self.dir / "request.txt").exists()}
+        available = age is not None and age <= HEARTBEAT_MAX_AGE
+        state = st.get("state")
+        # помощник остановлен, а в статусе осталось «Выполняется»: это прерванное действие, а не работающее
+        interrupted = not available and state in BUSY_STATES
+        if interrupted:
+            st = {**st, "state": "interrupted", "result": "failed"}
+        out_at = float(st.get("last_output_at") or 0)
+        stalled = available and state in BUSY_STATES and out_at and time.time() - out_at > STALL_WARN_S
+        return {**st, "available": available, "heartbeat_age_s": None if age is None else int(age), "request_pending": (self.dir / "request.txt").exists(),
+                "interrupted": interrupted, "stalled_s": int(time.time() - out_at) if stalled else None, "api_outdated": available and int(st.get("updater_api") or 1) < UPDATER_API}
 
     def remote(self) -> dict | None:
         r = self._json("remote.json")
@@ -92,15 +105,36 @@ class Channel:
             raw = fh.read(LOG_CHUNK)
         if len(raw) == LOG_CHUNK and b"\n" in raw:
             raw = raw[: raw.rindex(b"\n") + 1]
-        return {"offset": offset + len(raw), "size": size, "text": raw.decode("utf-8", errors="replace"), "reset": reset}
+        return {"offset": offset + len(raw), "size": size, "text": ANSI.sub("", raw.decode("utf-8", errors="replace")), "reset": reset}
 
-    def request(self, action: str, *, by: str, target: str = "") -> str:
-        if action not in ACTIONS:
+    def download_text(self, which: str = "last") -> str:
+        """Журнал последнего (или предыдущего) обновления для диагностики: сведения о системе и итоге, затем полный журнал. Секреты и пароли маскируются."""
+        from ..logging_setup import scrub  # noqa: PLC0415
+
+        path = self.dir / ("update.prev.log" if which == "prev" else "update.log")
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            body = "(журнал отсутствует: обновление ещё не выполнялось)\n"
+        st, rep, pf = self.status(), self.report() or {}, self.preflight() or {}
+        head = ["# Журнал обновления KAV Checker (для диагностики)", f"# Сформирован: {time.strftime('%Y-%m-%d %H:%M:%S %z')}", f"# Помощник: {'работает' if st['available'] else 'не отвечает'}, состояние: {st.get('state')}, API {st.get('updater_api')}",
+                f"# Действие: {st.get('action')} · способ: {rep.get('mode') or st.get('mode') or '?'} · этап {st.get('step_no')}/{st.get('step_total')}: {st.get('step_name')}"]
+        if rep:
+            head += [f"# Итог: {rep.get('result')} · {rep.get('from_version')} → {rep.get('to_version')} · этап: {rep.get('stage')} · причина: {rep.get('reason_code') or '-'}", f"# Совет: {rep.get('advice')}"]
+            head += [f"# Действие помощника: {a}" for a in (rep.get("actions") or [])]
+        if pf:
+            head += [f"# Проверка перед обновлением ({'пройдена' if pf.get('ok') else 'есть препятствия'}):"] + [f"#   [{i.get('status')}] {i.get('message')}" for i in pf.get("items") or []]
+        text = "\n".join(head) + "\n" + "=" * 78 + "\n" + ANSI.sub("", body)
+        text = URL_CRED.sub(r"\1***@", text)          # адрес зеркала с логином и паролем
+        return "\n".join(str(scrub(line)) for line in text.splitlines()) + "\n"
+
+    def request(self, action: str, *, by: str, target: str = "", mode: str = "") -> str:
+        if action not in ACTIONS or mode not in ("", "pull", "build"):
             raise ValueError("action")
         if target and not (BACKUP_RE.match(target) if action == "restore" else VERSION_RE.match(target)):
             raise ValueError("target")
         rid = uuid.uuid4().hex[:16]
-        body = "\n".join([f"id={rid}", f"action={action}", f"target={target}", f"by={_SAFE.sub('_', by)[:60]}", f"at={int(time.time())}"]) + "\n"
+        body = "\n".join([f"id={rid}", f"action={action}", f"target={target}", f"mode={mode}", f"by={_SAFE.sub('_', by)[:60]}", f"at={int(time.time())}"]) + "\n"
         tmp = self.dir / f".request.{rid}.tmp"
         tmp.write_text(body, encoding="utf-8")
         tmp.replace(self.dir / "request.txt")

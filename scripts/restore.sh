@@ -10,6 +10,7 @@ FILE=""; YES=0
 while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; shift 2 ;; --yes|-y) YES=1; shift ;; *) FILE="$1"; shift ;; esac; done
 [ -f "$FILE" ] || die "Укажите файл резервной копии (.dump)"
 load_env; validate_project_name; require_vars POSTGRES_USER POSTGRES_DB DATA_ROOT
+take_lock
 if [ "$YES" -ne 1 ]; then read -r -p "Восстановить базу из $FILE? Текущие данные будут ЗАМЕНЕНЫ (прежняя база сохранится под другим именем). [y/N] " a; [ "$a" = y ] || die "Отменено."; fi
 action_reset
 dc up -d postgres >/dev/null; wait_healthy 60 postgres
