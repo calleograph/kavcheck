@@ -8,8 +8,8 @@ import { forgetZones } from "../../components/ZoneBits";
 import { Empty, Segmented, SkelRows } from "../../components/ui";
 import { fmt, num, plural } from "../../util";
 
-const KIND: Record<ZoneRuleKind, string> = { net: "Сеть, адрес или диапазон", exclude: "Исключение", group: "Группа KSC", name: "Имя компьютера" };
-const ROLE: Record<ContactRole, string> = { responsible: "Ответственный за устранение", cc: "Получает копию (руководитель)", group: "Группа рассылки" };
+const KIND: Record<ZoneRuleKind, string> = { net: "Сеть или адреса", exclude: "Исключение", group: "Группа KSC", name: "Имя компьютера" };
+const ROLE: Record<ContactRole, string> = { responsible: "Ответственный", cc: "Копия (руководитель)", group: "Группа рассылки" };
 const EXAMPLE = "192.0.2.0/24\n198.51.100.10-198.51.100.50\nгруппа: Серверы*\nимя: srv-*\nисключить: 192.0.2.7";
 
 /** Построчный ввод признаков: «192.0.2.0/24», «группа: Серверы*», «имя: srv-*», «исключить: 192.0.2.7». Пустые строки и # игнорируются. */

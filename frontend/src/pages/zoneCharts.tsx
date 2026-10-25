@@ -6,7 +6,7 @@ type Pick = (k: "state" | "severity" | "problem", v: string) => void;
 
 /** Три компактные диаграммы зоны: состояние компьютеров (кольцо), критичность, категории проблем. Щелчок по сегменту отбирает компьютеры в таблице ниже. */
 export function Charts({ st, f, pick, ext }: { st: ZoneStats; f: Record<string, string>; pick: Pick; ext: boolean }) {
-  const states: Seg[] = ([["critical", "Критические уязвимости"], ["vulns", "Другие уязвимости"], ["protection", "Только проблемы защиты"], ["potential", "Только потенциальные"], ["ok", "Без проблем"]] as [HostState, string][])
+  const states: Seg[] = ([["critical", "Критические"], ["vulns", "Другие уязвимости"], ["protection", "Только защита"], ["potential", "Только потенциальные"], ["ok", "Без проблем"]] as [HostState, string][])
     .filter(([k]) => ext || k !== "potential").map(([k, l]) => ({ key: k, label: l, value: st.state[k] ?? 0, tone: k, hint: k === "potential" ? "Есть только совпадения по внешним базам, KSC уязвимостей не подтвердил" : undefined }));
   const sev: Seg[] = [{ key: "critical", label: "Критическая", value: st.severity.critical, tone: "critical" }, { key: "high", label: "Высокая", value: st.severity.high, tone: "high" },
     { key: "warning", label: "Предупреждение", value: st.severity.warning, tone: "warning" }, { key: "none", label: "Без уязвимостей", value: st.severity.none, tone: "ok" }];

@@ -58,7 +58,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True), sa.Column("source_id", sa.Uuid(), sa.ForeignKey("ksc_sources.id", ondelete="CASCADE"), nullable=False, index=True),
         sa.Column("scope", sa.String(8), nullable=False, server_default="host"), sa.Column("host_id", sa.BigInteger()), sa.Column("host_name", sa.String(300), nullable=False, server_default=""),
         sa.Column("zone_id", sa.Uuid(), sa.ForeignKey("zones.id", ondelete="CASCADE")), sa.Column("vuln_key", sa.String(80), nullable=False, index=True), sa.Column("origin", sa.String(4), nullable=False, server_default="ksc"),
-        sa.Column("product", sa.String(300), nullable=False, server_default=""), sa.Column("version", sa.String(120), nullable=False, server_default=""), sa.Column("status", sa.String(10), nullable=False),
+        sa.Column("product", sa.String(300), nullable=False, server_default=""), sa.Column("version", sa.String(120), nullable=False, server_default=""), sa.Column("status", sa.String(16), nullable=False),
         sa.Column("reason", sa.String(40), nullable=False, server_default=""), sa.Column("comment", sa.Text(), nullable=False, server_default=""), sa.Column("review_until", TS),
         sa.Column("recheck", sa.Boolean(), nullable=False, server_default=sa.text("false")), sa.Column("recheck_reason", sa.String(200), nullable=False, server_default=""),
         sa.Column("created_by", sa.String(300), nullable=False, server_default=""), sa.Column("created_at", TS, nullable=False), sa.Column("updated_at", TS, nullable=False))
@@ -66,7 +66,7 @@ def upgrade() -> None:
     op.create_table("vuln_triage_events",
         sa.Column("id", BIGPK, primary_key=True, autoincrement=True), sa.Column("triage_id", sa.Uuid(), sa.ForeignKey("vuln_triage.id", ondelete="CASCADE"), nullable=False, index=True),
         sa.Column("at", TS, nullable=False), sa.Column("actor", sa.String(300), nullable=False, server_default=""), sa.Column("action", sa.String(16), nullable=False),
-        sa.Column("from_status", sa.String(10), nullable=False, server_default=""), sa.Column("to_status", sa.String(10), nullable=False, server_default=""), sa.Column("comment", sa.Text(), nullable=False, server_default=""))
+        sa.Column("from_status", sa.String(16), nullable=False, server_default=""), sa.Column("to_status", sa.String(16), nullable=False, server_default=""), sa.Column("comment", sa.Text(), nullable=False, server_default=""))
 
 
 def downgrade() -> None:

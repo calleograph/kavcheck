@@ -673,7 +673,7 @@ class VulnTriage(Base):
     origin: Mapped[str] = mapped_column(String(4), nullable=False, default="ksc")              # ksc | ext
     product: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     version: Mapped[str] = mapped_column(String(120), nullable=False, default="")              # установленная версия на момент решения (основание)
-    status: Mapped[str] = mapped_column(String(10), nullable=False)                             # review | confirmed | false_positive | obsolete | risk_accepted
+    status: Mapped[str] = mapped_column(String(16), nullable=False)                             # review | confirmed | false_positive | obsolete | risk_accepted
     reason: Mapped[str] = mapped_column(String(40), nullable=False, default="")
     comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
     review_until: Mapped[datetime | None] = mapped_column(UTCDateTime)                          # принятый риск: срок пересмотра
@@ -693,6 +693,6 @@ class VulnTriageEvent(Base):
     at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
     actor: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     action: Mapped[str] = mapped_column(String(16), nullable=False)                             # create | status | comment | recheck | expire | delete
-    from_status: Mapped[str] = mapped_column(String(10), nullable=False, default="")
-    to_status: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    from_status: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    to_status: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     comment: Mapped[str] = mapped_column(Text, nullable=False, default="")

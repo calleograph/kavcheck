@@ -220,6 +220,7 @@ footer p { margin: 2px 0; }
 }
 @media (max-width: 700px) { .wrap { padding: 10px 8px 30px; } dl.cond div { grid-template-columns: 1fr; } .org { flex-wrap: wrap; } .org .cls { margin-left: 0; } }
 """
+NW_KEYS = {"online", "active", "last_connected", "installed_version", "detected"}
 SEV_CLASS = {"Критическая": "s-crit", "Высокая": "s-high", "Предупреждение": "s-warn"}
 LEVEL_COLOR = {"critical": "#b3261e", "high": "#d97706", "warning": "#a39a3c", "potential": "#5b7fa6", "ok": "#1b6e46"}
 
@@ -242,7 +243,8 @@ def _td(v, c: dict, anchors: set[str] | None = None, row: dict | None = None) ->
         return f'<td><a href="{html.escape(str(v), quote=True)}" rel="noopener noreferrer">{html.escape(str(v).rsplit("/", 1)[-1])}</a></td>'
     if kind == "mono" and ", " in text:        # CVE и версии списком: переносить между значениями, не внутри
         text = ", ".join(f'<span class="nw">{t}</span>' for t in text.split(", "))
-    return f'<td class="{"num" if kind == "num" else "mono" if kind == "mono" else ""}">{text}</td>'
+    cls = "num" if kind == "num" else "mono" if kind == "mono" else "nw" if kind == "date" or c["key"] in NW_KEYS else ""
+    return f'<td class="{cls}">{text}</td>'
 
 
 def _table(cols: list[dict], rows: list[dict], *, anchors: set[str] | None = None, limit: int = HTML_ROW_LIMIT) -> str:

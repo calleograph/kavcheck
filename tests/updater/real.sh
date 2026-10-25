@@ -85,11 +85,12 @@ say "R2. Ошибка миграции (настоящая): база возвр
 psql_ "ALTER TABLE vdb_sources ADD COLUMN channel text" >/dev/null; trigger; wait_idle 500
 t "обновление остановлено, причина — миграция" bash -c "[ '$(report result)' = failed ] && [ '$(report reason_code)' = migration ]"
 t "работает 0.5.0; образы нового релиза скачаны, но не запущены" bash -c "[ '$(running_version)' = 0.5.0 ] && grep -q '^IMAGE_TAG=real5' '$ENVF' && [ '$(git -C "$APP" rev-parse HEAD)' = '$START_HEAD' ]"
-t "база восстановлена из копии (лишнего столбца нет), пользователь admin на месте" bash -c "[ -z \"\$(docker exec \$(docker compose -p $P --project-directory $APP/deployment --env-file $ENVF -f $APP/deployment/compose.yml ps -q postgres) psql -U kc -d kc -tAc \"select 1 from information_schema.columns where table_name='vdb_sources' and column_name='channel'\")\" ] && [ '$(psql_ "select count(*) from users where username='admin'")' = 1 ]"
+t "база возвращена к копии перед обновлением (ревизия 0006, пользователь admin на месте), неудавшаяся база сохранена отдельно" bash -c "[ '$(psql_ "select version_num from alembic_version")' = 0006_cvss_scores ] && [ '$(psql_ "select count(*) from users where username='admin'")' = 1 ] && [ -n '$(psql_ "select datname from pg_database where datname like 'kc_failed_%'" | head -1)' ]"
+psql_ "ALTER TABLE vdb_sources DROP COLUMN channel" >/dev/null     # причина сбоя убрана: резервная копия снималась уже с этим столбцом
 t "вход в приложение работает" bash -c "[ -n '$(api POST /auth/login '{"login":"admin","password":"Real-Test-Pass-2026"}' | jq_ csrf_token)' ]"
 
 say "R3. «Перезагрузка» посреди миграции: все процессы убиты, служба поднимается сама и возвращает работоспособную версию"
-( dc exec -T postgres psql -U kc -d kc -c "BEGIN; LOCK TABLE vdb_sources IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(600);" >/dev/null 2>&1 ) & LOCKER=$!
+( dc exec -T postgres psql -U kc -d kc -c "BEGIN; LOCK TABLE vdb_sources IN SHARE UPDATE EXCLUSIVE MODE; SELECT pg_sleep(600);" >/dev/null 2>&1 ) & LOCKER=$!
 sleep 3; trigger
 for _ in $(seq 1 120); do grep -q '^stage=migrating' "$D/state/update.inprogress" 2>/dev/null && break; sleep 2; done
 t "обновление дошло до миграции и ждёт блокировку" grep -q '^stage=migrating' "$D/state/update.inprogress"

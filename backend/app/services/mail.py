@@ -138,5 +138,5 @@ def compose(cfg: SmtpSettings, *, to: list[str], cc: list[str], subject: str, te
     msg.add_alternative(html, subtype="html")
     for name, data, mime in attachments or []:
         main, _, sub = mime.partition("/")
-        msg.add_attachment(data, maintype=main, subtype=sub or "octet-stream", filename=name)
+        msg.add_attachment(data, maintype=main, subtype=sub or "octet-stream", filename=name, **({"params": {"charset": "utf-8"}} if main == "text" else {}))
     return msg

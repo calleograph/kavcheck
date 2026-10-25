@@ -175,12 +175,12 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
               <SortTh k="last_connected" label="Последняя активность" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><th>В сети</th><SortTh k="risk" label="Критичность" sort={sort} desc={desc} onSort={onSort} />
               <SortTh k="vulns" label="Уязвимости" sort={sort} desc={desc} onSort={onSort} /><th>Защита</th></tr></thead>
             <tbody>
-              <VirtualRows list={list} colSpan={9} estimate={56} row={(h) => (
+              <VirtualRows list={list} colSpan={9} estimate={48} row={(h) => (
                 <tr className={`clickable ${sel.has(key(h)) ? "sel" : ""} ${h.active ? "" : "dim-row"}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("a, input, button")) setOpen({ sid: h.source_id, hid: h.host_id }); }}>
                   <td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(key(h))} onChange={() => sel.toggle(key(h))} /></td>
                   <td><button type="button" className="link-btn strong-link" onClick={() => setOpen({ sid: h.source_id, hid: h.host_id })}>{h.name}</button>
                     {h.zone_conflict && <span className="zone-chip warn" title="Подходит нескольким зонам"> спорный</span>}{d && d.sources.length > 1 && <span className="sub">{h.source}</span>}</td>
-                  <td className="mono small nowrap hide-sm">{h.ip || "—"}</td><td className="small hide-sm">{h.os}</td>
+                  <td className="mono small nowrap hide-sm">{h.ip || "—"}</td><td className="small hide-sm os-cell" title={h.os}>{h.os.replace(/^Microsoft /, "")}</td>
                   <td className="nowrap small hide-sm">{fmt(h.last_connected)}{!h.active && <span className="sub warn-text">нет связи за {d?.activity_days} сут</span>}</td>
                   <td><OnlineBadge online={h.online} /></td>
                   <td>{h.max_sev ? <span className={`sev ${SEV_CLASS[h.max_sev]}`}>{h.max_sev_ru}{h.max_sev_basis === "ext" ? <span className="mark" title="Потенциально, по внешним базам"> *</span> : null}</span> : <span className="muted">—</span>}</td>

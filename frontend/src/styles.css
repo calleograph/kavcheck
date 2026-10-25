@@ -1076,3 +1076,9 @@ pre.notes-pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
 .zones-table { table-layout: auto; } .zones-table td, .zones-table th { vertical-align: top; } .zones-table td:first-child { min-width: 190px; } .zones-table .resp { max-width: 190px; }
 .zones-table td .state-bar { width: 100%; min-width: 80px; }
 .zones-table th, .zones-table td { padding-left: 7px; padding-right: 7px; }
+.os-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.donut-svg { width: 112px; height: 112px; } .legend { min-width: 140px; }
+.hbar { grid-template-columns: minmax(120px, 46%) minmax(0, 1fr) 40px; } .hb-l { white-space: normal; line-height: 1.2; }
+.legend-row .lg-t { white-space: normal; line-height: 1.2; }
+@media (min-width: 1100px) { .meters.dense { grid-template-columns: repeat(7, minmax(0, 1fr)); } }
+.meters.dense .meter .l { font-size: var(--fs-xs); }

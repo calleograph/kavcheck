@@ -298,3 +298,14 @@ def test_schedule_next_run_timezones_dst_month_end_and_catch_up():
     assert SC.due("weekly", 0, 1, "08:00", "UTC", datetime(2026, 10, 26, 8, tzinfo=utc), now, now)[0] is None
     with pytest.raises(SC.ScheduleError):
         SC.tz_of("Mars/Base")
+
+
+def test_enum_values_fit_postgres_column_lengths():
+    """SQLite длину строк не проверяет, PostgreSQL — проверяет: значения перечислений должны помещаться в столбцы (найдено на настоящей БД: «false_positive» в varchar(10))."""
+    from app import models as m
+    cases = [(m.VulnTriage.status, T.STATUSES), (m.VulnTriageEvent.from_status, T.STATUSES), (m.VulnTriageEvent.to_status, T.STATUSES), (m.VulnTriage.scope, T.SCOPES), (m.VulnTriage.reason, list(T.REASONS)),
+             (m.MailOutbox.status, ("queued", "sending", "accepted", "failed", "skipped")), (m.MailOutbox.kind, ("schedule", "manual", "test")), (m.ZoneRule.kind, ("net", "exclude", "group", "name")),
+             (m.ZoneContact.role, ("responsible", "cc", "group")), (m.ReportSchedule.level, ("management", "technical")), (m.ReportSchedule.frequency, ("daily", "weekly", "monthly")),
+             (m.VulnTriageEvent.action, ("create", "status", "comment", "recheck", "expire", "delete"))]
+    for col, values in cases:
+        assert col.type.length >= max(len(v) for v in values), (col, values)

@@ -27,8 +27,10 @@ def _fmt_dt(v) -> str:
     return v.strftime("%d.%m.%Y %H:%M") if isinstance(v, datetime) else ""
 
 
-def matches(h: dict, cats: set[str]) -> bool:
-    """Входит ли компьютер в список проблемных по выбранным категориям."""
+def matches(h: dict, cats: set[str], include_inactive: bool = False) -> bool:
+    """Входит ли компьютер в список проблемных по выбранным категориям. Давно не подключавшийся компьютер без включённого «Все устройства» попадает в список только как «давно не подключавшийся»."""
+    if not h["active"] and not include_inactive:
+        return "inactive" in cats
     if "ksc_vulns" in cats and h["ksc"]["total"]:
         return True
     if "ksc_critical" in cats and h["ksc"]["critical"]:
@@ -81,12 +83,15 @@ def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: d
     mine = [x for part in parts for x in part.get("hidden_hosts", []) if (unassigned and not x["zones"]) or (sel & set(x["zones"]))]
     inactive = sum(1 for x in mine if x["reason"] == "inactive")
     total_zone = len(hosts_all) + len(mine)
-    stat = D.stats(hosts_all, total_all=total_zone, hidden=inactive, sections=_sections(cats))
+    incl = bool(params.get("include_inactive"))
+    pool = hosts_all if incl else [h for h in hosts_all if h["active"]]          # показатели проблем — по активным (если не выбраны «все устройства»); «неактивные» — отдельным числом
+    inactive += 0 if incl else len(hosts_all) - len(pool)
+    stat = D.stats(pool, total_all=total_zone, hidden=inactive, sections=_sections(cats))
     multi_src = len({h["source_id"] for h in hosts_all} | {p["source_id"] for p in parts if p.get("source_id")}) > 1
     multi_zone = len(sel) + (1 if unassigned else 0) > 1
     zname = {z["id"]: z["name"] for z in zones} if zone_names is None else dict(zone_names)    # для рассылки — только свои зоны: чужие названия получателю не раскрываются
     other = lambda z: zname.get(z, "другая зона")  # noqa: E731
-    probs = sorted((h for h in hosts_all if matches(h, cats)), key=D.rank_key)
+    probs = sorted((h for h in hosts_all if matches(h, cats, incl)), key=D.rank_key)
     title_zone = "Без ответственного" if unassigned and not sel else zones[0]["name"] if len(zones) == 1 and not unassigned else f"{len(zones) + (1 if unassigned else 0)} зон"
     # ---- таблицы
     rows = []
@@ -94,7 +99,7 @@ def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: d
         zl = [zname.get(z, "") for z in h["zones"] if z in zname]
         conflict = f"; спорный: подходит также зонам {', '.join(other(z) for z in h['zone_candidates'] if z not in sel)}" if h["zone_conflict"] and any(z not in sel for z in h["zone_candidates"]) else ""
         sev = SEV_BADGE[h["max_sev"]] + (" (потенциально)" if h["max_sev"] and h["max_sev_basis"] == "ext" else "")
-        rows.append({"host_id": h["host_id"], "name": h["name"], "ip": h["ip"], "os": (h["os"] + (" " + h["os_version"] if h.get("os_version") else "")).strip(), "summary": h["summary"] + conflict,
+        rows.append({"host_id": h["host_id"], "name": h["name"], "ip": h["ip"], "os": h["os"].replace("Microsoft ", "").strip(), "summary": h["summary"] + conflict,
                      "max_sev": sev, "last_connected": h["last_connected"], "online": ONLINE_RU[h.get("online")], "online_raw": h.get("online"), "active": "да" if h["active"] else "нет",
                      "zone": ", ".join(z for z in zl if z) or "Без ответственного", "source": h["source"], "anchor": anchor(h), "_sev": D.SEV_RANK[h["max_sev"]],
                      "ksc_total": h["ksc"]["total"], "ksc_critical": h["ksc"]["critical"], "prot": len(h["problems"]), "ext_total": h["ext"]["total"]})
