@@ -13,6 +13,7 @@ import SystemAdmin from "./admin/SystemAdmin";
 import ZonesAdmin from "./admin/ZonesAdmin";
 import MailAdmin from "./admin/MailAdmin";
 import OrgAdmin from "./admin/OrgAdmin";
+import CacheAdmin from "./admin/CacheAdmin";
 
 const LEDE: Record<string, string> = {
   system: "Работают ли сервисы KAV Checker и доступны ли источники KSC.",
@@ -21,6 +22,7 @@ const LEDE: Record<string, string> = {
   ldap: "Вход доменных пользователей: подключения LDAPS, доверенные сертификаты, правила доступа по группам Active Directory.",
   general: "Какие компьютеры показывать в рабочих разделах, сроки хранения и ограничения отчётов.",
   zones: "Группы компьютеров по сетям и группам KSC с ответственными: создание, импорт из CSV, спорные компьютеры. Анализ зон — в разделе «Зоны ответственности».",
+  zcache: "Ночной расчёт данных зон: расписание, ограничения ресурсов, состояние по источникам KSC, очередь заданий.",
   mail: "Автоматическая отправка отчётов ответственным: расписания, история отправок, подключение к серверу почты.",
   org: "Название организации, подразделение, логотип и примечания для шапок и подвалов отчётов.",
   catalog: "Как записи реестра KSC объединяются в продукты и ветки: состояние каталога, ручные исправления, правила для опытных.",
@@ -45,6 +47,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "ldap" && <LdapAdmin sources={ctx.sources} />}
       {tab === "general" && <GeneralAdmin />}
       {tab === "zones" && <ZonesAdmin />}
+      {tab === "zcache" && <CacheAdmin />}
       {tab === "mail" && <MailAdmin sources={ctx.sources} />}
       {tab === "org" && <OrgAdmin />}
       {tab === "catalog" && <CatalogAdmin />}

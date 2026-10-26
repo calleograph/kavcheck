@@ -1,36 +1,29 @@
-"""Сбор данных зон из подключённых источников KSC и построение документа отчёта: общий для страниц, ручных отчётов и рассылок.
-Чтение KSC выполняется один раз на источник на срок кэша; зоны, решения по уязвимостям и пороги применяются в памяти."""
+"""Данные зон для отчётов и рассылок: из подготовленных данных PostgreSQL; обновление из KSC — только по явному запросу или если данных ещё нет."""
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import time
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
 from ..ksc.driver import KscError
-from ..models import KscSource, VulnTriage, Zone, ZoneContact, ZonePin, ZoneRule
-from ..reports import quick
+from ..models import KscSource, Zone, ZoneContact
 from ..services.cache import TtlCache
 from ..services.settings import SettingsService
 from ..services.sources import SourceRegistry
-from ..vdb import store as vdb_store
-from . import dataset as D
-from . import match as ZM
 from . import report as R
-from . import service as S
-from . import triage as T
 
 UNASSIGNED = "none"
 log = logging.getLogger("app.zones")
 
 
 class ZoneData:
+    """Доступ отчётов и рассылок к данным зон: всё берётся из подготовленных данных PostgreSQL (`zones.snapshot`/`zones.zread`); KSC опрашивается только при явном обновлении
+    («Обновить данные перед формированием») или если подготовленных данных по источнику ещё нет."""
+
     def __init__(self, sm: async_sessionmaker, cfg: Settings, svc: SettingsService, sources: SourceRegistry, cache: TtlCache | None = None):
         self.sm, self.cfg, self.svc, self.sources = sm, cfg, svc, sources
         self.cache = cache or TtlCache()
@@ -43,108 +36,80 @@ class ZoneData:
         want = {str(i) for i in ids or []}
         return [s for s in rows if (not want or str(s.id) in want) and (allowed is None or allowed(s))]
 
-    def ctx(self, src: KscSource, general, rcfg, org: dict):
-        client = self.sources.client(src)
-        return quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows, sm=self.sm, source_id=src.id, org=org,
-                         protection_loader=None), client
+    # ------------------------------------------------------------------ обновление данных (только по явному запросу или при их отсутствии)
+    async def ensure(self, db: AsyncSession, srcs: list[KscSource], zone_ids: list[str] | None, *, refresh: bool = False, max_age_h: float | None = None,
+                     progress=lambda _t: None, cancelled=lambda: False) -> list[str]:
+        """Гарантирует данные источников: нет данных — полный расчёт; refresh или данные старше max_age_h — обновление хостов выбранных зон. Возвращает замечания.
+        Расчёт идёт под общим ограничителем ресурсов; перед формированием отчёта это единственный случай обращения к KSC."""
+        from ..services.resources import RES  # noqa: PLC0415
+        from . import snapshot as SN  # noqa: PLC0415
+        from sqlalchemy import select as sel  # noqa: PLC0415
+        from ..models import ZcHostZone  # noqa: PLC0415
 
-    async def raw(self, db: AsyncSession, src: KscSource, *, with_ext: bool = False, refresh: bool = False, progress=lambda _t: None, cancelled=lambda: False) -> D.Raw:
-        general, rcfg, org = await self.svc.get(db, "general"), await self.svc.get(db, "reports"), await self.org(db)
-        key = (str(src.id), "zraw", rcfg.exclude_slave_servers, rcfg.max_rows)
+        zc = await self.svc.get(db, "zonecache")
+        general = await self.svc.get(db, "general")
+        bc = SN.BuildCtx(self.sm, self.cfg, self.svc, self.sources, zc, progress=lambda t, _p: progress(t), cancelled=cancelled)
+        notes: list[str] = []
+        touched: set[str] = set()
+        for src in srcs:
+            zs = await SN.get_zc(db, src.id)
+            await db.commit()
+            stale = bool(zs.built_at) and max_age_h is not None and (datetime.now(timezone.utc) - zs.built_at).total_seconds() > max_age_h * 3600
+            if zs.gen and not (refresh or stale):
+                continue
+            hosts = None
+            if zs.gen and zone_ids is not None:
+                hosts = set((await db.execute(sel(ZcHostZone.host_id).where(ZcHostZone.source_id == src.id, ZcHostZone.gen == zs.gen, ZcHostZone.zone_id.in_(zone_ids)))).scalars().all())
+                if not hosts:
+                    continue
+            async with RES.heavy("обновление данных зоны для отчёта", 1):
+                res = await SN.build_source(bc, src, hosts=hosts)
+            touched |= set(res["zones"])
+            notes.append(f"Данные источника «{src.name}» обновлены перед формированием отчёта ({res['hosts']} компьютеров).")
+        if touched:
+            from . import zread as ZR  # noqa: PLC0415
 
-        async def make() -> D.Raw:
-            ctx, client = self.ctx(src, general, rcfg, org)
-            ctx.progress, ctx.cancelled = progress, cancelled
-            return await D.load_raw(client, ctx)
-
-        try:
-            raw, _ = await self.cache.get(key, self.cfg.cache_ttl_seconds, make, refresh=refresh)
-        except KscError:
-            raise
-        return raw
-
-    async def ext_for(self, db: AsyncSession, src: KscSource, host_ids: list[int], *, progress=lambda _t: None, cancelled=lambda: False, refresh: bool = False) -> tuple[list[dict], list[str]]:
-        """Потенциальные совпадения с внешними базами для компьютеров. Индекс сопоставления кэшируется по источнику и состоянию баз (обновление баз, каталога, решения по сопоставлению меняют отпечаток)."""
-        from ..reports.quick_ext import build_ext_index, ext_rows_for_hosts  # noqa: PLC0415
-
-        general, rcfg, org = await self.svc.get(db, "general"), await self.svc.get(db, "reports"), await self.org(db)
-        rev = await vdb_store.revision(db, src.id)
-        ctx, client = self.ctx(src, general, rcfg, org)
-        ctx.progress, ctx.cancelled = progress, cancelled
-
-        async def make_index():
-            return await build_ext_index(ctx)
-
-        index, _ = await self.cache.get((str(src.id), "zextidx", rev), max(self.cfg.cache_ttl_seconds, 1800), make_index, refresh=refresh)
-        key = (str(src.id), "zext", rev, hashlib.sha1(",".join(map(str, host_ids)).encode()).hexdigest())
-
-        async def make():
-            return await ext_rows_for_hosts(client, ctx, host_ids, index=index)
-
-        val, _ = await self.cache.get(key, self.cfg.cache_ttl_seconds, make, refresh=refresh)
-        return val
+            await ZR.refresh_dashboards(self.sm, sorted(touched), default_days=int(general.activity_days), data_at=None)
+        return notes
 
     async def parts(self, db: AsyncSession, *, params: dict, source_ids: list[str] | None = None, allowed=None, refresh: bool = False, progress=lambda _t: None,
-                    cancelled=lambda: False, zone_ids: list[str] | None = None, ext_cap: int = 30_000) -> tuple[list[dict], list[KscSource]]:
-        """Наборы «компьютер × проблемы» по источникам с зонами и решениями. params: categories, include_inactive, online_only, severity, bases_days, scan_days."""
+                    cancelled=lambda: False, zone_ids: list[str] | None = None, ext_cap: int = 0, limit_hosts: int | None = None, allow_build: bool = True) -> tuple[list[dict], list[KscSource]]:
+        """Наборы «компьютер × проблемы» по источникам из подготовленных данных. params: categories, include_inactive, online_only, severity, bases_days, scan_days."""
+        from . import zread as ZR  # noqa: PLC0415
+
         general = await self.svc.get(db, "general")
-        zdefs = await S.load_defs(db)
-        zindex = await S.index(db)
-        zones_days = {z.id: z.activity_days for z in (await db.execute(select(Zone))).scalars() if z.activity_days}
         cats = set(params.get("categories") or R.DEFAULT_CATEGORIES)
-        with_ext = "ext_vulns" in cats or params.get("with_ext", False)
-        now = datetime.now(timezone.utc)
-        parts, srcs = [], await self.active_sources(db, source_ids, allowed)
-        want = set(zone_ids or [])
-        only = None if zone_ids is None else (lambda r: ((not r["zones"]) if UNASSIGNED in want and not r["zones"] else bool(set(r["zones"]) & want)))
-        zrev = await self._zone_rev(db)
-        pkey = json.dumps({k: v for k, v in params.items() if not k.startswith("_")}, sort_keys=True, default=str)
-        for src in srcs:
-            raw = await self.raw(db, src, refresh=refresh, progress=progress, cancelled=cancelled)
-            trev = (await db.execute(select(func.count(VulnTriage.id), func.max(VulnTriage.updated_at)).where(VulnTriage.source_id == src.id))).one()
-            vrev = await vdb_store.revision(db, src.id) if with_ext else ""
+        srcs = await self.active_sources(db, source_ids, allowed)
+        zl = zone_ids if zone_ids is not None else [str(z) for z in (await db.execute(select(Zone.id))).scalars()] + [UNASSIGNED]
+        if allow_build:
+            enotes = await self.ensure(db, srcs, zl if zone_ids is not None else None, refresh=refresh, max_age_h=params.get("_max_age_h"), progress=progress, cancelled=cancelled)
+        else:                                       # запрос пользователя к backend: KSC не опрашивается, нет подготовленных данных — понятный отказ
+            enotes = []
+            from . import zread as ZRC  # noqa: PLC0415
 
-            async def make(src=src, raw=raw):
-                t0 = time.monotonic()
-                tindex = await T.load(db, src.id, now)
-                ext_rows, ext_notes = None, []
-                if with_ext:                     # внешние базы — только для компьютеров выбранных зон, а не для всего источника
-                    ids = sorted({r["host_id"] for r in ZM.annotate(raw.base, zindex, str(src.id)) if only is None or only(r)})
-                    if len(ids) > ext_cap:
-                        ext_notes = [f"Потенциальные совпадения с внешними базами не рассчитаны: в выбранных зонах {len(ids)} компьютеров (предел для этого вида — {ext_cap}). Сформируйте отчёт по меньшим зонам."]
-                    else:
-                        ext_rows, ext_notes = await self.ext_for(db, src, ids, progress=progress, cancelled=cancelled, refresh=refresh)
-                t1 = time.monotonic()
-                part = D.assemble(raw, zindex, tindex, ext_rows=ext_rows, source_id=str(src.id), source_name=src.name, now=now, activity_days=int(general.activity_days),
-                                  include_inactive=bool(params.get("include_inactive")) or "inactive" in cats, online_only=bool(params.get("online_only")), bases_days=int(params.get("bases_days") or 3),
-                                  scan_days=int(params.get("scan_days") or 30), zone_activity=zones_days, min_sev=params.get("severity") or "", only=only)
-                part["notes"] += ext_notes
-                part.update(source=src.name, source_id=str(src.id), at=raw.at)
-                log.info("Зоны: набор источника собран", extra={"source": src.name, "hosts": len(part["hosts"]), "ext_s": round(t1 - t0, 1), "assemble_s": round(time.monotonic() - t1, 1)})
-                if await T.mark_stale(db, tindex):
-                    await db.commit()
-                return part
-
-            # собранный набор кэшируется: страницы, фильтры и отчёты по тем же зонам не повторяют разбор десятков тысяч компьютеров; решения, зоны и данные KSC меняют ключ
-            key = (str(src.id), "zpart", raw.at.isoformat(), zrev, str(tuple(trev)), vrev, pkey, tuple(sorted(zone_ids or [])), "ext" if with_ext else "")
-            part, _ = await self.cache.get(key, min(self.cfg.cache_ttl_seconds, 300), make, refresh=refresh)
-            parts.append(part)
-        _ = zdefs
+            if any(not await ZRC.current_gen(db, s.id) for s in srcs):
+                raise KscError("no_data", "Данные зон по выбранным источникам ещё не рассчитаны: первый расчёт выполняет фоновая служба (Администрирование → Расчёт данных зон). Отчёт можно сформировать после него.")
+        zdays = await ZR.zone_days_map(db)
+        if limit_hosts is not None:
+            n = (await ZR.conflict_counts(db, [s.id for s in srcs])).items()
+            big = sum(c[0] for z, c in n if z in zl)
+            if big > limit_hosts:
+                raise KscError("too_many_rows", f"В выбранных зонах {big} компьютеров: слишком много для предварительного просмотра. Сформируйте отчёт (он выполняется в фоне).")
+        parts = await ZR.parts_for_zones(db, zl, params, [s.id for s in srcs], activity_days=int(general.activity_days), zone_activity=zdays, want_ext="ext_vulns" in cats or bool(params.get("with_ext")),
+                                         include_inactive=bool(params.get("include_inactive")) or "inactive" in cats, online_only=bool(params.get("online_only")))
+        for p in parts:
+            p["notes"] = list(p["notes"]) + enotes
         return parts, srcs
 
-    async def _zone_rev(self, db: AsyncSession) -> str:
-        z = (await db.execute(select(func.count(Zone.id), func.max(Zone.updated_at)))).one()
-        r = (await db.execute(select(func.count(ZoneRule.id)))).scalar_one()
-        p = (await db.execute(select(func.count(ZonePin.id), func.max(ZonePin.created_at)))).one()
-        return f"{tuple(z)}|{r}|{tuple(p)}"
-
     async def host_ids(self, db: AsyncSession, src: KscSource, zone: str) -> set[int]:
-        """Идентификаторы компьютеров источника, принадлежащих зоне («none» — без ответственного): общий фильтр «Зона» разделов и отчётов."""
-        from . import match as ZM  # noqa: PLC0415
+        """Идентификаторы компьютеров источника, принадлежащих зоне («none» — без ответственного): общий фильтр «Зона» разделов и отчётов. Нет данных — расчёт источника."""
+        from . import zread as ZR  # noqa: PLC0415
 
-        raw = await self.raw(db, src, with_ext=False)
-        recs = ZM.annotate(raw.base, await S.index(db), str(src.id))
-        return {r["host_id"] for r in recs if (not r["zones"] if zone == UNASSIGNED else zone in r["zones"])}
+        ids = await ZR.host_ids_in_zone(db, src.id, zone)
+        if ids is None:
+            await self.ensure(db, [src], None)
+            ids = await ZR.host_ids_in_zone(db, src.id, zone) or set()
+        return ids
 
     async def zone_name(self, db: AsyncSession, zone: str) -> str:
         if zone == UNASSIGNED:
@@ -164,14 +129,14 @@ class ZoneData:
                  "contacts": cons.get(z.id, [])} for z in zs]
 
     async def zone_doc(self, db: AsyncSession, *, zone_ids: list[str], params: dict, source_ids: list[str] | None = None, allowed=None, recipients: str = "", refresh: bool = False,
-                       progress=lambda _t: None, cancelled=lambda: False, hide_other_zones: bool = False) -> dict:
+                       progress=lambda _t: None, cancelled=lambda: False, hide_other_zones: bool = False, limit_hosts: int | None = None, allow_build: bool = True) -> dict:
         unassigned = UNASSIGNED in zone_ids
         ids = [z for z in zone_ids if z != UNASSIGNED]
         general = await self.svc.get(db, "general")
         info = await self.zones_info(db, ids)
         days = (info[0]["activity_days"] if len(info) == 1 and info[0]["activity_days"] else None) or int(general.activity_days)
         p = {**params, "_days": days, "_recipients": recipients}
-        parts, _ = await self.parts(db, params=p, source_ids=source_ids, allowed=allowed, refresh=refresh, progress=progress, cancelled=cancelled, zone_ids=zone_ids)
+        parts, _ = await self.parts(db, params=p, source_ids=source_ids, allowed=allowed, refresh=refresh, progress=progress, cancelled=cancelled, zone_ids=zone_ids, limit_hosts=limit_hosts, allow_build=allow_build)
         if params.get("hosts"):        # отчёт по выбранным компьютерам «источник:идентификатор»
             pick = set(params["hosts"])
             parts = [{**x, "hosts": [h for h in x["hosts"] if f"{h['source_id']}:{h['host_id']}" in pick]} for x in parts]

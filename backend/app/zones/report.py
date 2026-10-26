@@ -208,7 +208,8 @@ def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: d
                         "ksc_more": max(0, len(h["rows"]["ksc"]["current"]) - CARD_KSC), "ext_more": max(0, len(h["rows"]["ext"]["current"]) - CARD_EXT),
                         "protection": [{"problem": P.PROBLEMS[k][0], "detail": _detail(h, k, bases_days, scan_days)} for k in h["problems"]],
                         "accepted": [_vrow(h, x, o) for o in ("ksc", "ext") for x in h["rows"][o]["accepted"]], "excluded": [_vrow(h, x, o) for o in ("ksc", "ext") for x in h["rows"][o]["excluded"]] if params.get("show_excluded") else []})
-    return {"title": f"Состояние безопасности: {title_zone}", "subtitle": f"Отчёт {LEVELS.get(level, '')}", "kind": "quick_zone", "level": level, "generated_at": generated_at.isoformat(timespec="seconds"), "source": ", ".join(p["source"] for p in parts if p.get("source")), "conditions": conds, "meta": meta, "metrics": metrics, "severity": severity,
+    return {"title": f"Состояние безопасности: {title_zone}", "subtitle": f"Отчёт {LEVELS.get(level, '')}", "kind": "quick_zone", "level": level, "generated_at": generated_at.isoformat(timespec="seconds"),
+            "data_at": min((p["at"] for p in parts if p.get("at")), default=generated_at).isoformat(timespec="seconds"), "source": ", ".join(p["source"] for p in parts if p.get("source")), "conditions": conds, "meta": meta, "metrics": metrics, "severity": severity,
             "notes": notes, "tables": tables, "layout": layout, "host_details": det, "org": org, "stats": {k: v for k, v in stat.items() if k != "problems"}, "base_url": base_url,
             "zone_names": [z["name"] for z in zones] + (["Без ответственного"] if unassigned else [])}
 
@@ -265,8 +266,9 @@ def _meta(zones: list[dict], unassigned: bool, generated_at: datetime, parts: li
         r = responsible_text(z.get("contacts") or [])
         if r:
             out.append({"label": "Ответственные", "text": r})
-    at = max((p.get("at") for p in parts if p.get("at")), default=generated_at)
-    out.append({"label": "Актуальность сведений", "text": f"{_fmt_dt(at)} UTC"})
+    ats = [p.get("at") for p in parts if p.get("at")]
+    at = min(ats) if ats else generated_at
+    out.append({"label": "Срез данных KSC", "text": f"{_fmt_dt(at)} UTC" + (f" (отчёт сформирован {_fmt_dt(generated_at)} UTC по подготовленным данным)" if ats and (generated_at - at).total_seconds() > 600 else "")})
     out.append({"label": "Период проверки", "text": f"состояние на момент формирования; активность — {params.get('_days') or 30} сут"})
     if params.get("_recipients"):
         out.append({"label": "Адресаты", "text": params["_recipients"]})

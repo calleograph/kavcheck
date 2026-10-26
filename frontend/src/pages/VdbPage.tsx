@@ -226,7 +226,7 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
     <>
       <div className="meters">
         <div className="meter"><span className="l">Новых</span><span className={`v ${s?.new ? "warn-text" : ""}`}>{s ? num(s.new) : "…"}</span><span className="t">не просмотрены специалистом</span></div>
-        <div className="meter"><span className="l">Из них эксплуатируются</span><span className={`v ${s?.new_exploited ? "bad-text" : ""}`}>{s ? num(s.new_exploited) : "…"}</span><span className="t">подтверждено CISA KEV</span></div>
+        <div className="meter"><span className="l">Из них в каталоге CISA KEV</span><span className={`v ${s?.new_exploited ? "bad-text" : ""}`}>{s ? num(s.new_exploited) : "…"}</span><span className="t">подтверждено CISA KEV</span></div>
         <div className="meter"><span className="l">Из них критических</span><span className={`v ${s?.new_critical ? "bad-text" : ""}`}>{s ? num(s.new_critical) : "…"}</span>{s && <span className="t">критических, высоких и эксплуатируемых — {num(s.new_serious)}, как в меню</span>}</div>
         <div className="meter"><span className="l">Всего затрагивают</span><span className="v">{s ? num(s.total) : "…"}</span><span className="t">по каталогу «{ctx.current?.name}»</span></div>
       </div>
@@ -234,7 +234,7 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
         <label className="check inline-check"><input type="checkbox" className="switch" checked={newOnly} onChange={(e) => setNewOnly(e.target.checked)} />Только новые</label>
         <Segmented<Sev> label="Уровень опасности" value={sev} onChange={setSev} options={SEV_OPTS} />
         <label className="field">CVSS<select value={range} onChange={(e) => setRange(e.target.value)}>{CVSS_RANGES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
-        <label className="check inline-check"><input type="checkbox" className="switch" checked={kev} onChange={(e) => setKev(e.target.checked)} />Только эксплуатируемые</label>
+        <label className="check inline-check"><input type="checkbox" className="switch" checked={kev} onChange={(e) => setKev(e.target.checked)} />Только из каталога CISA KEV</label>
         <div className="toolbar-foot"><span className="muted small">Оценка по каталогу установленного ПО, без запросов к KSC; список компьютеров — по кнопке «Проверить».</span>
           {canReport && (s?.new ?? 0) > 0 && <button type="button" className="link-btn" onClick={() => mark(true)}>Отметить все просмотренными</button>}</div>
       </div>

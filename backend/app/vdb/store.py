@@ -5,7 +5,7 @@ import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, delete, func, insert, select, update
+from sqlalchemy import String, and_, cast, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import VdbAffected, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
@@ -149,19 +149,21 @@ async def upgrade_scores(db: AsyncSession) -> int:
     scores_at не ставится — отсутствующие оценки NVD дозагрузит следующая загрузка источника. Возвращает число обновлённых записей."""
     n, last = 0, 0
     while True:
-        rows = (await db.execute(select(VdbRecord).where(VdbRecord.id > last).order_by(VdbRecord.id).limit(1000))).scalars().all()
+        # только записи, которым это нужно (есть балл, нет списка оценок): остальные не читаются, а прочитанные не копятся в памяти сессии
+        rows = (await db.execute(select(VdbRecord).where(VdbRecord.id > last, VdbRecord.score.is_not(None), cast(VdbRecord.scores, String) == "[]").order_by(VdbRecord.id).limit(500))).scalars().all()
         if not rows:
             break
         last = rows[-1].id
         keys = set()
         for r in rows:
-            if not r.scores and r.score is not None:
-                s = legacy_score(r.source, r.score, r.vector, r.modified)
-                r.scores, r.score = ([s] if s else []), (r.score if s else None)      # версию методики определить нельзя — оценка недостоверна и не показывается
-                keys.add(r.vuln_key)
-                n += 1
+            s = legacy_score(r.source, r.score, r.vector, r.modified)
+            r.scores, r.score = ([s] if s else []), (r.score if s else None)      # версию методики определить нельзя — оценка недостоверна и не показывается
+            keys.add(r.vuln_key)
+            n += 1
         await db.flush()
         await refresh_vulns(db, keys)
+        await db.commit()
+        db.expunge_all()
     return n
 
 

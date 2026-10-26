@@ -195,6 +195,8 @@ class Mailer:
                   "include_inactive": bool(f.get("include_inactive")), "online_only": bool(f.get("online_only")), "bases_days": f.get("bases_days", 3), "scan_days": f.get("scan_days", 30),
                   "show_excluded": bool(f.get("show_excluded"))}
         zone_ids = [str(row.zone_id)] if row.zone_id else [UNASSIGNED]
+        zc = await self.data.svc.get(db, "zonecache")
+        params["_max_age_h"] = zc.stale_hours          # данные старше порога обновляются перед формированием (одна зона), свежие подготовленные данные используются как есть
         doc = await self.data.zone_doc(db, zone_ids=zone_ids, params=params, source_ids=f.get("source_ids") or None, recipients=", ".join(row.to_addrs or []), hide_other_zones=True)
         c = R.counts_for_mail(doc)
         row.stats = c

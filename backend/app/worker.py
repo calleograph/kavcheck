@@ -18,6 +18,8 @@ from .services.settings import SettingsService
 from .services.sources import SourceRegistry
 from .zones.mailer import Mailer
 from .zones.reporter import ZoneData
+from .zones.zjobs import ZoneCache
+from .services.resources import RES
 
 log = logging.getLogger("app.worker")
 
@@ -37,7 +39,9 @@ async def main() -> None:
     catalog = CatalogScheduler(sm, settings, svc, journal)
     runner.catalog = catalog
     vdb = VdbSync(sm, settings, svc, journal)
-    mailer = Mailer(sm, settings, svc, ZoneData(sm, settings, svc, SourceRegistry(settings, svc)), journal)
+    sources = SourceRegistry(settings, svc)
+    mailer = Mailer(sm, settings, svc, ZoneData(sm, settings, svc, sources), journal)
+    zcache = ZoneCache(sm, settings, svc, sources, journal)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -46,12 +50,13 @@ async def main() -> None:
 
     def pulse() -> dict:
         return {"version": settings.app_version, "commit": settings.app_git_commit, "reports_running": len(runner._tasks),  # noqa: SLF001
-                "catalog_building": len(catalog._running), "vdb_running": len(vdb._running)}  # noqa: SLF001
+                "catalog_building": len(catalog._running), "vdb_running": len(vdb._running), "zonecache_job": zcache.current, "resources": RES.snapshot()}  # noqa: SLF001
 
-    tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"), asyncio.create_task(mailer.loop(), name="mail"),
+    tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"), asyncio.create_task(mailer.loop(), name="mail"), asyncio.create_task(zcache.loop(), name="zonecache"),
              asyncio.create_task(jh.flush_loop(sm), name="journal-flush"), asyncio.create_task(heartbeat_loop(sm, "worker", pulse), name="heartbeat")]
     log.info("Воркер отчётов и каталога запущен", extra={"version": settings.app_version})
     await stop.wait()
+    zcache.stop()
     for task in tasks:
         task.cancel()
     for task in tasks:

@@ -13,9 +13,9 @@ export const CVSS_RANGES: { id: string; label: string; min?: number; max?: numbe
 export const cvssText = (v: { score: number | null; score_version?: string }) => (v.score == null ? "Нет данных" : `${v.score.toFixed(1)}${v.score_version ? ` (CVSS ${v.score_version})` : ""}`);
 export const STATUS_TONE: Record<VdbStatus, string> = { confirmed: "err", potential: "warn", clarify: "accent", insufficient: "", fixed: "ok" };
 
-/** Заметная отметка: эксплуатация уязвимости подтверждена каталогом CISA KEV. */
-export function Kev({ title = "Эксплуатация подтверждена по каталогу CISA KEV" }: { title?: string }) {
-  return <span className="badge kev" title={title}>эксплуатируется</span>;
+/** Отметка: уязвимость включена в каталог CISA KEV (известна эксплуатация в реальных атаках; на конкретном компьютере это не доказано). */
+export function Kev({ title = "Уязвимость в каталоге CISA KEV: её эксплуатация в реальных атаках известна. На этом компьютере эксплуатация не подтверждена" }: { title?: string }) {
+  return <span className="badge kev" title={title}>в KEV</span>;
 }
 /** Числовая оценка CVSS 0.0–10.0 и версия методики; нет достоверной оценки — «Нет данных» (ноль не подставляется). */
 export function CvssCell({ v }: { v: { score: number | null; score_version: string; score_source?: string; severity: string } }) {
@@ -52,7 +52,7 @@ export function useVdbCounts(keys: string[], enabled: boolean): Record<string, V
 }
 export function VdbCountBadge({ c, productKey }: { c: VdbCount | undefined; productKey: string }) {
   if (!c || !c.total) return <span className="muted small">—</span>;
-  return <Link to={`/software/p/${encodeURIComponent(productKey)}#vdb`} className="vdb-count" title={`Известных уязвимостей: ${c.total}; эксплуатируются: ${c.kev}; критических: ${c.critical}`}>
+  return <Link to={`/software/p/${encodeURIComponent(productKey)}#vdb`} className="vdb-count" title={`Известных уязвимостей: ${c.total}; в каталоге CISA KEV: ${c.kev}; критических: ${c.critical}`}>
     <span className={`badge ${c.kev || c.critical ? "err" : "warn"}`}>{num(c.total)}</span>{c.kev > 0 && <span className="badge kev">KEV {c.kev}</span>}</Link>;
 }
 

@@ -59,10 +59,12 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         from .zones import zd  # noqa: PLC0415
 
         try:
-            doc = await zd(request).zone_doc(db, zone_ids=params["zone_ids"], params=params, source_ids=body.source_ids or None, allowed=lambda s: su.can_use_source(s.id), refresh=body.refresh)
+            doc = await zd(request).zone_doc(db, zone_ids=params["zone_ids"], params=params, source_ids=body.source_ids or None, allowed=lambda s: su.can_use_source(s.id), allow_build=False, limit_hosts=3000)
         except KscError as exc:
+            if exc.code == "no_data":
+                raise HTTPException(status_code=409, detail=exc.message) from None
             raise _ksc(exc) from None
-        return _answer(doc, doc.get("generated_at"))
+        return _answer(doc, doc.get("data_at") or doc.get("generated_at"))
     miss = unsupported(src, FEATURE[body.kind])
     if miss:
         return {"unsupported": miss, "doc": None, "items": [], "total": 0}

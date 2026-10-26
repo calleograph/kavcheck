@@ -83,8 +83,34 @@ def short_text(h: dict) -> str:
     parts += [P.PROBLEMS[x][0].lower() for x in h["problems"]]
     e = h["ext"]
     if e["total"]:
-        parts.append(f"потенциально по внешним базам: {e['total']}" + (f" (эксплуатируются: {e['kev']})" if e["kev"] else ""))
+        parts.append(f"потенциально по внешним базам: {e['total']}" + (f" (в каталоге CISA KEV: {e['kev']})" if e["kev"] else ""))
     return "; ".join(parts) or "проблем не выявлено"
+
+
+def host_record(r: dict, hv: dict, he: dict, a: dict, *, agg_only: bool, floor: int, now: datetime, bases_days: int, scan_days: int, source_id: str, source_name: str) -> dict:
+    """Компьютер в области: проблемы защиты, итоги по обнаружениям KSC и внешним базам, состояние и строки обнаружений. Одна функция для расчёта «на лету» и для сохранённых данных:
+    итоговые числа по сохранённым строкам совпадают с расчётом по свежим."""
+    if agg_only:
+        ksc = {"critical": a.get("critical", 0), "high": a.get("high", 0), "warning": a.get("warning", 0), "total": a.get("total", 0), "worst": "critical" if a.get("critical") else "high" if a.get("high") else "warning" if a.get("warning") else "",
+               "accepted": 0, "excluded": 0, "review": 0}
+    else:
+        cur = [x for x in hv["current"] if SEV_RANK[x["severity"]] >= floor]
+        ksc = {k: sum(1 for x in cur if x["severity"] == k) for k in ("critical", "high", "warning")}
+        ksc.update(total=len(cur), worst=_worst(cur), accepted=len(hv["accepted"]), excluded=len(hv["excluded"]), review=sum(1 for x in cur if x.get("triage") and x["triage"]["status"] == "review"))
+    ec = [x for x in he["current"] if SEV_RANK[x["severity"]] >= floor]
+    ext = {"total": len(ec), "critical": sum(1 for x in ec if x["severity"] == "critical"), "high": sum(1 for x in ec if x["severity"] == "high"), "warning": sum(1 for x in ec if x["severity"] == "warning"),
+           "kev": sum(1 for x in ec if x.get("kev")), "confirmed": sum(1 for x in ec if x["status"] == "confirmed"), "worst": _worst(ec), "accepted": len(he["accepted"]), "excluded": len(he["excluded"])}
+    problems = P.problems(r, now, bases_days=bases_days, scan_days=scan_days)
+    worst = ksc["worst"] if SEV_RANK[ksc["worst"]] >= SEV_RANK[ext["worst"]] else ext["worst"]
+    state = "critical" if ksc["critical"] else "vulns" if ksc["total"] else "protection" if problems else "potential" if ext["total"] else "ok"
+    h = {k: r[k] for k in ("host_id", "name", "fqdn", "ip", "os", "platform", "group", "last_connected", "days_since_connection", "activity", "online", "active", "zones", "zone_conflict",
+                           "zone_pinned", "zone_candidates", "zone_via", "ksc_status", "av", "mask", "agent_build", "rtp_label", "rtp_state", "last_full_scan", "uncured", "os_version")}
+    hv = {**hv, "current": [x for x in hv["current"] if SEV_RANK[x["severity"]] >= floor]} if not agg_only else hv
+    he = {**he, "current": ec}
+    h.update(source_id=source_id, source=source_name, problems=problems, ksc=ksc, ext=ext, max_sev=worst, max_sev_basis=("ksc" if SEV_RANK[ksc["worst"]] >= SEV_RANK[ext["worst"]] and ksc["worst"] else "ext" if ext["worst"] else ""),
+             state=state, rows={"ksc": hv, "ext": he})
+    h["summary"] = short_text(h)
+    return h
 
 
 def assemble(raw: Raw, zindex: ZoneIndex, tindex: T.TriageIndex, *, ext_rows: list[dict] | None = None, source_id: str, source_name: str, now: datetime, activity_days: int, include_inactive: bool, online_only: bool,
@@ -111,6 +137,7 @@ def assemble(raw: Raw, zindex: ZoneIndex, tindex: T.TriageIndex, *, ext_rows: li
     out, hidden, offline = [], 0, 0
     hidden_hosts: list[dict] = []
     online_data = any(r.get("online") is not None for r in records)
+    empty = {"current": [], "accepted": [], "excluded": []}
     for r in records:
         days_limit = (zone_activity or {}).get(r["zones"][0]) if r["zones"] else None
         limit = days_limit or activity_days
@@ -124,30 +151,8 @@ def assemble(raw: Raw, zindex: ZoneIndex, tindex: T.TriageIndex, *, ext_rows: li
             offline += 1
             hidden_hosts.append({"zones": r["zones"], "reason": "offline"})
             continue
-        hv = by_host.get(r["host_id"], {"current": [], "accepted": [], "excluded": []})
-        he = ext_by.get(r["host_id"], {"current": [], "accepted": [], "excluded": []})
-        if raw.agg_only:
-            a = raw.agg.get(r["host_id"], {})
-            ksc = {"critical": a.get("critical", 0), "high": a.get("high", 0), "warning": a.get("warning", 0), "total": a.get("total", 0), "worst": "critical" if a.get("critical") else "high" if a.get("high") else "warning" if a.get("warning") else "",
-                   "accepted": 0, "excluded": 0, "review": 0}
-        else:
-            cur = [x for x in hv["current"] if SEV_RANK[x["severity"]] >= floor]
-            ksc = {k: sum(1 for x in cur if x["severity"] == k) for k in ("critical", "high", "warning")}
-            ksc.update(total=len(cur), worst=_worst(cur), accepted=len(hv["accepted"]), excluded=len(hv["excluded"]), review=sum(1 for x in cur if x.get("triage") and x["triage"]["status"] == "review"))
-        ec = [x for x in he["current"] if SEV_RANK[x["severity"]] >= floor]
-        ext = {"total": len(ec), "critical": sum(1 for x in ec if x["severity"] == "critical"), "high": sum(1 for x in ec if x["severity"] == "high"), "warning": sum(1 for x in ec if x["severity"] == "warning"),
-               "kev": sum(1 for x in ec if x.get("kev")), "confirmed": sum(1 for x in ec if x["status"] == "confirmed"), "worst": _worst(ec), "accepted": len(he["accepted"]), "excluded": len(he["excluded"])}
-        problems = P.problems(r, now, bases_days=bases_days, scan_days=scan_days)
-        worst = ksc["worst"] if SEV_RANK[ksc["worst"]] >= SEV_RANK[ext["worst"]] else ext["worst"]
-        state = "critical" if ksc["critical"] else "vulns" if ksc["total"] else "protection" if problems else "potential" if ext["total"] else "ok"
-        h = {k: r[k] for k in ("host_id", "name", "fqdn", "ip", "os", "platform", "group", "last_connected", "days_since_connection", "activity", "online", "active", "zones", "zone_conflict",
-                               "zone_pinned", "zone_candidates", "zone_via", "ksc_status", "av", "mask", "agent_build", "rtp_label", "rtp_state", "last_full_scan", "uncured", "os_version")}
-        hv = {**hv, "current": [x for x in hv["current"] if SEV_RANK[x["severity"]] >= floor]} if not raw.agg_only else hv
-        he = {**he, "current": ec}
-        h.update(source_id=source_id, source=source_name, problems=problems, ksc=ksc, ext=ext, max_sev=worst, max_sev_basis=("ksc" if SEV_RANK[ksc["worst"]] >= SEV_RANK[ext["worst"]] and ksc["worst"] else "ext" if ext["worst"] else ""),
-                 state=state, rows={"ksc": hv, "ext": he})
-        h["summary"] = short_text(h)
-        out.append(h)
+        out.append(host_record(r, by_host.get(r["host_id"], empty), ext_by.get(r["host_id"], empty), raw.agg.get(r["host_id"], {}), agg_only=raw.agg_only, floor=floor, now=now,
+                               bases_days=bases_days, scan_days=scan_days, source_id=source_id, source_name=source_name))
     return {"hosts": out, "hidden": hidden, "offline": offline, "hidden_hosts": hidden_hosts, "online_data": online_data, "total_all": len(records), "notes": list(raw.notes), "agg_only": raw.agg_only}
 
 

@@ -22,6 +22,7 @@ from ..ksc.driver import KscError, Session
 from .. import search as msearch
 from ..models import CatalogOverride, CatalogProduct, CatalogState, KscSource, utcnow
 from .audit import Journal
+from .resources import RES
 from .settings import SettingsService
 
 log = logging.getLogger("app.catalog")
@@ -169,7 +170,8 @@ class CatalogScheduler:
                     fams, stats = CB.build(s, activity_days=activity_days, overrides=ov, progress=progress)
                     return sig, fams, stats
 
-            sig, fams, stats = await asyncio.to_thread(work)
+            async with RES.heavy("сборка каталога", 1):
+                sig, fams, stats = await asyncio.to_thread(work)
             ms = int((time.perf_counter() - started) * 1000)
             async with self._sm() as db:
                 now = utcnow()

@@ -3,7 +3,8 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { api, type ApiError, type HostState, type ProblemKey, type ZoneDash, type ZoneHost, type ZoneHostCard, type ZoneVulnRow, type ZoneOverview, type TriageRow } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Charts } from "./zoneCharts";
-import { Fetched, OnlineBadge } from "../components/Common";
+import { OnlineBadge } from "../components/Common";
+import { DataStamp, FreshnessNotes, RefreshButton } from "../components/ZoneBits";
 import { Modal } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
@@ -50,9 +51,11 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
   const [data, setData] = useState<ZoneOverview | null>(null); const [err, setErr] = useState("");
   const [q, setQ] = useKept("zones.q", ""); const [state, setState] = useKept("zones.state", ""); const [sort, setSort] = useKept("zones.sort", "risk"); const [desc, setDesc] = useKept("zones.desc", true);
   const [force, setForce] = useState(0);
+  const calc = !!data?.freshness.job && data.freshness.job.status !== "done";
+  useEffect(() => { if (!calc) return; const t = window.setInterval(() => setForce((x) => x + 1), 4000); return () => window.clearInterval(t); }, [calc]);        // пока идёт расчёт, список обновляется сам
   useEffect(() => {
     let live = true; setErr("");
-    const t = window.setTimeout(() => { api.zones.overview({ q, state, sort, desc, refresh: force > 0 || undefined }).then((r) => live && setData(r)).catch((e) => live && setErr((e as ApiError).message)); }, 200);
+    const t = window.setTimeout(() => { api.zones.overview({ q, state, sort, desc }).then((r) => live && setData(r)).catch((e) => live && setErr((e as ApiError).message)); }, 200);
     return () => { live = false; window.clearTimeout(t); };
   }, [q, state, sort, desc, force]);
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } };
@@ -61,8 +64,10 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
       <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Зона или ответственный" aria-label="Поиск зоны" /><MaskHint /></div>
       <Segmented label="Состояние" value={state} onChange={setState} options={[["", "Все"], ["critical", "Критические"], ["vulns", "Уязвимости"], ["protection", "Защита"], ["ok", "Без проблем"]]} />
       <div className="spacer" />
-      <button className="btn" onClick={() => setForce(force + 1)} title={data?.fetched_at ? `Данные получены ${fmt(data.fetched_at)}` : undefined}><Icon name="refresh" /><span>Обновить</span></button>
+      <DataStamp fr={data?.freshness} />
+      {ctx.me.user.is_admin && <Link className="btn" to="/admin?tab=zcache" title="Расписание и состояние расчёта данных зон"><Icon name="clock" /><span>Расчёт данных</span></Link>}
     </div>
+    <FreshnessNotes fr={data?.freshness} canRefresh={false} />
     {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
     {data && data.totals.conflicts > 0 && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Компьютеров, подходящих нескольким зонам: <b>{num(data.totals.conflicts)}</b>. Они показаны в каждой зоне.{" "}
       {ctx.me.user.is_admin ? <Link to="/admin?tab=zones&view=conflicts">Разобрать пересечения</Link> : "Сообщите администратору."}</div></div>}
@@ -109,9 +114,18 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
   const setF = (kv: Partial<Record<(typeof PARAMS)[number], string>>) => setSp((p) => { for (const [k, v] of Object.entries(kv)) { if (v) p.set(k, v); else p.delete(k); } return p; }, { replace: true });
   useEffect(() => { const t = window.setTimeout(() => { if (q !== f.q || cve !== f.cve || product !== f.product) setF({ q, cve, product }); }, 350); return () => window.clearTimeout(t); }, [q, cve, product]); // eslint-disable-line react-hooks/exhaustive-deps
   const [forced, setForced] = useState(0);
+  const [qbusy, setQbusy] = useState(false); const [qerr, setQerr] = useState("");
   const list = useInfinite<ZoneHost>(`zone:${zid}`, [zid, f, sort, desc, ext, forced], (offset, limit) =>
-    api.zones.dashboard(zid, { ...f, ext, sort, desc, offset, limit, refresh: forced > 0 && offset === 0 ? true : undefined }) as unknown as Promise<Chunk<ZoneHost>>, 50);
+    api.zones.dashboard(zid, { ...f, ext, sort, desc, offset, limit }) as unknown as Promise<Chunk<ZoneHost>>, 50);
   const d = list.extra as Omit<ZoneDash, "items" | "total"> | null;
+  const jobActive = !!d?.freshness.job && (d.freshness.job.status === "queued" || d.freshness.job.status === "running");
+  useEffect(() => {          // пока идёт пересчёт, ход читается лёгким запросом; по завершении таблица и показатели перечитываются один раз
+    if (!jobActive) return;
+    let stop = false;
+    const t = window.setInterval(() => { api.zones.refreshState(zid).then((r) => { if (!stop && !r.job) { setForced((x) => x + 1); } }).catch(() => undefined); }, 3000);
+    return () => { stop = true; window.clearInterval(t); };
+  }, [jobActive, zid]);
+  const startRefresh = () => { setQbusy(true); setQerr(""); api.zones.refresh(zid).then(() => setForced((x) => x + 1)).catch((e) => setQerr((e as ApiError).message)).finally(() => setQbusy(false)); };
   const st = d?.stats;
   const zone = d?.zone;
   const canAdmin = ctx.me.user.is_admin;
@@ -128,8 +142,8 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
     <section>
       <PageHead back={<Link to="/zones" className="btn ghost mini"><Icon name="arrowL" size={15} />Все зоны</Link>} title={zone?.name ?? "Зона ответственности"}
         lede={zone ? <>{zone.purpose || zone.description || "Описание не задано"}</> : undefined}>
-        {d?.fetched_at && <Fetched at={d.fetched_at} />}
-        <button className="btn" onClick={() => setForced(forced + 1)} aria-busy={list.refreshing && !list.initial}><Icon name="refresh" /><span>Обновить</span></button>
+        <DataStamp fr={d?.freshness} />
+        {canReport && <RefreshButton fr={d?.freshness} onClick={startRefresh} busy={qbusy} />}
         {canReport && <button className="btn primary" onClick={() => setReport("all")} disabled={list.initial}><Icon name="file" />Отчёт по зоне</button>}
         {canAdmin && zid !== "none" && <Link className="btn" to={`/admin?tab=zones&zone=${zid}`}><Icon name="edit" />Настройки зоны</Link>}
       </PageHead>
@@ -137,6 +151,8 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
         {people.length ? people.map((c) => <span key={c.email}>{c.name || c.email}{c.position ? `, ${c.position}` : ""}<span className="p-role">{c.role === "responsible" ? "" : c.role === "cc" ? "копия" : "рассылка"} {c.name ? c.email : ""}</span></span>)
           : zid === "none" ? <span className="muted">Компьютеры, не подошедшие ни одной зоне</span> : <span className="warn-text">Ответственные не назначены — рассылка этой зоне не уйдёт</span>}
       </div>}
+      <FreshnessNotes fr={d?.freshness} canRefresh={canReport} onRefresh={startRefresh} busy={qbusy} zoneMode />
+      {qerr && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{qerr}</div></div>}
       {d?.notes.map((n) => <div key={n} className="alert info"><Icon name="info" /><div className="alert-body">{n}</div></div>)}
       {d?.conflicts ? <div className="alert warn"><Icon name="alert" /><div className="alert-body">Спорных компьютеров в зоне: <b>{d.conflicts}</b> — они подходят и другим зонам, поэтому показаны в каждой.{canAdmin ? <> <Link to="/admin?tab=zones&view=conflicts">Разобрать</Link></> : null}</div></div> : null}
 

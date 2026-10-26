@@ -243,10 +243,27 @@ async def load_context(db: AsyncSession, source_id: uuid.UUID | None) -> tuple[l
     return load_catalog(rows), list(maps)
 
 
-async def affected_for(db: AsyncSession, keys: list[str]) -> list[VdbAffected]:
-    out: list[VdbAffected] = []
+AFF_COLS = [c for c in VdbAffected.__table__.c if c.key not in ("id", "generation", "cpe", "purl")]      # столбцы, нужные сопоставлению; Row даёт доступ по имени, как у объекта, но без состояния ORM
+
+
+def _aff_query(keys: list[str]):
+    return select(*AFF_COLS).join(VdbSource, active(VdbAffected)).where(VdbAffected.vuln_key.in_(keys))
+
+
+async def iter_affected(db: AsyncSession, keys: list[str], batch: int = 300):
+    """Записи источников по уязвимостям порциями (по batch уязвимостей): в памяти одновременно только одна порция. Порция всегда содержит ВСЕ записи своих уязвимостей:
+    подтверждение или исправление может прийти из другого источника."""
+    for i in range(0, len(keys), batch):
+        yield keys[i:i + batch], (await db.execute(_aff_query(keys[i:i + batch]))).all()
+
+
+async def affected_for(db: AsyncSession, keys: list[str], *, limit: int = 500_000) -> list:
+    """Все записи для небольшого числа уязвимостей (страница уязвимости, проверка по выбранным идентификаторам). Для больших наборов — iter_affected. limit защищает память."""
+    out: list = []
     for i in range(0, len(keys), 400):
-        out += (await db.execute(select(VdbAffected).join(VdbSource, active(VdbAffected)).where(VdbAffected.vuln_key.in_(keys[i:i + 400])))).scalars().all()
+        out += (await db.execute(_aff_query(keys[i:i + 400]))).all()
+        if len(out) > limit:
+            raise MemoryError(f"слишком много записей источников для выбранных уязвимостей (более {limit}); сузьте выбор")
     return out
 
 
@@ -302,9 +319,8 @@ def candidate_product_keys(prods: list[M.CatProd]) -> set[str]:
 
 
 
-async def reverse_affected(db: AsyncSession, prods: list[CatProd], maps: list[VdbMapping] | tuple = ()) -> list[VdbAffected]:
-    """Записи источников, которые могут относиться к продуктам каталога (поиск по индексам product_key и pkg_name), дополненные всеми записями найденных уязвимостей:
-    подтверждение или исправление может прийти из другого источника."""
+async def reverse_keys(db: AsyncSession, prods: list[CatProd], maps: list[VdbMapping] | tuple = ()) -> list[str]:
+    """Ключи уязвимостей, записи которых могут относиться к продуктам каталога (поиск по индексам product_key и pkg_name): только строки, без записей."""
     have = {p.key for p in prods}
     cand = sorted(candidate_product_keys(prods) | {x.product_key for x in maps if x.action == "map" and x.catalog_key in have})     # решения администратора добавляют свои названия
     pkgs = sorted({norm(x) for p in prods if p.platforms & 2 for x in p.names} - {""})
@@ -313,4 +329,9 @@ async def reverse_affected(db: AsyncSession, prods: list[CatProd], maps: list[Vd
         found |= set((await db.execute(select(VdbAffected.vuln_key).join(VdbSource, active(VdbAffected)).where(VdbAffected.product_key.in_(cand[i:i + 400])).distinct())).scalars().all())
     for i in range(0, len(pkgs), 400):
         found |= set((await db.execute(select(VdbAffected.vuln_key).join(VdbSource, active(VdbAffected)).where(VdbAffected.pkg_name.in_(pkgs[i:i + 400])).distinct())).scalars().all())
-    return await affected_for(db, sorted(found))
+    return sorted(found)
+
+
+async def reverse_affected(db: AsyncSession, prods: list[CatProd], maps: list[VdbMapping] | tuple = (), *, limit: int = 500_000) -> list:
+    """Записи источников, которые могут относиться к продуктам каталога, дополненные всеми записями найденных уязвимостей (для небольших каталогов; полный анализ — reverse_keys + iter_affected)."""
+    return await affected_for(db, await reverse_keys(db, prods, maps), limit=limit)

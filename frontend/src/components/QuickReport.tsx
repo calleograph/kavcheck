@@ -163,6 +163,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
               <label className="field">Критичность уязвимостей<select value={String(params.severity ?? "")} onChange={(e) => setExtra({ ...extra, severity: e.target.value })}><option value="">Все уровни</option><option value="high">Высокие и критические</option><option value="critical">Только критические</option></select></label>
               <label className="check"><input type="checkbox" checked={!!params.include_inactive} onChange={(e) => setExtra({ ...extra, include_inactive: e.target.checked })} />Включить давно не подключавшиеся к KSC</label>
               <label className="check"><input type="checkbox" checked={!!params.online_only} onChange={(e) => setExtra({ ...extra, online_only: e.target.checked })} />Только в сети сейчас</label>
+              <label className="check"><input type="checkbox" checked={!!params.refresh_data} onChange={(e) => setExtra({ ...extra, refresh_data: e.target.checked })} />Обновить данные зоны из KSC перед формированием (дольше; иначе — подготовленные, дата среза указана в отчёте)</label>
               <label className="check"><input type="checkbox" checked={!!params.show_excluded} onChange={(e) => setExtra({ ...extra, show_excluded: e.target.checked })} />Перечислить исключённые обнаружения с обоснованиями</label>
               <p className="muted small">Ложные срабатывания не входят в показатели; их число и правила исключения указываются в конце отчёта. Принятые риски учитываются отдельно.</p>
             </>}
@@ -178,7 +179,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
                   onChange={(e) => setExtra({ ...extra, statuses: e.target.checked ? [...cur, k] : cur.filter((x) => x !== k) })} />{l}</label>; })}</fieldset>
               <label className="field">Опасность не ниже<select value={String(params.min_severity ?? "")} onChange={(e) => setExtra({ ...extra, min_severity: e.target.value })}>
                 <option value="">Любая</option><option value="critical">Критическая</option><option value="high">Высокая</option><option value="medium">Средняя</option></select></label>
-              <label className="check"><input type="checkbox" checked={!!params.exploited_only} onChange={(e) => setExtra({ ...extra, exploited_only: e.target.checked })} />Только с подтверждённой эксплуатацией (CISA KEV)</label>
+              <label className="check"><input type="checkbox" checked={!!params.exploited_only} onChange={(e) => setExtra({ ...extra, exploited_only: e.target.checked })} />Только уязвимости из каталога CISA KEV</label>
             </>}
             {options.severity && <label className="field">Опасность<select value={String(params.severity ?? "")} onChange={(e) => setExtra({ ...extra, severity: e.target.value })}>
               <option value="">Все уровни</option><option value="critical">Только критические</option><option value="high">Только высокие</option><option value="warning">Только предупреждения</option></select></label>}

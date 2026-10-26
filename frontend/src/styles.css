@@ -1083,3 +1083,10 @@ pre.notes-pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
 @media (min-width: 1100px) { .meters.dense { grid-template-columns: repeat(7, minmax(0, 1fr)); } }
 .meters.dense .meter .l { font-size: var(--fs-xs); }
 .zone-sub { color: var(--accent); }
+
+/* подготовленные данные зон: ход пересчёта, мягкое уведомление о свежих данных, ссылка-кнопка в тексте */
+.calc-progress { align-items: center; }
+.calc-progress .spin { flex: none; }
+.alert.soft { background: transparent; border-style: dashed; }
+.linklike { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; }
+.linklike:disabled { opacity: .6; cursor: default; }

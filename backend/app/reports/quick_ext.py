@@ -18,7 +18,7 @@ from . import audit
 from .quick import Ctx, col, metric, apply_scope, host_part, scope_conditions, scope_notes
 
 LEVEL = {4: "critical", 3: "high"}
-EXT_COLS = [col("severity_ru", "Опасность", "sev"), col("vuln_key", "Уязвимость", "mono"), col("ids", "Идентификаторы", "mono"), col("title", "Название"), col("kev", "Эксплуатация (CISA KEV)"),
+EXT_COLS = [col("severity_ru", "Опасность", "sev"), col("vuln_key", "Уязвимость", "mono"), col("ids", "Идентификаторы", "mono"), col("title", "Название"), col("kev", "В каталоге CISA KEV"),
             col("status_ru", "Результат сопоставления"), col("basis", "Основание"), col("program", "Программа"), col("installed_version", "Установленная версия", "mono"),
             col("name", "Компьютер"), col("ip", "IP-адрес", "mono"), col("os", "ОС"), col("group", "Группа администрирования"), col("last_connected", "Последнее подключение к KSC (UTC)", "date"),
             col("active", "Связь за период"), col("online", "В сети сейчас"), col("sources", "Источники сведений"), col("fix", "Исправление")]
@@ -50,6 +50,31 @@ async def resolve_keys(db, ids: list[str]) -> tuple[list[str], list[str]]:
 
 def like_escape(t: str) -> str:
     return t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def summarize_hosts(out: list[dict]) -> list[dict]:
+    """Строки таблицы «Компьютеры»: единица подсчёта во всех столбцах — уникальная уязвимость (общий ключ CVE/БДУ/OSV); несколько установок одной программы не удваивают число,
+    поэтому «из них в KEV» и «из них подтверждено» — подмножества «уязвимостей». «Обнаружений» — строки таблицы обнаружений (установка × уязвимость)."""
+    by_host: dict[int, dict] = {}
+    for r in out:
+        h = by_host.setdefault(r["host_id"], {**{k: r[k] for k in ("name", "ip", "os", "group", "last_connected", "active", "online")}, "rank": 0, "vulns": set(), "kev": set(), "confirmed": set(), "rows": 0, "programs": set()})
+        h["rank"] = max(h["rank"], r["rank"])
+        h["vulns"].add(r["vuln_key"])                    # единица подсчёта во всех столбцах — уникальная уязвимость (общий ключ CVE/БДУ/OSV): повторы из-за нескольких установок не удваивают число
+        h["rows"] += 1
+        if r["kev"]:
+            h["kev"].add(r["vuln_key"])
+        if r["status"] == "confirmed":
+            h["confirmed"].add(r["vuln_key"])
+        h["programs"].add(f"{r['program']} {r['installed_version']}")
+
+    def _list(keys: set[str], cap: int = 12) -> str:
+        ks = sorted(keys)
+        return ", ".join(ks[:cap]) + (f" и ещё {len(ks) - cap}" if len(ks) > cap else "")
+
+    host_rows = sorted(({**{k: v for k, v in h.items() if k != "kev"}, "worst": SEV_RU[next((k for k, v in SEV_RANK.items() if v == h["rank"]), "")], "vulns": len(h["vulns"]), "kev_n": len(h["kev"]), "confirmed": len(h["confirmed"]),
+                         "kev_list": _list(h["kev"]), "vuln_list": _list(h["vulns"], 20), "programs": "; ".join(sorted(h["programs"]))[:300]} for h in by_host.values()),
+                       key=lambda h: (-int(h["kev_n"] > 0), -h["rank"], h["name"].lower()))
+    return host_rows
 
 
 async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
@@ -136,7 +161,7 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     kev_hosts = len({r["host_id"] for r in out if r["kev"]})
     worst: dict[int, str] = {}
     for r in out:
-        lvl = "critical" if r["kev"] or r["rank"] >= 4 else _level(r["rank"])        # подтверждённая эксплуатация — наивысший приоритет независимо от оценки
+        lvl = "critical" if r["kev"] or r["rank"] >= 4 else _level(r["rank"])        # наличие в каталоге CISA KEV — наивысший приоритет независимо от оценки
         cur = worst.get(r["host_id"], "warning")
         worst[r["host_id"]] = lvl if ("warning", "high", "critical").index(lvl) > ("warning", "high", "critical").index(cur) else cur
     lv = {k: sum(1 for w in worst.values() if w == k) for k in ("critical", "high", "warning")}
@@ -151,7 +176,7 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     if p.get("min_severity"):
         conds.append({"label": "Опасность не ниже", "text": SEV_RU[p["min_severity"]]})
     if p.get("exploited_only"):
-        conds.append({"label": "Эксплуатация", "text": "только подтверждённая эксплуатация (CISA KEV)"})
+        conds.append({"label": "Каталог CISA KEV", "text": "только уязвимости из каталога CISA KEV (известна эксплуатация в реальных атаках)"})
     notes = ["Это потенциальные уязвимости, найденные KAV Checker по внешним базам (NVD, CISA KEV, OSV, БДУ ФСТЭК) и каталогу установленного ПО; они НЕ подтверждены Kaspersky Security Center. "
              "Статус сопоставления и основание указаны в каждой строке; совпадение по одному названию программы подтверждением не считается."] + notes
     if by_status["clarify"] or by_status["potential"]:
@@ -161,19 +186,10 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         notes.append("По выбранным условиям затронутых компьютеров не найдено: нет совпадающих версий ПО в каталоге, либо версии исправлены, либо устройства вне периода связи.")
     metrics = [metric("hosts", "Затронуто компьютеров (уникальных)", len(hosts_u), "компьютер с несколькими уязвимостями или программами считается один раз", "danger" if hosts_u else "ok"),
                metric("installs", "Затронутых установок (компьютер × программа)", len(installs)), metric("vulns", "Различных уязвимостей", len(vulns_u)),
-               metric("rows", "Обнаружений (компьютер × уязвимость × установка)", len(out)), metric("kev", "Компьютеров с подтверждённой эксплуатацией (CISA KEV)", kev_hosts, "", "danger" if kev_hosts else ""),
+               metric("rows", "Обнаружений (компьютер × уязвимость × установка)", len(out)), metric("kev", "Компьютеров с уязвимостями из каталога CISA KEV", kev_hosts, "каталог CISA KEV — уязвимости с известной эксплуатацией в реальных атаках; это не означает, что эксплуатация идёт на этом компьютере", "danger" if kev_hosts else ""),
                metric("confirmed", "Подтверждено источником (компьютеров)", by_status["confirmed"]), metric("online", "Из затронутых в сети сейчас", sum(1 for h in hosts_u if hosts[h].get("online") is True),
                                                                                                                  f"не в сети: {sum(1 for h in hosts_u if hosts[h].get('online') is False)}; нет данных: {sum(1 for h in hosts_u if hosts[h].get('online') is None)}")]
-    by_host: dict[int, dict] = {}
-    for r in out:
-        h = by_host.setdefault(r["host_id"], {**{k: r[k] for k in ("name", "ip", "os", "group", "last_connected", "active", "online")}, "rank": 0, "vulns": set(), "kev": 0, "confirmed": 0, "programs": set()})
-        h["rank"] = max(h["rank"], r["rank"])
-        h["vulns"].add(r["vuln_key"])
-        h["kev"] += 1 if r["kev"] else 0
-        h["confirmed"] += 1 if r["status"] == "confirmed" else 0
-        h["programs"].add(f"{r['program']} {r['installed_version']}")
-    host_rows = sorted(({**h, "worst": SEV_RU[next((k for k, v in SEV_RANK.items() if v == h["rank"]), "")], "vulns": len(h["vulns"]), "programs": "; ".join(sorted(h["programs"]))[:300]} for h in by_host.values()),
-                       key=lambda h: (-int(h["kev"] > 0), -h["rank"], h["name"].lower()))
+    host_rows = summarize_hosts(out)
     by_prog: dict[tuple, dict] = {}
     for r in out:
         g = by_prog.setdefault((r["program"], r["installed_version"]), {"program": r["program"], "installed_version": r["installed_version"], "hosts": set(), "vulns": set(), "rank": 0, "best": ""})
@@ -196,45 +212,75 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         g.pop("_r"), g.pop("_k")
     return {"title": f"Уязвимости по внешним базам: {label}", "subtitle": "Потенциально затронутые компьютеры по сведениям NVD, CISA KEV, OSV и БДУ ФСТЭК и каталогу установленного ПО",
             "conditions": conds, "metrics": metrics,
-            "severity": {"title": "Компьютеры по наивысшему приоритету (сумма = затронуто компьютеров; подтверждённая эксплуатация CISA KEV приравнена к критической)",
+            "severity": {"title": "Компьютеры по наивысшему приоритету (сумма = затронуто компьютеров; наличие уязвимости в каталоге CISA KEV приравнено к критической)",
                          "levels": [{"key": k, "label": SEV_LABEL[k], "value": lv[k], "hint": ""} for k in ("critical", "high", "warning")]},
             "notes": notes, "tables": [
-                {"id": "rows", "title": "Обнаружения", "columns": EXT_COLS, "rows": out, "note": "Одна строка — компьютер × уязвимость × установленная программа; у каждой строки указаны статус сопоставления и его основание."},
+                {"id": "rows", "title": "Обнаружения", "columns": EXT_COLS, "rows": out, "note": "Одна строка — компьютер × уязвимость × установленная программа; у каждой строки указаны статус сопоставления и его основание. В таблице «Компьютеры» уязвимости считаются уникально (одна уязвимость на нескольких установках — одна), «Обнаружений» — строки этой таблицы."},
                 {"id": "hosts", "title": "Компьютеры", "columns": [col("name", "Компьютер"), col("ip", "IP-адрес", "mono"), col("os", "ОС"), col("group", "Группа администрирования"), col("worst", "Наивысшая опасность", "sev"),
-                                                                   col("vulns", "Уязвимостей", "num"), col("kev", "Из них эксплуатируются (KEV)", "num"), col("confirmed", "Подтверждено источником", "num"), col("programs", "Программы и версии"),
+                                                                   col("vulns", "Уязвимостей (уникальных)", "num"), col("kev_n", "Из них в каталоге CISA KEV", "num"), col("confirmed", "Из них подтверждено источником", "num"), col("rows", "Обнаружений (установка × уязвимость)", "num"),
+                                                                   col("kev_list", "Какие из них в KEV", "mono"), col("vuln_list", "Идентификаторы уязвимостей", "mono"), col("programs", "Программы и версии"),
                                                                    col("last_connected", "Последнее подключение к KSC (UTC)", "date"), col("active", "Связь за период"), col("online", "В сети сейчас")], "rows": host_rows},
                 {"id": "programs", "title": "Программы", "columns": [col("program", "Программа"), col("installed_version", "Установленная версия", "mono"), col("hosts", "Компьютеров", "num"), col("vulns", "Уязвимостей", "num"),
                                                                     col("status_ru", "Лучший статус"), col("worst", "Наивысшая опасность", "sev")], "rows": prog_rows},
                 {"id": "vulns", "title": "Уязвимости", "columns": [col("vuln_key", "Уязвимость", "mono"), col("ids", "Идентификаторы", "mono"), col("title", "Название"), col("severity_ru", "Опасность", "sev"), col("score", "CVSS", "num"),
-                                                                    col("kev", "Эксплуатация (CISA KEV)"), col("hosts", "Компьютеров", "num"), col("installs", "Установок", "num"), col("status_ru", "Лучший статус"),
+                                                                    col("kev", "В каталоге CISA KEV"), col("hosts", "Компьютеров", "num"), col("installs", "Установок", "num"), col("status_ru", "Лучший статус"),
                                                                     col("sources", "Источники"), col("fix", "Исправление")], "rows": vuln_rows}]}
 
 
 class ExtIndex:
-    """Сопоставление «установленная запись реестра → потенциальные уязвимости» для источника: считается один раз на состояние баз (≈ секунды на крупной базе) и используется всеми зонами и отчётами."""
+    """Сопоставление «установленная запись реестра → потенциальные уязвимости» для источника: считается один раз на состояние баз и каталога порциями (без загрузки всех записей источников в память).
+    Хранится компактно: запись реестра → номер версии каталога → кортежи (уязвимость, статус, основание); сведения об уязвимостях читаются позже только для найденных у компьютеров."""
 
-    def __init__(self, by_pid: dict[int, list[M.Match]], srcs: dict[str, set[str]], notes: list[str]):
-        self.by_pid, self.srcs, self.notes = by_pid, srcs, notes
+    def __init__(self, by_pid: dict[int, int], versions: list[tuple[str, str]], hits: dict[int, list[tuple]], srcs: dict[str, str], notes: list[str], pnames: dict[str, str] | None = None):
+        self.by_pid, self.versions, self.hits, self.srcs, self.notes, self.pnames = by_pid, versions, hits, srcs, notes, pnames or {}
+
+    def matches_for(self, pid: int) -> list[tuple]:
+        vid = self.by_pid.get(pid)
+        return self.hits.get(vid, ()) if vid is not None else ()
+
+    def stats(self) -> dict:
+        return {"installs": len(self.by_pid), "versions": len(self.versions), "matches": sum(len(v) for v in self.hits.values()), "vulns": len(self.srcs)}
 
 
-async def build_ext_index(ctx: Ctx, statuses: tuple[str, ...] = M.AFFECTED) -> ExtIndex:
+async def build_ext_index(ctx: Ctx, statuses: tuple[str, ...] = M.AFFECTED, *, res=None) -> ExtIndex:
     if ctx.sm is None or ctx.source_id is None:
-        return ExtIndex({}, {}, ["Внешние базы недоступны: нет доступа к локальной базе уязвимостей"])
+        return ExtIndex({}, [], {}, {}, ["Внешние базы недоступны: нет доступа к локальной базе уязвимостей"])
     async with ctx.sm() as db:
         prods, maps = await M.load_context(db, ctx.source_id)
         if not prods:
-            return ExtIndex({}, {}, ["Каталог программ источника ещё не построен: потенциальные совпадения с внешними базами не рассчитаны"])
-        keys = list((await db.execute(select(VdbFinding.vuln_key).where(VdbFinding.source_id == ctx.source_id))).scalars().all())
-        affs = await M.affected_for(db, keys)
-    matches = [m for m in M.matches_from(M.Matcher(prods, maps), affs) if m.status in statuses]
-    by_pid: dict[int, list[M.Match]] = {}
-    for m in matches:
-        for pid in m.product_ids:
-            by_pid.setdefault(int(pid), []).append(m)
-    srcs: dict[str, set[str]] = {}
-    for a in affs:
-        srcs.setdefault(a.vuln_key, set()).add(a.source)
-    return ExtIndex(by_pid, srcs, [])
+            return ExtIndex({}, [], {}, {}, ["Каталог программ источника ещё не построен: потенциальные совпадения с внешними базами не рассчитаны"])
+        matcher = M.Matcher(prods, maps)
+        keys = sorted((await db.execute(select(VdbFinding.vuln_key).where(VdbFinding.source_id == ctx.source_id))).scalars().all())
+        vid_of: dict[tuple[str, str], int] = {}
+        versions: list[tuple[str, str]] = []
+        by_pid: dict[int, int] = {}
+        hits: dict[int, list[tuple]] = {}
+        srcs: dict[str, str] = {}
+        pnames: dict[str, str] = {}
+        async for _part, rows in M.iter_affected(db, keys, 200):             # порциями по уязвимостям: в памяти только порция и компактный результат
+            ms = [m for m in M.matches_from(matcher, rows) if m.status in statuses]
+            if ms:
+                by_src: dict[str, set[str]] = {}
+                for a in rows:
+                    by_src.setdefault(a.vuln_key, set()).add(a.source)
+                for m in ms:
+                    k = (m.product_key, m.version)
+                    vid = vid_of.get(k)
+                    if vid is None:
+                        vid = vid_of[k] = len(versions)
+                        versions.append(k)
+                        for pid in m.product_ids:
+                            by_pid[int(pid)] = vid
+                    pnames[m.product_key] = m.product_name
+                    hits.setdefault(vid, []).append((m.vuln_key, m.status, m.basis))
+                    if m.vuln_key not in srcs:
+                        srcs[m.vuln_key] = ", ".join(sorted(by_src.get(m.vuln_key, set())))
+            del rows, ms
+            if res is not None:
+                await res.breathe("индекс внешних баз")
+            if ctx.cancelled():
+                raise RuntimeError("cancelled")
+    return ExtIndex(by_pid, versions, hits, srcs, [], pnames)
 
 
 async def ext_rows_for_hosts(client: SourceClient, ctx: Ctx, host_ids: list[int], *, index: ExtIndex | None = None, chunk: int = 400) -> tuple[list[dict], list[str]]:
@@ -244,31 +290,33 @@ async def ext_rows_for_hosts(client: SourceClient, ctx: Ctx, host_ids: list[int]
     index = index or await build_ext_index(ctx)
     if index.notes:
         return [], index.notes
-    hits: list[tuple[dict, M.Match]] = []
+    hits: list[tuple[dict, tuple]] = []
     seen: set[tuple] = set()
     for i in range(0, len(host_ids), chunk):
         if ctx.cancelled():
             raise RuntimeError("cancelled")
         for r in await client.run(q.INSTALLS_FOR_HOSTS.format(ids=q.ids_list(host_ids[i:i + chunk])), max_rows=2_000_000):
-            for m in index.by_pid.get(int(r["product_id"]), ()):
-                k = (r["host_id"], r["product_id"], m.vuln_key)
+            pid = int(r["product_id"])
+            vid = index.by_pid.get(pid)
+            for m in (index.hits.get(vid, ()) if vid is not None else ()):
+                k = (r["host_id"], pid, m[0])
                 if k not in seen:
                     seen.add(k)
-                    hits.append((r, m))
+                    hits.append((r, (*m, index.versions[vid][0])))
         ctx.progress(f"внешние базы: совпадений {len(hits)}, компьютеров проверено {min(i + chunk, len(host_ids))} из {len(host_ids)}")
-    need = sorted({m.vuln_key for _, m in hits})
+    need = sorted({m[0] for _, m in hits})
     meta: dict[str, VdbVuln] = {}
     async with ctx.sm() as db:
         for i in range(0, len(need), 400):
             for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_(need[i:i + 400])))).scalars().all():
                 meta[v.vuln_key] = v
     out: list[dict] = []
-    for r, m in hits:
-        v = meta.get(m.vuln_key)
+    for r, (vuln_key, status, basis, pkey) in hits:
+        v = meta.get(vuln_key)
         rank = v.sev_rank if v else 0
-        out.append({"host_id": int(r["host_id"]), "vuln_key": m.vuln_key, "ids": (v.ids_text.upper() if v else m.vuln_key)[:120], "title": (v.title if v else "")[:200],
+        out.append({"host_id": int(r["host_id"]), "vuln_key": vuln_key, "ids": (v.ids_text.upper() if v else vuln_key)[:120], "title": (v.title if v else "")[:200],
                     "severity": "critical" if (v and v.exploited) or rank >= 4 else _level(rank), "rank": rank, "severity_ru": SEV_RU[next((k2 for k2, r2 in SEV_RANK.items() if r2 == rank), "")],
-                    "kev": "да" if v and v.exploited else "", "status": m.status, "status_ru": M.STATUS_RU[m.status], "basis": m.basis, "program": m.product_name, "installed_version": r.get("version") or "",
-                    "sources": ", ".join(sorted(index.srcs.get(m.vuln_key, set()))), "fix": "есть сведения об исправлении" if v and v.has_fix else "нет сведений", "product_id": int(r["product_id"]),
+                    "kev": "да" if v and v.exploited else "", "status": status, "status_ru": M.STATUS_RU[status], "basis": basis, "program": index.pnames.get(pkey, pkey), "installed_version": r.get("version") or "",
+                    "sources": index.srcs.get(vuln_key, ""), "fix": "есть сведения об исправлении" if v and v.has_fix else "нет сведений", "product_id": int(r["product_id"]),
                     "score": v.score if v else None, "app_name": r.get("name") or "", "publisher": r.get("publisher") or ""})
     return out, []

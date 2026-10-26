@@ -61,6 +61,8 @@ services:
       postgres: { condition: service_healthy }
     environment:
       <<: *app-env
+      MALLOC_ARENA_MAX: "2"
+    mem_limit: ${BACKEND_MEM_LIMIT:-1g}
     volumes:
       - ${DATA_ROOT}/reports:/data/reports
       - ${DATA_ROOT}/updater:/data/updater
@@ -81,6 +83,9 @@ services:
       postgres: { condition: service_healthy }
     environment:
       <<: *app-env
+      MALLOC_ARENA_MAX: "2"                       # меньше арен glibc — меньше фрагментация и «раздувание» RSS при порционной обработке
+    mem_limit: ${WORKER_MEM_LIMIT:-3g}            # страховка: фоновая служба сама удерживает память на 50 % (мягкий) и 75 % (жёсткий предел) этого значения
+    memswap_limit: ${WORKER_MEM_LIMIT:-3g}        # без использования swap: при превышении контейнер перезапускается, а не загружает диск и систему
     command: ["python", "-m", "app.worker"]
     volumes:
       - ${DATA_ROOT}/reports:/data/reports

@@ -467,8 +467,12 @@ async def host_vulns(host_id: int, request: Request, su: SessionUser = Depends(r
         return {"items": [], "catalog": bool(prods)}
     for p in mine:
         p.versions = [v for v in p.versions if set(v.get("product_ids") or []) & ids]
-    affs = await M.reverse_affected(db, mine, maps)
-    ms = [m for m in M.matches_from(M.Matcher(mine, maps), affs, only_active=False) if m.status in M.AFFECTED]
+    matcher = M.Matcher(mine, maps)
+    ms: list[M.Match] = []
+    async for _part, rows in M.iter_affected(db, await M.reverse_keys(db, mine, maps), 200):       # порциями: память не зависит от числа уязвимостей
+        ms += [m for m in M.matches_from(matcher, rows, only_active=False) if m.status in M.AFFECTED]
+        if len(ms) > 20_000:
+            break
     meta = {v.vuln_key: v for i in range(0, len(ms), 400) for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_({m.vuln_key for m in ms[i:i + 400]})))).scalars().all()}
     items = [{"key": m.vuln_key, "title": meta[m.vuln_key].title if m.vuln_key in meta else "", "severity_ru": SEV_RU[next((k for k, r in SEV_RANK.items() if r == (meta[m.vuln_key].sev_rank if m.vuln_key in meta else 0)), "")],
               "sev_rank": meta[m.vuln_key].sev_rank if m.vuln_key in meta else 0, "exploited": bool(meta.get(m.vuln_key) and meta[m.vuln_key].exploited), "product": m.product_name, "version": m.version,
@@ -486,6 +490,15 @@ class MappingIn(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+async def _recheck(db: AsyncSession, su: SessionUser, product_key: str) -> None:
+    """Пересчёт находок только по уязвимостям названного продукта (до 3000): быстро и без нагрузки на память; остальное сверит фоновая служба по отпечатку данных."""
+    if not su.current_source_id:
+        return
+    keys = (await db.execute(select(VdbAffected.vuln_key).where(VdbAffected.product_key == product_key).distinct().limit(3000))).scalars().all()
+    if keys:
+        await analyze(db, su.current_source_id, keys=list(keys))
+
+
 @router.get("/mappings")
 async def mappings(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(VdbMapping).order_by(VdbMapping.created_at.desc()))).scalars().all()
@@ -500,21 +513,21 @@ async def add_mapping(body: MappingIn, su: SessionUser = Depends(require_analyst
     db.add(m)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="vdb.mapping.add", target_type="vdb_mapping", target_id=str(m.id), details={"product": m.product_key, "catalog": m.catalog_key, "action": m.action})
     await db.flush()
-    if su.current_source_id:      # находки выбранного источника пересчитываются сразу, остальных — фоновой службой
-        await analyze(db, su.current_source_id, keys=None)
     await db.commit()
+    await _recheck(db, su, m.product_key)          # затронутые решением уязвимости пересчитываются сразу, полный пересчёт по всему каталогу — фоновая служба
     return {"id": str(m.id)}
 
 
 @router.delete("/mappings/{mid}", status_code=204)
 async def delete_mapping(mid: uuid.UUID, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+    pk = (await db.execute(select(VdbMapping.product_key).where(VdbMapping.id == mid))).scalar_one_or_none()
     r = await db.execute(delete(VdbMapping).where(VdbMapping.id == mid))
     if not r.rowcount:
         raise HTTPException(status_code=404, detail="Решение не найдено")
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="vdb.mapping.delete", target_type="vdb_mapping", target_id=str(mid))
-    if su.current_source_id:
-        await analyze(db, su.current_source_id, keys=None)
     await db.commit()
+    if pk:
+        await _recheck(db, su, pk)
 
 
 @router.get("/suggest-products")

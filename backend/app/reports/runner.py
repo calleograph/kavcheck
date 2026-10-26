@@ -19,6 +19,7 @@ from ..ksc.grouping import Rule
 from ..models import GroupingRule, KscSource, ReportJob, utcnow
 from ..services import catalog as catalog_svc
 from ..services.audit import Journal
+from ..services.resources import RES
 from ..services.settings import ReportsSettings, SettingsService
 from . import audit, builder, export, quick, quick_export
 
@@ -65,7 +66,8 @@ class Runner:
 
     async def run_job(self, job: ReportJob) -> None:
         async with self._sem:
-            await self._execute(job)
+            async with RES.heavy(f"отчёт {job.kind}", 1):          # отчёты идут под общим ограничителем: при занятых слотах или нехватке памяти ждут, а не копят память
+                await self._execute(job)
 
     async def _execute(self, job: ReportJob) -> None:
         if job.kind == "version_audit":
@@ -221,7 +223,7 @@ class Runner:
         params = {k: v for k, v in (job.params or {}).items() if not k.startswith("_") and k != "active_days"}
         try:
             async with self._sm() as db:
-                doc = await self._zones.zone_doc(db, zone_ids=params["zone_ids"], params=params, source_ids=job.source_ids or None,
+                doc = await self._zones.zone_doc(db, zone_ids=params["zone_ids"], params=params, source_ids=job.source_ids or None, refresh=bool(params.get("refresh_data")),
                                                  progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"])
             if job.title and job.title != quick.KIND_TITLE.get(job.kind):
                 doc["title"] = job.title

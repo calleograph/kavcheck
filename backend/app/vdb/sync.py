@@ -18,6 +18,7 @@ from ..config import Settings
 from ..models import CaCertificate, CatalogState, KscSource, VdbAffected, VdbFinding, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
 from ..services.settings import SettingsService
 from ..services.audit import Journal
+from ..services.resources import RES, MemoryPressure, Resources
 from . import match as M
 from . import sources as S
 from . import store
@@ -42,6 +43,7 @@ class VdbSync:
         self._http_factory, self._sleep = http_factory, sleep
         self._running: set[str] = set()
         self._analyzed: dict[uuid.UUID, str] = {}
+        self._retry_at: dict[uuid.UUID, float] = {}
 
     # ------------------------------------------------------------------------------------------ запуск источника
     async def _http(self, db: AsyncSession, key: str, row: VdbSource) -> Http:
@@ -220,21 +222,29 @@ class VdbSync:
                     if self._analyzed.get(st.source_id) != rev:
                         todo.append((st.source_id, rev))
         for sid, rev in todo:
-            await self.analyze_full(sid)
-            self._analyzed[sid] = rev
+            if time.monotonic() < self._retry_at.get(sid, 0):
+                continue
+            try:
+                await self.analyze_full(sid)
+                self._analyzed[sid] = rev
+            except MemoryPressure as exc:               # память на пределе: сделанное сохранено порциями, повторим позже
+                self._retry_at[sid] = time.monotonic() + 600
+                log.warning("Анализ уязвимостей отложен: %s", exc)
 
     async def analyze_keys(self, keys: set[str]) -> None:
-        async with self._sm() as db:
-            sids = [s for s in (await db.execute(select(KscSource.id).where(KscSource.is_active.is_(True)))).scalars().all()]
-            for sid in sids:
-                await analyze(db, sid, keys=sorted(keys))
-                self._analyzed[sid] = await store.revision(db, sid)
-            await db.commit()
+        async with RES.heavy("анализ уязвимостей", RES.slots):
+            async with self._sm() as db:
+                sids = [s for s in (await db.execute(select(KscSource.id).where(KscSource.is_active.is_(True)))).scalars().all()]
+                for sid in sids:
+                    await analyze(db, sid, keys=sorted(keys), res=RES)
+                    self._analyzed[sid] = await store.revision(db, sid)
+                await db.commit()
 
     async def analyze_full(self, source_id: uuid.UUID) -> int:
-        async with self._sm() as db:
-            n = await analyze(db, source_id, keys=None)
-            await db.commit()
+        async with RES.heavy("анализ уязвимостей", RES.slots):         # тяжёлые задачи (каталог, анализ, расчёт дашбордов) идут по одной
+            async with self._sm() as db:
+                n = await analyze(db, source_id, keys=None, res=RES)
+                await db.commit()
         return n
 
 
@@ -242,49 +252,55 @@ def _utc(d: datetime) -> datetime:
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
-async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None) -> int:
-    """Сопоставить уязвимости с каталогом источника и обновить находки (без обращения к KSC). keys=None — полный пересчёт по продуктам каталога."""
+async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None, *, batch: int = 300, res: Resources | None = None) -> int:
+    """Сопоставить уязвимости с каталогом источника и обновить находки (без обращения к KSC). keys=None — полный пересчёт по продуктам каталога.
+    Данные обрабатываются порциями по `batch` уязвимостей: записи источников читаются как строки без ORM, результат порции сразу сохраняется и фиксируется, память не растёт
+    с числом уязвимостей (в памяти — каталог, множество уже обработанных ключей и одна порция). Прерванный пересчёт безопасно повторяется: находки меняются по ключу."""
     prods, maps = await M.load_context(db, source_id)
     if not prods:
         return 0
     matcher = M.Matcher(prods, maps)
-    if keys is None:
-        affs = await M.reverse_affected(db, prods, maps)
-        scope = None
-    else:
-        affs = await M.affected_for(db, keys)
-        scope = set(keys)
-    matches = [m for m in M.matches_from(matcher, affs) if m.status in M.AFFECTED]
-    by: dict[str, list[M.Match]] = {}
-    for m in matches:
-        by.setdefault(m.vuln_key, []).append(m)
-    meta = {}
-    ks = list(by)
-    for i in range(0, len(ks), 400):
-        for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_(ks[i:i + 400])))).scalars().all():
-            meta[v.vuln_key] = v
-    existing = {f.vuln_key: f for f in (await db.execute(select(VdbFinding).where(VdbFinding.source_id == source_id))).scalars().all()}
+    all_keys = await M.reverse_keys(db, prods, maps) if keys is None else sorted(set(keys))
+    scope = None if keys is None else set(keys)
+    matched: set[str] = set()
     now = utcnow()
-    for k, ms in by.items():
-        v = meta.get(k)
-        best = max(ms, key=lambda m: M.STATUS_RANK[m.status]).status
-        prod_rows: dict[str, dict] = {}
-        for m in ms:
-            p = prod_rows.setdefault(m.product_key, {"key": m.product_key, "name": m.product_name, "versions": [], "installs": 0, "hosts": 0})
-            p["versions"].append(m.version)
-            p["installs"] += m.installs_active
-            p["hosts"] += m.hosts_active
-        fields = dict(status=best, sev_rank=v.sev_rank if v else 0, exploited=bool(v.exploited) if v else False, products=sorted(prod_rows.values(), key=lambda p: -p["installs"])[:30],
-                      installs=sum(p["installs"] for p in prod_rows.values()), hosts_max=sum(p["hosts"] for p in prod_rows.values()), updated_at=now)
-        f = existing.get(k)
-        if f is None:
-            # первичный просмотр базы: давние уязвимости (изменены раньше 90 суток назад) — исходное состояние, а не новость для специалиста
-            old = bool(v and v.modified and _utc(v.modified) < now - timedelta(days=BACKLOG_DAYS))
-            db.add(VdbFinding(source_id=source_id, vuln_key=k, first_seen_at=now, seen_at=now if old else None, seen_by="исходное состояние базы" if old else None, **fields))
-        else:
-            for a, b in fields.items():
-                setattr(f, a, b)
-    stale = [k for k in existing if k not in by and (scope is None or k in scope)]
+    async for part, rows in M.iter_affected(db, all_keys, batch):
+        matches = [m for m in M.matches_from(matcher, rows) if m.status in M.AFFECTED]
+        by: dict[str, list[M.Match]] = {}
+        for m in matches:
+            by.setdefault(m.vuln_key, []).append(m)
+        del rows, matches
+        if by:
+            ks = list(by)
+            meta = {v.vuln_key: v for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_(ks)))).scalars().all()}
+            existing = {f.vuln_key: f for f in (await db.execute(select(VdbFinding).where(VdbFinding.source_id == source_id, VdbFinding.vuln_key.in_(ks)))).scalars().all()}
+            for k, ms in by.items():
+                v = meta.get(k)
+                best = max(ms, key=lambda m: M.STATUS_RANK[m.status]).status
+                prod_rows: dict[str, dict] = {}
+                for m in ms:
+                    p = prod_rows.setdefault(m.product_key, {"key": m.product_key, "name": m.product_name, "versions": [], "installs": 0, "hosts": 0})
+                    p["versions"].append(m.version)
+                    p["installs"] += m.installs_active
+                    p["hosts"] += m.hosts_active
+                fields = dict(status=best, sev_rank=v.sev_rank if v else 0, exploited=bool(v.exploited) if v else False, products=sorted(prod_rows.values(), key=lambda p: -p["installs"])[:30],
+                              installs=sum(p["installs"] for p in prod_rows.values()), hosts_max=sum(p["hosts"] for p in prod_rows.values()), updated_at=now)
+                f = existing.get(k)
+                if f is None:
+                    # первичный просмотр базы: давние уязвимости (изменены раньше 90 суток назад) — исходное состояние, а не новость для специалиста
+                    old = bool(v and v.modified and _utc(v.modified) < now - timedelta(days=BACKLOG_DAYS))
+                    db.add(VdbFinding(source_id=source_id, vuln_key=k, first_seen_at=now, seen_at=now if old else None, seen_by="исходное состояние базы" if old else None, **fields))
+                else:
+                    for a, b in fields.items():
+                        setattr(f, a, b)
+            matched |= set(by)
+        await db.commit()                       # порция сохранена: транзакция не остаётся открытой на время вычислений следующей
+        db.expunge_all()
+        if res is not None:
+            await res.breathe("анализ уязвимостей")
+    existing_keys = (await db.execute(select(VdbFinding.vuln_key).where(VdbFinding.source_id == source_id))).scalars().all()
+    stale = [k for k in existing_keys if k not in matched and (scope is None or k in scope)]
     for i in range(0, len(stale), 400):
         await db.execute(delete(VdbFinding).where(VdbFinding.source_id == source_id, VdbFinding.vuln_key.in_(stale[i:i + 400])))
-    return len(by)
+    await db.commit()
+    return len(matched)

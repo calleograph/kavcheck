@@ -144,7 +144,7 @@ async def detail_rows(client: SourceClient, *, descr_ids: list[int], vp_ids: lis
         params["sev"] = severity
     if patchable:
         extra.append("o.bPatchesAvailable = 1")
-    sql = q.VULN_DETAIL.format(extra=" AND " + " AND ".join(extra))
+    sql = q.VULN_DETAIL.format(top=50000, extra=" AND " + " AND ".join(extra))
     out: list[dict] = []
     after = 0
     while True:
@@ -191,3 +191,31 @@ async def descr_list(client: SourceClient, *, active_days: int | None, exclude_s
                     "url": r.get("url") or "", "cve": sorted(nm["cve"]), "kb": nm["kb"], "products": [p for p, _ in pr if p][:6], "hosts": int(r["hosts"]), "total": int(r["total"]),
                     "patchable": int(r.get("patchable") or 0), "last_detected": r.get("last_detected")})
     return out
+
+
+async def iter_detail_pages(client: SourceClient, *, host_ids: list[int] | None = None, exclude_slaves: bool = True, page: int = 20000, cancelled=lambda: False):
+    """Действующие обнаружения порциями (по page строк, keyset по o.nId): весь источник или выбранные компьютеры. В памяти — одна порция, а не весь набор."""
+    extra = ["h.bIsSlaveServer = 0"] if exclude_slaves else []
+    if host_ids is not None:
+        extra.append(f"o.nHostId IN ({q.ids_list(host_ids[:5000])})")
+    sql = q.VULN_DETAIL.format(top=int(page), extra=(" AND " + " AND ".join(extra)) if extra else "")
+    after = 0
+    while True:
+        if cancelled():
+            raise RuntimeError("cancelled")
+        rows = await client.run(sql, {"after": after}, max_rows=page)
+        if rows:
+            yield rows
+        if len(rows) < page:
+            return
+        after = int(rows[-1]["occurrence_id"])
+
+
+async def stamp(client: SourceClient) -> str:
+    """Лёгкий отпечаток данных KSC (число компьютеров и действующих обнаружений, наибольшие идентификаторы): изменился — значит, после расчёта пришли новые сведения."""
+    try:
+        r = (await client.run(q.KSC_STAMP, max_rows=1))[0]
+        return f"{r.get('hosts')}:{r.get('max_host')}:{r.get('vulns')}:{r.get('max_occ')}"
+    except Exception:  # noqa: BLE001 — нет представлений уязвимостей: отпечаток по компьютерам
+        r = (await client.run(q.COUNT_HOSTS, max_rows=1))[0]
+        return f"{r.get('n')}:::"

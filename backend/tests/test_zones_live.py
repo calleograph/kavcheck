@@ -9,6 +9,7 @@ from openpyxl import load_workbook
 from app.reports.runner import job_dir
 from tests.test_audit_e2e import _run, _setup
 from tests.test_ksc_live import HOST, params
+from tests.zc import settle
 
 pytestmark = pytest.mark.skipif(not HOST, reason="нет синтетической базы KSC (KSC_TEST_HOST)")
 # KAVTEST: 192.0.2.10 ksc-server(1, активен, в сети), .21 web-01(2), .22 web-02(3, 2 сут), .23 app-01(4, 10 сут), .24 old-srv(5, 45 сут — неактивен), .30 SQL-CL-01(9, кластер),
@@ -32,6 +33,7 @@ async def setup(client, app):
     sid, runner = await _setup(client, app)
     z_srv = await mk_zone(client, "Серверы", [("net", "192.0.2.10-192.0.2.23")], contacts=[{"name": "Иван Петров", "position": "Начальник ИТ", "email": "petrov@example.local", "role": "responsible"}])
     z_arm = await mk_zone(client, "АРМ", [("net", "192.0.2.96/27")], contacts=[{"email": "arm@example.local", "role": "group"}])
+    await settle(app)
     return sid, runner, z_srv, z_arm
 
 
@@ -61,6 +63,7 @@ async def test_zone_membership_stats_unassigned_and_inactive(client, app):
 async def test_overlap_is_visible_priority_and_pin_resolve(client, app):
     sid, runner, z_srv, z_arm = await setup(client, app)
     z_web = await mk_zone(client, "Веб", [("net", "192.0.2.21-192.0.2.22")])
+    await settle(app, full=False)
     c = (await client.get("/api/v1/admin/zones/overview/conflicts")).json()
     assert c["total"] == 2 and all(x["conflict"] for x in c["items"]) and {x["name"] for x in c["items"]} == {"web-01.example.local", "web-02.example.local"}
     srv, web = await dash(client, z_srv), await dash(client, z_web)
@@ -68,13 +71,16 @@ async def test_overlap_is_visible_priority_and_pin_resolve(client, app):
     assert {h["name"] for h in web["items"]} == {"web-01.example.local", "web-02.example.local"}
     r = await client.put(f"/api/v1/admin/zones/{z_web}", json={"name": "Веб", "priority": 10, "rules": [{"kind": "net", "value": "192.0.2.21-192.0.2.22"}]})      # приоритет решает
     assert r.status_code == 200
+    await settle(app, full=False)
     c = (await client.get("/api/v1/admin/zones/overview/conflicts")).json()
     assert c["total"] == 2 and not any(x["conflict"] for x in c["items"]) and {x["via"] for x in c["items"]} == {"priority"}
     assert {h["name"] for h in (await dash(client, z_srv))["items"]} == {"ksc-server", "app-01.example.local"}
     pin = await client.post("/api/v1/admin/zones/pins", json={"source_id": sid, "host_id": 2, "host_name": "web-01", "zone_id": z_srv})
     assert pin.status_code == 201
+    await settle(app, full=False)
     assert "web-01.example.local" in {h["name"] for h in (await dash(client, z_srv))["items"]}
     assert (await client.delete(f"/api/v1/admin/zones/pins/{sid}/2")).status_code == 204
+    await settle(app, full=False)
     # предварительный просмотр состава до сохранения
     pv = (await client.post("/api/v1/admin/zones/preview/composition", json={"rules": [{"kind": "net", "value": "192.0.2.100-192.0.2.103"}], "name": "Проба"})).json()
     assert pv["total"] == 3 and pv["active"] == 2 and {h["name"] for h in pv["items"]} == {"ws-001", "ws-002", "ws-003"} and pv["all_hosts"] >= 8
@@ -150,6 +156,7 @@ async def test_two_ksc_sources_are_merged_without_double_counting_hosts_ids(clie
     r = await client.post("/api/v1/admin/sources", json={"name": "KAVTEST-2", "host": p.host, "port": p.port, "database": p.database, "username": p.username, "password": p.password,
                                                        "tls_mode": "request", "trust_server_cert": True})
     sid2 = r.json()["id"]
+    await settle(app)
     d = await dash(client, z_arm)
     assert d["stats"]["total"] == 6 and {s["name"] for s in d["sources"]} == {"KAVTEST", "KAVTEST-2"}                           # одинаковые идентификаторы хостов в разных источниках не склеиваются
     assert {(h["source_id"], h["host_id"]) for h in d["items"]} == {(sid, 6), (sid, 7), (sid2, 6), (sid2, 7)}
@@ -167,6 +174,7 @@ async def test_external_potential_is_separate_from_confirmed_and_respects_triage
     async with app.state.session_maker() as db:
         await analyze(db, uuid.UUID(sid), None)
         await db.commit()
+    await settle(app)
     srv = await dash(client, z_srv)
     h1 = next(h for h in srv["items"] if h["host_id"] == 1)
     assert h1["ext"]["total"] == 1 and h1["ext"]["kev"] == 1 and h1["ksc"]["critical"] >= 1                     # подтверждённая KLA10001 и потенциальная CVE-2099-2 — раздельно

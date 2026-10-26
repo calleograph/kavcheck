@@ -164,8 +164,30 @@ class OrganizationSettings(_Group):
         return v
 
 
+class ZonecacheSettings(_Group):
+    """Ночной расчёт данных зон ответственности и ограничения фоновой обработки. Страницы зон читают готовые данные; тяжёлые вычисления выполняет worker по одному."""
+    enabled: bool = True
+    at: str = Field(default="03:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")             # время начала ночного расчёта (по часовому поясу ниже)
+    timezone: str = Field(default="", max_length=64)                   # пусто — часовой пояс организации (Общие настройки)
+    parallel: int = Field(default=1, ge=1, le=2)                       # сколько тяжёлых фоновых задач (расчёт зон, анализ уязвимостей, каталог) одновременно
+    intensity: Literal["low", "normal", "high"] = "normal"             # размер порции и паузы между порциями: low — медленнее и мягче для KSC и сервера
+    max_detections: int = Field(default=3_000_000, ge=10_000, le=20_000_000)    # больше обнаружений на источник — сохраняются только счётчики по компьютерам
+    stale_hours: int = Field(default=36, ge=1, le=720)                 # отчёты по расписанию обновляют данные зоны, если им больше этого возраста
+
+    @field_validator("timezone")
+    @classmethod
+    def _tz(cls, v: str) -> str:
+        if v:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # noqa: PLC0415
+            try:
+                ZoneInfo(v)
+            except (ZoneInfoNotFoundError, ValueError):
+                raise ValueError("timezone: неизвестный часовой пояс (пример: Europe/Moscow)") from None
+        return v
+
+
 GROUPS: dict[str, type[_Group]] = {"general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
-                                   "organization": OrganizationSettings}
+                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings}
 
 
 class SettingsService:

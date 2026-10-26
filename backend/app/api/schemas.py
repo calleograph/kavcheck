@@ -268,6 +268,7 @@ class QuickZone(BaseModel):
     show_excluded: bool = False
     bases_days: int = Field(default=3, ge=1, le=90)
     scan_days: int = Field(default=30, ge=1, le=365)
+    refresh_data: bool = False                                             # обновить данные зоны из KSC перед формированием (иначе — подготовленные, с датой среза в отчёте)
     hosts: list[str] = Field(default_factory=list, max_length=500)          # выбранные компьютеры «источник:идентификатор» — отчёт только по ним
 
     @model_validator(mode="after")

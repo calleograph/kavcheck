@@ -696,3 +696,134 @@ class VulnTriageEvent(Base):
     from_status: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     to_status: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
+# ------------------------------------------------------------------------------------------------ подготовленные данные зон (ночной расчёт)
+class ZcSource(Base):
+    """Состояние подготовленных данных зон по источнику KSC: текущее поколение, время и срез данных, ход расчёта. Читатели видят только поколение `gen`: новое записывается рядом и подменяется одной транзакцией."""
+    __tablename__ = "zc_sources"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    gen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                       # 0 — данных ещё нет
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="empty")           # empty | building | ready | failed
+    built_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                              # срез данных KSC (начало последнего успешного чтения)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    progress: Mapped[str | None] = mapped_column(String(300))
+    error: Mapped[str | None] = mapped_column(Text)
+    hosts_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detections_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    agg_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notes: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    stamp: Mapped[str] = mapped_column(String(200), nullable=False, default="")                 # отпечаток данных KSC в момент расчёта
+    probe_stamp: Mapped[str] = mapped_column(String(200), nullable=False, default="")           # отпечаток по последней лёгкой проверке KSC
+    probe_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    vdb_rev: Mapped[str] = mapped_column(String(64), nullable=False, default="")                # состояние баз уязвимостей и каталога при расчёте (хэш)
+    vdb_rev_now: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+
+class ZcHost(Base):
+    """Компьютер источника в подготовленных данных: колонки для фильтров, сортировки и итогов (без чтения KSC), data — остальные сведения для карточки и отчётов."""
+    __tablename__ = "zc_hosts"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    host_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    gen: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    search: Mapped[str] = mapped_column(String(800), nullable=False, default="")                # имя, FQDN и адрес в нижнем регистре
+    ip_num: Mapped[int | None] = mapped_column(BigInteger)
+    os: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    last_connected: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    days_since: Mapped[float | None] = mapped_column(Float)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    online: Mapped[bool | None] = mapped_column(Boolean)
+    has_av: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    bases_age: Mapped[float | None] = mapped_column(Float)                                      # возраст антивирусных баз в сутках на момент среза
+    scan_age: Mapped[float | None] = mapped_column(Float)
+    p_no_av: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    p_rtp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    p_inf: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    p_lic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    p_reb: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    k_crit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    k_high: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    k_warn: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    k_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    k_acc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    k_exc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    k_rev: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    e_crit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    e_high: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    e_warn: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    e_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    e_kev: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    e_conf: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    e_acc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    e_exc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conflict: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    data: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    __table_args__ = (Index("ix_zc_hosts_gen", "source_id", "gen"),)
+
+
+class ZcHostZone(Base):
+    """Принадлежность компьютера зоне (zone_id — идентификатор зоны или «none»): пересчитывается при изменении зон без обращения к KSC."""
+    __tablename__ = "zc_hostzones"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    host_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    gen: Mapped[int] = mapped_column(Integer, primary_key=True)
+    zone_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    __table_args__ = (Index("ix_zc_hostzones_zone", "zone_id", "source_id", "gen"),)
+
+
+class ZcDetection(Base):
+    """Обнаружение (подтверждённое KSC или потенциальное по внешним базам) на компьютере: строки для карточки, таблиц и отчётов, с решением специалиста (bucket, triage)."""
+    __tablename__ = "zc_detections"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    gen: Mapped[int] = mapped_column(Integer, nullable=False)
+    host_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    origin: Mapped[str] = mapped_column(String(4), nullable=False)                              # ksc | ext
+    vuln_key: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    keys: Mapped[str] = mapped_column(String(600), nullable=False, default="")                  # все идентификаторы строки в верхнем регистре (поиск и привязка решений)
+    prod: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    severity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                   # 0 нет, 1 предупреждение, 2 высокая, 3 критическая
+    bucket: Mapped[str] = mapped_column(String(8), nullable=False, default="current")           # current | accepted | excluded
+    tstatus: Mapped[str] = mapped_column(String(16), nullable=False, default="")                # эффективное решение: review | confirmed | … | "" (решения нет)
+    flags: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                      # 1 — в каталоге CISA KEV, 2 — подтверждено источником (внешние базы)
+    row: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    __table_args__ = (Index("ix_zc_det_host", "source_id", "gen", "host_id"), Index("ix_zc_det_vuln", "source_id", "gen", "vuln_key"))
+
+
+class ZcDashboard(Base):
+    """Готовая сводка зоны (показатели, данные диаграмм, обзорная строка): читается при открытии страницы. Заменяется целиком после успешного расчёта; при ошибке остаётся прежняя."""
+    __tablename__ = "zc_dashboards"
+    zone_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(12), primary_key=True, default="default")
+    payload: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    built_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)       # когда рассчитана сводка
+    data_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                                # срез данных KSC, по которому она построена (самый старый из источников)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(8), nullable=False, default="ok")
+    error: Mapped[str | None] = mapped_column(Text)
+    failed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class ZcJob(Base):
+    """Задание фонового расчёта: ночной пересчёт всех зон, обновление одной зоны или пересчёт состава зон. Один активный экземпляр каждого вида (dedupe_key), состояние переживает перезапуск worker."""
+    __tablename__ = "zc_jobs"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)                                # all | zone | members
+    zone_id: Mapped[str | None] = mapped_column(String(40))
+    dedupe_key: Mapped[str] = mapped_column(String(60), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(10), nullable=False, default="manual")          # nightly | manual | initial | auto
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="queued")           # queued | running | done | failed
+    requested_by: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    requested_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    progress: Mapped[str | None] = mapped_column(String(300))
+    pct: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (Index("ux_zc_jobs_active", "dedupe_key", unique=True, postgresql_where=text("status IN ('queued','running')"), sqlite_where=text("status IN ('queued','running')")),)

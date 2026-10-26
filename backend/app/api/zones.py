@@ -8,13 +8,13 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, get_db, require_admin, require_analyst, require_user
 from ..ksc import protection as P
 from ..ksc.driver import KscError
-from ..models import KscSource, MailOutbox, ReportSchedule, VulnTriage, Zone, ZoneContact, ZonePin, ZoneRule
+from ..models import KscSource, MailOutbox, ReportSchedule, VulnTriage, ZcDashboard, ZcHostZone, ZcJob, ZcSource, Zone, ZoneContact, ZonePin, ZoneRule
 from ..search import any_field, matcher
 from ..services import mail as M
 from ..services.audit import write_audit
@@ -24,7 +24,10 @@ from ..zones import match as ZM
 from ..zones import report as R
 from ..zones import schedule as SC
 from ..zones import service as S
+from ..zones import snapshot as SN
 from ..zones import triage as T
+from ..zones import zjobs as ZJ
+from ..zones import zread as ZR
 from ..zones.reporter import UNASSIGNED, ZoneData
 
 router = APIRouter(prefix="/zones", tags=["zones"])
@@ -51,6 +54,11 @@ def _uid(v: str) -> uuid.UUID:
         return uuid.UUID(v)
     except ValueError:
         raise HTTPException(status_code=404, detail="Зона не найдена") from None
+
+
+async def _members_changed(db: AsyncSession, su: SessionUser) -> None:
+    """Состав зон изменился (правила, закрепления, CSV): пересчёт принадлежности по сохранённым данным ставится в очередь worker (без обращения к KSC), сводки обновятся после него."""
+    await ZJ.enqueue(db, "members", trigger="auto", by=su.display_name)
 
 
 # ------------------------------------------------------------------------------------------------ схемы
@@ -164,6 +172,7 @@ async def create(body: ZoneIn, su: SessionUser = Depends(require_admin), db: Asy
     db.add(z)
     await _write_zone(db, z, body, rules, contacts, su.display_name)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="zone.create", target_type="zone", target_id=str(z.id), details={"name": z.name, "rules": len(rules), "contacts": len(contacts)})
+    await _members_changed(db, su)
     await db.commit()
     return await _load_zone(db, z.id)
 
@@ -178,6 +187,7 @@ async def update(zid: str, body: ZoneIn, su: SessionUser = Depends(require_admin
         raise HTTPException(status_code=409, detail="Зона с таким названием уже есть")
     await _write_zone(db, z, body, rules, contacts, su.display_name)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="zone.update", target_type="zone", target_id=str(z.id), details={"name": z.name, "rules": len(rules), "contacts": len(contacts)})
+    await _members_changed(db, su)
     await db.commit()
     return await _load_zone(db, z.id)
 
@@ -189,6 +199,9 @@ async def delete(zid: str, su: SessionUser = Depends(require_admin), db: AsyncSe
         raise HTTPException(status_code=404, detail="Зона не найдена")
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="zone.delete", target_type="zone", target_id=str(z.id), details={"name": z.name})
     await S.delete_zone(db, z.id)
+    await db.execute(sa_delete(ZcHostZone).where(ZcHostZone.zone_id == str(z.id)))
+    await db.execute(sa_delete(ZcDashboard).where(ZcDashboard.zone_id == str(z.id)))
+    await _members_changed(db, su)
     await db.commit()
     return Response(status_code=204)
 
@@ -214,30 +227,28 @@ async def preview_composition(body: PreviewIn, request: Request, su: SessionUser
     idx = ZM.ZoneIndex(defs, await S.load_pins(db))
     names = {d.id: d.name for d in defs}
     general = await request.app.state.settings_svc.get(db, "general")
-    zdata = zd(request)
-    found, active, online, shared, total_hosts = [], 0, 0, 0, 0
-    try:
-        for src in await zdata.active_sources(db, allowed=lambda s: su.can_use_source(s.id)):
-            raw = await zdata.raw(db, src, with_ext=False)
-            for r in ZM_annotate(raw.base, idx, str(src.id)):
+    found, active, online, shared, total_hosts, matched = [], 0, 0, 0, 0, 0
+    sids, _all, srcs = await _scope(db, su)
+    prepared = False
+    for src in srcs:                                         # по сохранённым данным компьютеров, порциями: KSC не опрашивается
+        async for chunk in ZR.base_records(db, src.id):
+            prepared = True
+            for r in ZM.annotate(chunk, idx, str(src.id)):
                 total_hosts += 1
                 if me not in r["zone_candidates"]:
                     continue
+                matched += 1
                 act = r["days_since_connection"] is not None and r["days_since_connection"] <= general.activity_days
                 active += act
                 online += r.get("online") is True
                 other = [names[z] for z in r["zone_candidates"] if z != me]
                 shared += bool(other)
-                found.append({"source": src.name, "host_id": r["host_id"], "name": r["name"], "ip": r["ip"], "os": r["os"], "group": r["group"], "active": act, "online": r.get("online"),
-                              "also_in": other, "assigned_here": me in r["zones"], "via": r["zone_via"]})
-    except KscError as exc:
-        raise _ksc(exc) from None
+                if len(found) < 5000:
+                    found.append({"source": src.name, "host_id": r["host_id"], "name": r["name"], "ip": r["ip"], "os": r["os"], "group": r["group"], "active": act, "online": r.get("online"),
+                                  "also_in": other, "assigned_here": me in r["zones"], "via": r["zone_via"]})
     found.sort(key=lambda h: (not h["active"], h["name"].lower()))
-    return {"total": len(found), "active": active, "online": online, "shared": shared, "all_hosts": total_hosts, "items": found[:body.limit], "rules": [{"kind": k, "value": v} for k, v, _ in rules]}
-
-
-def ZM_annotate(base, idx, source_id):  # noqa: N802 — короткая обёртка для читаемости
-    return ZM.annotate(base, idx, source_id)
+    return {"total": matched, "active": active, "online": online, "shared": shared, "all_hosts": total_hosts, "items": found[:body.limit], "rules": [{"kind": k, "value": v} for k, v, _ in rules],
+            "prepared": prepared, "note": "" if prepared else "Подготовленных данных о компьютерах ещё нет: первый расчёт выполняет фоновая служба."}
 
 
 @admin_router.get("/overview/conflicts")
@@ -247,18 +258,33 @@ async def conflicts(request: Request, su: SessionUser = Depends(require_admin), 
     names = {z["id"]: z["name"] for z in await zdata.zones_info(db)}
     idx = await S.index(db)
     out, counts = [], Counter()
-    try:
-        for src in await zdata.active_sources(db, allowed=lambda s: su.can_use_source(s.id)):
-            raw = await zdata.raw(db, src, with_ext=False)
-            for r in ZM.annotate(raw.base, idx, str(src.id)):
+    _sids, _all, srcs = await _scope(db, su)
+    for src in srcs:
+        async for chunk in ZR.base_records(db, src.id):
+            for r in ZM.annotate(chunk, idx, str(src.id)):
                 if len(r["zone_candidates"]) > 1:
                     counts[r["zone_via"]] += 1
-                    out.append({"source_id": str(src.id), "source": src.name, "host_id": r["host_id"], "name": r["name"], "ip": r["ip"], "via": r["zone_via"], "conflict": r["zone_conflict"],
-                                "zones": [{"id": z, "name": names.get(z, z), "chosen": z in r["zones"]} for z in r["zone_candidates"]]})
-    except KscError as exc:
-        raise _ksc(exc) from None
+                    if len(out) < 5000:
+                        out.append({"source_id": str(src.id), "source": src.name, "host_id": r["host_id"], "name": r["name"], "ip": r["ip"], "via": r["zone_via"], "conflict": r["zone_conflict"],
+                                    "zones": [{"id": z, "name": names.get(z, z), "chosen": z in r["zones"]} for z in r["zone_candidates"]]})
     out.sort(key=lambda x: (not x["conflict"], x["name"].lower()))
-    return {"items": out[:1000], "total": len(out), "by_via": dict(counts)}
+    return {"items": out[:1000], "total": sum(counts.values()), "by_via": dict(counts)}
+
+
+@admin_router.get("/cache")
+async def cache_status(request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Подготовленные данные зон: расписание ночного расчёта, последний успешный расчёт и его длительность, ошибки, очередь заданий, ресурсы worker."""
+    return await ZJ.status(db, request.app.state.settings_svc)
+
+
+@admin_router.post("/cache/run", status_code=202)
+async def cache_run(su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Пересчитать данные всех зон сейчас (в очередь worker; одинаковое задание не дублируется)."""
+    job, created = await ZJ.enqueue(db, "all", trigger="manual", by=su.display_name)
+    if created:
+        write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="zone.cache.run", target_type="zone", target_id="*", details={"job": str(job.id)})
+    await db.commit()
+    return {"created": created, "job": ZJ.job_out(job)}
 
 
 class PinIn(BaseModel):
@@ -279,6 +305,7 @@ async def pin(body: PinIn, su: SessionUser = Depends(require_admin), db: AsyncSe
     else:
         db.add(ZonePin(source_id=body.source_id, host_id=body.host_id, host_name=body.host_name, zone_id=body.zone_id, created_by=su.display_name))
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="zone.pin", target_type="zone", target_id=str(body.zone_id), details={"host": body.host_name or body.host_id})
+    await _members_changed(db, su)
     await db.commit()
     return {"ok": True}
 
@@ -289,6 +316,7 @@ async def unpin(source_id: uuid.UUID, host_id: int, su: SessionUser = Depends(re
     if cur:
         write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="zone.unpin", target_type="zone", target_id=str(cur.zone_id), details={"host": cur.host_name or host_id})
         await db.delete(cur)
+        await _members_changed(db, su)
         await db.commit()
     return Response(status_code=204)
 
@@ -342,6 +370,7 @@ async def csv_apply(request: Request, mode: str = Query("add_update", pattern="^
         await db.rollback()
         raise
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="zone.csv.import", target_type="zone", target_id="*", details={"mode": mode, **done, "rows": plan.summary["rows"]})
+    await _members_changed(db, su)
     await db.commit()
     return {"done": done, "summary": plan.summary}
 
@@ -355,46 +384,54 @@ def _host_out(h: dict) -> dict:
             "state": h["state"], "summary": h["summary"], "zones": h["zones"], "zone_conflict": h["zone_conflict"], "zone_pinned": h["zone_pinned"]}
 
 
-def _in_zone(h: dict, zid: str) -> bool:
-    return (not h["zones"]) if zid == UNASSIGNED else zid in h["zones"]
+async def _scope(db: AsyncSession, su: SessionUser) -> tuple[list[uuid.UUID], bool, list[KscSource]]:
+    """Источники, доступные пользователю: (идентификаторы, доступны ли все активные, сами источники)."""
+    allv = (await db.execute(select(KscSource).where(KscSource.is_active.is_(True)).order_by(KscSource.position, KscSource.name))).scalars().all()
+    mine = [s for s in allv if su.can_use_source(s.id)]
+    return [s.id for s in mine], len(mine) == len(allv), mine
 
 
-def _stat_for(hosts: list[dict], all_hosts_n: int) -> dict:
-    act = [h for h in hosts if h["active"]]
-    return D.stats(act, total_all=all_hosts_n, hidden=all_hosts_n - len(act))
+def _freshness(states: list[dict], dash, job, sids: list[str]) -> dict:
+    """Сведения об актуальности для страницы: когда данные получены из KSC, есть ли более свежие, идёт ли пересчёт."""
+    mine = [s for s in states if s["id"] in sids]
+    built = [s["built_at"] for s in mine if s["built_at"]]
+    return {"empty": not any(s["gen"] for s in mine), "data_at": dash.data_at if dash is not None and dash.data_at else (min(built) if built else None),
+            "calculated_at": dash.built_at if dash is not None else None, "newer": any(s["newer"] for s in mine), "errors": [{"source": s["name"], "error": s["error"]} for s in mine if s["error"]],
+            "building": [s["name"] for s in mine if s["progress"]], "job": ZJ.job_out(job) if job is not None else None,
+            "sources": [{"id": s["id"], "name": s["name"], "built_at": s["built_at"], "status": s["status"], "agg_only": s["agg_only"]} for s in mine]}
 
 
-async def _compute(request: Request, su: SessionUser, db: AsyncSession, *, ext: bool, refresh: bool = False, bases_days: int = 3, scan_days: int = 30, zone_ids: list[str] | None = None) -> tuple[list[dict], list[dict], list[KscSource], dict]:
-    cats = ["ksc_vulns", "no_av", "rtp_off", "bases_old", "infected", "license", "scan_old", "reboot"] + (["ext_vulns"] if ext else [])
-    params = {"categories": cats, "include_inactive": True, "bases_days": bases_days, "scan_days": scan_days}
-    zdata = zd(request)
-    try:
-        parts, srcs = await zdata.parts(db, params=params, allowed=lambda s: su.can_use_source(s.id), refresh=refresh, zone_ids=zone_ids, ext_cap=4000)
-    except KscError as exc:
-        raise _ksc(exc) from None
-    hosts = [h for p in parts for h in p["hosts"]]
-    return hosts, parts, srcs, params
+async def _active_job(db: AsyncSession, zid: str | None):
+    """Выполняющееся или ожидающее задание, относящееся к зоне (её собственное или общий расчёт)."""
+    q = select(ZcJob).where(ZcJob.status.in_(("queued", "running")))
+    rows = (await db.execute(q.order_by(ZcJob.requested_at))).scalars().all()
+    return next((j for j in rows if j.kind in ("all", "members") or (zid is not None and j.kind == "zone" and j.zone_id == zid)), None)
 
 
 @router.get("")
 async def overview(request: Request, q_: str = Query("", alias="q", max_length=200), state: str = Query("", pattern="^(|critical|vulns|protection|ok)$"),
-                   sort: str = Query("risk", pattern="^(risk|name|hosts|problems|critical|protection)$"), desc: bool = True, refresh: bool = False,
+                   sort: str = Query("risk", pattern="^(risk|name|hosts|problems|critical|protection)$"), desc: bool = True,
                    su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    """Все зоны с показателями: компьютеры, активные, онлайн, проблемные, критические, проблемы защиты; ответственные. «Без ответственного» — отдельной строкой."""
+    """Все зоны с показателями из подготовленных данных (без обращения к KSC): компьютеры, активные, онлайн, проблемные, критические, проблемы защиты; ответственные."""
     zdata = zd(request)
     infos = await zdata.zones_info(db)
-    hosts, parts, srcs, _ = await _compute(request, su, db, ext=False, refresh=refresh)
-    by_zone: dict[str, list[dict]] = {z["id"]: [] for z in infos} | {UNASSIGNED: []}
-    for h in hosts:
-        for z in (h["zones"] or [UNASSIGNED]):
-            by_zone.setdefault(z, []).append(h)
+    sids, all_ok, srcs = await _scope(db, su)
     general = await request.app.state.settings_svc.get(db, "general")
+    zdays = await ZR.zone_days_map(db)
+    dashes = {d.zone_id: d for d in (await db.execute(select(ZcDashboard).where(ZcDashboard.kind == "default"))).scalars()}
+    if all_ok and dashes:
+        stats = {z: d.payload.get("stats") for z, d in dashes.items()}
+        confl = {z: d.payload.get("conflicts", 0) for z, d in dashes.items()}
+    else:                                           # ограниченный доступ к источникам или сводки ещё нет: агрегаты SQL по доступным источникам
+        stats = await ZR.group_stats(db, sids=sids, default_days=int(general.activity_days), zone_days=zdays)
+        confl = {z: c for z, (_n, c) in (await ZR.conflict_counts(db, sids)).items()}
     rows = []
-    for z in infos + [{"id": UNASSIGNED, "name": "Без ответственного", "description": "Компьютеры, не подошедшие ни одной зоне", "purpose": "", "priority": 0, "contacts": [], "enabled": True, "activity_days": None}]:
-        hs = by_zone.get(z["id"], [])
-        st = _stat_for(hs, len(hs))
-        rows.append({"id": z["id"], "name": z["name"], "description": z["description"], "purpose": z["purpose"], "enabled": z["enabled"], "stats": {k: st[k] for k in ("total", "active", "online", "critical", "other_vulns", "protection", "ok", "state", "inactive")},
-                     "problem_hosts": st["in_scope"] - st["ok"], "conflicts": sum(1 for h in hs if h["zone_conflict"]),
+    unassigned = {"id": UNASSIGNED, "name": "Без ответственного", "description": "Компьютеры, не подошедшие ни одной зоне", "purpose": "", "priority": 0, "contacts": [], "enabled": True, "activity_days": None}
+    for z in infos + [unassigned]:
+        st = stats.get(z["id"]) or ZR._empty_stats()  # noqa: SLF001
+        rows.append({"id": z["id"], "name": z["name"], "description": z["description"], "purpose": z["purpose"], "enabled": z["enabled"],
+                     "stats": {k: st[k] for k in ("total", "active", "online", "critical", "other_vulns", "protection", "ok", "state", "inactive")},
+                     "problem_hosts": st["in_scope"] - st["ok"], "conflicts": confl.get(z["id"], 0),
                      "responsible": [(c["name"] or c["email"]) + (f" ({c['position']})" if c["position"] else "") for c in z["contacts"] if c["role"] == "responsible"][:3],
                      "contacts_n": len([c for c in z["contacts"] if c["enabled"]]), "activity_days": z["activity_days"] or general.activity_days})
     needle = matcher(q_)
@@ -406,30 +443,13 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
            "problems": lambda r: r["problem_hosts"], "critical": lambda r: r["stats"]["critical"], "protection": lambda r: r["stats"]["protection"]}[sort]
     rows.sort(key=key, reverse=desc if sort != "name" else not desc)
     rows.sort(key=lambda r: r["id"] == UNASSIGNED)             # «Без ответственного» — всегда последней
-    totals_hosts = len(hosts)
-    uniq = len({(h["source_id"], h["host_id"]) for h in hosts})
-    return {"items": rows, "totals": {"zones": len(infos), "hosts": totals_hosts, "unique_hosts": uniq, "unassigned": len(by_zone[UNASSIGNED]), "conflicts": sum(1 for h in hosts if h["zone_conflict"])},
-            "sources": [s.name for s in srcs], "activity_days": general.activity_days, "notes": list(dict.fromkeys(n for p in parts for n in p["notes"])), "fetched_at": max((p["at"] for p in parts), default=None)}
-
-
-def _row_has(h: dict, *, cve: str, product: str, status: str) -> bool:
-    m_c, m_p = any_field(cve), any_field(product)
-    for origin in ("ksc", "ext"):
-        for bucket, rows in h["rows"][origin].items():
-            for r in rows:
-                t = r.get("triage")
-                eff = t["status"] if t else "review"
-                if status == "attention":
-                    if bucket != "current":
-                        continue
-                elif status and status != "all" and eff != status:
-                    continue
-                if m_c and not m_c(r.get("kla_id"), r.get("cve"), r.get("vuln_key"), r.get("ids")):
-                    continue
-                if m_p and not m_p(r.get("product"), r.get("program")):
-                    continue
-                return True
-    return False
+    tot = await ZR.totals(db, sids)
+    states = await ZR.source_states(db, sids)
+    job = await _active_job(db, None)
+    dsample = next(iter(dashes.values()), None)
+    fr = _freshness(states, dsample, job, [str(i) for i in sids])
+    return {"items": rows, "totals": {"zones": len(infos), "hosts": tot["unique_hosts"], "unique_hosts": tot["unique_hosts"], "unassigned": (stats.get(UNASSIGNED) or {}).get("total", 0), "conflicts": tot["conflicts"]},
+            "sources": [s.name for s in srcs], "activity_days": general.activity_days, "notes": list(dict.fromkeys(n for ns in await _notes(db, sids) for n in ns)), "fetched_at": fr["data_at"], "freshness": fr}
 
 
 @router.get("/{zid}")
@@ -438,9 +458,10 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
                     activity: str = Query("active", pattern="^(active|all|inactive)$"), triage: str = Query("attention", pattern="^(attention|all|review|confirmed|false_positive|obsolete|risk_accepted)$"),
                     cve: str = Query("", max_length=100), product: str = Query("", max_length=200), ext: bool = True, source_id: str = Query("", max_length=40),
                     sort: str = Query("risk", pattern="^(risk|name|ip|last_connected|vulns)$"), desc: bool = True, offset: int = Query(0, ge=0), limit: int = Query(50, ge=0, le=500),
-                    bases_days: int = Query(3, ge=1, le=90), scan_days: int = Query(30, ge=1, le=365), refresh: bool = False,
+                    bases_days: int = Query(3, ge=1, le=90), scan_days: int = Query(30, ge=1, le=365),
                     su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    """Дашборд зоны: показатели, распределения (кольцо по состоянию, столбцы по критичности и категориям проблем) и таблица компьютеров с фильтрами. Диаграммы и таблица считаются по одному набору."""
+    """Дашборд зоны из подготовленных данных: показатели и данные диаграмм читаются готовыми (или считаются агрегатом SQL при нестандартных порогах), таблица компьютеров — страница с фильтрами
+    и сортировкой в SQL. KSC не опрашивается, расчёт не запускается."""
     if zid != UNASSIGNED:
         _uid(zid)
     zdata = zd(request)
@@ -449,46 +470,76 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
     if info is None:
         raise HTTPException(status_code=404, detail="Зона не найдена")
     general = await request.app.state.settings_svc.get(db, "general")
-    hosts, parts, srcs, _ = await _compute(request, su, db, ext=ext, refresh=refresh, bases_days=bases_days, scan_days=scan_days, zone_ids=[zid])
-    mine = [h for h in hosts if _in_zone(h, zid) and (not source_id or h["source_id"] == source_id)]
+    sids, all_ok, srcs = await _scope(db, su)
+    if source_id:
+        try:
+            one = uuid.UUID(source_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Некорректный источник") from None
+        sids = [one] if one in sids else []
+    zdays = await ZR.zone_days_map(db)
     days = info["activity_days"] or general.activity_days
-    pool = [h for h in mine if h["active"]]
-    stat = D.stats(pool, total_all=len(mine), hidden=len(mine) - len(pool), sections=None if ext else {"ksc", "protection"})
-    stat["bars"] = {"severity": stat["severity"], "problems": stat["problems"], "vulns": stat["vulns"]}
-    items = mine
-    if activity == "active":
-        items = [h for h in items if h["active"]]
-    elif activity == "inactive":
-        items = [h for h in items if not h["active"]]
-    if state:
-        items = [h for h in items if h["state"] == state or (state == "ok" and h["state"] == "ok")]
-    if severity:
-        items = [h for h in items if (h["max_sev"] or "none") == severity]
-    if problem:
-        items = [h for h in items if problem in h["problems"]]
-    if online:
-        items = [h for h in items if h["online"] is (online == "yes")]
-    needle = any_field(q_)
-    if needle:
-        items = [h for h in items if needle(h["name"], h["fqdn"], h["ip"])]
-    if cve or product or triage != "attention":
-        items = [h for h in items if _row_has(h, cve=cve, product=product, status=triage)]
-    order = lambda h: D.rank_key(h)  # noqa: E731
-    floor = datetime.min.replace(tzinfo=timezone.utc)
-    items.sort(key={"risk": order, "name": lambda h: h["name"].lower(), "ip": lambda h: (ZM.ip_int(h["ip"]) or 0, h["name"].lower()), "last_connected": lambda h: h["last_connected"] or floor,
-                    "vulns": lambda h: (h["ksc"]["total"], h["ext"]["total"])}[sort], reverse=(not desc if sort == "risk" else desc) if sort != "name" else not desc)
-    return {"zone": info, "stats": stat, "activity_days": days, "total": len(items), "offset": offset, "limit": limit, "items": [_host_out(h) for h in items[offset:offset + limit]],
-            "sources": [{"id": str(s.id), "name": s.name} for s in srcs], "notes": list(dict.fromkeys(n for p in parts for n in p["notes"])), "fetched_at": max((p["at"] for p in parts), default=None),
-            "conflicts": sum(1 for h in mine if h["zone_conflict"]), "ext_included": ext}
+    dash = await ZR.read_dashboard(db, zid)
+    default = bases_days == ZR.DEFAULT_BD and scan_days == ZR.DEFAULT_SD and ext and all_ok and not source_id
+    if default and dash is not None:
+        stat = dash.payload["stats"]
+        conflicts = dash.payload.get("conflicts", 0)
+    else:                                           # нестандартные пороги, ограниченный доступ или сводки ещё нет: тот же агрегат SQL «на лету» (быстро, без KSC)
+        stat = (await ZR.group_stats(db, sids=sids, zone_id=zid, bd=bases_days, sd=scan_days, ext=ext, default_days=int(general.activity_days), zone_days=zdays)).get(zid) or ZR._empty_stats()  # noqa: SLF001
+        conflicts = (await ZR.conflict_counts(db, sids)).get(zid, (0, 0))[1]
+    stat = {**stat, "bars": {"severity": stat["severity"], "problems": stat["problems"], "vulns": stat["vulns"]}}
+    total, items = await ZR.hosts_page(db, zid, sids, bd=bases_days, sd=scan_days, ext=ext, default_days=int(general.activity_days), zone_days=zdays, state=state, severity=severity, problem=problem,
+                                       q=q_, online=online, activity=activity, triage=triage, cve=cve, product=product, source_id=source_id, sort=sort, desc=desc, offset=offset, limit=limit)
+    states = await ZR.source_states(db, sids)
+    fr = _freshness(states, dash, await _active_job(db, zid), [str(i) for i in sids])
+    notes = list(dict.fromkeys(n for ns in await _notes(db, sids) for n in ns))
+    return {"zone": info, "stats": stat, "activity_days": days, "total": total, "offset": offset, "limit": limit, "items": items,
+            "sources": [{"id": str(s.id), "name": s.name} for s in srcs], "notes": notes, "fetched_at": fr["data_at"], "conflicts": conflicts, "ext_included": ext, "freshness": fr}
+
+
+async def _notes(db: AsyncSession, sids: list[uuid.UUID]) -> list[list[str]]:
+    return [list(n or []) for (n,) in (await db.execute(select(ZcSource.notes).where(ZcSource.source_id.in_(sids), ZcSource.gen > 0))).all()]
+
+
+@router.post("/{zid}/refresh", status_code=202)
+async def refresh(zid: str, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+    """Поставить в очередь пересчёт данных одной зоны («Обновить данные»): запрос возвращается сразу, расчёт выполняет worker; одинаковые задания не дублируются."""
+    if zid != UNASSIGNED:
+        if await db.get(Zone, _uid(zid)) is None:
+            raise HTTPException(status_code=404, detail="Зона не найдена")
+    job, created = await ZJ.enqueue(db, "zone", zone_id=zid, trigger="manual", by=su.display_name)
+    if created:
+        write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="zone.refresh", target_type="zone", target_id=zid, details={"job": str(job.id)})
+    await db.commit()
+    return {"created": created, "job": ZJ.job_out(job)}
+
+
+@router.get("/{zid}/refresh")
+async def refresh_state(zid: str, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    """Ход пересчёта зоны: активное задание (своё или общий расчёт) или последнее завершённое."""
+    job = await _active_job(db, zid)
+    last = None
+    if job is None:
+        last = (await db.execute(select(ZcJob).where(ZcJob.kind == "zone", ZcJob.zone_id == zid).order_by(ZcJob.requested_at.desc()).limit(1))).scalars().first()
+    dash = await ZR.read_dashboard(db, zid)
+    return {"job": ZJ.job_out(job) if job else None, "last": ZJ.job_out(last) if last else None, "data_at": dash.data_at if dash else None, "calculated_at": dash.built_at if dash else None}
 
 
 @router.get("/{zid}/hosts/{source_id}/{host_id}")
 async def host_card(zid: str, source_id: str, host_id: int, request: Request, ext: bool = True, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     """Карточка компьютера: уязвимости KSC и потенциальные совпадения (с решениями), принятые и исключённые обнаружения, проблемы защиты, зона и ответственные."""
-    hosts, _, _, _ = await _compute(request, su, db, ext=ext, zone_ids=[zid])
-    h = next((x for x in hosts if x["source_id"] == source_id and x["host_id"] == host_id), None)
+    try:
+        sid = uuid.UUID(source_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Компьютер не найден") from None
+    if not su.can_use_source(sid):
+        raise HTTPException(status_code=403, detail="Нет доступа к источнику")
+    src = await db.get(KscSource, sid)
+    h = await ZR.load_host(db, sid, host_id, source_name=src.name if src else "")
     if h is None:
         raise HTTPException(status_code=404, detail="Компьютер не найден среди доступных источников")
+    if not ext:
+        h["rows"]["ext"] = {"current": [], "accepted": [], "excluded": []}
     infos = {z["id"]: z for z in await zd(request).zones_info(db)}
     zs = [{"id": z, "name": infos[z]["name"], "contacts": [c for c in infos[z]["contacts"] if c["role"] != "cc"]} for z in h["zones"] if z in infos]
     av = h["av"] or {}
@@ -501,30 +552,27 @@ async def host_card(zid: str, source_id: str, host_id: int, request: Request, ex
 
 @router.get("/of-host/{source_id}/{host_id}")
 async def of_host(source_id: uuid.UUID, host_id: int, request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    """Зона компьютера и её ответственные — для карточек компьютеров и уязвимостей в других разделах."""
+    """Зона компьютера и её ответственные — для карточек компьютеров и уязвимостей в других разделах (из подготовленных данных, без обращения к KSC)."""
     if not su.can_use_source(source_id):
         raise HTTPException(status_code=403, detail="Нет доступа к источнику")
-    src = await db.get(KscSource, source_id)
-    if src is None:
+    if await db.get(KscSource, source_id) is None:
         raise HTTPException(status_code=404, detail="Источник не найден")
-    zdata = zd(request)
-    raw = await zdata.raw(db, src, with_ext=False)
-    rec = next((r for r in ZM.annotate([r for r in raw.base if r["host_id"] == host_id], await S.index(db), str(source_id))), None)
+    rec = await ZR.host_zone_ids(db, source_id, host_id)
     if rec is None:
-        return {"zones": [], "candidates": [], "conflict": False}
-    infos = {z["id"]: z for z in await zdata.zones_info(db)}
+        return {"zones": [], "candidates": [], "conflict": False, "prepared": False}
+    infos = {z["id"]: z for z in await zd(request).zones_info(db)}
     f = lambda ids: [{"id": z, "name": infos[z]["name"], "responsible": [(c["name"] or c["email"]) for c in infos[z]["contacts"] if c["role"] == "responsible" and c["enabled"]][:3]} for z in ids if z in infos]  # noqa: E731
-    return {"zones": f(rec["zones"]), "candidates": f(rec["zone_candidates"]), "conflict": rec["zone_conflict"], "pinned": rec["zone_pinned"], "via": rec["zone_via"]}
+    return {"zones": f(rec["zones"]), "candidates": f(rec["candidates"]), "conflict": rec["conflict"], "pinned": rec["pinned"], "via": rec["via"], "prepared": True}
 
 
 async def zone_host_ids(request: Request, db: AsyncSession, src: KscSource, zone: str) -> set[int]:
-    """Идентификаторы компьютеров источника, принадлежащих зоне (или «none» — без ответственного): общий фильтр «Зона» разделов приложения."""
+    """Идентификаторы компьютеров источника, принадлежащих зоне (или «none» — без ответственного): общий фильтр «Зона» разделов приложения (из подготовленных данных)."""
     if zone != UNASSIGNED:
         _uid(zone)
-    try:
-        return await zd(request).host_ids(db, src, zone)
-    except KscError as exc:
-        raise _ksc(exc) from None
+    ids = await ZR.host_ids_in_zone(db, src.id, zone)
+    if ids is None:
+        raise HTTPException(status_code=409, detail="Данные зон ещё не рассчитаны: первый расчёт выполняется фоновой службой, повторите позже или запустите его в разделе «Администрирование → Зоны → Расчёт»")
+    return ids
 
 
 async def zone_labels(db: AsyncSession, src: KscSource, rows: list[dict]) -> None:
@@ -588,6 +636,16 @@ async def _apply_triage(db: AsyncSession, su: SessionUser, b: TriageIn) -> VulnT
     return t
 
 
+async def _retriage(request: Request, keys: dict[uuid.UUID, set[str]]) -> None:
+    """Решения применяются к сохранённым строкам сразу (только затронутые обнаружения), итоги компьютеров и сводки зон обновляются без обращения к KSC."""
+    st = request.app.state
+    for sid, ks in keys.items():
+        await SN.retriage(st.session_maker, sid, ks)
+    async with st.session_maker() as db:
+        days = int((await st.settings_svc.get(db, "general")).activity_days)
+    await ZR.refresh_dashboards(st.session_maker, None, default_days=days, data_at=None)
+
+
 def _triage_out(t: VulnTriage) -> dict:
     until = t.review_until.replace(tzinfo=timezone.utc) if t.review_until is not None and t.review_until.tzinfo is None else t.review_until
     expired = t.status == "risk_accepted" and until is not None and until < datetime.now(timezone.utc)
@@ -605,17 +663,23 @@ async def triage_meta(su: SessionUser = Depends(require_user)):
 
 
 @triage_router.post("")
-async def triage_set(body: TriageIn, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+async def triage_set(body: TriageIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     t = await _apply_triage(db, su, body)
     await db.commit()
+    await _retriage(request, {t.source_id: {t.vuln_key}})
     return _triage_out(t)
 
 
 @triage_router.post("/bulk")
-async def triage_bulk(body: TriageBulk, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+async def triage_bulk(body: TriageBulk, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     """Одно решение для нескольких обнаружений (одной транзакцией): либо все, либо ни одного."""
-    out = [_triage_out(await _apply_triage(db, su, b)) for b in body.items]
+    ts = [await _apply_triage(db, su, b) for b in body.items]
+    out = [_triage_out(t) for t in ts]
     await db.commit()
+    keys: dict[uuid.UUID, set[str]] = {}
+    for t in ts:
+        keys.setdefault(t.source_id, set()).add(t.vuln_key)
+    await _retriage(request, keys)
     return {"items": out, "count": len(out)}
 
 

@@ -121,7 +121,7 @@ VULNS_ON_HOST = f"""SELECT TOP (5000) o.nId AS occurrence_id, d.nId AS descr_id,
 WHERE {VULNS_WHERE} AND o.nHostId = %(host)s
 ORDER BY d.nKlSeverity DESC, o.tmDetectTime DESC"""
 # Быстрые отчёты: действующие обнаружения целиком (уязвимость × компьютер × программа) с данными компьютера; keyset по o.nId, выбор — в {extra}
-VULN_DETAIL = f"""SELECT TOP (50000) o.nId AS occurrence_id, d.nId AS descr_id, d.wstrPrimaryName AS kla_id, d.nKlSeverity AS severity, d.wstrDescriptionURL AS url,
+VULN_DETAIL = f"""SELECT TOP ({{top}}) o.nId AS occurrence_id, d.nId AS descr_id, d.wstrPrimaryName AS kla_id, d.nKlSeverity AS severity, d.wstrDescriptionURL AS url,
        vp.nId AS vp_id, vp.wstrName AS product, ev.strProductDisplVersion AS product_version, p.wstrDisplayName AS app_name, p.wstrDisplayVersion AS app_version,
        p.nId AS inv_id, p.wstrPublisher AS publisher, o.tmDetectTime AS detected, o.bPatchesAvailable AS patches_available, {HOST_COLS}
 {VULN_FROM}
@@ -149,6 +149,9 @@ VULN_CVE_EXISTS = "EXISTS (SELECT 1 FROM dbo.vapm_vulnerability_names n WHERE n.
 # Состояние защиты: компьютеры со статусом KSC (1:1) и защитные продукты на них — два чтения небольших таблиц, проверки — в приложении (ksc/protection.py)
 PROTECTION_HOSTS = (f"SELECT {HOST_COLS}, s.nStatus AS ksc_status, s.nStatusMask AS status_mask, h.nUncured AS uncured, h.nVirusCount AS virus_count "
                     "FROM dbo.v_akpub_host h LEFT JOIN dbo.v_akpub_host_status s ON s.nId = h.nId WHERE {where}")
+HOST_IDS = "SELECT h.nId AS host_id FROM dbo.v_akpub_host h WHERE {where} ORDER BY h.nId"
+KSC_STAMP = ("SELECT (SELECT COUNT_BIG(*) FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0) AS hosts, (SELECT MAX(h.nId) FROM dbo.v_akpub_host h) AS max_host, "
+             "(SELECT COUNT_BIG(*) FROM dbo.vapm_vulnerability_occurence o WHERE o.tmDisappearanceTime IS NULL) AS vulns, (SELECT MAX(o.nId) FROM dbo.vapm_vulnerability_occurence o) AS max_occ")
 PROTECTION_PRODUCTS_FOR = ("SELECT p.nHost AS host_id, p.wstrProductNameId AS code, p.wstrProductDisplayName AS name, p.wstrProductBuildNumber AS build, p.nState AS state, "
                            "p.tmAvbasesDate AS bases, p.bAvProduct AS is_av, p.bHasRtp AS has_rtp FROM dbo.v_akpub_hst_prdstate p "
                            "WHERE (p.bAvProduct = 1 OR p.wstrProductNameId = '1103') AND p.nHost IN ({ids})")
