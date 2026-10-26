@@ -116,7 +116,12 @@ class VdbSync:
                     row.status, row.last_error, row.progress = "error", error[:1500], None
                 else:
                     row.status, row.last_ok_at, row.last_error, row.progress, row.channel = "ok", utcnow(), None, None, ctx.channel
-                    row.records = int((await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.source == key, VdbRecord.generation == row.active_generation))).scalar_one())
+                    if S.INFO[key].get("own_store"):                    # источник со своими таблицами (endoflife.date): число продуктов
+                        from ..eol.sync import count as eol_count  # noqa: PLC0415
+
+                        row.records = await eol_count(self._sm)
+                    else:
+                        row.records = int((await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.source == key, VdbRecord.generation == row.active_generation))).scalar_one())
                 row.last_duration_ms = ms
                 await store.finish_run(db, run_id, finished_at=utcnow(), status="error" if error else "ok", fetched=ctx.fetched, changed=ctx.changed, duration_ms=ms, error=error[:1500] or None, channel=ctx.channel, attempts=ctx.attempts or None)
                 await store.prune_runs(db, key)

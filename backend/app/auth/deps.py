@@ -127,7 +127,10 @@ async def require_admin(su: SessionUser = Depends(require_user)) -> SessionUser:
 
 async def current_source(request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)) -> KscSource:
     """Выбранный в сессии источник KSC (проверка права доступа — на каждом запросе). Заголовок X-Source-Id имеет приоритет над сессией."""
-    raw = request.headers.get("x-source-id") or (str(su.current_source_id) if su.current_source_id else "")
+    raw = request.headers.get("x-source-id") or ""
+    if raw == ALL_SOURCES:                          # раздел работает с одним источником: «Все источники» заменяются выбранным в сессии
+        raw = ""
+    raw = raw or (str(su.current_source_id) if su.current_source_id else "")
     try:
         sid = uuid.UUID(raw)
     except ValueError:
@@ -138,3 +141,23 @@ async def current_source(request: Request, su: SessionUser = Depends(require_use
     if not su.can_use_source(src.id):
         raise HTTPException(status_code=403, detail="Нет доступа к этому источнику KSC")
     return src
+
+
+ALL_SOURCES = "all"
+
+
+async def source_scope(request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)) -> list[KscSource]:
+    """Источники запроса: выбранный источник либо все доступные пользователю активные (заголовок X-Source-Id: all — «Все источники»; новые источники попадают сюда сами).
+    Права не обходятся: берутся только источники, разрешённые пользователю."""
+    if (request.headers.get("x-source-id") or "") == ALL_SOURCES:
+        from ..services.sources import visible_sources  # noqa: PLC0415
+
+        out = await visible_sources(db, su)
+        if not out:
+            raise HTTPException(status_code=409, detail={"code": "no_source", "message": "Нет доступных источников KSC."})
+        return out
+    return [await current_source(request, su, db)]
+
+
+def is_all(request: Request) -> bool:
+    return (request.headers.get("x-source-id") or "") == ALL_SOURCES

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, Uuid, text
+from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, Uuid, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
@@ -831,3 +831,131 @@ class ZcJob(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (Index("ux_zc_jobs_active", "dedupe_key", unique=True, postgresql_where=text("status IN ('queued','running')"), sqlite_where=text("status IN ('queued','running')")),)
+
+
+# ------------------------------------------------------------------------------------------------ жизненный цикл ПО (endoflife.date)
+class EolProduct(Base):
+    """Продукт из базы endoflife.date (локальная копия): названия, идентификаторы (purl, cpe, repology), подписи этапов поддержки у производителя."""
+    __tablename__ = "eol_products"
+    name: Mapped[str] = mapped_column(String(120), primary_key=True)                          # слаг endoflife.date
+    label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    tags: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    aliases: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    identifiers: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)       # [{type: purl|cpe|repology, id}]
+    labels: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)            # как производитель называет этапы: eoas, eol, eoes, discontinued
+    links: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)             # html, releasePolicy, icon
+    search: Mapped[str] = mapped_column(Text, nullable=False, default="")                   # название, подпись, алиасы, идентификаторы — строчными, для поиска
+    releases_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    digest: Mapped[str] = mapped_column(String(32), nullable=False, default="")             # хэш содержимого: неизменившиеся продукты при обновлении не переписываются
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class EolRelease(Base):
+    """Ветка (цикл) продукта: даты этапов поддержки как их отдаёт API; признаки «закончилось» пересчитываются по датам на момент проверки, а не берутся из сохранённого."""
+    __tablename__ = "eol_releases"
+    product: Mapped[str] = mapped_column(String(120), ForeignKey("eol_products.name", ondelete="CASCADE"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)                          # название ветки: «7.4», «2019», «22.04»
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)               # порядок в ответе API (новые первыми)
+    label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    codename: Mapped[str | None] = mapped_column(String(80))
+    release_date: Mapped[date | None] = mapped_column(Date)
+    is_lts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    lts_from: Mapped[date | None] = mapped_column(Date)
+    eoas_from: Mapped[date | None] = mapped_column(Date)                                    # конец активной поддержки (исправления ошибок и новые возможности)
+    eol_from: Mapped[date | None] = mapped_column(Date)                                     # конец поддержки исправлений безопасности (стандартной)
+    eoes_from: Mapped[date | None] = mapped_column(Date)                                    # конец расширенной поддержки (платной, по подписке или договору)
+    eol_flag: Mapped[bool | None] = mapped_column(Boolean)                                  # признак isEol из API (если даты нет)
+    eoes_flag: Mapped[bool | None] = mapped_column(Boolean)
+    discontinued_from: Mapped[date | None] = mapped_column(Date)
+    latest_name: Mapped[str | None] = mapped_column(String(80))
+    latest_date: Mapped[date | None] = mapped_column(Date)
+    latest_link: Mapped[str | None] = mapped_column(String(400))
+    custom: Mapped[dict | None] = mapped_column(JSONType)
+
+
+class EolMapping(Base):
+    """Решение администратора: какому продукту endoflife.date соответствует программа каталога (или что соответствия нет). Сохраняется при обновлении базы и каталога."""
+    __tablename__ = "eol_mappings"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    catalog_key: Mapped[str] = mapped_column(String(160), nullable=False)       # ключ продукта каталога (одинаков во всех источниках)
+    eol_product: Mapped[str | None] = mapped_column(String(120))                            # слаг endoflife.date; пусто при action=exclude
+    action: Mapped[str] = mapped_column(String(8), nullable=False, default="map")           # map | exclude
+    note: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    created_by: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    __table_args__ = (Index("ux_eol_mappings_key", "catalog_key", unique=True),)
+
+
+class EolFinding(Base):
+    """Итог сопоставления программы или ОС источника KSC с жизненным циклом: считается в фоне после загрузки базы EOL, пересборки каталога или решения администратора; страницы читают готовое."""
+    __tablename__ = "eol_findings"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(3), primary_key=True)                          # app | os
+    subject: Mapped[str] = mapped_column(String(200), primary_key=True)                     # app: ключ продукта каталога; os: название ОС (как в KSC)
+    version: Mapped[str] = mapped_column(String(120), primary_key=True)                     # app: версия каталога; os: «мажор.минор.сборка»
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")             # название продукта или ОС
+    publisher: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    eol_product: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    eol_release: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="unknown")      # eol | extended | upcoming | supported | unknown
+    severity: Mapped[str] = mapped_column(String(10), nullable=False, default="")           # critical | high | warning | ""
+    confidence: Mapped[str] = mapped_column(String(8), nullable=False, default="")          # mapped | high | name — насколько надёжно сопоставлен продукт
+    confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)          # False: поддержка зависит от подписки/договора или продукт сопоставлен только по названию
+    eol_from: Mapped[date | None] = mapped_column(Date)
+    eoas_from: Mapped[date | None] = mapped_column(Date)
+    eoes_from: Mapped[date | None] = mapped_column(Date)
+    condition: Mapped[str] = mapped_column(String(600), nullable=False, default="")
+    link: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    os_key: Mapped[dict | None] = mapped_column(JSONType)                                   # для ОС: поля отбора устройств в KSC (название, версия, сборка)
+    product_ids: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)       # для программ: записи реестра ПО (для списка устройств)
+    hosts_all: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hosts_active: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    installs_active: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    computed_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    __table_args__ = (Index("ix_eol_findings_status", "source_id", "status"), Index("ix_eol_findings_product", "eol_product"))
+
+
+class EolState(Base):
+    """Состояние расчёта сопоставления по источнику: отпечаток данных, от которых зависит результат (база EOL, каталог, решения), и время."""
+    __tablename__ = "eol_state"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    rev: Mapped[str] = mapped_column(String(64), nullable=False, default="")               # отпечаток результата (для «изменилось ли»)
+    inputs: Mapped[str] = mapped_column(String(64), nullable=False, default="")            # отпечаток исходных данных последнего расчёта: база EOL, каталог источника, решения
+    computed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    error_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    progress: Mapped[str | None] = mapped_column(String(200))
+
+
+class EolHost(Base):
+    """Устройство, на котором найдена программа или ОС из `eol_findings` (по записи реестра ПО либо по ОС компьютера). Строится вместе с находками; страницы EOL и дашборды зон читают готовое."""
+    __tablename__ = "eol_hosts"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(3), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(200), primary_key=True)
+    version: Mapped[str] = mapped_column(String(120), primary_key=True)
+    host_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    __table_args__ = (Index("ix_eol_hosts_host", "source_id", "host_id"),)
+
+
+# ------------------------------------------------------------------------------------------------ пользователи устройств
+class DeviceUser(Base):
+    """Наблюдения за пользователями устройств: KSC хранит список вошедших сейчас и список «входивших ранее» без дат, поэтому история семи суток строится по наблюдениям KAV Checker
+    (время — когда пользователь замечен в списках KSC, а не время входа в систему)."""
+    __tablename__ = "dev_users"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    host_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_key: Mapped[str] = mapped_column(String(80), primary_key=True)                     # логин (sAMAccountName) либо хэш учётной записи, если логин в KSC неизвестен
+    login: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    domain: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    kind: Mapped[str] = mapped_column(String(8), nullable=False, default="user")            # user | service | system
+    resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)           # логин определён (иначе — только хэш из KSC)
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)       # первое наблюдение KAV Checker
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)        # последнее наблюдение в любом списке KSC
+    last_session_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                              # последнее наблюдение в списке вошедших сейчас (bActual=1)
+    session_now: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    seen_n: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    __table_args__ = (Index("ix_dev_users_login", "login"), Index("ix_dev_users_host", "source_id", "host_id", "last_seen_at"))

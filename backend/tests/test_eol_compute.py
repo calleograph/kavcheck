@@ -1,0 +1,153 @@
+"""Сопоставление каталога и ОС источника с жизненным циклом: находки, устройства, неоднозначность, решения администратора (SQLite, подставной KSC; данные endoflife.date — срез из fixtures)."""
+import json
+import uuid
+from datetime import date
+from pathlib import Path
+
+from sqlalchemy import select
+
+from app.eol import compute as C
+from app.ksc import guard
+from app.eol.service import EolService
+from app.eol.sync import apply_products
+from app.models import CatalogProduct, CatalogState, EolFinding, EolHost, EolMapping, EolState, KscSource, utcnow
+from tests.conftest import login
+
+DOC = json.loads((Path(__file__).parent / "fixtures" / "eol_sample.json").read_text(encoding="utf-8"))
+TODAY = date(2026, 10, 26)
+
+
+class FakeKsc:
+    """Отвечает на два запроса EOL: записи реестра → устройства и страницы компьютеров."""
+    def __init__(self, apps: dict[int, list[tuple[int, int]]], hosts: list[dict]):
+        self.apps, self.hosts, self.queries = apps, hosts, []
+
+    async def run(self, sql, params=None, *, max_rows=0):
+        self.queries.append(sql)
+        if "hst_inventory_hstprds" in sql:
+            ids = {int(x) for x in sql.split("IN (")[1].split(")")[0].split(",")}
+            return [{"host_id": h, "product_id": p, "active": a} for p, lst in self.apps.items() if p in ids for h, a in lst]
+        after = int(params["after"])
+        return [h for h in self.hosts if h["host_id"] > after][: int(params["n"])]
+
+
+def cat(sid, key, name, pub, versions):
+    return CatalogProduct(source_id=sid, key=key, name=name, publisher=pub, publisher_key=pub.lower(), origin="auto", component=False, platforms=1, names=[[name, 5]],
+                          versions=[{"version": v, "branch": v.split(".")[0], "scheme": "numeric", "platform": 1, "installs": 5, "installs_active": 4, "hosts": 5, "hosts_active": 4, "product_ids": pids, "raw": [v], "names": [name]}
+                                    for v, pids in versions],
+                          branches=[], versions_count=len(versions), latest_version=versions[0][0], scheme="numeric", hosts_all=5, hosts_active=4, installs_all=5, installs_active=4,
+                          search=f"{name} {pub} {key}".lower(), built_at=utcnow())
+
+
+async def seed(app):
+    sm = app.state.session_maker
+    await apply_products(sm, DOC["result"])
+    sid = uuid.uuid4()
+    async with sm() as db:
+        db.add(KscSource(id=sid, name="KSC-A", host="a.example.local", port=1433, database="KAV", username="u", password_enc="x", is_active=True))
+        db.add(CatalogState(source_id=sid, status="ready", built_at=utcnow(), activity_days=30))
+        db.add(cat(sid, "php", "PHP", "The PHP Group", [("7.4.16", [11, 12]), ("8.3.2", [13])]))
+        db.add(cat(sid, "mystery", "Mystery Tool", "Nobody", [("9.9", [21])]))
+        await db.commit()
+    return sid
+
+
+def hosts():
+    return [{"host_id": 1, "os_name": "Microsoft Windows Server 2012 R2 Standard", "os_major": 6, "os_minor": 3, "os_build": 9600, "active": 1},
+            {"host_id": 2, "os_name": "Microsoft Windows Server 2012 R2 Standard", "os_major": 6, "os_minor": 3, "os_build": 9600, "active": 0},
+            {"host_id": 3, "os_name": "Ubuntu 22.04.3 LTS", "os_major": 5, "os_minor": 15, "os_build": 0, "active": 1},
+            {"host_id": 4, "os_name": "Linux", "os_major": 5, "os_minor": 10, "os_build": 0, "active": 1}]
+
+
+async def test_findings_hosts_and_unknowns(app):
+    sid = await seed(app)
+    sm = app.state.session_maker
+    ksc = FakeKsc({11: [(1, 1), (2, 0)], 12: [(2, 0), (5, 1)], 13: [(1, 1)]}, hosts())
+    async with sm() as db:
+        src = await db.get(KscSource, sid)
+    res = await C.compute_source(sm, ksc, src, activity_days=30, today=TODAY)
+    async with sm() as db:
+        f = {(x.kind, x.subject, x.version): x for x in (await db.execute(select(EolFinding))).scalars()}
+        links = {(h.kind, h.subject, h.version): h.host_id for h in (await db.execute(select(EolHost))).scalars()}
+        st = await db.get(EolState, sid)
+    php = f[("app", "php", "7.4.16")]
+    assert php.status == "eol" and php.severity == "critical" and php.eol_release == "7.4" and php.confirmed
+    assert (php.hosts_all, php.hosts_active) == (3, 2)                                  # устройства 1, 2 и 5 (запись 12 — тоже php 7.4.16), активные 1 и 5
+    assert ("app", "php", "8.3.2") not in f and ("app", "mystery", "9.9") not in f      # поддерживаемое и неизвестное EOL не присваивается
+    ws = f[("os", "Microsoft Windows Server 2012 R2 Standard", "6.3.9600")]
+    assert ws.status == "eol" and ws.eol_product == "windows-server" and (ws.hosts_all, ws.hosts_active) == (2, 1)
+    assert not any(k[1] == "Linux" for k in f) and not any("Ubuntu" in k[1] and f[k].status == "eol" for k in f)     # Ubuntu 22.04 поддерживается, «Linux» не определяется
+    assert st.items == len(f) and st.inputs and res["links"] == 5 and links
+    for sql in ksc.queries:                                                             # запросы к KSC проходят защиту «только чтение»
+        guard.check(sql)
+
+
+async def test_mapping_exclude_and_manual_choice_are_kept_on_recompute(app):
+    sid = await seed(app)
+    sm = app.state.session_maker
+    async with sm() as db:
+        db.add(EolMapping(catalog_key="php", action="exclude", eol_product=None, note="внутренняя сборка", created_by="admin"))
+        db.add(EolMapping(catalog_key="mystery", action="map", eol_product="nginx", note="", created_by="admin"))
+        await db.commit()
+        src = await db.get(KscSource, sid)
+    ksc = FakeKsc({11: [(1, 1)], 21: [(7, 1)]}, [])
+    await C.compute_source(sm, ksc, src, activity_days=30, today=TODAY)
+    async with sm() as db:
+        f = {(x.kind, x.subject): x for x in (await db.execute(select(EolFinding))).scalars()}
+    assert ("app", "php") not in f                                                      # исключено решением
+    # решение «это nginx» применяется к продукту, но версия 9.9 не соответствует ни одной ветке nginx — EOL не присваивается
+    assert ("app", "mystery") not in f
+
+
+async def test_due_follows_inputs_and_manual_request(app):
+    sid = await seed(app)
+    sm = app.state.session_maker
+    svc = EolService(sm, app.state.settings_svc, app.state.sources)
+    assert await svc.due() == [sid]
+    async with sm() as db:
+        src = await db.get(KscSource, sid)
+    await C.compute_source(sm, FakeKsc({11: [(1, 1)]}, []), src, activity_days=30, today=TODAY)
+    assert await svc.due() == []                                                        # данные не менялись
+    async with sm() as db:
+        p = await db.get(CatalogProduct, (sid, "php"))
+        p.built_at = utcnow().replace(year=2030)
+        await db.commit()
+    assert await svc.due() == [sid]                                                     # каталог пересобран
+    await C.compute_source(sm, FakeKsc({}, []), src, activity_days=30, today=TODAY)
+    assert await svc.due() == [] and await svc.request(sid) == 1 and await svc.due() == [sid]
+
+
+_ = login
+
+
+async def test_api_summary_infra_hosts_mappings(client, app):
+    """Страницы EOL читают готовое: сводка, список, устройства находки, режим «Все источники», права на запись решений."""
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await seed(app)
+    sm = app.state.session_maker
+    async with sm() as db:
+        src = await db.get(KscSource, sid)
+    await C.compute_source(sm, FakeKsc({11: [(1, 1), (2, 0)], 12: [(5, 1)]}, hosts()), src, activity_days=30, today=TODAY)
+    h = {"X-Source-Id": str(sid)}
+    s = (await client.get("/api/v1/eol/summary", headers=h)).json()
+    assert s["findings"]["eol"] == 2 and s["devices"]["eol"] == 3 and s["kinds"] == {"app": 1, "os": 1}      # PHP: устройства 1, 2, 5; Windows Server 2012 R2: 1, 2 — вместе три, без двойного подсчёта
+    items = (await client.get("/api/v1/eol/infra", headers=h)).json()
+    assert items["total"] == 2 and {i["kind"] for i in items["items"]} == {"app", "os"} and items["by_status"]["eol"] == 2
+    php = next(i for i in items["items"] if i["kind"] == "app")
+    assert php["severity_ru"] == "Критическая" and php["source"] == "KSC-A" and php["hosts_active"] == 2 and php["eol_label"]
+    assert (await client.get("/api/v1/eol/infra", headers={"X-Source-Id": "all"})).json()["total"] == 2           # «Все источники»: те же данные, у записи указан источник
+    assert (await client.get("/api/v1/eol/infra", params={"q": "ph*", "status": "eol"}, headers=h)).json()["total"] == 1
+    assert (await client.get("/api/v1/eol/infra", params={"kind": "os", "severity": "high"}, headers=h)).json()["total"] == 0
+    hs = (await client.get("/api/v1/eol/infra/hosts", params={"source_id": str(sid), "kind": "app", "subject": "php", "version": "7.4.16", "all_hosts": True}, headers=h)).json()
+    assert hs["total"] == 3 and hs["items"][0]["name"] == "#1"                                                # данных зон ещё нет: показываются идентификаторы устройств
+    p = (await client.get("/api/v1/eol/products/php", headers=h)).json()
+    assert {r["name"]: r["status"] for r in p["releases"]}["7.4"] == "eol" and next(r for r in p["releases"] if r["name"] == "7.4")["installed_hosts"] == 2
+    allp = (await client.get("/api/v1/eol/products", params={"state": "installed"}, headers=h)).json()
+    assert {i["name"] for i in allp["items"]} == {"php", "windows-server"}
+    m = await client.post("/api/v1/eol/mappings", json={"catalog_key": "mystery", "eol_product": "nginx", "action": "map"})
+    assert m.status_code == 201 and len((await client.get("/api/v1/eol/mappings")).json()["items"]) == 1
+    assert (await client.post("/api/v1/eol/mappings", json={"catalog_key": "x", "eol_product": "no-such", "action": "map"})).status_code == 422
+    assert (await client.post("/api/v1/eol/recalc", headers=h)).status_code == 202
+    await client.post("/api/v1/auth/logout")
+    await login(client, "viewer", "Viewer-Passw0rd-123")
+    assert (await client.post("/api/v1/eol/mappings", json={"catalog_key": "mystery", "action": "exclude"})).status_code == 403

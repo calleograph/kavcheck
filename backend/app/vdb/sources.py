@@ -51,6 +51,8 @@ INFO = {
             "terms": "Каталог CISA публикуется открыто, свободное использование; запасной канал — официальный репозиторий CISA на GitHub"},
     "osv": {"title": "OSV", "url": "https://osv.dev/", "mode": "incremental", "channels": ["Архивы экосистем и modified_id.csv (storage.googleapis.com/osv-vulnerabilities)"],
             "terms": "Открытая выгрузка; данные распространяются на условиях CC-BY 4.0 и лицензий исходных баз. Первая загрузка — архивы выбранных экосистем, дальше — только изменённые записи"},
+    "eol": {"title": "endoflife.date (жизненный цикл ПО)", "url": "https://endoflife.date/docs/api/v1/", "mode": "incremental", "own_store": True, "channels": ["API v1 endoflife.date (products/full)"],
+            "terms": "Открытый API endoflife.date (лицензия MIT на данные). Это не база уязвимостей: сведения о датах окончания поддержки продуктов и их веток. Документ загружается условным запросом (ETag); изменившиеся продукты обновляются, остальные не переписываются. Окончание поддержки показывается как отдельная проблема EOL, а не как CVE"},
     "bdu": {"title": "БДУ ФСТЭК России", "url": "https://bdu.fstec.ru/", "mode": "full", "channels": ["Выгрузка vulxml.zip с сайта bdu.fstec.ru", "Файл, загруженный вручную"],
             "terms": "XML-выгрузка с сайта (≈34 МБ в архиве); условия использования — по тексту на bdu.fstec.ru, приложение хранит ссылку на первоисточник. Сертификат сайта выдан УЦ Минцифры России: его корневой и промежуточный сертификаты поставляются с приложением и применяются только к этому источнику"},
 }
@@ -550,4 +552,30 @@ async def run_osv(ctx: RunCtx) -> None:
     await run_channels(ctx, [("archives", INFO["osv"]["channels"][0], _osv_archives)])
 
 
-SOURCES: dict[str, Callable[[RunCtx], Awaitable[None]]] = {"kev": run_kev, "bdu": run_bdu, "nvd": run_nvd, "osv": run_osv}
+# ------------------------------------------------------------------------------------------------ endoflife.date
+async def _eol_api(ctx: RunCtx) -> None:
+    from ..eol import sync as eol_sync  # noqa: PLC0415
+
+    url = (ctx.settings.get("url") or eol_sync.API).rstrip("/") + "/products/full"
+    cur = ctx.cursor or {}
+    dest = ctx.tmp() / "eol.json"
+    await ctx.progress("запрос базы жизненного цикла")
+    cond = ctx.has_data and not ctx.force
+    got = await ctx.http.download(url, dest, etag=cur.get("etag", "") if cond else "", progress=ctx.dl_progress("endoflife.date"), headers={"Accept-Encoding": "identity", "Accept": "application/json"})
+    if got.not_modified:
+        await ctx.progress("база на сайте не изменилась")
+        return
+    try:
+        doc = eol_sync.load_document(dest)
+        res = await eol_sync.apply_products(ctx.sm, doc["result"], progress=ctx.progress)
+    except eol_sync.EolFormatError as exc:
+        raise FetchError(str(exc)) from None
+    ctx.fetched, ctx.changed = res["total"], res["changed"] + res["removed"]
+    ctx.new_cursor = {"etag": got.etag, "generated_at": doc.get("generated_at"), "schema_version": doc.get("schema_version"), "products": res["total"], "added": res["added"], "removed": res["removed"]}
+
+
+async def run_eol(ctx: RunCtx) -> None:
+    await run_channels(ctx, [("api", INFO["eol"]["channels"][0], _eol_api)])
+
+
+SOURCES: dict[str, Callable[[RunCtx], Awaitable[None]]] = {"kev": run_kev, "bdu": run_bdu, "nvd": run_nvd, "osv": run_osv, "eol": run_eol}

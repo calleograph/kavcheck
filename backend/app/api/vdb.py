@@ -112,6 +112,11 @@ def _clean_settings(key: str, cur: dict, new: dict) -> dict:
         for flag in ("verify_tls", "builtin_ca"):
             if flag in new:
                 out[flag] = bool(new[flag])
+    if key == "eol" and "url" in new and str(new["url"]).strip():
+        u = str(new["url"]).strip()
+        if not u.lower().startswith("https://") or len(u) > 300:
+            raise HTTPException(status_code=422, detail="Адрес API endoflife.date должен начинаться с https://")
+        out["url"] = u.rstrip("/")
     if key == "kev" and "url" in new and str(new["url"]).strip():
         u = str(new["url"]).strip()
         if not u.lower().startswith("https://"):

@@ -125,11 +125,11 @@ class Http:
         return r
 
     async def download(self, url: str, dest: Path, *, etag: str = "", last_modified: str = "", max_bytes: int = MAX_BYTES,
-                       progress: Callable[[int, int], Awaitable[None]] | None = None) -> Downloaded:
+                       progress: Callable[[int, int], Awaitable[None]] | None = None, headers: dict | None = None) -> Downloaded:
         """Скачивание большого файла потоком (память — один блок). Проверяется свободное место по Content-Length до начала, размер — после (оборванный файл отклоняется).
         etag/last_modified — условный запрос: 304 возвращает not_modified без скачивания."""
         total, expected, last = 0, 0, time.monotonic()
-        cond = {k: v for k, v in (("If-None-Match", etag), ("If-Modified-Since", last_modified)) if v}
+        cond = {**(headers or {}), **{k: v for k, v in (("If-None-Match", etag), ("If-Modified-Since", last_modified)) if v}}
         try:
             async with self._c.stream("GET", url, headers=cond) as r:
                 if r.status_code == 304:

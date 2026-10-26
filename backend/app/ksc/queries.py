@@ -21,6 +21,12 @@ KSC_VERSION = "SELECT TOP (1) p.wstrProductBuildNumber AS build FROM dbo.v_akpub
 # --- сводка главной страницы
 COUNT_HOSTS = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0"
 COUNT_HOSTS_ACTIVE = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0 AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())"
+# EOL: компьютеры (ОС) порциями по nId и устройства с заданными записями реестра ПО; признак активности считается в SQL (даты KSC — UTC)
+_ACTIVE = "CASE WHEN h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE()) THEN 1 ELSE 0 END"
+EOL_OS_HOSTS = ("SELECT TOP (%(n)s) h.nId AS host_id, h.wstrOSName AS os_name, h.nVersionMajor AS os_major, h.nVersionMinor AS os_minor, h.nOsBuildNumber AS os_build, " + _ACTIVE + " AS active "
+                "FROM dbo.v_akpub_host h WHERE h.nId > %(after)s AND {where} ORDER BY h.nId")
+EOL_APP_HOSTS = ("SELECT i.nHostId AS host_id, i.nProduct AS product_id, " + _ACTIVE + " AS active FROM dbo.hst_inventory_hstprds i JOIN dbo.v_akpub_host h ON h.nId = i.nHostId "
+                 "WHERE i.bDeleted = 0 AND {where} AND i.nProduct IN ({ids})")
 COUNT_PRODUCTS = "SELECT COUNT(*) AS n FROM dbo.hst_inventory_products p WHERE EXISTS (SELECT 1 FROM dbo.hst_inventory_hstprds i WHERE i.nProduct = p.nId AND i.bDeleted = 0)"
 COUNT_INSTALLS = "SELECT COUNT(*) AS n FROM dbo.hst_inventory_hstprds i WHERE i.bDeleted = 0"
 
