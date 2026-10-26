@@ -137,10 +137,14 @@ NEWSHA="$(sha256sum "$APP/scripts/updater.sh" | cut -d' ' -f1)"
 for _ in $(seq 1 40); do [ "$(python3 -c "import json;print(json.load(open('$D/updater/heartbeat.json')).get('script_sha',''))" 2>/dev/null)" = "$NEWSHA" ] && break; sleep 1; done
 t "скрипты заменены, служба (перезапущенная systemd) работает на новом коде" bash -c "[ '$NEWSHA' != '$OLDSHA' ] && [ \"\$(python3 -c \"import json;print(json.load(open('$D/updater/heartbeat.json')).get('script_sha',''))\")\" = '$NEWSHA' ] && [ '$(ov | jq_ updater.available)' = True ]"
 t "приложение и данные не затронуты (версия 0.6.1, вход работает)" bash -c "[ '$(running_version)' = 0.6.1 ] && [ -n '$(api POST /auth/login '{"login":"admin","password":"Real-Test-Pass-2026"}' | jq_ csrf_token)' ]"
-N1="$(systemctl --user show -p NRestarts --value "$UNIT")"; api POST /admin/updates/backup >/dev/null; wait_idle 180; sleep 2
-t "запрос из интерфейса после исправления выполнен: резервная копия создана, служба не перезапускалась" bash -c "[ '$(ov | jq_ updater.result)' = ok ] && [ '$(systemctl --user show -p NRestarts --value "$UNIT")' = '$N1' ]"
-api POST /admin/updates/helper '{"confirm":true}' >/dev/null; sleep 6; wait_idle 120
-t "обновление помощника из интерфейса (действие helper) выполнено" bash -c "[ '$(ov | jq_ updater.result)' = ok ] && [ '$(ov | jq_ updater.action)' = helper ]"
+for _ in $(seq 1 30); do [ "$(ov | jq_ updater.available)" = True ] && [ "$(ov | jq_ updater.state)" = idle ] && break; sleep 1; done
+N1="$(systemctl --user show -p NRestarts --value "$UNIT")"; RESP="$(api POST /admin/updates/backup)"; echo "backup: $RESP" >> "$W/diag.log"
+for _ in $(seq 1 90); do grep -q 'backup завершён' "$D/updater/backup.log" 2>/dev/null && break; sleep 2; done
+t "запрос из интерфейса после исправления выполнен: резервная копия создана, служба не перезапускалась" bash -c "grep -q 'backup завершён.*успешно' '$D/updater/backup.log' && [ '$(systemctl --user show -p NRestarts --value "$UNIT")' = '$N1' ]"
+# образ приложения в этом испытании — релиз 0.6.1 без кнопки «Обновить помощника»: запрос передаётся файлом в том же формате, что и новый backend
+send_req() { printf 'id=%s\naction=%s\ntarget=%s\nmode=\nby=admin\nat=%s\n' "$1" "$2" "$3" "$(date +%s)" > "$D/updater/request.txt"; }
+send_req aabbccddeeff0801 helper v0.6.1; for _ in $(seq 1 90); do grep -q 'helper завершён' "$D/updater/update.log" 2>/dev/null && break; sleep 2; done
+t "обновление помощника (действие helper) выполнено: скрипты уже соответствуют релизу, служба жива" bash -c "grep -q 'helper завершён.*успешно' '$D/updater/update.log' && [ '$(ov | jq_ updater.available)' = True ]"
 
 printf '\nИтого: %s проверок пройдено, %s не пройдено\n' "$PASS" "$FAILS"
 [ -f "$W/diag.log" ] && { cp "$W/diag.log" "${DIAG_OUT:-/tmp/real-diag.log}"; echo "Диагностика провалов: ${DIAG_OUT:-/tmp/real-diag.log}"; }
