@@ -9,7 +9,6 @@ import asyncio
 
 from sqlalchemy import select
 
-from ..ksc import queries as q
 from ..ksc.driver import KscError, Session, SourceClient
 from ..models import VdbFinding, VdbSource, VdbVuln
 from ..vdb import match as M
@@ -228,35 +227,48 @@ async def build_extvulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
 
 
 class ExtIndex:
-    """Сопоставление «установленная запись реестра → потенциальные уязвимости» для источника: считается один раз на состояние баз и каталога порциями (без загрузки всех записей источников в память).
-    Хранится компактно: запись реестра → номер версии каталога → кортежи (уязвимость, статус, основание); сведения об уязвимостях читаются позже только для найденных у компьютеров."""
+    """Сопоставление «установленная запись реестра → потенциальные уязвимости» для источника в компактном виде. Считается порциями по уязвимостям и хранит не все совпадения,
+    а по каждой версии каталога: итоги (по уровням, KEV, подтверждённые), самые приоритетные совпадения (не более `cap`) и совпадения с уязвимостями, по которым есть решения специалистов.
+    Память зависит от числа версий каталога, а не от числа уязвимостей, у компьютера стандартное «потенциальных 6000» не раздувает память и время."""
 
-    def __init__(self, by_pid: dict[int, int], versions: list[tuple[str, str]], hits: dict[int, list[tuple]], srcs: dict[str, str], notes: list[str], pnames: dict[str, str] | None = None):
-        self.by_pid, self.versions, self.hits, self.srcs, self.notes, self.pnames = by_pid, versions, hits, srcs, notes, pnames or {}
-
-    def matches_for(self, pid: int) -> list[tuple]:
-        vid = self.by_pid.get(pid)
-        return self.hits.get(vid, ()) if vid is not None else ()
+    def __init__(self, cap: int):
+        self.cap = cap
+        self.by_pid: dict[int, int] = {}
+        self.versions: list[tuple[str, str]] = []
+        self.agg: list[list[int]] = []                 # по версии: [критич., высок., предупр., всего, KEV, подтверждено источником]
+        self.top: list[list[tuple]] = []               # по версии: (kev, -уровень, -статус, уязвимость, статус, основание_id), по возрастанию (лучшее первым), не более cap
+        self.tk: list[list[tuple]] = []                # по версии: совпадения с уязвимостями, по которым есть решения: (уязвимость, статус, основание_id, уровень, kev, подтверждено)
+        self.bases: list[str] = []
+        self.srcs: dict[str, str] = {}
+        self.sev: dict[str, tuple[int, bool]] = {}     # уязвимость → (уровень 3/2/1, в KEV)
+        self.pnames: dict[str, str] = {}
+        self.notes: list[str] = []
+        self.total_matches = 0
 
     def stats(self) -> dict:
-        return {"installs": len(self.by_pid), "versions": len(self.versions), "matches": sum(len(v) for v in self.hits.values()), "vulns": len(self.srcs)}
+        return {"installs": len(self.by_pid), "versions": len(self.versions), "matches": self.total_matches, "vulns": len(self.sev), "stored": sum(len(t) for t in self.top)}
 
 
-async def build_ext_index(ctx: Ctx, statuses: tuple[str, ...] = M.AFFECTED, *, res=None) -> ExtIndex:
+LEVEL_I = {"critical": 3, "high": 2, "warning": 1}
+
+
+async def build_ext_index(ctx: Ctx, statuses: tuple[str, ...] = M.AFFECTED, *, res=None, tkeys: frozenset | set = frozenset(), cap: int = 300) -> ExtIndex:
+    idx = ExtIndex(cap)
     if ctx.sm is None or ctx.source_id is None:
-        return ExtIndex({}, [], {}, {}, ["Внешние базы недоступны: нет доступа к локальной базе уязвимостей"])
+        idx.notes.append("Внешние базы недоступны: нет доступа к локальной базе уязвимостей")
+        return idx
+    bas_id: dict[str, int] = {}
+    vid_of: dict[tuple[str, str], int] = {}
     async with ctx.sm() as db:
         prods, maps = await M.load_context(db, ctx.source_id)
         if not prods:
-            return ExtIndex({}, [], {}, {}, ["Каталог программ источника ещё не построен: потенциальные совпадения с внешними базами не рассчитаны"])
+            idx.notes.append("Каталог программ источника ещё не построен: потенциальные совпадения с внешними базами не рассчитаны")
+            return idx
         matcher = M.Matcher(prods, maps)
-        keys = sorted((await db.execute(select(VdbFinding.vuln_key).where(VdbFinding.source_id == ctx.source_id))).scalars().all())
-        vid_of: dict[tuple[str, str], int] = {}
-        versions: list[tuple[str, str]] = []
-        by_pid: dict[int, int] = {}
-        hits: dict[int, list[tuple]] = {}
-        srcs: dict[str, str] = {}
-        pnames: dict[str, str] = {}
+        fnd = (await db.execute(select(VdbFinding.vuln_key, VdbFinding.sev_rank, VdbFinding.exploited).where(VdbFinding.source_id == ctx.source_id).order_by(VdbFinding.vuln_key))).all()
+        keys = [k for k, _r, _e in fnd]
+        for k, rank, ex in fnd:
+            idx.sev[k] = (3 if (ex or rank >= 4) else LEVEL_I[_level(rank)], bool(ex))
         async for _part, rows in M.iter_affected(db, keys, 200):             # порциями по уязвимостям: в памяти только порция и компактный результат
             ms = [m for m in M.matches_from(matcher, rows) if m.status in statuses]
             if ms:
@@ -267,56 +279,61 @@ async def build_ext_index(ctx: Ctx, statuses: tuple[str, ...] = M.AFFECTED, *, r
                     k = (m.product_key, m.version)
                     vid = vid_of.get(k)
                     if vid is None:
-                        vid = vid_of[k] = len(versions)
-                        versions.append(k)
+                        vid = vid_of[k] = len(idx.versions)
+                        idx.versions.append(k)
+                        idx.agg.append([0, 0, 0, 0, 0, 0])
+                        idx.top.append([])
+                        idx.tk.append([])
                         for pid in m.product_ids:
-                            by_pid[int(pid)] = vid
-                    pnames[m.product_key] = m.product_name
-                    hits.setdefault(vid, []).append((m.vuln_key, m.status, m.basis))
-                    if m.vuln_key not in srcs:
-                        srcs[m.vuln_key] = ", ".join(sorted(by_src.get(m.vuln_key, set())))
+                            idx.by_pid[int(pid)] = vid
+                    idx.pnames[m.product_key] = m.product_name
+                    sev, kev = idx.sev.get(m.vuln_key, (1, False))
+                    conf = m.status == "confirmed"
+                    a = idx.agg[vid]
+                    a[0 if sev == 3 else 1 if sev == 2 else 2] += 1
+                    a[3] += 1
+                    a[4] += 1 if kev else 0
+                    a[5] += 1 if conf else 0
+                    bid = bas_id.get(m.basis)
+                    if bid is None:
+                        bid = bas_id[m.basis] = len(idx.bases)
+                        idx.bases.append(m.basis)
+                    t = idx.top[vid]
+                    t.append((0 if kev else 1, -sev, -M.STATUS_RANK[m.status], m.vuln_key, m.status, bid))
+                    if len(t) > cap * 2:
+                        t.sort()
+                        del t[cap:]
+                    if m.vuln_key.upper() in tkeys:
+                        idx.tk[vid].append((m.vuln_key, m.status, bid, sev, kev, conf))
+                    idx.total_matches += 1
+                    if m.vuln_key not in idx.srcs:
+                        idx.srcs[m.vuln_key] = ", ".join(sorted(by_src.get(m.vuln_key, set())))
             del rows, ms
             if res is not None:
                 await res.breathe("индекс внешних баз")
             if ctx.cancelled():
                 raise RuntimeError("cancelled")
-    return ExtIndex(by_pid, versions, hits, srcs, [], pnames)
+    for t in idx.top:
+        t.sort()
+        del t[cap:]
+    return idx
 
 
-async def ext_rows_for_hosts(client: SourceClient, ctx: Ctx, host_ids: list[int], *, index: ExtIndex | None = None, chunk: int = 400) -> tuple[list[dict], list[str]]:
-    """Потенциальные совпадения с внешними базами для выбранных компьютеров (страницы и отчёты по зонам).
-    Не обходит весь источник: сопоставление «уязвимость × версия каталога» берётся из индекса источника, затем читаются установки только выбранных компьютеров.
-    Строки — как в build_extvulns, без полей компьютера (имя, адрес добавляет вызывающий по host_id). Возвращает (строки, замечания)."""
-    index = index or await build_ext_index(ctx)
-    if index.notes:
-        return [], index.notes
-    hits: list[tuple[dict, tuple]] = []
-    seen: set[tuple] = set()
-    for i in range(0, len(host_ids), chunk):
-        if ctx.cancelled():
-            raise RuntimeError("cancelled")
-        for r in await client.run(q.INSTALLS_FOR_HOSTS.format(ids=q.ids_list(host_ids[i:i + chunk])), max_rows=2_000_000):
-            pid = int(r["product_id"])
-            vid = index.by_pid.get(pid)
-            for m in (index.hits.get(vid, ()) if vid is not None else ()):
-                k = (r["host_id"], pid, m[0])
-                if k not in seen:
-                    seen.add(k)
-                    hits.append((r, (*m, index.versions[vid][0])))
-        ctx.progress(f"внешние базы: совпадений {len(hits)}, компьютеров проверено {min(i + chunk, len(host_ids))} из {len(host_ids)}")
-    need = sorted({m[0] for _, m in hits})
-    meta: dict[str, VdbVuln] = {}
+async def ext_meta(ctx: Ctx, keys: list[str]) -> dict[str, tuple]:
+    """Сведения об уязвимостях для сохраняемых строк: (ранг, заголовок, идентификаторы, есть исправление, оценка) — только нужные столбцы."""
+    out: dict[str, tuple] = {}
     async with ctx.sm() as db:
-        for i in range(0, len(need), 400):
-            for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_(need[i:i + 400])))).scalars().all():
-                meta[v.vuln_key] = v
-    out: list[dict] = []
-    for r, (vuln_key, status, basis, pkey) in hits:
-        v = meta.get(vuln_key)
-        rank = v.sev_rank if v else 0
-        out.append({"host_id": int(r["host_id"]), "vuln_key": vuln_key, "ids": (v.ids_text.upper() if v else vuln_key)[:120], "title": (v.title if v else "")[:200],
-                    "severity": "critical" if (v and v.exploited) or rank >= 4 else _level(rank), "rank": rank, "severity_ru": SEV_RU[next((k2 for k2, r2 in SEV_RANK.items() if r2 == rank), "")],
-                    "kev": "да" if v and v.exploited else "", "status": status, "status_ru": M.STATUS_RU[status], "basis": basis, "program": index.pnames.get(pkey, pkey), "installed_version": r.get("version") or "",
-                    "sources": index.srcs.get(vuln_key, ""), "fix": "есть сведения об исправлении" if v and v.has_fix else "нет сведений", "product_id": int(r["product_id"]),
-                    "score": v.score if v else None, "app_name": r.get("name") or "", "publisher": r.get("publisher") or ""})
-    return out, []
+        for i in range(0, len(keys), 400):
+            for k, rank, title, ids, fix, score in (await db.execute(select(VdbVuln.vuln_key, VdbVuln.sev_rank, VdbVuln.title, VdbVuln.ids_text, VdbVuln.has_fix, VdbVuln.score).where(VdbVuln.vuln_key.in_(keys[i:i + 400])))).all():
+                out[k] = (rank, title, ids, fix, score)
+    return out
+
+
+def ext_row(index: ExtIndex, vk: str, status: str, bid: int, pkey: str, inst: dict, meta: dict[str, tuple]) -> dict:
+    """Строка потенциального совпадения (как в быстром отчёте по внешним базам) без полей компьютера."""
+    rank, title, ids, fix, score = meta.get(vk, (0, "", vk, None, None))
+    sev, kev = index.sev.get(vk, (1, False))
+    return {"vuln_key": vk, "ids": (ids.upper() if ids else vk)[:120], "title": (title or "")[:200], "severity": {3: "critical", 2: "high", 1: "warning"}[sev], "rank": rank,
+            "severity_ru": SEV_RU[next((k2 for k2, r2 in SEV_RANK.items() if r2 == rank), "")], "kev": "да" if kev else "", "status": status, "status_ru": M.STATUS_RU[status], "basis": index.bases[bid],
+            "program": index.pnames.get(pkey, pkey), "installed_version": inst.get("version") or "", "sources": index.srcs.get(vk, ""), "fix": "есть сведения об исправлении" if fix else "нет сведений",
+            "product_id": int(inst["product_id"]), "score": score, "app_name": inst.get("name") or "", "publisher": inst.get("publisher") or ""}

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from sqlalchemy import and_, bindparam, delete, func, insert, or_, select, update
+from sqlalchemy import and_, bindparam, delete, distinct, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
@@ -27,15 +27,18 @@ from ..ksc import vulns as V
 from ..ksc.driver import KscError
 from ..models import KscSource, Zone, ZcDashboard, ZcDetection, ZcHost, ZcHostZone, ZcSource, utcnow
 from ..reports import quick
+from ..reports.quick_ext import ext_meta, ext_row
 from ..reports.quick import SEV_RU
-from ..services.resources import RES, MemoryPressure
+from ..vdb.match import STATUS_RU as M_STATUS_RU
+from ..vdb.normalize import SEV_RANK as SEV_RANK_RU
+from ..vdb.normalize import SEV_RU as EXT_SEV_RU
+from ..services.resources import RES
 from ..services.settings import SettingsService
 from ..services.sources import SourceRegistry
 from ..vdb import store as vdb_store
 from . import match as ZM
 from . import service as S
 from . import triage as T
-from .dataset import SEV_RANK
 
 log = logging.getLogger("app.zonecache")
 UNASSIGNED = "none"
@@ -81,21 +84,46 @@ def unpack_record(d: dict) -> dict:
     return out
 
 
-def pack_row(r: dict) -> dict:
+# поля строки обнаружения, которые восстанавливаются при чтении (длинные константы и повторы не хранятся: размер строки — треть исходного)
+_KSC_DROP = ("severity_ru", "cve", "host_id", "name", "fix", "binding", "install_key", "descr_id_dup")
+_EXT_DROP = ("severity_ru", "status_ru", "host_id", "name", "product", "ids_list")
+
+
+def pack_row(r: dict, origin: str = "") -> dict:
+    """Строка обнаружения → компактный словарь для JSON (даты — строки ISO; восстанавливаемые поля не сохраняются)."""
     out = {k: _iso(v) for k, v in r.items()}
     t = r.get("triage")
     if t:
         out["triage"] = {k: _iso(v) for k, v in t.items()}
+    if origin == "ksc":
+        for k in _KSC_DROP:
+            out.pop(k, None)
+    elif origin == "ext":
+        for k in _EXT_DROP:
+            out.pop(k, None)
+        out["kev"] = bool(r.get("kev"))
+        out["fix"] = r.get("fix") == "есть сведения об исправлении"
     return out
 
 
-def unpack_row(d: dict) -> dict:
+def unpack_row(d: dict, origin: str = "") -> dict:
     out = dict(d)
     if "detected" in out:
         out["detected"] = _dt(out["detected"])
     t = out.get("triage")
     if t:
         out["triage"] = {**t, "at": _dt(t.get("at")), "review_until": _dt(t.get("review_until"))}
+    if origin == "ksc" and "severity" in out:
+        out.setdefault("severity_ru", SEV_RU[out["severity"]])
+        out.setdefault("cve", ", ".join(out.get("cve_list") or []))
+        out.setdefault("fix", ("Исправление доступно" + (f" ({', '.join(out.get('kb') or [])})" if out.get("kb") else "")) if out.get("patch") else "Сведений об исправлении в KSC нет")
+        out.setdefault("binding", "подтверждено KSC: найдена программа в реестре" if out.get("confirmed") else "KSC не определил установленную версию: указана версия из справочника уязвимости")
+    elif origin == "ext" and "severity" in out:
+        out.setdefault("severity_ru", EXT_SEV_RU[next((k2 for k2, r2 in SEV_RANK_RU.items() if r2 == out.get("rank", 0)), "")])
+        out["status_ru"] = M_STATUS_RU.get(out.get("status", ""), "")
+        out["product"] = out.get("program", "")
+        out["ids_list"] = (out.get("ids") or "").split()[:20]
+        out["fix"] = "есть сведения об исправлении" if out.get("fix") is True else "нет сведений" if out.get("fix") is False else out.get("fix", "")
     return out
 
 
@@ -128,7 +156,35 @@ def ksc_detection(r: dict, nm: dict, host_name: str) -> dict:
             "vp_id": r.get("vp_id"), "detected": _iso(r.get("detected")), "url": r.get("url") or "", "occurrence_id": int(r["occurrence_id"]),
             "fix": ("Исправление доступно" + (f" ({', '.join(kb)})" if kb else "")) if r.get("patches_available") else "Сведений об исправлении в KSC нет", "patch": bool(r.get("patches_available")),
             "binding": "подтверждено KSC: найдена программа в реестре" if confirmed else "KSC не определил установленную версию: указана версия из справочника уязвимости",
-            "confirmed": confirmed, "install_key": f"{r['host_id']}:{r.get('inv_id') or ''}:{r.get('vp_id') or ''}:{r.get('app_name') or r.get('product') or ''}:{installed}"}
+            "confirmed": confirmed, "kb": kb, "inv_id": r.get("inv_id")}
+
+
+class RetryClient:
+    """Клиент KSC для фонового расчёта: свой, с длинным тайм-аутом запроса и без конкуренции с интерактивными запросами, повтор при временных сбоях (обрыв, тайм-аут сервера)."""
+
+    TRANSIENT = ("connect", "timeout", "unavailable")
+
+    def __init__(self, params, name: str, tries: int = 3):
+        from dataclasses import replace  # noqa: PLC0415
+
+        from ..ksc.driver import SourceClient  # noqa: PLC0415
+
+        self.params = replace(params, query_timeout_s=max(params.query_timeout_s, 600), connect_timeout_s=max(params.connect_timeout_s, 20))
+        self._c = SourceClient(self.params, concurrency=1, name=name)
+        self.tries = tries
+
+    async def run(self, sql: str, params=None, *, max_rows: int = 100_000):
+        import asyncio  # noqa: PLC0415
+
+        for i in range(self.tries):
+            try:
+                return await self._c.run(sql, params, max_rows=max_rows)
+            except KscError as exc:
+                transient = exc.code in self.TRANSIENT or "timed out" in exc.message or "connection failed" in exc.message
+                if not transient or i == self.tries - 1:
+                    raise
+                log.warning("Временный сбой чтения KSC при расчёте зон, повтор", extra={"attempt": i + 1, "error": exc.message[:200]})
+                await asyncio.sleep(15 * (i + 1))
 
 
 # ------------------------------------------------------------------------------------------------ контекст расчёта
@@ -166,7 +222,7 @@ def vdb_rev_hash(rev: str) -> str:
 
 async def probe(bc: BuildCtx, src: KscSource) -> None:
     """Лёгкая проверка KSC (несколько агрегатов): отпечаток данных и состояние баз уязвимостей — для отметки «доступны более свежие сведения»."""
-    client = bc.sources.client(src)
+    client = RetryClient(bc.sources.params(src), src.name, tries=1)
     st = await V.stamp(client)
     async with bc.sm() as db:
         zs = await get_zc(db, src.id)
@@ -186,7 +242,7 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
     async with bc.sm() as db:
         zs = await get_zc(db, sid)
         cur = zs.gen
-        stage = -(int(time.time()) % 1_000_000_000 + 1) if partial else cur + 1
+        stage = -int(time.time()) if partial else cur + 1                       # поколение обновления зоны — минус время начала (по нему находятся хвосты прерванных заданий)
         zs.status = "building" if cur == 0 else zs.status
         zs.started_at, zs.progress = started, "подготовка"
         general, rcfg = await bc.svc.get(db, "general"), await bc.svc.get(db, "reports")
@@ -194,14 +250,17 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
         zones_days = {str(z.id): z.activity_days for z in (await db.execute(select(Zone))).scalars() if z.activity_days}
         tindex = await T.load(db, sid, started)
         vrev = vdb_rev_hash(await vdb_store.revision(db, sid))
-        await db.execute(delete(ZcDetection).where(ZcDetection.source_id == sid, ZcDetection.gen == stage))      # хвосты прерванного расчёта
-        await db.execute(delete(ZcHost).where(ZcHost.source_id == sid, ZcHost.gen == stage))
-        await db.execute(delete(ZcHostZone).where(ZcHostZone.source_id == sid, ZcHostZone.gen == stage))
+        old_gens = (await db.execute(select(ZcHost.gen).where(ZcHost.source_id == sid, ZcHost.gen != cur).distinct())).scalars().all()
         await db.commit()
+    now_s = int(time.time())
+    # хвосты прерванных расчётов, которые читатели не видят: неподменённые полные поколения и обновления зон старше 3 часов (свежие могут принадлежать идущему сейчас заданию)
+    leftovers = [g for g in old_gens if (g > cur and not partial) or (g < 0 and -g < now_s - 3 * 3600)]
+    for g in set(leftovers) | {stage}:
+        await purge_gen(bc.sm, sid, g)
     activity_days = int(general.activity_days)
     excl = rcfg.exclude_slave_servers
     max_det = int(getattr(bc.zc, "max_detections", 3_000_000))
-    client = bc.sources.client(src)
+    client = RetryClient(bc.sources.params(src), src.name)
     ctx = quick.Ctx(source_name=src.name, activity_days=activity_days, exclude_slaves=excl, max_rows=rcfg.max_rows, sm=bc.sm, source_id=sid, org={}, protection_loader=None)
     ctx.progress, ctx.cancelled = lambda t: bc.progress(t, -1), bc.cancelled
     notes: list[str] = []
@@ -283,49 +342,51 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
                         else:
                             c["k_acc" if bucket == "accepted" else "k_exc"] += 1
                         out_rows.append({"source_id": sid, "gen": stage, "host_id": hid, "origin": "ksc", "vuln_key": (row["kla_id"] or "")[:80], "keys": " ".join([row["kla_id"], *row["cve_list"]]).upper()[:600],
-                                         "prod": row["product"][:300], "severity": SEV_INT[row["severity"]], "bucket": bucket, "tstatus": d.status if d else "", "flags": 0, "row": pack_row(row)})
+                                         "prod": row["product"][:300], "severity": SEV_INT[row["severity"]], "bucket": bucket, "tstatus": d.status if d else "", "flags": 0, "row": pack_row(row, "ksc")})
                     total_det += len(out_rows)
                     await _insert_rows(bc, out_rows)
                     tick(f"обнаружения KSC: {total_det}", 30 + 35 * min(total_det, max_det) // max(max_det, 1))
                     await bc.res.breathe("расчёт зон: обнаружения")
-        # --- C. потенциальные совпадения с внешними базами (по порциям компьютеров)
+        # --- C. потенциальные совпадения с внешними базами: итоги — по версиям каталога, строки — только самые приоритетные на компьютер
         ext_total = 0
-        index = await _ext_index(bc, src, ctx, vrev)
+        index = await _ext_index(bc, src, ctx, vrev, tindex)
         if index.notes:
             notes += index.notes
         else:
-            from ..reports.quick_ext import ext_rows_for_hosts  # noqa: PLC0415
-
-            ez = max(100, cz // 2)
+            ez = max(25, cz // 8)                                # компьютеров в порции: установки читаются порцией, строки собираются по одному компьютеру
+            cap = int(getattr(bc.zc, "ext_per_host", 60))
+            capped = 0
             for i in range(0, n_hosts, ez):
                 part = ids[i:i + ez]
-                rows, _n = await ext_rows_for_hosts(client, ctx, part, index=index, chunk=ez)
-                out_rows = []
-                for r in rows:
-                    hid = int(r["host_id"])
+                installs: dict[int, list[dict]] = {}
+                for r in await client.run(q.INSTALLS_FOR_HOSTS.format(ids=q.ids_list(part)), max_rows=2_000_000):
+                    installs.setdefault(int(r["host_id"]), []).append(r)
+                picked: list[tuple[int, int, str, str, int, str, dict, str]] = []          # (компьютер, версия, уязвимость, статус, основание, продукт, установка, корзина)
+                for hid, inst in installs.items():
                     if hid not in hmeta:
                         continue
                     name, zones = hmeta[hid]
-                    r = {**r, "product": r.get("program"), "name": name, "ids_list": (r.get("ids") or "").split()[:20]}
-                    r.pop("host_id", None)
-                    d = tindex.lookup(host_id=hid, host_name=name, keys=[r["vuln_key"], *r["ids_list"]], product=r.get("program") or "", version=r.get("installed_version") or "", zone_ids=zones)
+                    c, cands, over = host_ext(index, inst, hid, name, zones, tindex, cap)
+                    capped += 1 if over else 0
+                    for k, v in c.items():
+                        cnt[hid][k] += v
+                    picked += [(hid, *x) for x in cands]
+                meta = await ext_meta(ctx, sorted({x[2] for x in picked}))
+                out_rows = []
+                for hid, vid, vk, status, bid, pkey, inst, forced_bucket in picked:
+                    name, zones = hmeta[hid]
+                    row = ext_row(index, vk, status, bid, pkey, inst, meta)
+                    row.update(product=row["program"], name=name, ids_list=(row["ids"] or "").split()[:20])
+                    d = tindex.lookup(host_id=hid, host_name=name, keys=[vk, *row["ids_list"]], product=row["program"], version=row["installed_version"], zone_ids=zones)
                     bucket = "excluded" if d and d.status in T.EXCLUDED else "accepted" if d and d.status == "risk_accepted" else "current"
-                    r["triage"] = d.public() if d else None
-                    c = cnt[hid]
-                    if bucket == "current":
-                        c["e_total"] += 1
-                        c[{"critical": "e_crit", "high": "e_high"}.get(r["severity"], "e_warn")] += 1
-                        c["e_kev"] += 1 if r.get("kev") else 0
-                        c["e_conf"] += 1 if r["status"] == "confirmed" else 0
-                    else:
-                        c["e_acc" if bucket == "accepted" else "e_exc"] += 1
-                    out_rows.append({"source_id": sid, "gen": stage, "host_id": hid, "origin": "ext", "vuln_key": r["vuln_key"][:80], "keys": " ".join([r["vuln_key"], *r["ids_list"]]).upper()[:600],
-                                     "prod": (r.get("program") or "")[:300], "severity": SEV_INT[r["severity"]], "bucket": bucket, "tstatus": d.status if d else "",
-                                     "flags": (1 if r.get("kev") else 0) | (2 if r["status"] == "confirmed" else 0), "row": pack_row(r)})
+                    row["triage"] = d.public() if d else None
+                    out_rows.append({"source_id": sid, "gen": stage, "host_id": hid, "origin": "ext", "vuln_key": vk[:80], "keys": " ".join([vk, *row["ids_list"]]).upper()[:600], "prod": row["program"][:300],
+                                     "severity": SEV_INT[row["severity"]], "bucket": bucket, "tstatus": d.status if d else "", "flags": (1 if row["kev"] else 0) | (2 if status == "confirmed" else 0), "row": pack_row(row, "ext")})
                 ext_total += len(out_rows)
                 await _insert_rows(bc, out_rows)
-                tick(f"внешние базы: {ext_total}", 65 + 25 * min(i + ez, n_hosts) // max(n_hosts, 1))
+                tick(f"внешние базы: компьютеров {min(i + ez, n_hosts)} из {n_hosts}, строк {ext_total}", 65 + 25 * min(i + ez, n_hosts) // max(n_hosts, 1))
                 await bc.res.breathe("расчёт зон: внешние базы")
+            log.info("Расчёт зон: потенциальные совпадения", extra={"source": src.name, "hosts_over_cap": capped, "cap": cap, "rows": ext_total})
         # --- D. итоги по компьютерам, подмена поколения
         tick("сохранение итогов", 92)
         async with bc.sm() as db:
@@ -333,6 +394,7 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
             items = [{"b_s": sid, "b_h": hid, "b_g": stage, **c} for hid, c in cnt.items()]
             for i in range(0, len(items), 2000):
                 await db.execute(upd, items[i:i + 2000])
+            await refresh_texts(db, sid, stage, sorted(hmeta))
             await T.mark_stale(db, tindex)
             if partial:
                 await _swap_partial(db, sid, cur, stage, set(ids))
@@ -361,16 +423,62 @@ async def _insert_rows(bc: BuildCtx, rows: list[dict]) -> None:
             await db.commit()
 
 
-async def _ext_index(bc: BuildCtx, src: KscSource, ctx, vrev: str):
+async def _ext_index(bc: BuildCtx, src: KscSource, ctx, vrev: str, tindex: T.TriageIndex):
     from ..reports.quick_ext import build_ext_index  # noqa: PLC0415
 
-    key = (str(src.id), vrev)
+    tkeys = frozenset({r.vuln_key.upper() for rs in (*tindex.by_host.values(), *tindex.by_product.values(), *tindex.by_zone.values(), *tindex.by_host_name.values()) for r in rs if r.origin == "ext"})
+    key = (str(src.id), vrev, tuple(sorted(tkeys)))
     idx = bc.ext_index.get(key)
     if idx is None:
         bc.ext_index.clear()
         bc.progress("индекс внешних баз", -1)
-        idx = bc.ext_index[key] = await build_ext_index(ctx, res=bc.res)
+        idx = bc.ext_index[key] = await build_ext_index(ctx, res=bc.res, tkeys=tkeys, cap=int(getattr(bc.zc, "ext_per_host", 60)))
     return idx
+
+
+def host_ext(index, inst: list[dict], hid: int, name: str, zones: list[str], tindex: T.TriageIndex, cap: int) -> tuple[dict[str, int], list[tuple], bool]:
+    """Потенциальные совпадения одного компьютера из индекса версий: (итоги, строки для сохранения, были ли отброшены менее опасные). Не перебирает совпадения: итоги — сумма по установкам."""
+    import heapq  # noqa: PLC0415
+    from itertools import islice  # noqa: PLC0415
+
+    c = dict.fromkeys(("e_crit", "e_high", "e_warn", "e_total", "e_kev", "e_conf", "e_acc", "e_exc"), 0)
+    seen: set[int] = set()
+    lists = []
+    forced: list[tuple] = []
+    total_hits = 0
+    for r in inst:
+        pid = int(r["product_id"])
+        if pid in seen:
+            continue
+        seen.add(pid)
+        vid = index.by_pid.get(pid)
+        if vid is None:
+            continue
+        a = index.agg[vid]
+        c["e_crit"] += a[0]
+        c["e_high"] += a[1]
+        c["e_warn"] += a[2]
+        c["e_total"] += a[3]
+        c["e_kev"] += a[4]
+        c["e_conf"] += a[5]
+        total_hits += a[3]
+        pkey = index.versions[vid][0]
+        for vk, status, bid, sev, kev, conf in index.tk[vid]:                      # совпадения с уязвимостями, по которым есть решения: корзина — по решению для этого компьютера
+            d = tindex.lookup(host_id=hid, host_name=name, keys=[vk], product=index.pnames.get(pkey, pkey), version=r.get("version") or "", zone_ids=zones)
+            if d and (d.status in T.EXCLUDED or d.status == "risk_accepted"):
+                c["e_crit" if sev == 3 else "e_high" if sev == 2 else "e_warn"] -= 1
+                c["e_total"] -= 1
+                c["e_kev"] -= 1 if kev else 0
+                c["e_conf"] -= 1 if conf else 0
+                c["e_exc" if d.status in T.EXCLUDED else "e_acc"] += 1
+                forced.append((vid, vk, status, bid, pkey, r, "x"))
+        lists.append(((t, vid, pkey, r) for t in index.top[vid]))
+    picked: list[tuple] = []
+    for (t, vid, pkey, r) in islice(heapq.merge(*lists, key=lambda x: x[0][:4]), cap):
+        picked.append((vid, t[3], t[4], t[5], pkey, r, "c"))
+    have = {(x[0], x[1], int(x[5]["product_id"])) for x in picked}
+    picked += [x for x in forced if (x[0], x[1], int(x[5]["product_id"])) not in have]
+    return c, picked, total_hits > cap
 
 
 async def _swap_partial(db: AsyncSession, sid, cur: int, stage: int, hosts: set[int]) -> None:
@@ -447,6 +555,24 @@ async def total_rows(db: AsyncSession, sid, gen: int) -> tuple[int, int]:
 
 
 # ------------------------------------------------------------------------------------------------ решения по уязвимостям и итоги
+async def refresh_texts(db: AsyncSession, sid, gen: int, host_ids: list[int]) -> None:
+    """Списки идентификаторов и программ текущих обнаружений компьютеров (для поиска по CVE/KLA и программе в таблице зоны): пересобираются агрегатами SQL по группам компьютеров."""
+    D = ZcDetection
+    pg = db.get_bind().dialect.name == "postgresql"
+    agg = (lambda x: func.string_agg(distinct(x), "|")) if pg else (lambda x: func.group_concat(distinct(x)))
+    for i in range(0, len(host_ids), 1000):
+        part = host_ids[i:i + 1000]
+        rows = (await db.execute(select(D.host_id, D.origin, agg(func.replace(func.lower(D.keys), " ", "|")), agg(func.lower(D.prod)))
+                                 .where(D.source_id == sid, D.gen == gen, D.host_id.in_(part), D.bucket == "current").group_by(D.host_id, D.origin))).all()
+        got = {h: {"kk": "", "ke": "", "pk": "", "pe": ""} for h in part}
+        for h, o, keys, prods in rows:
+            sep = "|" if pg else ","
+            wrap = lambda t: ("|" + (t or "").replace(sep, "|")[:60000] + "|") if t else ""  # noqa: E731
+            got[h]["kk" if o == "ksc" else "ke"], got[h]["pk" if o == "ksc" else "pe"] = wrap(keys), wrap(prods)
+        await db.execute(update(ZcHost.__table__).where(ZcHost.source_id == sid, ZcHost.gen == gen, ZcHost.host_id == bindparam("b_h")).values(kk=bindparam("kk"), ke=bindparam("ke"), pk=bindparam("pk"), pe=bindparam("pe"))
+                         .execution_options(synchronize_session=False), [{"b_h": h, **v} for h, v in got.items()])
+
+
 async def recount_hosts(db: AsyncSession, sid, gen: int, host_ids: list[int]) -> None:
     """Пересчитать итоги компьютеров по сохранённым обнаружениям (после изменения решений): агрегатами SQL, без чтения строк в память."""
     from sqlalchemy import case  # noqa: PLC0415
@@ -469,6 +595,7 @@ async def recount_hosts(db: AsyncSession, sid, gen: int, host_ids: list[int]) ->
         got = {r[0]: r[1:] for r in rows}
         upd = [{"b_h": h, **{k: int(v) for k, v in zip(COUNTERS, got.get(h, (0,) * len(COUNTERS)))}} for h in part]
         await db.execute(update(ZcHost.__table__).where(ZcHost.source_id == sid, ZcHost.gen == gen, ZcHost.host_id == bindparam("b_h")).values({k: bindparam(k) for k in COUNTERS}).execution_options(synchronize_session=False), upd)
+    await refresh_texts(db, sid, gen, host_ids)
 
 
 async def retriage(sm: async_sessionmaker, sid, keys: set[str] | None = None) -> int:
@@ -495,7 +622,7 @@ async def retriage(sm: async_sessionmaker, sid, keys: set[str] | None = None) ->
             hosts = {h: (d.get("name", ""), d.get("zones") or []) for h, d in (await db.execute(select(ZcHost.host_id, ZcHost.data).where(ZcHost.source_id == sid, ZcHost.gen == gen, ZcHost.host_id.in_({r.host_id for r in rows})))).all()}
             for r in rows:
                 name, zones = hosts.get(r.host_id, ("", []))
-                row = unpack_row(r.row)
+                row = unpack_row(r.row, r.origin)
                 keys_ = ([row.get("kla_id") or "", *row.get("cve_list", [])] if r.origin == "ksc" else [row.get("vuln_key") or "", *row.get("ids_list", [])])
                 prod = row.get("product") or row.get("program") or ""
                 dcs = tindex.lookup(host_id=r.host_id, host_name=name, keys=keys_, product=prod, version=row.get("installed_version") or "", zone_ids=zones)
@@ -503,7 +630,7 @@ async def retriage(sm: async_sessionmaker, sid, keys: set[str] | None = None) ->
                 ts = dcs.status if dcs else ""
                 if bucket != r.bucket or ts != r.tstatus or bool(row.get("triage")) != bool(dcs) or (dcs and row.get("triage", {}).get("id") != dcs.id):
                     row["triage"] = dcs.public() if dcs else None
-                    r.bucket, r.tstatus, r.row = bucket, ts, pack_row(row)
+                    r.bucket, r.tstatus, r.row = bucket, ts, pack_row(row, r.origin)
                     touched.add(r.host_id)
                     changed += 1
             await db.commit()

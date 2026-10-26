@@ -271,7 +271,7 @@ async def conflicts(request: Request, su: SessionUser = Depends(require_admin), 
     return {"items": out[:1000], "total": sum(counts.values()), "by_via": dict(counts)}
 
 
-@admin_router.get("/cache")
+@admin_router.get("/cache/status")
 async def cache_status(request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     """Подготовленные данные зон: расписание ночного расчёта, последний успешный расчёт и его длительность, ошибки, очередь заданий, ресурсы worker."""
     return await ZJ.status(db, request.app.state.settings_svc)
@@ -494,7 +494,8 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
     fr = _freshness(states, dash, await _active_job(db, zid), [str(i) for i in sids])
     notes = list(dict.fromkeys(n for ns in await _notes(db, sids) for n in ns))
     return {"zone": info, "stats": stat, "activity_days": days, "total": total, "offset": offset, "limit": limit, "items": items,
-            "sources": [{"id": str(s.id), "name": s.name} for s in srcs], "notes": notes, "fetched_at": fr["data_at"], "conflicts": conflicts, "ext_included": ext, "freshness": fr}
+            "sources": [{"id": str(s.id), "name": s.name} for s in srcs], "notes": notes, "fetched_at": fr["data_at"], "conflicts": conflicts, "ext_included": ext, "freshness": fr,
+            "ext_cap": (await request.app.state.settings_svc.get(db, "zonecache")).ext_per_host}
 
 
 async def _notes(db: AsyncSession, sids: list[uuid.UUID]) -> list[list[str]]:

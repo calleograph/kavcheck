@@ -70,7 +70,7 @@ def responsible_text(contacts: list[dict], limit: int = 3) -> str:
 
 
 def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: dict, generated_at: datetime, selection: list[str], unassigned: bool, base_url: str = "", zone_names: dict[str, str] | None = None) -> dict:
-    """parts — результаты D.assemble по источникам (с ключом `source`), zones — сведения о выбранных зонах [{id,name,description,purpose,contacts}],
+    """parts — наборы по источникам из подготовленных данных (`zread.parts_for_zones`, с ключом `source`), zones — сведения о выбранных зонах [{id,name,description,purpose,contacts}],
     selection — идентификаторы зон отчёта, unassigned — отчёт по компьютерам «Без ответственного»."""
     cats = set(params.get("categories") or DEFAULT_CATEGORIES)
     level = params.get("level") or "management"
@@ -113,13 +113,31 @@ def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: d
     if multi_src:
         cols_hosts.insert(1, col("source", "Источник KSC"))
     v_rows, ext_rows, prot_rows, acc_rows, exc_rows = [], [], [], [], []
+    keep = {id(h) for h in probs}
+    for h in hosts_all:                                       # строки компьютеров вне отчёта больше не нужны (счётчики остаются)
+        if id(h) not in keep:
+            h["rows"] = {"ksc": {"current": [], "accepted": [], "excluded": []}, "ext": {"current": [], "accepted": [], "excluded": []}}
+    sev0 = {"Критическая": 3, "Высокая": 2, "Предупреждение": 1}
     for h in probs:
+        # каждая строка преобразуется один раз; исходная освобождается сразу, карточка компьютера ссылается на те же строки таблиц (память — одна строка вместо трёх)
+        card = {"ksc": [], "ksc_n": 0, "ext": [], "ext_n": 0, "acc": [], "exc": []}
         for bucket, dest in (("current", v_rows), ("accepted", acc_rows), ("excluded", exc_rows)):
-            for r in h["rows"]["ksc"][bucket]:
-                dest.append(_vrow(h, r, "ksc"))
+            lst = [_vrow(h, r, "ksc") for r in h["rows"]["ksc"][bucket]]
+            dest.extend(lst)
+            if bucket == "current":
+                card["ksc"], card["ksc_n"] = lst[:CARD_KSC], len(lst)
+            else:
+                card["acc" if bucket == "accepted" else "exc"].extend(lst)
+            h["rows"]["ksc"][bucket] = []
         for bucket, dest in (("current", ext_rows), ("accepted", acc_rows), ("excluded", exc_rows)):
-            for r in h["rows"]["ext"][bucket]:
-                dest.append(_vrow(h, r, "ext"))
+            lst = [_vrow(h, r, "ext") for r in h["rows"]["ext"][bucket]]
+            dest.extend(lst)
+            if bucket == "current":
+                card["ext"], card["ext_n"] = sorted(lst, key=lambda r: (-int(bool(r["kev"])), -sev0.get(r["severity_ru"], 0)))[:CARD_EXT], len(lst)
+            else:
+                card["acc" if bucket == "accepted" else "exc"].extend(lst)
+            h["rows"]["ext"][bucket] = []
+        h["_card"] = card
         for k in h["problems"]:
             if "protection" in _sections(cats) and (k in cats or not (cats & set(PROTECTION_KEYS))):
                 av = h["av"] or {}
@@ -203,11 +221,11 @@ def build_zone_doc(parts: list[dict], zones: list[dict], *, params: dict, org: d
     det: list[dict] = []
     if level == "technical":
         for h, r in zip(probs, rows):
+            c = h["_card"]
             det.append({"anchor": r["anchor"], "name": h["name"], "ip": h["ip"], "os": r["os"], "summary": h["summary"], "max_sev": r["max_sev"], "source": h["source"], "zone": r["zone"],
-                        "last_connected": h["last_connected"], "online": r["online"], "ksc": [_vrow(h, x, "ksc") for x in h["rows"]["ksc"]["current"][:CARD_KSC]], "ext": sorted((_vrow(h, x, "ext") for x in h["rows"]["ext"]["current"]), key=lambda r: (-int(bool(r["kev"])), -sev_order.get(r["severity_ru"], 0)))[:CARD_EXT],
-                        "ksc_more": max(0, len(h["rows"]["ksc"]["current"]) - CARD_KSC), "ext_more": max(0, len(h["rows"]["ext"]["current"]) - CARD_EXT),
+                        "last_connected": h["last_connected"], "online": r["online"], "ksc": c["ksc"], "ext": c["ext"], "ksc_more": max(0, c["ksc_n"] - CARD_KSC), "ext_more": max(0, c["ext_n"] - CARD_EXT),
                         "protection": [{"problem": P.PROBLEMS[k][0], "detail": _detail(h, k, bases_days, scan_days)} for k in h["problems"]],
-                        "accepted": [_vrow(h, x, o) for o in ("ksc", "ext") for x in h["rows"][o]["accepted"]], "excluded": [_vrow(h, x, o) for o in ("ksc", "ext") for x in h["rows"][o]["excluded"]] if params.get("show_excluded") else []})
+                        "accepted": c["acc"], "excluded": c["exc"] if params.get("show_excluded") else []})
     return {"title": f"Состояние безопасности: {title_zone}", "subtitle": f"Отчёт {LEVELS.get(level, '')}", "kind": "quick_zone", "level": level, "generated_at": generated_at.isoformat(timespec="seconds"),
             "data_at": min((p["at"] for p in parts if p.get("at")), default=generated_at).isoformat(timespec="seconds"), "source": ", ".join(p["source"] for p in parts if p.get("source")), "conditions": conds, "meta": meta, "metrics": metrics, "severity": severity,
             "notes": notes, "tables": tables, "layout": layout, "host_details": det, "org": org, "stats": {k: v for k, v in stat.items() if k != "problems"}, "base_url": base_url,

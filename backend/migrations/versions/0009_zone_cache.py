@@ -35,7 +35,7 @@ def upgrade() -> None:
         sa.Column("source_id", sa.Uuid(), primary_key=True), sa.Column("host_id", sa.BigInteger(), primary_key=True), sa.Column("gen", sa.Integer(), primary_key=True),
         sa.Column("name", sa.String(300), nullable=False, server_default=""), sa.Column("search", sa.String(800), nullable=False, server_default=""), sa.Column("ip_num", sa.BigInteger()),
         sa.Column("os", sa.String(200), nullable=False, server_default=""), sa.Column("last_connected", TS), sa.Column("days_since", sa.Float()), sa.Column("online", sa.Boolean()),
-        sa.Column("bases_age", sa.Float()), sa.Column("scan_age", sa.Float()), *flags, *counters, sa.Column("data", JSONB, nullable=False, server_default="{}"))
+        sa.Column("bases_age", sa.Float()), sa.Column("scan_age", sa.Float()), *flags, *counters, sa.Column("data", JSONB, nullable=False, server_default="{}"), *[sa.Column(n, sa.Text(), nullable=False, server_default="") for n in ("kk", "ke", "pk", "pe")])
     op.create_index("ix_zc_hosts_gen", "zc_hosts", ["source_id", "gen"])
     op.create_table("zc_hostzones",
         sa.Column("source_id", sa.Uuid(), primary_key=True), sa.Column("host_id", sa.BigInteger(), primary_key=True), sa.Column("gen", sa.Integer(), primary_key=True), sa.Column("zone_id", sa.String(40), primary_key=True))
@@ -58,6 +58,13 @@ def upgrade() -> None:
         sa.Column("heartbeat_at", TS), sa.Column("progress", sa.String(300)), _i("pct"), _i("attempts"), sa.Column("error", sa.Text()))
     op.create_index("ix_zc_jobs_requested_at", "zc_jobs", ["requested_at"])
     op.create_index("ux_zc_jobs_active", "zc_jobs", ["dedupe_key"], unique=True, postgresql_where=sa.text("status IN ('queued','running')"), sqlite_where=sa.text("status IN ('queued','running')"))
+    if op.get_bind().dialect.name == "postgresql":
+        # поиск по идентификатору уязвимости и программе (подстрока) в списках компьютера — триграммные индексы; расширение необязательно: без него поиск работает, но медленнее
+        op.execute("""DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS pg_trgm; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'pg_trgm недоступно: поиск по обнаружениям без триграммных индексов'; END $$""")
+        has = op.get_bind().execute(sa.text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")).scalar()
+        if has:
+            for c in ("kk", "ke", "pk", "pe"):
+                op.execute(f"CREATE INDEX ix_zc_hosts_{c}_trgm ON zc_hosts USING gin ({c} gin_trgm_ops)")
 
 
 def downgrade() -> None:

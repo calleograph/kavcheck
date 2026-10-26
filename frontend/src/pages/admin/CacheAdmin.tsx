@@ -54,6 +54,9 @@ export default function CacheAdmin() {
           <label>Интенсивность<select value={v.intensity} onChange={(e) => set("intensity", e.target.value as ZoneCacheSettings["intensity"])}>{Object.entries(INTENSITY).map(([k, t]) => <option key={k} value={k}>{t}</option>)}</select></label>
         </div>
         <div className="cols">
+          <label>Потенциальных совпадений в списке на компьютер<input type="number" min={10} max={1000} value={v.ext_per_host} onChange={(e) => set("ext_per_host", Number(e.target.value))} /><span className="help">Сохраняются самые опасные (сначала из каталога CISA KEV); показатели учитывают все совпадения. Меньше — меньше данных в базе.</span></label>
+        </div>
+        <div className="cols">
           <label>Предел обнаружений на источник<input type="number" min={10000} max={20000000} step={10000} value={v.max_detections} onChange={(e) => set("max_detections", Number(e.target.value))} /><span className="help">Больше — сохраняются только счётчики по компьютерам, без списков и решений.</span></label>
           <label>Обновлять данные перед отчётом по расписанию, если им больше, часов<input type="number" min={1} max={720} value={v.stale_hours} onChange={(e) => set("stale_hours", Number(e.target.value))} /><span className="help">Свежие подготовленные данные используются как есть; в отчёте указана дата среза.</span></label>
         </div>

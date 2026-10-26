@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from functools import reduce
 from operator import add
 
@@ -14,9 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .. import search as msearch
 from ..ksc import protection as P
+from ..services.resources import RES
 from ..models import KscSource, Zone, ZcDashboard, ZcDetection, ZcHost, ZcHostZone, ZcSource, utcnow
 from . import dataset as D
-from . import match as ZM
 from .snapshot import UNASSIGNED, unpack_record, unpack_row
 
 DEFAULT_BD, DEFAULT_SD = 3, 30
@@ -119,6 +119,18 @@ async def totals(db: AsyncSession, sids: list[uuid.UUID] | None) -> dict:
 
 
 # ------------------------------------------------------------------------------------------------ таблица компьютеров
+def _token_like(col, text: str):
+    """Подстрока или маска среди элементов списка «|a|b|c|» (значения хранятся строчными): маска сопоставляется с элементом, а не со всей строкой."""
+    p = msearch.local_like(text)
+    if p is None:
+        return literal(True)
+    if not p.startswith("%"):
+        p = "%|" + p
+    if not p.endswith("%"):
+        p += "|%"
+    return col.like(p, escape="\\")
+
+
 def host_out(row, x_days: int, bd: int, sd: int, ext: bool, src_names: dict, zones: list[str]) -> dict:
     """Строка таблицы зоны из колонок компьютера (без чтения обнаружений и KSC)."""
     h: ZcHost = row
@@ -162,7 +174,13 @@ async def hosts_page(db: AsyncSession, zid: str, sids: list[uuid.UUID] | None, *
         c = msearch.column_like(H.search, q) if msearch.is_mask(q) else H.search.like(msearch.local_like(q), escape="\\")
         if c is not None:
             cond.append(c)
-    if cve or product or triage != "attention":
+    one_filter = bool(msearch.clean(cve)) != bool(msearch.clean(product))
+    if triage == "attention" and one_filter:
+        # обычный отбор по одной CVE/KLA или программе: по спискам компьютера (текущие обнаружения), с триграммными индексами — миллисекунды и на крупных зонах
+        text, cols = (cve, (H.kk, H.ke)) if msearch.clean(cve) else (product, (H.pk, H.pe))
+        cond.append(_token_like(cols[0], text) if not ext else or_(_token_like(cols[0], text), _token_like(cols[1], text)))
+    elif cve or product or triage != "attention":
+        # одновременно CVE и программа (в одной строке) либо иное состояние обработки: точный отбор по строкам обнаружений
         d = [ZcDetection.source_id == H.source_id, ZcDetection.gen == H.gen, ZcDetection.host_id == H.host_id]
         if not ext:
             d.append(ZcDetection.origin == "ksc")
@@ -182,9 +200,12 @@ async def hosts_page(db: AsyncSession, zid: str, sids: list[uuid.UUID] | None, *
     else:
         order = {"name": [func.lower(H.name).asc() if desc else func.lower(H.name).desc()], "ip": [H.ip_num.desc() if desc else H.ip_num.asc(), func.lower(H.name)],
                  "last_connected": [H.last_connected.desc() if desc else H.last_connected.asc()], "vulns": [H.k_total.desc() if desc else H.k_total.asc(), x.e_total.desc() if desc else x.e_total.asc()]}[sort]
-    base = select(H.source_id).select_from(_joined()).where(and_(*cond))
-    total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one())
-    rows = (await db.execute(select(H, ZcHostZone.zone_id).select_from(_joined()).where(and_(*cond)).order_by(*order, H.host_id).offset(offset).limit(limit))).all()
+    q = select(H, ZcHostZone.zone_id, func.count().over().label("_total")).select_from(_joined()).where(and_(*cond)).order_by(*order, H.host_id).offset(offset).limit(limit)
+    rows = (await db.execute(q)).all()
+    if rows:
+        total = int(rows[0]._total)
+    else:                                                        # страница за пределами списка: число находим отдельным запросом
+        total = int((await db.execute(select(func.count()).select_from(select(H.source_id).select_from(_joined()).where(and_(*cond)).subquery()))).scalar_one()) if offset else 0
     names = {str(s.id): s.name for s in (await db.execute(select(KscSource))).scalars()}
     zmap = await zones_of(db, [(r[0].source_id, r[0].host_id, r[0].gen) for r in rows])
     items = [host_out(r[0], zone_days.get(zid) or default_days, bd, sd, ext, names, zmap.get((r[0].source_id, r[0].host_id), [])) for r in rows]
@@ -226,7 +247,7 @@ def _buckets(rows) -> tuple[dict, dict]:
     hv = {"current": [], "accepted": [], "excluded": []}
     he = {"current": [], "accepted": [], "excluded": []}
     for d in rows:
-        (hv if d.origin == "ksc" else he)[d.bucket].append(unpack_row(d.row))
+        (hv if d.origin == "ksc" else he)[d.bucket].append(unpack_row(d.row, d.origin))
     return hv, he
 
 
@@ -256,6 +277,7 @@ async def parts_for_zones(db: AsyncSession, zone_ids: list[str], params: dict, s
         out, hidden, offline, hidden_hosts, online_any = [], 0, 0, [], False
         records = 0
         for i in range(0, len(ids), chunk):
+            RES.check("чтение данных отчёта")              # не доводить процесс до нехватки памяти: понятная остановка вместо аварийного завершения контейнера
             part = ids[i:i + chunk]
             rows = (await db.execute(select(ZcHost).where(ZcHost.source_id == src.id, ZcHost.gen == zs.gen, ZcHost.host_id.in_(part)).order_by(ZcHost.host_id))).scalars().all()
             det: dict[int, list] = {}
@@ -279,6 +301,14 @@ async def parts_for_zones(db: AsyncSession, zone_ids: list[str], params: dict, s
         parts.append({"hosts": out, "hidden": hidden, "offline": offline, "hidden_hosts": hidden_hosts, "online_data": online_any, "total_all": records, "notes": notes, "agg_only": zs.agg_only,
                       "source": src.name, "source_id": str(src.id), "at": zs.built_at})
     return parts
+
+
+async def report_volume(db: AsyncSession, zone_ids: list[str], sids: list[uuid.UUID] | None) -> tuple[int, int]:
+    """(компьютеров, строк обнаружений KSC) в выбранных зонах — для проверки, поместится ли отчёт в память: по итогам компьютеров, без чтения самих строк."""
+    q = select(func.count(func.distinct(ZcHost.host_id)), func.coalesce(func.sum(ZcHost.k_total + ZcHost.k_acc + ZcHost.k_exc), 0)).select_from(_joined()).where(
+        _scope(None, sids), ZcHostZone.zone_id.in_(zone_ids))
+    n, rows = (await db.execute(q)).one()
+    return int(n), int(rows)
 
 
 async def host_ids_in_zone(db: AsyncSession, sid, zone: str) -> set[int] | None:

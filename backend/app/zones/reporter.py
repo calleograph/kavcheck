@@ -17,6 +17,7 @@ from ..services.sources import SourceRegistry
 from . import report as R
 
 UNASSIGNED = "none"
+ZONE_REPORT_ROWS = 300_000      # строк обнаружений KSC в одном отчёте по зонам без повышения предела (≈ 1,3 ГБ памяти при формировании: на стенде 150 тыс. строк — 0,7 ГБ)
 log = logging.getLogger("app.zones")
 
 
@@ -87,9 +88,15 @@ class ZoneData:
             enotes = []
             from . import zread as ZRC  # noqa: PLC0415
 
-            if any(not await ZRC.current_gen(db, s.id) for s in srcs):
+            missing = [s.name for s in srcs if not await ZRC.current_gen(db, s.id)]
+            if missing:
                 raise KscError("no_data", "Данные зон по выбранным источникам ещё не рассчитаны: первый расчёт выполняет фоновая служба (Администрирование → Расчёт данных зон). Отчёт можно сформировать после него.")
         zdays = await ZR.zone_days_map(db)
+        rcfg = await self.svc.get(db, "reports")
+        n_hosts, n_rows = await ZR.report_volume(db, zl, [s.id for s in srcs])
+        limit_rows = max(rcfg.max_rows, ZONE_REPORT_ROWS)
+        if n_rows > limit_rows:                                 # предел строк защищает память worker; повышается в настройках отчётов осознанно
+            raise KscError("too_many_rows", f"Обнаружений в выбранных зонах {n_rows} — больше предела отчёта ({limit_rows}): сформируйте отчёт по меньшим зонам или выбранным компьютерам, в управленческом варианте либо повысьте предел в настройках отчётов (потребуется больше памяти).")
         if limit_hosts is not None:
             n = (await ZR.conflict_counts(db, [s.id for s in srcs])).items()
             big = sum(c[0] for z, c in n if z in zl)

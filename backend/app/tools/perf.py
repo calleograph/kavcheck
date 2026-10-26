@@ -48,6 +48,7 @@ async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("scenario")
     ap.add_argument("--source", default="")
+    ap.add_argument("--zone", default="Серверная")
     a = ap.parse_args()
     cfg = get_settings()
     engine = create_engine(cfg)
@@ -87,6 +88,22 @@ async def main() -> None:
 
                 fams, stats = await asyncio.to_thread(work)
                 res = f"продуктов {stats['products']}, установок {stats['installs']}, компьютеров {stats['hosts']}"
+            elif a.scenario == "zonedoc":
+                from ..services.settings import SettingsService  # noqa: PLC0415
+                from ..security.secretbox import SecretBox  # noqa: PLC0415
+                from ..services.sources import SourceRegistry  # noqa: PLC0415
+                from ..zones import report as R  # noqa: PLC0415
+                from ..zones import zread as ZR  # noqa: PLC0415
+                from ..zones.reporter import ZoneData  # noqa: PLC0415
+                from ..models import Zone  # noqa: PLC0415
+
+                svc = SettingsService(SecretBox(cfg.app_master_key))
+                zd = ZoneData(sm, cfg, svc, SourceRegistry(cfg, svc))
+                async with sm() as db:
+                    z = (await db.execute(select(Zone).where(Zone.name.like(a.zone + "%")))).scalars().first()
+                    r0 = rss_mb()
+                    doc = await zd.zone_doc(db, zone_ids=[str(z.id)], params={"categories": ["ksc_vulns", "ext_vulns", "no_av", "rtp_off", "bases_old", "infected"], "level": "technical"}, allow_build=False)
+                res = f"строк в таблицах {sum(len(t['rows']) for t in doc['tables'])}, карточек {len(doc['host_details'])}; после документа {rss_mb():.0f} МБ (+{rss_mb() - r0:.0f})"
             else:
                 raise SystemExit(f"неизвестный сценарий {a.scenario}")
         print(f"{a.scenario} · {s.name}: {time.perf_counter() - t0:.1f} с, пик RSS {pk.max:.0f} МБ (+{pk.max - base:.0f}); {res}")

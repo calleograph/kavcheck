@@ -19,7 +19,7 @@ from ..ksc.grouping import Rule
 from ..models import GroupingRule, KscSource, ReportJob, utcnow
 from ..services import catalog as catalog_svc
 from ..services.audit import Journal
-from ..services.resources import RES
+from ..services.resources import RES, MemoryPressure
 from ..services.settings import ReportsSettings, SettingsService
 from . import audit, builder, export, quick, quick_export
 
@@ -66,7 +66,7 @@ class Runner:
 
     async def run_job(self, job: ReportJob) -> None:
         async with self._sem:
-            async with RES.heavy(f"отчёт {job.kind}", 1):          # отчёты идут под общим ограничителем: при занятых слотах или нехватке памяти ждут, а не копят память
+            async with RES.heavy(f"отчёт {job.kind}", 1, interactive=True):          # отчёты идут под общим ограничителем: при занятых слотах или нехватке памяти ждут, а не копят память
                 await self._execute(job)
 
     async def _execute(self, job: ReportJob) -> None:
@@ -242,6 +242,9 @@ class Runner:
         except KscError as exc:
             await self._set(job.id, status="failed", finished_at=utcnow(), error=exc.message, progress="ошибка")
             await self._journal.emit("report", "report_failed", level="error", user=job.created_by, source=job.source_name[:120], message=f"{job.title}: {exc.message}", data={"job_id": str(job.id), "code": exc.code})
+        except MemoryPressure as exc:
+            await self._set(job.id, status="failed", finished_at=utcnow(), progress="ошибка",
+                            error="Не хватило памяти для отчёта: слишком много данных в выбранных зонах. Сформируйте отчёт по меньшим зонам или выбранным компьютерам, в управленческом варианте либо увеличьте память службы (WORKER_MEM_LIMIT). " + str(exc)[-120:])
         except Exception as exc:  # noqa: BLE001
             log.exception("Сбой формирования отчёта по зоне", extra={"job_id": str(job.id)})
             await self._set(job.id, status="failed", finished_at=utcnow(), error=f"Внутренняя ошибка: {type(exc).__name__}", progress="ошибка")

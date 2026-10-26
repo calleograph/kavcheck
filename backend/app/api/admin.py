@@ -360,6 +360,12 @@ async def journal_purge(request: Request, su: SessionUser = Depends(require_admi
 
 
 # ----------------------------------------------------------------------------------------------- состояние системы
+def _worker_mem(hb) -> str:
+    """Память фоновой службы из её пульса: текущая, пик, пределы ограничителя (подробнее — Администрирование → Расчёт данных зон)."""
+    r = ((hb.data or {}) if hb is not None else {}).get("resources") or {}
+    return f"; память {r['rss_mb']} МБ (пик {r.get('peak_mb', '?')}, предел {r.get('soft_mb', '?')}/{r.get('hard_mb', '?')}), тяжёлых задач {r.get('used', 0)}" if r.get("rss_mb") is not None else ""
+
+
 @router.get("/system")
 async def system(request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     """Состояние компонентов (backend, worker, web, PostgreSQL, помощник обновлений), источников KSC, ресурсов сервера и данных; история обновлений, ошибки фоновых задач."""
@@ -383,7 +389,7 @@ async def system(request: Request, su: SessionUser = Depends(require_admin), db:
     w_ok = age is not None and age < 120 and not stuck
     comps.append({"key": "worker", "title": "Worker (отчёты и каталог)", "ok": w_ok,
                   "detail": ("нет сигнала от службы — проверьте контейнер worker" if age is None or age >= 120 else
-                             "задания не берутся в работу дольше 5 минут" if stuck else f"сигнал {int(age)} с назад; отчётов в работе {running}, в очереди {queued}")})
+                             "задания не берутся в работу дольше 5 минут" if stuck else f"сигнал {int(age)} с назад; отчётов в работе {running}, в очереди {queued}" + _worker_mem(hb))})
     out["checks"]["worker"] = {"ok": w_ok, "running": running, "queued": queued, "last_done": (await db.execute(select(func.max(ReportJob.finished_at)).where(ReportJob.status == "done"))).scalar_one()}
     try:
         async with httpx.AsyncClient(timeout=2.5) as cl:

@@ -166,6 +166,7 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
         <button type="button" className={`meter meter-btn ${f.state === "ok" ? "on" : ""}`} aria-pressed={f.state === "ok"} onClick={() => pick("state", "ok")}><span className="l">Без проблем</span><span className="v ok-text">{st ? num(st.ok) : "…"}</span><span className="t">среди активных</span></button>
       </div>
       {st && <Charts st={st} f={f} pick={pick} ext={ext} />}
+      {st && ext && d?.ext_cap ? <p className="muted small mt-sm">Показатели потенциальных совпадений с внешними базами учитывают все совпадения; в списке компьютера сохранены до {d.ext_cap} самых опасных (сначала из каталога CISA KEV).</p> : null}
       {st && (st.excluded > 0 || st.accepted > 0 || st.review > 0) && <p className="muted small mt-sm">Решения специалистов: ложных и неактуальных обнаружений исключено <b>{num(st.excluded)}</b>, принятых рисков <b>{num(st.accepted)}</b> (учитываются отдельно), ждут проверки <b>{num(st.review)}</b>. Исходные сведения не удаляются.</p>}
 
       <div className="section-head" id="zone-hosts"><h2>Компьютеры</h2>{!list.initial && <span className="count">{num(list.total)}</span>}<div className="spacer" />

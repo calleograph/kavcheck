@@ -65,6 +65,17 @@ Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=
 
 Загрузчики, локальная база, сопоставление с каталогом и отчёт `quick_extvulns` — пакет `app/vdb`, `app/reports/quick_ext.py`, `app/api/vdb.py`; как добавить источник и как устроены статусы — в [VULNDB.md](VULNDB.md). Загрузка выполняется воркером (`VdbSync.loop`), API только ставит запрос на запуск.
 
+## Память и нагрузка
+
+Правила для фоновых задач и страниц: страница или запрос API не читает KSC и не загружает целиком источник, каталог или базу уязвимостей в память — читает порции или готовые агрегаты PostgreSQL; тяжёлое выполняется только в worker, порциями, с `RES.heavy(...)` (ограничитель в `services/resources.py`) и `RES.breathe(...)` на границе порции; записи баз читаются строками (`select(*columns)`), не объектами ORM; результат порции фиксируется сразу (транзакция не держится на время вычислений); прерванную задачу можно безопасно повторить. Замеры:
+
+```bash
+docker compose exec worker python -m app.tools.perf analyze|catalog|scores|zonedoc   # пик RSS и время операции на данных установки, без записи
+python3 tests/perf/dash_load.py http://127.0.0.1:18080 admin 'пароль' 10             # открытие зон, фильтры, параллельные клиенты
+```
+
+Тесты: `tests/test_zonecache.py` (очередь, расписание, показатели SQL = расчёт по свежим данным, таблица и фильтры, решения, ограничитель, возобновляемый анализ), `tests/zc.py::settle` — выполнить расчёт зон в тесте так, как это делает worker. Подробно — [PERFORMANCE.md](PERFORMANCE.md).
+
 ## Добавить модуль (раздел)
 
 Сервис в `ksc/<module>.py` (шаблоны в `queries.py`, объекты в `FEATURE_OBJECTS`), маршрут в `api/` с зависимостями `require_user`/`current_source` и проверкой `unsupported(src, "<функция>")`, тяжёлые агрегаты — через `request.app.state.cache` (как `api/protection.py`), глобальный фильтр активности — из `settings_svc.get(db, "general").activity_days` со счётчиком скрытых, аудит важных действий (`write_audit`) и события (`Journal.emit`), страница в `pages/` и пункт в `NAV` (`App.tsx`). Тесты: правила без базы — `tests/test_<module>.py`, SQL — `tests/test_ksc_live.py`.

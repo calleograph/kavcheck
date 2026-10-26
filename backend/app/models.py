@@ -762,6 +762,10 @@ class ZcHost(Base):
     conflict: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     data: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    kk: Mapped[str] = mapped_column(Text, nullable=False, default="")                            # идентификаторы и программы текущих обнаружений через «|» (строчные): поиск по CVE/KLA и программе без обхода обнаружений
+    ke: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    pk: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    pe: Mapped[str] = mapped_column(Text, nullable=False, default="")
     __table_args__ = (Index("ix_zc_hosts_gen", "source_id", "gen"),)
 
 

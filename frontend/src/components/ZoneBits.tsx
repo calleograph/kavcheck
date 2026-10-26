@@ -68,7 +68,7 @@ export function FreshnessNotes({ fr, canRefresh, onRefresh, busy, zoneMode }: { 
 /** Кнопка «Обновить данные» с подписью времени последнего расчёта. */
 export function RefreshButton({ fr, onClick, busy }: { fr: Freshness | undefined; onClick: () => void; busy: boolean }) {
   const active = !!fr?.job && (fr.job.status === "queued" || fr.job.status === "running");
-  return <button type="button" className="btn" onClick={onClick} disabled={busy || active} aria-busy={busy || active} title="Пересчитать данные этой зоны в фоне; страница остаётся доступной"><Icon name="refresh" /><span>{active ? "Идёт пересчёт…" : "Обновить данные"}</span></button>;
+  return <button type="button" className="btn" onClick={onClick} disabled={busy || active} title="Пересчитать данные этой зоны в фоне; страница остаётся доступной">{active || busy ? <span className="spin sm" aria-hidden /> : <Icon name="refresh" />}<span>{active ? "Идёт пересчёт…" : "Обновить данные"}</span></button>;
 }
 
 export function DataStamp({ fr }: { fr: Freshness | undefined }) {

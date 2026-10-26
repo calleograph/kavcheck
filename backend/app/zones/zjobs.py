@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
 from ..ksc.driver import KscError
-from ..models import KscSource, ZcDashboard, ZcHostZone, ZcJob, ZcSource, utcnow
+from ..models import KscSource, ZcHost, ZcHostZone, ZcJob, ZcSource, utcnow
 from ..services.audit import Journal
 from ..services.resources import RES, MemoryPressure
 from ..services.settings import SettingsService, ZonecacheSettings
@@ -126,7 +126,28 @@ class ZoneCache:
                         await enqueue(db, "all", trigger="initial", by="первый расчёт")
             await db.commit()
         await self.probes(srcs)
+        await self.sweep(srcs)
         await self.run_next()
+
+    async def sweep(self, srcs: list[KscSource]) -> None:
+        """Принятые риски с истёкшим сроком возвращаются на проверку: строки подготовленных данных обновляются без обращения к KSC (раз в 30 минут)."""
+        if self.current or time.monotonic() - getattr(self, "_swept", 0) < 1800:
+            return
+        self._swept = time.monotonic()
+        from . import triage as T  # noqa: PLC0415
+
+        changed = False
+        for s in srcs:
+            async with self.sm() as db:
+                n = await T.sweep_expired(db, s.id)
+                await db.commit()
+            if n:
+                await SN.retriage(self.sm, s.id, None)
+                changed = True
+        if changed:
+            async with self.sm() as db:
+                days = int((await self.svc.get(db, "general")).activity_days)
+            await ZR.refresh_dashboards(self.sm, None, default_days=days, data_at=None)
 
     async def recover(self, db: AsyncSession) -> None:
         """Задания, которые выполнял завершившийся процесс, возвращаются в очередь; после лимита попыток — ошибка."""
@@ -189,8 +210,7 @@ class ZoneCache:
         beat = asyncio.create_task(self._beat(jid))
         status, error, delay = "done", None, 0
         try:
-            weight = self.res.slots if kind in ("all", "members") else 1
-            async with self.res.heavy(f"расчёт зон ({kind})", weight):
+            async with self.res.heavy(f"расчёт зон ({kind})", 1):
                 self._prog = ("запуск", 1)
                 errors = await self._execute(kind, zone_id, zc)
                 if errors:
@@ -293,7 +313,28 @@ class ZoneCache:
     def stop(self) -> None:
         self._stop.set()
 
+    async def recover_on_start(self) -> None:
+        """При запуске worker выполняющихся заданий у него нет: «running» — след прерванного процесса. Они возвращаются в очередь сразу (поколение не подменено, повтор безопасен)."""
+        async with self.sm() as db:
+            for j in (await db.execute(select(ZcJob).where(ZcJob.status == "running"))).scalars().all():
+                if j.attempts >= MAX_ATTEMPTS:
+                    j.status, j.finished_at, j.error = "failed", utcnow(), "Расчёт прерван (перезапуск службы) слишком много раз подряд"
+                else:
+                    j.status, j.progress = "queued", "возвращено в очередь после перезапуска"
+                log.warning("Задание расчёта зон прервано перезапуском и поставлено в очередь заново", extra={"job": str(j.id), "kind": j.kind})
+            for zs in (await db.execute(select(ZcSource).where(ZcSource.progress.is_not(None)))).scalars().all():
+                zs.progress = None
+            await db.commit()
+            gens = (await db.execute(select(ZcHost.source_id, ZcHost.gen, ZcSource.gen).join(ZcSource, ZcSource.source_id == ZcHost.source_id, isouter=True).distinct())).all()
+        for sid, g, cur in gens:                                  # недозаписанные поколения прерванных расчётов: читатели их не видят, заданий в работе нет — удаляем
+            if g != (cur or 0):
+                await SN.purge_gen(self.sm, sid, g)
+
     async def loop(self) -> None:
+        try:
+            await self.recover_on_start()
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось обработать прерванные задания расчёта зон")
         await asyncio.sleep(15)
         while not self._stop.is_set():
             try:
@@ -304,7 +345,9 @@ class ZoneCache:
 
 
 async def status(db: AsyncSession, svc: SettingsService) -> dict:
-    """Состояние для администратора: расписание, последний успешный расчёт, длительность, ошибки, очередь."""
+    """Состояние для администратора: расписание, последний успешный расчёт, длительность, ошибки, очередь, память фоновой службы (по её пульсу)."""
+    from ..models import ServiceHeartbeat  # noqa: PLC0415
+
     zc = await svc.get(db, "zonecache")
     gtz = (await svc.get(db, "general")).timezone  # type: ignore[attr-defined]
     now = utcnow()
@@ -312,7 +355,10 @@ async def status(db: AsyncSession, svc: SettingsService) -> dict:
     jobs = (await db.execute(select(ZcJob).order_by(ZcJob.requested_at.desc()).limit(15))).scalars().all()
     active = [j for j in jobs if j.status in ("queued", "running")]
     srcs = await ZR.source_states(db)
-    ok_at = max((s["built_at"] for s in srcs if s["built_at"]), default=None)
-    return {"settings": zc.model_dump(), "timezone": str(tz_of(zc, gtz)), "next_run": nxt if zc.enabled else None, "last_success_at": ok_at, "sources": srcs,
-            "jobs": [job_out(j) for j in jobs], "active": [job_out(j) for j in active], "resources": RES.snapshot(),
-            "last_duration_ms": next((s["duration_ms"] for s in srcs if s["duration_ms"]), None), "last_plan": last_plan}
+    done = (await db.execute(select(ZcJob).where(ZcJob.kind == "all", ZcJob.status == "done").order_by(ZcJob.finished_at.desc()).limit(1))).scalars().first()
+    hb = await db.get(ServiceHeartbeat, "worker")
+    res = ((hb.data or {}) if hb is not None else {}).get("resources") or {}
+    return {"settings": zc.model_dump(), "timezone": str(tz_of(zc, gtz)), "next_run": nxt if zc.enabled else None,
+            "last_success_at": done.finished_at if done else max((s["built_at"] for s in srcs if s["built_at"]), default=None), "sources": srcs,
+            "jobs": [job_out(j) for j in jobs], "active": [job_out(j) for j in active], "resources": res or RES.snapshot(),
+            "last_duration_ms": int((done.finished_at - done.started_at).total_seconds() * 1000) if done and done.started_at and done.finished_at else None, "last_plan": last_plan}

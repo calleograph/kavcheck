@@ -110,7 +110,7 @@ export interface ZoneBrief { id: string; name: string; description: string; purp
 export type HostState = "critical" | "vulns" | "protection" | "potential" | "ok";
 export interface ZoneStats { total: number; in_scope: number; inactive: number; active: number; online: number; offline: number; online_unknown: number; critical: number; other_vulns: number; any_vulns: number; protection: number; potential: number; ok: number;
   state: Record<HostState, number>; severity: { critical: number; high: number; warning: number; none: number }; vulns: { critical: number; high: number; warning: number }; problems: { key: ProblemKey; title: string; hosts: number }[]; excluded: number; accepted: number; review: number }
-export interface ZoneCacheSettings { enabled: boolean; at: string; timezone: string; parallel: number; intensity: "low" | "normal" | "high"; max_detections: number; stale_hours: number }
+export interface ZoneCacheSettings { enabled: boolean; at: string; timezone: string; parallel: number; intensity: "low" | "normal" | "high"; max_detections: number; ext_per_host: number; stale_hours: number }
 export interface ZoneCacheStatus { settings: ZoneCacheSettings; timezone: string; next_run: string | null; last_success_at: string | null; last_duration_ms: number | null; last_plan: string;
   sources: { id: string; name: string; gen: number; status: string; built_at: string | null; duration_ms: number | null; error: string | null; progress: string | null; hosts: number; detections: number; agg_only: boolean; newer: boolean; probe_at: string | null }[];
   jobs: ZoneJob[]; active: ZoneJob[]; resources: { rss_mb: number; peak_mb: number; soft_mb: number; hard_mb: number; slots: number; used: number; active: string[]; deferred: number } }
@@ -123,7 +123,7 @@ export interface ZoneHost { source_id: string; source: string; host_id: number; 
   max_sev: "" | "critical" | "high" | "warning"; max_sev_ru: string; max_sev_basis: "" | "ksc" | "ext"; ksc: HostCounts; ext: { total: number; critical: number; high: number; warning: number; kev: number; confirmed: number; accepted: number; excluded: number };
   problems: { key: ProblemKey; title: string }[]; state: HostState; summary: string; zones: string[]; zone_conflict: boolean; zone_pinned: boolean }
 export interface ZoneInfo { id: string; name: string; description: string; purpose: string; priority: number; enabled: boolean; activity_days: number | null; contacts: ZoneContact[] }
-export interface ZoneDash { zone: ZoneInfo; stats: ZoneStats & { bars: unknown }; activity_days: number; total: number; offset: number; limit: number; items: ZoneHost[]; sources: { id: string; name: string }[]; notes: string[]; fetched_at: string | null; conflicts: number; ext_included: boolean; freshness: Freshness }
+export interface ZoneDash { zone: ZoneInfo; stats: ZoneStats & { bars: unknown }; activity_days: number; total: number; offset: number; limit: number; items: ZoneHost[]; sources: { id: string; name: string }[]; notes: string[]; fetched_at: string | null; conflicts: number; ext_included: boolean; freshness: Freshness; ext_cap?: number }
 export interface TriageDecision { id: string; scope: "host" | "product" | "zone"; scope_ru: string; status: TriageStatus; stored_status: TriageStatus; status_ru: string; stored_status_ru: string; reason: string; reason_ru: string; comment: string; by: string; at: string | null;
   review_until: string | null; recheck: boolean; recheck_reason: string; expired: boolean; version: string; product: string }
 export type TriageStatus = "review" | "confirmed" | "false_positive" | "obsolete" | "risk_accepted";
@@ -305,7 +305,7 @@ export const api = {
   admin: {
     zones: {
       list: () => req<{ items: ZoneBrief[] }>("GET", "/admin/zones"),
-      cache: () => req<ZoneCacheStatus>("GET", "/admin/zones/cache"),
+      cache: () => req<ZoneCacheStatus>("GET", "/admin/zones/cache/status"),
       cacheRun: () => req<{ created: boolean; job: ZoneJob }>("POST", "/admin/zones/cache/run"),
       get: (id: string) => req<ZoneFull>("GET", `/admin/zones/${id}`),
       create: (b: Omit<ZoneFull, "id">) => req<ZoneFull>("POST", "/admin/zones", b),

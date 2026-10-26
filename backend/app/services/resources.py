@@ -70,9 +70,11 @@ class Resources:
     """Общие для worker ограничители. slots — сколько тяжёлых задач одновременно (каждая со своим весом), pause_ms — пауза между порциями (интенсивность)."""
     limits: Limits = field(default_factory=Limits.detect)
     slots: int = 1
+    islots: int = 1                  # места для запросов пользователя (отчёты) сверх фоновых
     pause_ms: int = 0
     _sem: asyncio.Condition | None = None
     _used: int = 0
+    _iused: int = 0
     active: dict[str, float] = field(default_factory=dict)
     peak_mb: float = 0.0
     deferred: int = 0
@@ -107,32 +109,41 @@ class Resources:
         await asyncio.sleep(self.pause_ms / 1000 if self.pause_ms else 0)
 
     @contextlib.asynccontextmanager
-    async def heavy(self, name: str, weight: int = 1, wait_s: float = 0):
-        """Место для тяжёлой задачи: ждёт, пока освободятся слоты и память опустится ниже мягкого предела. wait_s=0 — ждать без ограничения."""
-        weight = max(1, min(weight, self.slots))
+    async def heavy(self, name: str, weight: int = 1, wait_s: float = 0, *, interactive: bool = False):
+        """Место для тяжёлой задачи: ждёт, пока освободятся слоты и память опустится ниже мягкого предела. wait_s=0 — ждать без ограничения.
+        interactive — запрос пользователя (отчёт): отдельное место сверх фоновых, чтобы ночной расчёт не задерживал отчёты на десятки минут; память по-прежнему проверяется."""
         cond = self._cond()
         t0 = time.monotonic()
+        cap = self.islots if interactive else self.slots
+        weight = max(1, min(weight, cap))
         async with cond:
             while True:
-                if self._used + weight <= self.slots and (rss_mb() <= self.limits.soft_mb or not self.active):     # первая задача идёт всегда: иначе при высоком фоне ничто не стартует
+                used = self._iused if interactive else self._used
+                if used + weight <= cap and (rss_mb() <= self.limits.soft_mb or not self.active):     # первая задача идёт всегда: иначе при высоком фоне ничто не стартует
                     break
                 if wait_s and time.monotonic() - t0 > wait_s:
                     raise TimeoutError(f"нет свободных ресурсов для «{name}»")
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(cond.wait(), timeout=5)
-            self._used += weight
+            if interactive:
+                self._iused += weight
+            else:
+                self._used += weight
             self.active[name] = time.monotonic()
         try:
             yield
         finally:
             async with cond:
-                self._used -= weight
+                if interactive:
+                    self._iused -= weight
+                else:
+                    self._used -= weight
                 self.active.pop(name, None)
                 cond.notify_all()
             trim()
 
     def snapshot(self) -> dict:
-        return {"rss_mb": int(rss_mb()), "peak_mb": int(self.peak_mb), "soft_mb": int(self.limits.soft_mb), "hard_mb": int(self.limits.hard_mb), "slots": self.slots, "used": self._used,
+        return {"rss_mb": int(rss_mb()), "peak_mb": int(self.peak_mb), "soft_mb": int(self.limits.soft_mb), "hard_mb": int(self.limits.hard_mb), "slots": self.slots, "used": self._used + self._iused, "interactive_slots": self.islots,
                 "active": sorted(self.active), "deferred": self.deferred}
 
 

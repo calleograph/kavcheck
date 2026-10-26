@@ -172,6 +172,7 @@ class ZonecacheSettings(_Group):
     parallel: int = Field(default=1, ge=1, le=2)                       # сколько тяжёлых фоновых задач (расчёт зон, анализ уязвимостей, каталог) одновременно
     intensity: Literal["low", "normal", "high"] = "normal"             # размер порции и паузы между порциями: low — медленнее и мягче для KSC и сервера
     max_detections: int = Field(default=3_000_000, ge=10_000, le=20_000_000)    # больше обнаружений на источник — сохраняются только счётчики по компьютерам
+    ext_per_host: int = Field(default=60, ge=10, le=1000)             # потенциальных совпадений с внешними базами в списке на компьютер (итоги учитывают все)
     stale_hours: int = Field(default=36, ge=1, le=720)                 # отчёты по расписанию обновляют данные зоны, если им больше этого возраста
 
     @field_validator("timezone")
