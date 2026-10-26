@@ -31,6 +31,10 @@ export interface SavedCheck { id: string; kind: "version_audit" | "legacy"; name
 export interface VulnHost { zone?: string; host_id: number; name: string; fqdn: string; ip: string; os: string; os_version: string; group: string; last_connected: string | null; days_since_connection: number | null; activity: string; critical: number; high: number; warning: number; total: number; patchable: number; products: number; last_detected: string | null }
 export interface VulnSummary { hosts: number; hidden_hosts: number; total: number; critical_hosts: number; high_hosts: number; warning_hosts: number; critical: number; high: number; warning: number; patchable: number; activity_days: number; fetched_at: string }
 export interface VulnProduct { product_id: number | null; name: string; hosts: number; vulns: number; critical: number; high: number; warning: number; total: number; patchable: number; last_detected: string | null }
+export interface HostVulnRow { id: string; keys: string[]; kla_id: string; title: string; severity: "critical" | "high" | "warning"; severity_ru: string; product: string; version: string; detected_by: ("ksc" | "external")[];
+  verdict: "confirmed_ksc" | "confirmed_ext" | "potential"; verdict_ru: string; basis: string; exploited: boolean; sources: string[];
+  ksc: { url: string; patches_available: boolean; kb: string[]; detected: string | null } | null; external: { key: string; status: string; status_ru: string; basis: string; databases: string[] } | null }
+export interface HostVulnsAll { external_checked: boolean; items: HostVulnRow[]; notes: string[]; fetched_at: string; counts: { total: number; confirmed_ksc: number; confirmed_ext: number; potential: number; critical: number; high: number; warning: number } }
 export interface HostVuln { occurrence_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label: string; url: string; product: string; product_version: string; app_name: string; app_version: string; publisher: string; detected: string | null; patches_available: boolean; cve: string[]; mssb: string[]; kb: string[] }
 export type ProblemKey = "no_av" | "rtp_off" | "infected" | "bases_old" | "license" | "scan_old" | "reboot";
 export interface ProtHost { zone?: string; host_id: number; name: string; fqdn: string; ip: string; os: string; platform: string; group: string; last_connected: string | null; days_since_connection: number | null; activity: string; last_full_scan: string | null; online: boolean | null; last_visible: string | null; last_info_update: string | null;
@@ -266,6 +270,7 @@ export const api = {
     list: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<SecEvent> & { days?: number; unsupported?: string[] }>("GET", `/events${qs(p)}`),
   },
   hosts: {
+    vulns: (id: number, external = true) => req<HostVulnsAll>("GET", `/hosts/${id}/vulnerabilities${external ? "" : "?external=false"}`),
     list: (p: Record<string, string | number | boolean | undefined>) => req<Page<Host> & { hidden: number; activity_days: number; fetched_at: string }>("GET", `/hosts${qs(p)}`),
     one: (id: number) => req<{ host: Host; activity_days: number; fetched_at: string; software: { install_id: number; product_id: number; name: string; version: string; publisher: string; install_date: string | null }[]; kaspersky: { product_code: string; product: string; build: string; state: string; av_bases_date: string | null; is_av: boolean; has_rtp: boolean }[] }>("GET", `/hosts/${id}`),
   },

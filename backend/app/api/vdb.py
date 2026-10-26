@@ -458,18 +458,17 @@ async def product_vulns(key: str, offset: int = Query(0, ge=0), limit: int = Que
     return {"items": [{**_vuln_out(v, f), "versions": next((p["versions"] for p in f.products if p["key"] == key), [])} for f, v in sel[offset:offset + limit]], "total": len(sel)}
 
 
-@router.get("/hosts/{host_id}")
-async def host_vulns(host_id: int, request: Request, su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
-    """Независимая проверка компьютера: установленное ПО компьютера (записи реестра KSC) сопоставляется с внешними базами. Результат — потенциальные уязвимости, не подтверждённые KSC."""
+async def host_ext_items(db: AsyncSession, client, source_id: uuid.UUID, host_id: int) -> tuple[list[dict], bool]:
+    """Потенциальные уязвимости компьютера по внешним базам: установленное ПО (записи реестра KSC) сопоставляется с каталогом и внешними базами.
+    Возвращает (элементы по убыванию важности, построен ли каталог)."""
     from ..ksc import queries as q  # noqa: PLC0415
 
-    client = request.app.state.sources.client(src)
     soft = await client.run(q.SOFTWARE_ON_HOST, {"id": host_id}, max_rows=20_000)
     ids = {int(s["product_id"]) for s in soft}
-    prods, maps = await M.load_context(db, src.id)
+    prods, maps = await M.load_context(db, source_id)
     mine = [p for p in prods if any(set(v.get("product_ids") or []) & ids for v in p.versions)]
     if not mine:
-        return {"items": [], "catalog": bool(prods)}
+        return [], bool(prods)
     for p in mine:
         p.versions = [v for v in p.versions if set(v.get("product_ids") or []) & ids]
     matcher = M.Matcher(mine, maps)
@@ -479,11 +478,22 @@ async def host_vulns(host_id: int, request: Request, su: SessionUser = Depends(r
         if len(ms) > 20_000:
             break
     meta = {v.vuln_key: v for i in range(0, len(ms), 400) for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_({m.vuln_key for m in ms[i:i + 400]})))).scalars().all()}
-    items = [{"key": m.vuln_key, "title": meta[m.vuln_key].title if m.vuln_key in meta else "", "severity_ru": SEV_RU[next((k for k, r in SEV_RANK.items() if r == (meta[m.vuln_key].sev_rank if m.vuln_key in meta else 0)), "")],
-              "sev_rank": meta[m.vuln_key].sev_rank if m.vuln_key in meta else 0, "exploited": bool(meta.get(m.vuln_key) and meta[m.vuln_key].exploited), "product": m.product_name, "version": m.version,
-              "status": m.status, "status_ru": M.STATUS_RU[m.status], "basis": m.basis} for m in ms]
+    items = []
+    for m in ms:
+        v = meta.get(m.vuln_key)
+        rank = v.sev_rank if v else 0
+        items.append({"key": m.vuln_key, "title": v.title if v else "", "severity_ru": SEV_RU[next((k for k, r in SEV_RANK.items() if r == rank), "")], "sev_rank": rank, "exploited": bool(v and v.exploited),
+                      "product": m.product_name, "version": m.version, "status": m.status, "status_ru": M.STATUS_RU[m.status], "basis": m.basis,
+                      "sources": [x for x in (v.sources.split(",") if v else []) if x], "ids": [x.upper() for x in (v.ids_text.split() if v else [])][:20]})
     items.sort(key=lambda x: (not x["exploited"], -x["sev_rank"], -M.STATUS_RANK[x["status"]]))
-    return {"items": items[:500], "total": len(items), "catalog": True}
+    return items, True
+
+
+@router.get("/hosts/{host_id}")
+async def host_vulns(host_id: int, request: Request, su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+    """Независимая проверка компьютера по внешним базам. Результат — потенциальные уязвимости, не подтверждённые KSC (общий список вместе с данными KSC — `/hosts/{id}/vulnerabilities`)."""
+    items, catalog = await host_ext_items(db, request.app.state.sources.client(src), src.id, host_id)
+    return {"items": [{k: v for k, v in i.items() if k not in ("sources", "ids")} for i in items[:500]], "total": len(items), "catalog": catalog}
 
 
 # ------------------------------------------------------------------------------------------------ решения по сопоставлению

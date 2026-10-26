@@ -86,3 +86,38 @@ async def host(host_id: int, request: Request, su: SessionUser = Depends(require
                           "install_date": s.get("install_date"), "is_msi": bool(s.get("is_msi"))} for s in software],
             "kaspersky": [{"product_code": k.get("product_code"), "product": k.get("product") or k.get("product_code"), "build": k.get("build"), "state": P.PRODUCT_STATE.get(k.get("state"), str(k.get("state"))),
                            "av_bases_date": k.get("av_bases_date"), "is_av": bool(k.get("is_av")), "has_rtp": bool(k.get("has_rtp"))} for k in kaspersky]}
+
+
+@router.get("/{host_id}/vulnerabilities")
+async def host_vulnerabilities(host_id: int, request: Request, external: bool = True, su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+    """Все уязвимости компьютера в одном списке: подтверждённые KSC и найденные по внешним базам (NVD, CISA KEV, OSV, БДУ), без дублей; у каждой строки — источники обнаружения и достоверность.
+    Недоступность одного источника сведений не скрывает другой: причина — в `notes`."""
+    from ..ksc import vulns as V  # noqa: PLC0415
+    from ..services import hostvulns as HV  # noqa: PLC0415
+    from .vdb import host_ext_items  # noqa: PLC0415
+    from .vulns import unsupported  # noqa: PLC0415
+
+    client = request.app.state.sources.client(src)
+    notes: list[str] = []
+    ksc_items: list[dict] = []
+    if unsupported(src):
+        notes.append("В базе источника нет объектов уязвимостей KSC: показаны только результаты проверки по внешним базам.")
+    else:
+        try:
+            ksc_items = await V.on_host(client, host_id)
+        except KscError as exc:
+            notes.append(f"Данные об уязвимостях KSC получить не удалось ({exc.message}): показаны только результаты проверки по внешним базам.")
+    ext_items, catalog = [], True
+    if external:
+        try:       # сопоставление с внешними базами — самая долгая часть: результат кэшируется (ключ — состояние баз уязвимостей и каталога), страница сначала просит только данные KSC (`external=false`)
+            from ..vdb import store as vdb_store  # noqa: PLC0415
+
+            rev = await vdb_store.revision(db, src.id)
+            (ext_items, catalog), _at = await request.app.state.cache.get((str(src.id), "host_ext", host_id, rev), request.app.state.settings.cache_ttl_seconds,
+                                                                          lambda: host_ext_items(db, client, src.id, host_id))
+        except KscError as exc:
+            notes.append(f"Проверка по внешним базам не выполнена ({exc.message}): показаны только данные KSC.")
+    if external and not catalog:
+        notes.append("Каталог программ источника ещё не построен: проверка по внешним базам не выполнялась.")
+    rows = HV.merge(ksc_items, ext_items)
+    return {"items": rows[:1000], "counts": HV.counts(rows), "notes": notes, "external_checked": external, "fetched_at": datetime.now(timezone.utc)}

@@ -27,8 +27,9 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
   const [err, setErr] = useState("");
   // выбранная версия или ветка — в адресе: список компьютеров открывается в боковой панели, «Назад» из карточки компьютера возвращает к ней
   const [sp, setSp] = useSearchParams();
+  const whole = sp.get("all") === "1";                                    // «Где установлено»: компьютеры со всеми версиями продукта
   const sel = sp.get("v") !== null ? { version: sp.get("v") ?? "" } : sp.get("b") !== null ? { branch: sp.get("b") ?? "" } : null;
-  const setSel = (s: { version?: string; branch?: string } | null) => setSp((x) => { x.delete("v"); x.delete("b"); if (s?.version !== undefined) x.set("v", s.version); else if (s?.branch !== undefined) x.set("b", s.branch); return x; });
+  const setSel = (s: { version?: string; branch?: string } | null) => setSp((x) => { x.delete("v"); x.delete("b"); x.delete("all"); if (s?.version !== undefined) x.set("v", s.version); else if (s?.branch !== undefined) x.set("b", s.branch); return x; });
   const [hover, setHover] = useState<string | null>(null);
   const [dialog, setDialog] = useState<"split" | "merge" | "rename" | null>(null);
   const [vdbReport, setVdbReport] = useState(false);
@@ -50,6 +51,7 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
       <PageHead title={p.name} back={back}
         lede={<>{p.publisher ? <>{p.publisher} · </> : null}{p.platforms.join(", ")} · {ORIGIN[p.origin]}{p.note ? <span className="lede-note">{p.note}</span> : null}</>}>
         <CatalogStateLine state={p.state} canRebuild={canEdit} onRebuilt={() => setTick((x) => x + 1)} />
+        <button className="btn" onClick={() => setSp((x) => { x.delete("v"); x.delete("b"); x.set("all", "1"); return x; })}><Icon name="monitor" />Где установлено</button>
         {canEdit && <Link className="btn primary" to={checkHref()}><Icon name="target" />Проверить версии</Link>}
       </PageHead>
       <div className="meters">
@@ -92,6 +94,9 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
         </table>
       </div>
       <HiddenNote hidden={hiddenTotal} days={ctx.me.activity_days} all={all} onToggle={() => setAll(!all)} />
+      {whole && !sel && <HostsDrawer title={`Где установлено: ${p.name}`} lede={<>Компьютеры со всеми версиями продукта; {all ? "все устройства" : `подключавшиеся к KSC за ${ctx.me.activity_days} сут`}.</>}
+        listKey={`product-hosts:${ctx.current.id}:${p.key}:all`} deps={[p.key, all]} activityDays={ctx.me.activity_days}
+        fetchPage={(offset, limit) => api.catalog.productHosts(p.key, { all_hosts: all, offset, limit }) as unknown as Promise<Chunk<DrawerHost>>} onClose={() => setSel(null)} />}
       {sel && <HostsDrawer title={sel.version !== undefined ? `${p.name} ${sel.version}` : `${p.name}: ветка ${sel.branch || "не определена"}`}
         lede={<>Компьютеры с {sel.version !== undefined ? "этой версией" : "этой веткой"}; {all ? "все устройства" : `подключавшиеся к KSC за ${ctx.me.activity_days} сут`}.
           {canEdit && sel.version && <> <Link to={checkHref(`&value=${encodeURIComponent(sel.version)}&op=le`)}>Проверить эту версию и ниже</Link></>}</>}
@@ -99,7 +104,7 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
         fetchPage={(offset, limit) => api.catalog.productHosts(p.key, { version: sel.version, branch: sel.branch, all_hosts: all, offset, limit }) as unknown as Promise<Chunk<DrawerHost>>}
         onClose={() => setSel(null)} />}
 
-      <div className="section-gap"><ProductVulns productKey={p.key} canReport={canEdit} onCheck={() => setVdbReport(true)} /></div>
+      <div className="section-gap"><ProductVulns productKey={p.key} canReport={canEdit} onCheck={() => setVdbReport(true)} onHosts={() => setSp((x) => { x.delete("v"); x.delete("b"); x.set("all", "1"); return x; })} /></div>
       {vdbReport && <QuickReportPanel kind="quick_extvulns" title={`Проверка инфраструктуры: ${p.name}`} lede="Известные уязвимости продукта по внешним базам" options={{ scope: true, ext: true, zoneFilter: true }}
         params={{ product_keys: [p.key] }} activityDays={ctx.me.activity_days} canReport={canEdit} onClose={() => setVdbReport(false)} />}
       <div className="split even section-gap">

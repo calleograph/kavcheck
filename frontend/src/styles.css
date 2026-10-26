@@ -767,7 +767,7 @@ input.otp { font-family: var(--mono); font-size: 20px; letter-spacing: .3em; tex
 .report-card.failed { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); }
 .mono-list { font-family: var(--mono); font-size: 12px; padding-left: 18px; margin: 6px 0 0; }
 .pad-help { padding: 0 18px 14px; }
-.clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.table .sub.clamp2, .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 /* ================================================================ защита и события */
 .mt { margin-top: 12px; }
@@ -1120,3 +1120,8 @@ tr.expand > td { background: var(--surface-2, var(--accent-soft)); padding: 10px
 .vdb-eol { margin: 0 0 18px; }
 .zone-eol { margin-top: 10px; }
 h3.h3 { margin: 22px 0 8px; }
+.dd-about { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-xs); }
+.dd-about a { color: inherit; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); }
+.dd-about a:hover { color: var(--accent); }
+.qr-hosts { margin: 8px 0 10px; font-size: var(--fs-sm); line-height: 1.55; overflow-wrap: anywhere; }
+.table .sub.clamp2, .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 46ch; }

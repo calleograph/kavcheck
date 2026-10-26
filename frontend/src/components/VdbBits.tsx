@@ -57,13 +57,14 @@ export function VdbCountBadge({ c, productKey }: { c: VdbCount | undefined; prod
 }
 
 /** Известные уязвимости продукта (внешние базы) для установленных версий: карточка в разделе «Программы». Не путать с уязвимостями, подтверждёнными KSC. */
-export function ProductVulns({ productKey, canReport, onCheck }: { productKey: string; canReport: boolean; onCheck: () => void }) {
+export function ProductVulns({ productKey, canReport, onCheck, onHosts }: { productKey: string; canReport: boolean; onCheck: () => void; onHosts?: () => void }) {
   const [d, setD] = useState<{ items: (VdbVulnRow & { versions: string[] })[]; total: number } | null>(null);
   const [err, setErr] = useState("");
   useEffect(() => { setD(null); setErr(""); api.vdb.product(productKey).then(setD).catch((e) => setErr((e as ApiError).message)); }, [productKey]);
   return (
     <div className="card flush" id="vdb">
       <div className="card-head"><h2>Известные уязвимости (внешние базы)</h2><span className="muted small">NVD, CISA KEV, OSV, БДУ — потенциальные, не подтверждённые KSC</span><div className="spacer" />
+        {onHosts && d && d.total > 0 && <button className="btn mini" onClick={onHosts}><Icon name="monitor" size={15} />Где установлено</button>}
         {canReport && d && d.total > 0 && <button className="btn mini primary" onClick={onCheck}><Icon name="target" size={15} />Проверить инфраструктуру ({d.total})</button>}</div>
       {err ? <div className="alert error pad"><Icon name="alert" /><div className="alert-body">{err}</div></div> : !d ? <div className="pad"><SkelRows rows={3} cols={3} /></div> : !d.total ? (
         <p className="muted small pad">Для установленных версий продукта уязвимости во внешних базах не найдены (или базы ещё не загружены: Администрирование → База уязвимостей).</p>) : (

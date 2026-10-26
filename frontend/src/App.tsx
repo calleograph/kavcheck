@@ -88,7 +88,10 @@ function UserMenu({ me, version, onLogout }: { me: Me; version: string; onLogout
         <button className="dd-item" role="menuitem" tabIndex={open ? 0 : -1} onClick={() => { setOpen(false); navigate("/security"); }}><Icon name="key" />Безопасность входа</button>
         <div className="dd-sep" />
         <button className="dd-item danger" role="menuitem" tabIndex={open ? 0 : -1} onClick={onLogout}><Icon name="logout" />Выйти</button>
-        {version && <div className="dd-text">KAV Checker {version}</div>}
+        {version && <div className="dd-text dd-about">
+          <span><a href="https://github.com/calleograph/kavcheck" target="_blank" rel="noopener noreferrer">KAV Checker</a> {version}</span>
+          <span><a href="https://github.com/calleograph" target="_blank" rel="noopener noreferrer">calleograph</a> · <a href={`https://github.com/calleograph/kavcheck/blob/${/^\d+\.\d+\.\d+$/.test(version.split(" ")[0]) && version.split(" ")[0] !== "0.0.0" ? `v${version.split(" ")[0]}` : "master"}/CHANGELOG.md`} target="_blank" rel="noopener noreferrer">Список изменений</a></span>
+        </div>}
       </div>
     </div>
   );

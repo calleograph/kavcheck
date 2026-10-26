@@ -59,6 +59,23 @@ const SECTIONS: [string, string][] = [["software", "Установленное �
 const FORMATS: [string, string][] = [["xlsx", "Excel (XLSX)"], ["html", "HTML для руководства"], ["csv", "CSV"]];
 const PREVIEW_SHOWN = 60;
 
+/** Затронутые компьютеры одной строкой (имена-ссылки на карточки); длинный список сворачивается. Список строится по строкам предпросмотра (до 1 000), полный — в файле. */
+function AffectedHosts({ rows, total, expected, link, onClose }: { rows: Record<string, unknown>[]; total: number; expected: number | null; link: boolean; onClose: () => void }) {
+  const [all, setAll] = useState(false);
+  const hosts = useMemo(() => { const m = new Map<number, string>(); for (const r of rows) if (typeof r.host_id === "number" && typeof r.name === "string" && !m.has(r.host_id)) m.set(r.host_id, r.name); return [...m]; }, [rows]);
+  if (!hosts.length) return null;
+  const shown = all ? hosts : hosts.slice(0, 12);
+  return (
+    <div className="qr-hosts">
+      <b>Затронутые компьютеры ({num(hosts.length)}):</b>{" "}
+      {shown.map(([id, name], i) => <span key={id}>{link ? <Link to={`/hosts/${id}`} onClick={onClose} className="strong-link">{name}</Link> : name}{i < shown.length - 1 ? ", " : ""}</span>)}
+      {hosts.length > shown.length && <> <button type="button" className="link-btn" onClick={() => setAll(true)}>Показать все</button></>}
+      {all && hosts.length > 12 && <> <button type="button" className="link-btn" onClick={() => setAll(false)}>Свернуть</button></>}
+      {rows.length < total && hosts.length !== expected && <span className="muted small"> · по первым {num(rows.length)} строкам предпросмотра; полный список — в файле</span>}
+    </div>
+  );
+}
+
 /** Боковая панель быстрого отчёта: предпросмотр (число компьютеров, условия, замечания, первые строки) и выгрузка в Excel/HTML/CSV.
  *  Просмотр и выгрузка строятся на сервере из одного документа — числа совпадают. Дополнительные условия — в «Дополнительно». */
 export function QuickReportPanel({ kind, params: base, title, lede, options = { scope: true }, activityDays, canReport, sourceIds = [], onClose }: {
@@ -126,6 +143,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
             <span className="qr-cap">{hosts ? (kind === "quick_eol" ? plural(Number(hosts.value), "устройство с проблемой поддержки", "устройства с проблемой поддержки", "устройств с проблемой поддержки") : kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
               {hosts?.hint && <span className="muted small"> · {hosts.hint}</span>}</span>
           </div>
+          {data && (kind === "quick_extvulns" || kind === "quick_vulns" || kind === "version_audit" || kind === "quick_eol") && <AffectedHosts rows={data.items} total={data.total} expected={hosts ? Number(hosts.value) : null} link={sourceIds.length <= 1 && kind !== "quick_eol"} onClose={onClose} />}
           <dl className="qr-cond">{doc.conditions.map((c) => <div key={c.label}><dt>{c.label}</dt><dd>{c.text}</dd></div>)}</dl>
           <div className="qr-metrics">{doc.metrics.filter((m) => m.key !== "hosts").map((m) => (
             <div key={m.key} className="qr-metric" title={m.hint}><b className={m.tone === "danger" ? "bad-text" : ""}>{typeof m.value === "number" ? num(m.value) : m.value}</b><span>{m.label}</span></div>))}</div>
