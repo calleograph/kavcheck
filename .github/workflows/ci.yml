@@ -29,6 +29,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # сценарий 27 берёт скрипты релиза v0.6.1 из тега (git archive): нужна полная история с тегами
       - name: Синтаксис скриптов
         run: for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f" || exit 1; done
       - name: Сценарии отказов обновления (подставной docker)
