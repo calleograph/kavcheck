@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, setCsrf, setSourceId, setUnauthorizedHandler, type Me, type SourceRef } from "./api";
+import { api, setAllSources, setCsrf, setSourceId, setUnauthorizedHandler, type Me, type SourceRef } from "./api";
 import { Icon, Mark, type IconName } from "./components/Icons";
 import { Empty, Segmented } from "./components/ui";
 import { GlobalSearch } from "./components/GlobalSearch";
@@ -23,15 +23,22 @@ const ReportsPage = lazy(() => import("./pages/ReportsPage"));
 import { fmt, versionLabel } from "./util";
 
 const AdminPage = lazy(() => import("./pages/AdminPage"));
+const EolPage = lazy(() => import("./pages/EolPage"));
+const DevicesPage = lazy(() => import("./pages/DevicesPage"));
 
-export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; reloadSources: () => Promise<void> }
+export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; /** выбрано «Все источники» (разделы, которые это умеют, показывают данные всех доступных источников) */ all: boolean; reloadSources: () => Promise<void> }
+
+/** Разделы, работающие со всеми источниками сразу; остальные показывают выбранный источник. */
+export const ALL_PAGES = ["/eol", "/devices", "/reports"];
 
 const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/", label: "Главная", icon: "home", end: true },
   { to: "/software", label: "Программы", icon: "layers" },
   { to: "/hosts", label: "Компьютеры", icon: "monitor" },
+  { to: "/devices", label: "Устройства и пользователи", icon: "users" },
   { to: "/vulnerabilities", label: "Уязвимости", icon: "bug" },
   { to: "/vdb", label: "База уязвимостей", icon: "vault" },
+  { to: "/eol", label: "EOL", icon: "clock" },
   { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" },
   { to: "/events", label: "События безопасности", icon: "bell" },
   { to: "/zones", label: "Зоны ответственности", icon: "grid" },
@@ -39,7 +46,7 @@ const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
 ];
 export const ADMIN_TABS: { id: string; label: string }[] = [
   { id: "system", label: "Состояние системы" }, { id: "sources", label: "Источники KSC" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" },
-  { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "zcache", label: "Расчёт данных зон" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
+  { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "zcache", label: "Расчёт данных зон" }, { id: "eolcfg", label: "EOL и пользователи" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
 ];
 
 type Theme = "system" | "light" | "dark";
@@ -88,37 +95,46 @@ function UserMenu({ me, version, onLogout }: { me: Me; version: string; onLogout
 }
 
 /** Выбор источника KSC: собственный список с состоянием проверки, адресом и версией; клавиатура — стрелки, Enter, Escape. */
-function SourceSwitcher({ sources, current, onPick, isAdmin }: { sources: SourceRef[]; current: SourceRef | null; onPick: (id: string) => void; isAdmin: boolean }) {
+function SourceSwitcher({ sources, current, onPick, isAdmin, all, onAll }: { sources: SourceRef[]; current: SourceRef | null; onPick: (id: string) => void; isAdmin: boolean; all: boolean; onAll: (on: boolean) => void }) {
   const { open, setOpen, root, btn } = usePopover();
   const [kb, setKb] = useState(-1);
-  useEffect(() => { if (open) setKb(Math.max(0, sources.findIndex((s) => s.id === current?.id))); }, [open, sources, current]);
+  const many = sources.length > 1;
+  // позиции списка: 0 — «Все источники» (если источников больше одного), далее источники
+  useEffect(() => { if (open) setKb(all && many ? 0 : Math.max(0, sources.findIndex((s) => s.id === current?.id)) + (many ? 1 : 0)); }, [open, sources, current, all, many]);
   if (!sources.length) return <span className="src-empty"><Icon name="alert" size={16} />Источники KSC не настроены</span>;
   const state = (s: SourceRef) => (s.last_check_ok === true ? "ok" : s.last_check_ok === false ? "bad" : "off");
   const stateText = (s: SourceRef) => (s.last_check_ok === true ? `проверен ${fmt(s.last_check_at)}` : s.last_check_ok === false ? "ошибка проверки" : "не проверялся");
-  const choose = (id: string) => { onPick(id); setOpen(false); btn.current?.focus(); };
+  const choose = (id: string) => { onAll(false); onPick(id); setOpen(false); btn.current?.focus(); };
+  const chooseAll = () => { onAll(true); setOpen(false); btn.current?.focus(); };
+  const count = sources.length + (many ? 1 : 0);
+  const bad = sources.filter((s) => s.last_check_ok === false);
   const onKey = (e: React.KeyboardEvent) => {
     if (!open && (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ")) { e.preventDefault(); setOpen(true); return; }
     if (!open) return;
-    if (e.key === "ArrowDown") { e.preventDefault(); setKb((k) => (k + 1) % sources.length); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); setKb((k) => (k - 1 + sources.length) % sources.length); }
-    else if (e.key === "Enter" && kb >= 0) { e.preventDefault(); choose(sources[kb].id); }
+    if (e.key === "ArrowDown") { e.preventDefault(); setKb((k) => (k + 1) % count); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setKb((k) => (k - 1 + count) % count); }
+    else if (e.key === "Enter" && kb >= 0) { e.preventDefault(); if (many && kb === 0) chooseAll(); else choose(sources[kb - (many ? 1 : 0)].id); }
     else if (e.key === "Tab") setOpen(false);
   };
   return (
     <div className={`dd left ${open ? "open" : ""}`} ref={root}>
-      <button ref={btn} type="button" className="src-btn" aria-haspopup="listbox" aria-expanded={open} aria-label={`Источник KSC: ${current?.name ?? "не выбран"}`} onClick={() => setOpen((o) => !o)} onKeyDown={onKey}>
-        <span className={`dot ${current ? state(current) : "off"}`} aria-hidden />
-        <span className="src-main"><span className="src-name">{current?.name ?? "Выберите источник"}</span>{current && <span className="src-meta">{current.database} @ {current.host}{current.ksc_version ? ` · KSC ${current.ksc_version}` : ""}</span>}</span>
+      <button ref={btn} type="button" className="src-btn" aria-haspopup="listbox" aria-expanded={open} aria-label={`Источник KSC: ${all && many ? "все источники" : current?.name ?? "не выбран"}`} onClick={() => setOpen((o) => !o)} onKeyDown={onKey}>
+        <span className={`dot ${all && many ? (bad.length ? "bad" : "ok") : current ? state(current) : "off"}`} aria-hidden />
+        <span className="src-main"><span className="src-name">{all && many ? `Все источники (${sources.length})` : current?.name ?? "Выберите источник"}</span>{all && many ? <span className="src-meta">{bad.length ? `недоступно: ${bad.map((s) => s.name).join(", ")}` : "данные всех доступных вам источников"}</span> : current && <span className="src-meta">{current.database} @ {current.host}{current.ksc_version ? ` · KSC ${current.ksc_version}` : ""}</span>}</span>
         <Icon name="chevronD" size={16} className="chev" />
       </button>
       <div className="dd-panel src-list" role="listbox" aria-label="Источники KSC" aria-hidden={!open}>
         <div className="dd-text">Данные всех разделов берутся из выбранного источника</div>
-        {sources.map((s, i) => (
-          <button key={s.id} type="button" role="option" tabIndex={-1} aria-selected={s.id === current?.id} className={`src-opt ${i === kb ? "kb" : ""}`} onMouseEnter={() => setKb(i)} onClick={() => choose(s.id)}>
-            <span className={`dot ${state(s)}`} aria-hidden /><span className="src-name">{s.name}</span>{s.id === current?.id ? <Icon name="check" size={16} className="tick" /> : <span />}
+        {many && (
+          <button type="button" role="option" tabIndex={-1} aria-selected={all} className={`src-opt ${kb === 0 ? "kb" : ""}`} onMouseEnter={() => setKb(0)} onClick={chooseAll}>
+            <span className={`dot ${bad.length ? "bad" : "ok"}`} aria-hidden /><span className="src-name">Все источники</span>{all ? <Icon name="check" size={16} className="tick" /> : <span />}
+            <span className="src-meta">{sources.length} · новые источники добавляются сами · EOL, устройства и отчёты; остальные разделы показывают выбранный источник</span>
+          </button>)}
+        {sources.map((s, j) => { const i = j + (many ? 1 : 0); return (
+          <button key={s.id} type="button" role="option" tabIndex={-1} aria-selected={!all && s.id === current?.id} className={`src-opt ${i === kb ? "kb" : ""}`} onMouseEnter={() => setKb(i)} onClick={() => choose(s.id)}>
+            <span className={`dot ${state(s)}`} aria-hidden /><span className="src-name">{s.name}</span>{!all && s.id === current?.id ? <Icon name="check" size={16} className="tick" /> : <span />}
             <span className="src-meta">{s.database} @ {s.host}:{s.port}{s.ksc_version ? ` · KSC ${s.ksc_version}` : ""} · {stateText(s)}</span>
-          </button>
-        ))}
+          </button>); })}
         {isAdmin && <><div className="dd-sep" /><Link className="dd-item" to="/admin?tab=sources" onClick={() => setOpen(false)} tabIndex={open ? 0 : -1}><Icon name="database" />Управление источниками</Link></>}
       </div>
     </div>
@@ -143,7 +159,7 @@ function NavIndicator({ deps }: { deps: unknown[] }) {
   return <span ref={self} className={`nav-indicator ${pos ? "on" : ""}`} style={pos ? { transform: `translateY(${pos.y}px)`, height: pos.h } : undefined} aria-hidden />;
 }
 
-function Shell({ me, version, onLogout, children, sources, current, onPick }: { me: Me; version: string; onLogout: () => void; children: ReactNode; sources: SourceRef[]; current: SourceRef | null; onPick: (id: string) => void }) {
+function Shell({ me, version, onLogout, children, sources, current, onPick, all, onAll }: { me: Me; version: string; onLogout: () => void; children: ReactNode; sources: SourceRef[]; current: SourceRef | null; onPick: (id: string) => void; all: boolean; onAll: (on: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const { pathname, search } = useLocation();
   useEffect(() => setOpen(false), [pathname, search]);
@@ -172,7 +188,7 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
               {adminOpen && ADMIN_TABS.map((t) => {
                 const active = inAdmin && tab === t.id;
                 return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>
-                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", zones: "grid", zcache: "clock", mail: "mail", org: "file", catalog: "package", vdb: "vault", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
+                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", zones: "grid", zcache: "clock", eolcfg: "users", mail: "mail", org: "file", catalog: "package", vdb: "vault", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
               })}
             </>}
           </div>
@@ -183,12 +199,18 @@ function Shell({ me, version, onLogout, children, sources, current, onPick }: { 
       <div className="workspace">
         <header className="topbar">
           <button type="button" className="btn ghost icon burger" aria-label="Открыть меню разделов" aria-expanded={open} onClick={() => setOpen(true)}><Icon name="menu" size={20} /></button>
-          <SourceSwitcher sources={sources} current={current} onPick={onPick} isAdmin={me.user.is_admin} />
+          <SourceSwitcher sources={sources} current={current} onPick={onPick} isAdmin={me.user.is_admin} all={all} onAll={onAll} />
           <GlobalSearch sourceId={current?.id ?? null} />
           <div className="spacer" />
           <UserMenu me={me} version={version} onLogout={onLogout} />
         </header>
-        <main id="main" tabIndex={-1}>{children}</main>
+        <main id="main" tabIndex={-1}>
+          {all && sources.length > 1 && !ALL_PAGES.some((p) => pathname.startsWith(p)) && !inAdmin && (
+            <p className="scope-note" role="status"><Icon name="info" size={15} />Выбрано «Все источники», но этот раздел работает с одним источником — показан «{current?.name}». <button type="button" className="link-btn" onClick={() => onAll(false)}>Работать с «{current?.name}»</button></p>)}
+          {all && sources.some((s) => s.last_check_ok === false) && ALL_PAGES.some((p) => pathname.startsWith(p)) && (
+            <p className="scope-note warn" role="status"><Icon name="alert" size={15} />Источник «{sources.filter((s) => s.last_check_ok === false).map((s) => s.name).join("», «")}» недоступен или не прошёл проверку: показаны сохранённые данные, они могут быть неактуальными.</p>)}
+          {children}
+        </main>
       </div>
     </div>
   );
@@ -199,6 +221,9 @@ export default function App() {
   const [version, setVersion] = useState("");
   const [sources, setSources] = useState<SourceRef[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  const [all, setAll] = useState<boolean>(() => { try { return localStorage.getItem("kc:scope-all") === "1"; } catch { return false; } });
+  useEffect(() => { setAllSources(all && sources.length > 1); }, [all, sources.length]);
+  const onAll = useCallback((on: boolean) => { setAll(on); try { localStorage.setItem("kc:scope-all", on ? "1" : "0"); } catch { /* не запомнится */ } }, []);
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -213,7 +238,7 @@ export default function App() {
   useEffect(() => { if (me) void reloadSources(); }, [me, reloadSources]);
   useEffect(() => { setUnauthorizedHandler(() => { setCsrf(""); setMe(null); }); return () => setUnauthorizedHandler(null); }, []);
   useEffect(() => {
-    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
+    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/devices", "Устройства и пользователи"], ["/eol", "EOL"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
     const t = me ? (titles.find(([p]) => pathname.startsWith(p))?.[1] ?? "Главная") : "Вход";
     document.title = `${t} — ${me?.site_name || "KAV Checker"}`;
   }, [pathname, me]);
@@ -227,14 +252,17 @@ export default function App() {
   if (me.must_change_password) return <ChangePasswordPage onDone={() => api.me().then((m) => { setCsrf(m.csrf_token); setMe(m); })} onLogout={logout} />;
   if (me.must_enroll_totp) return <main className="forced-shell"><SecurityPage me={me} forced onLogout={logout} onEnrolled={() => api.me().then((m) => { setCsrf(m.csrf_token); setMe(m); })} /></main>;
   const current = sources.find((s) => s.id === currentId) ?? null;
-  const ctx: Ctx = { me, sources, current, reloadSources };
+  const allOn = all && sources.length > 1;
+  const ctx: Ctx = { me, sources, current, all: allOn, reloadSources };
   return (
-    <Shell me={me} version={version} onLogout={logout} sources={sources} current={current} onPick={pick}>
+    <Shell me={me} version={version} onLogout={logout} sources={sources} current={current} onPick={pick} all={allOn} onAll={onAll}>
       <Suspense fallback={<div className="center"><span className="spin" role="status" aria-label="Загрузка" /></div>}>
         <Routes>
           <Route path="/" element={<DashboardPage key={currentId} ctx={ctx} />} />
           <Route path="/software" element={<SoftwarePage key={currentId} ctx={ctx} />} />
           <Route path="/software/p/:key" element={<ProductPage key={currentId} ctx={ctx} />} />
+          <Route path="/eol" element={<EolPage key={`${currentId}:${allOn}`} ctx={ctx} />} />
+          <Route path="/devices" element={<DevicesPage key={`${currentId}:${allOn}`} ctx={ctx} />} />
           <Route path="/hosts" element={<HostsPage key={currentId} ctx={ctx} />} />
           <Route path="/hosts/:hostId" element={<HostPage key={currentId} ctx={ctx} />} />
           <Route path="/vulnerabilities" element={<VulnsPage key={currentId} ctx={ctx} />} />

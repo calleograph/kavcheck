@@ -45,7 +45,8 @@ async def summary(request: Request, zone: str = Query("", max_length=40), su: Se
     sids = [s.id for s in srcs]
     vs = await db.get(VdbSource, "eol")
     n_prod, n_rel = int((await db.execute(select(func.count()).select_from(EolProduct))).scalar_one()), int((await db.execute(select(func.count()).select_from(EolRelease))).scalar_one())
-    base = {"products": n_prod, "releases": n_rel, "enabled": bool(vs and vs.enabled), "status": vs.status if vs else "never", "last_ok_at": vs.last_ok_at if vs else None, "error": vs.last_error if vs else None}
+    cfg = await request.app.state.settings_svc.get(db, "eol")
+    base = {"include_in_analytics": bool(cfg.include_in_analytics), "soon_days": int(cfg.soon_days), "products": n_prod, "releases": n_rel, "enabled": bool(vs and vs.enabled), "status": vs.status if vs else "never", "last_ok_at": vs.last_ok_at if vs else None, "error": vs.last_error if vs else None}
     zsub = R.zone_agg(zone, sids) if zone else None
     n_all, n_act = (zsub.c.n, zsub.c.na) if zsub is not None else (EolFinding.hosts_all, EolFinding.hosts_active)
     s = select(EolFinding.status, EolFinding.kind, func.count().label("items"), func.coalesce(func.sum(n_act), 0).label("devices")).where(EolFinding.source_id.in_(sids), EolFinding.status.in_(R.PROBLEM_STATUSES), n_act > 0)

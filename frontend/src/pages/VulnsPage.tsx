@@ -1,4 +1,5 @@
 import { ZoneSelect, HostZones } from "../components/ZoneBits";
+import { CompactList } from "../components/CompactList";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type HostVuln, type QuickKind, type SavedCheck, type VulnDescr, type VulnHost, type VulnProduct, type VulnSummary } from "../api";
@@ -154,9 +155,9 @@ function ListView({ ctx }: { ctx: Ctx }) {
                 <tr className={sel.has(v.descr_id) ? "sel" : ""}>
                   <td className="check"><input type="checkbox" aria-label={`Выбрать ${v.kla_id}`} checked={sel.has(v.descr_id)} onChange={() => sel.toggle(v.descr_id)} /></td>
                   <td>{v.url ? <a href={v.url} target="_blank" rel="noopener noreferrer" className="mono strong-link">{v.kla_id}<Icon name="external" size={13} className="ext" /></a> : <span className="mono">{v.kla_id}</span>}
-                    <span className="sub mono">{v.cve.length ? `${v.cve.slice(0, 3).join(", ")}${v.cve.length > 3 ? ` +${v.cve.length - 3}` : ""}` : "без CVE"}</span></td>
+                    <span className="sub mono">{v.cve.length ? <CompactList items={v.cve} label="CVE" /> : "без CVE"}</span></td>
                   <td><span className={`sev ${v.severity === "critical" ? "crit" : v.severity === "high" ? "high" : "warn"}`}>{v.severity_label}</span></td>
-                  <td className="small hide-sm">{v.products.slice(0, 3).join(", ")}{v.products.length > 3 ? "…" : ""}</td>
+                  <td className="small hide-sm"><CompactList items={v.products} label="программы" /></td>
                   <td className="num"><b>{num(v.hosts)}</b></td><td className="num hide-sm">{num(v.total)}</td>
                   <td className="hide-sm">{v.patchable ? <span className="badge ok">доступно</span> : <span className="muted small">нет</span>}</td>
                   <td className="actions">{canReport && <button type="button" className="btn mini ghost row-act" onClick={() => setReport(reportFor([v.descr_id], `Отчёт по уязвимости ${v.cve[0] ?? v.kla_id}`))}><Icon name="file" size={15} />Отчёт по этой уязвимости</button>}</td>

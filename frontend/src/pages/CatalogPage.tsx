@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CompactList } from "../components/CompactList";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type CatalogItem, type CatalogState } from "../api";
 import type { Ctx } from "../App";
@@ -143,7 +144,7 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
                         {fam && grouped && <button type="button" className="fam-toggle" aria-expanded={open.includes(p.key)} onClick={() => setOpen((o) => (o.includes(p.key) ? o.filter((k) => k !== p.key) : [...o, p.key]))}>
                           <Icon name="chevronD" size={14} />{p.family_size - 1} {plural3(p.family_size - 1)}</button>}</td>
                       <td className="small hide-sm">{self ? "" : p.publisher || <span className="muted">—</span>}</td>
-                      <td className="hide-sm">{!self && <span className="branch-chips">{p.branches.slice(0, 5).map((b) => <span key={b.branch || "-"} className="bchip" title={`${num(b.hosts)} комп.`}>{b.branch || "?"}</span>)}{p.branches.length > 5 && <span className="muted small">+{p.branches.length - 5}</span>}</span>}</td>
+                      <td className="hide-sm">{!self && <span className="branch-chips"><CompactList items={p.branches} max={5} sep=" " label="ветки" render={(b) => <span className="bchip" title={`${num(b.hosts)} комп.`}>{b.branch || "?"}</span>} /></span>}</td>
                       <td className="num">{self ? "" : num(p.versions_count)}</td>
                       <td className="mono small nowrap hide-sm">{self ? "" : <>{p.latest_version}{p.oldest_version && p.oldest_version !== p.latest_version ? <span className="muted"> · {p.oldest_version}</span> : null}</>}</td>
                       <td className="num">{self ? "" : <button type="button" className="count-btn" onClick={() => openHosts(p)} title="Показать компьютеры">{num(p.hosts)}</button>}{!self && all && p.hidden_hosts > 0 && <span className="sub">{num(p.hidden_hosts)} неакт.</span>}</td>
@@ -204,7 +205,7 @@ export function PublishersView({ ctx }: { ctx: Ctx }) {
               <VirtualRows list={list} colSpan={4} estimate={38} row={(p) => (
                 <tr className="clickable" onClick={() => open(p.publisher_key)}>
                   <td><button type="button" className="link-btn strong-link" onClick={() => open(p.publisher_key)}>{p.publisher}</button></td>
-                  <td className="num">{num(p.products)}</td><td className="small">{p.top.join(", ")}</td><td className="num">{num(p.max_hosts)}</td>
+                  <td className="num">{num(p.products)}</td><td className="small"><CompactList items={p.top} label="продукты" /></td><td className="num">{num(p.max_hosts)}</td>
                 </tr>)} />
               {!list.items.length && !list.loading && <tr><td colSpan={4}><Empty icon="search" title="Производители не найдены">Каталог пуст или запрос слишком узкий.</Empty></td></tr>}
             </tbody>

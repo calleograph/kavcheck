@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import { CompactList } from "../components/CompactList";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type VdbAffectedRow, type VdbCard, type VdbScore, type VdbCounts, type VdbSourceInfo, type VdbVulnRow } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
+import { EolList } from "../components/EolList";
 import { Modal } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
@@ -110,10 +112,10 @@ function SearchView({ ctx }: { ctx: Ctx }) {
                 <tr className={`clickable ${sel.has(v.key) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("input, button, a")) setSp((p) => { p.set("v", v.key); return p; }); }}>
                   <td className="check"><input type="checkbox" aria-label={`Выбрать ${v.key}`} checked={sel.has(v.key)} onChange={() => sel.toggle(v.key)} /></td>
                   <td><button type="button" className="link-btn strong-link mono" onClick={() => setSp((p) => { p.set("v", v.key); return p; })}>{v.key}</button>{v.version_match && <span className={`badge ${v.version_match === "yes" ? "err" : "warn"} new-dot`}>{v.version_match === "yes" ? "затрагивает версию" : "версия требует уточнения"}</span>}
-                    <span className="sub vdb-title">{v.title || v.description}</span>{v.ids.length > 1 && <span className="sub mono small">{v.ids.filter((i) => i !== v.key).slice(0, 3).join(", ")}</span>}</td>
+                    <span className="sub vdb-title">{v.title || v.description}</span>{v.ids.length > 1 && <span className="sub mono small"><CompactList items={v.ids.filter((i) => i !== v.key)} label="идентификаторы" /></span>}</td>
                   <td className="nowrap"><CvssCell v={v} /><span className="sm-stack"><LevelBadge v={v} />{v.exploited && <Kev />}</span></td>
                   <td className="hide-sm"><LevelBadge v={v} />{v.exploited && <span className="block kev-line"><Kev /></span>}</td>
-                  <td className="small hide-sm hide-lg vdb-prods">{v.products.slice(0, 3).join("; ")}</td>
+                  <td className="small hide-sm hide-lg vdb-prods"><CompactList items={v.products} sep="; " label="продукты" /></td>
                   <td className="hide-md">{v.sources.map((s) => <span key={s} className="chip tiny">{SRC_TITLE[s] ?? s}</span>)}</td>
                   <td className="nowrap small hide-md">{fmtDate(v.published)}</td>
                   <td className="hide-sm">{v.finding ? <><StatusBadge s={v.finding.status} label={v.finding.status_ru} /><span className="sub">{num(v.finding.installs)} уст.{v.finding.new ? " · новая" : ""}</span></> : <span className="muted small">не найдено</span>}</td>
@@ -216,6 +218,12 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(true); } };
   const sel = useRowSel<string>(); const [report, setReport] = useState<Report | null>(null); const [toast, show] = useToast();
   const canReport = ctx.me.user.role !== "viewer";
+  const [type, setType] = useKept<"all" | "cve" | "eol">("vdbm.type", "all");
+  const [eol, setEol] = useState<Awaited<ReturnType<typeof api.eol.summary>> | null>(null);
+  useEffect(() => { api.eol.summary().then(setEol).catch(() => setEol(null)); }, [ctx.current?.id, ctx.all]);
+  const eolOn = !!eol?.base.include_in_analytics;             // EOL включён в аналитику: в общем списке есть тип «EOL»
+  const kind: "all" | "cve" | "eol" = eolOn ? type : "cve";
+  const eolN = eol ? eol.findings.eol + eol.findings.extended + eol.findings.upcoming : 0;
   const list = useInfinite<VdbVulnRow>(`vdb-mine:${sid}`, [newOnly, sev, kev, range, sort, desc], (offset, limit) => api.vdb.findings({ new_only: newOnly || undefined, min_severity: sev, ...scoreParams(range, "", ""), sort, desc, exploited: kev || undefined, offset, limit }) as unknown as Promise<Chunk<VdbVulnRow>>);
   const extra = list.extra as { summary?: VdbCounts } | null;
   useEffect(() => { if (extra?.summary) onCounts(extra.summary); }, [extra?.summary]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -224,6 +232,10 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
   const mark = async (all: boolean) => { try { const c = await api.vdb.seen(sel.ids, all); onCounts(c); sel.clear(); list.reload(); show("Отмечено как просмотренное"); } catch (e) { show((e as ApiError).message, "error"); } };
   return (
     <>
+      {eolOn && <div className="toolbar"><Segmented<"all" | "cve" | "eol"> label="Тип записей" value={type} onChange={setType} options={[["all", "Все"], ["cve", "CVE"], ["eol", `EOL${eolN ? ` · ${eolN}` : ""}`]]} />
+        <span className="muted small">CVE и EOL — разные типы проблем: они считаются отдельно и не складываются. EOL выключается в Администрирование → База уязвимостей.</span></div>}
+      {kind !== "cve" && <div className="vdb-eol"><h3 className="h3">EOL: программы и ОС без поддержки производителя{eol ? ` (${eolN})` : ""}</h3><EolList limit={kind === "eol" ? 100 : 5} sources={ctx.all} /></div>}
+      {kind !== "eol" && <>
       <div className="meters">
         <div className="meter"><span className="l">Новых</span><span className={`v ${s?.new ? "warn-text" : ""}`}>{s ? num(s.new) : "…"}</span><span className="t">не просмотрены специалистом</span></div>
         <div className="meter"><span className="l">Из них в каталоге CISA KEV</span><span className={`v ${s?.new_exploited ? "bad-text" : ""}`}>{s ? num(s.new_exploited) : "…"}</span><span className="t">подтверждено CISA KEV</span></div>
@@ -251,7 +263,7 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
                   <td className="nowrap"><CvssCell v={v} /><span className="sm-stack"><LevelBadge v={v} />{v.exploited && <Kev />}</span></td>
                   <td className="hide-sm"><LevelBadge v={v} />{v.exploited && <span className="block kev-line"><Kev /></span>}</td>
                   <td className="hide-sm">{v.finding && <StatusBadge s={v.finding.status} label={v.finding.status_ru} />}</td>
-                  <td className="small hide-sm hide-lg vdb-prods">{v.finding?.products.slice(0, 3).map((p) => <span key={p.key} className="block">{p.name} <span className="muted mono nowrap">{p.versions.slice(0, 2).join(", ")}{p.versions.length > 2 ? "…" : ""}</span></span>)}
+                  <td className="small hide-sm hide-lg vdb-prods">{v.finding && <CompactList items={v.finding.products} sep=" " label="продукты" render={(p) => <span key={p.key} className="block">{p.name} <span className="muted mono nowrap"><CompactList items={p.versions} max={2} /></span></span>} />}
                     <span className="sub">до {num(v.finding?.hosts_max)} комп., {num(v.finding?.installs)} уст.</span></td>
                   <td className="actions hide-sm">{canReport && <button type="button" className="btn mini ghost row-act" onClick={() => setReport({ title: `Проверка инфраструктуры: ${v.key}`, keys: [v.key] })}><Icon name="target" size={15} />Проверить</button>}</td>
                 </tr>)} />
@@ -260,6 +272,7 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
           </table>)}
       </div>
       <ListFoot list={list} />
+      </>}
       <ReportDock label="Выбранные уязвимости" count={sel.count} noun={["уязвимость выбрана", "уязвимости выбраны", "уязвимостей выбрано"]} canReport={canReport} onClear={sel.clear}
         onReport={() => setReport({ title: `Проверка инфраструктуры: ${sel.count} ${plural(sel.count, "уязвимость", "уязвимости", "уязвимостей")}`, keys: sel.ids })} />
       {sel.count > 0 && canReport && <button className="btn mini seen-btn" onClick={() => mark(false)}><Icon name="check" size={15} />Отметить просмотренными</button>}

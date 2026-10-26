@@ -11,6 +11,7 @@ LAYOUTS: dict[str, list[dict]] = {
                     {"id": "programs", "section": "detail", "title": "Уязвимые программы и версии"}, {"id": "rows", "section": "detail", "title": "Обнаружения (подробно)"}],
     "quick_extvulns": [{"id": "hosts", "section": "summary", "title": "Потенциально затронутые компьютеры"}, {"id": "vulns", "section": "detail", "title": "Уязвимости"},
                        {"id": "programs", "section": "detail", "title": "Программы и версии"}, {"id": "rows", "section": "detail", "title": "Обнаружения (подробно)"}],
+    "quick_eol": [{"id": "rows", "section": "summary", "title": "Программы и ОС с EOL"}, {"id": "devices", "section": "detail", "title": "Устройства"}],
     "quick_hosts": [{"id": "hosts_short", "table": "hosts", "section": "summary", "title": "Состояние компьютеров", "where": "",
                      "cols": ["name", "ip", "os", "online", "last_connected", "problems", "v_critical", "v_high", "v_warning", "software"]},
                     {"id": "hosts", "section": "detail", "title": "Компьютеры: все показатели"}, {"id": "vulns", "section": "detail"}, {"id": "software", "section": "detail"}],

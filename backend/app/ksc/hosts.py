@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from ..netsearch import parse as parse_query
 from ..search import mssql_like
 from . import queries as q
 
@@ -61,13 +62,33 @@ def host_row(h: dict, groups: dict[int, dict] | None, now: datetime | None = Non
             "linux_release": release or "", "created": _utc(h.get("created"))}
 
 
+def search_where(text: str, params: dict, *, users: bool = False) -> str | None:
+    """Единый поиск устройств: имя и DNS-имя (маски `*`), IP-адрес (адрес, сеть CIDR, диапазон, маска по октетам — по числовому столбцу nIp), при users — ещё и логин пользователя
+    из списков KSC. Несколько значений через пробел или запятую: подходит любое. Значения — только параметрами."""
+    conds = []
+    for i, t in enumerate(parse_query(text)):
+        if t.is_net:
+            conds.append(f"h.nIp BETWEEN %(ipl{i})s AND %(iph{i})s")
+            params[f"ipl{i}"], params[f"iph{i}"] = t.lo, t.hi
+            continue
+        like = mssql_like(t.text)
+        params[f"q{i}"] = like
+        c = f"h.wstrDisplayName LIKE %(q{i})s OR h.wstrDnsName LIKE %(q{i})s"
+        if users:
+            c += (f" OR EXISTS (SELECT 1 FROM dbo.hst_user_visited v JOIN dbo.ak_users u ON u.nId = v.nUser WHERE v.nHost = h.nId AND u.wstrSamAccountName LIKE %(q{i})s)")
+        conds.append(c)
+    return "(" + " OR ".join(f"({c})" for c in conds) + ")" if conds else None
+
+
 def hosts_where(*, qtext: str = "", group_contains: str = "", os_contains: str = "", active_days: int | None = None, inactive_only: bool = False,
-                exclude_slaves: bool = True) -> tuple[str, dict]:
+                exclude_slaves: bool = True, search_users: bool = False) -> tuple[str, dict]:
     where, params = [], {}
     if exclude_slaves:
         where.append("h.bIsSlaveServer = 0")
-    for text, sql, name in ((qtext, "(h.wstrDisplayName LIKE %(q)s OR h.wstrDnsName LIKE %(q)s)", "q"), (group_contains, "g.wstrName LIKE %(g)s", "g"),
-                            (os_contains, "h.wstrOSName LIKE %(os)s", "os")):
+    sw = search_where(qtext, params, users=search_users)
+    if sw:
+        where.append(sw)
+    for text, sql, name in ((group_contains, "g.wstrName LIKE %(g)s", "g"), (os_contains, "h.wstrOSName LIKE %(os)s", "os")):
         like = mssql_like(text)
         if like:
             where.append(sql)

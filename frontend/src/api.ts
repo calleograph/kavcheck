@@ -44,7 +44,7 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns";
+export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol";
 export interface QuickCol { key: string; title: string; type: string }
 export interface QuickMetric { key: string; label: string; value: number | string; hint: string; tone: string }
 /** Документ быстрого отчёта без строк: один источник правды для просмотра, XLSX, HTML и CSV. */
@@ -116,14 +116,15 @@ export interface ZoneCacheStatus { settings: ZoneCacheSettings; timezone: string
   jobs: ZoneJob[]; active: ZoneJob[]; resources: { rss_mb: number; peak_mb: number; soft_mb: number; hard_mb: number; slots: number; used: number; active: string[]; deferred: number } }
 export interface ZoneJob { id: string; kind: string; kind_ru: string; zone_id: string | null; trigger: string; status: "queued" | "running" | "done" | "failed"; requested_by: string; requested_at: string; started_at: string | null; finished_at: string | null; progress: string | null; pct: number; attempts: number; error: string | null }
 export interface Freshness { empty: boolean; data_at: string | null; calculated_at: string | null; newer: boolean; errors: { source: string; error: string }[]; building: string[]; job: ZoneJob | null; sources: { id: string; name: string; built_at: string | null; status: string; agg_only: boolean }[] }
-export interface ZoneOverviewRow { id: string; name: string; description: string; purpose: string; enabled: boolean; stats: Pick<ZoneStats, "total" | "active" | "online" | "critical" | "other_vulns" | "protection" | "ok" | "state" | "inactive">; problem_hosts: number; conflicts: number; responsible: string[]; contacts_n: number; activity_days: number }
+export interface ZoneEol { hosts: number; eol: number; extended: number; upcoming: number; items: number; os: number }
+export interface ZoneOverviewRow { eol: ZoneEol | null; id: string; name: string; description: string; purpose: string; enabled: boolean; stats: Pick<ZoneStats, "total" | "active" | "online" | "critical" | "other_vulns" | "protection" | "ok" | "state" | "inactive">; problem_hosts: number; conflicts: number; responsible: string[]; contacts_n: number; activity_days: number }
 export interface ZoneOverview { items: ZoneOverviewRow[]; totals: { zones: number; hosts: number; unique_hosts: number; unassigned: number; conflicts: number }; sources: string[]; activity_days: number; notes: string[]; fetched_at: string | null; freshness: Freshness }
 export interface HostCounts { critical: number; high: number; warning: number; total: number; worst: string; accepted: number; excluded: number; review: number }
 export interface ZoneHost { source_id: string; source: string; host_id: number; name: string; fqdn: string; ip: string; os: string; group: string; last_connected: string | null; days_since_connection: number | null; active: boolean; online: boolean | null;
   max_sev: "" | "critical" | "high" | "warning"; max_sev_ru: string; max_sev_basis: "" | "ksc" | "ext"; ksc: HostCounts; ext: { total: number; critical: number; high: number; warning: number; kev: number; confirmed: number; accepted: number; excluded: number };
   problems: { key: ProblemKey; title: string }[]; state: HostState; summary: string; zones: string[]; zone_conflict: boolean; zone_pinned: boolean }
 export interface ZoneInfo { id: string; name: string; description: string; purpose: string; priority: number; enabled: boolean; activity_days: number | null; contacts: ZoneContact[] }
-export interface ZoneDash { zone: ZoneInfo; stats: ZoneStats & { bars: unknown }; activity_days: number; total: number; offset: number; limit: number; items: ZoneHost[]; sources: { id: string; name: string }[]; notes: string[]; fetched_at: string | null; conflicts: number; ext_included: boolean; freshness: Freshness; ext_cap?: number }
+export interface ZoneDash { zone: ZoneInfo; stats: ZoneStats & { bars: unknown; eol: ZoneEol | null }; activity_days: number; total: number; offset: number; limit: number; items: ZoneHost[]; sources: { id: string; name: string }[]; notes: string[]; fetched_at: string | null; conflicts: number; ext_included: boolean; freshness: Freshness; ext_cap?: number }
 export interface TriageDecision { id: string; scope: "host" | "product" | "zone"; scope_ru: string; status: TriageStatus; stored_status: TriageStatus; status_ru: string; stored_status_ru: string; reason: string; reason_ru: string; comment: string; by: string; at: string | null;
   review_until: string | null; recheck: boolean; recheck_reason: string; expired: boolean; version: string; product: string }
 export type TriageStatus = "review" | "confirmed" | "false_positive" | "obsolete" | "risk_accepted";
@@ -145,11 +146,32 @@ export interface Schedule { id: string; name: string; enabled: boolean; zone_ids
 export interface OutboxRow { id: string; schedule_id: string | null; zone_id: string | null; zone_name: string; period_key: string; kind: "schedule" | "manual" | "test"; status: "queued" | "sending" | "accepted" | "failed" | "skipped"; subject: string; to: string[]; cc: string[];
   stats: Record<string, number>; attempts: number; last_error: string | null; refused: { address: string; reply: string }[]; created_at: string; next_attempt_at: string | null; sent_at: string | null }
 
+export type EolStatus = "eol" | "extended" | "upcoming" | "unknown";
+export interface EolFinding { source_id: string; source: string; kind: "app" | "os"; kind_ru: string; subject: string; version: string; title: string; publisher: string; eol_product: string; eol_label: string; eol_release: string; status: EolStatus; status_ru: string; severity: "critical" | "high" | "warning" | ""; severity_ru: string; confidence: string; confidence_ru: string; confirmed: boolean; eol_from: string | null; eoas_from: string | null; eoes_from: string | null; days_left: number | null; condition: string; link: string; hosts: number; hosts_active: number; computed_at: string }
+export interface EolSourceState { source: string; computed_at: string | null; error: string | null; error_at: string | null; progress: string | null; items: number; ready: boolean }
+export interface EolSummary { base: { include_in_analytics: boolean; soon_days: number; products: number; releases: number; enabled: boolean; status: string; last_ok_at: string | null; error: string | null }; all_sources: boolean; findings: Record<"eol" | "extended" | "upcoming", number>; kinds: { app: number; os: number }; devices: { hosts: number; eol: number; extended: number; upcoming: number }; ambiguous: number; sources: Record<string, EolSourceState> }
+export type EolInfra = { total: number; by_status: Record<string, number>; items: EolFinding[]; computed_at: string | null; publishers: string[] };
+export interface EolProductRow { name: string; label: string; category: string; tags: string[]; releases: number; supported: number; link: string; installed_items: number; installed_hosts: number; updated_at: string }
+export interface EolRelease { name: string; label: string; codename: string | null; release_date: string | null; lts: boolean; eoas_from: string | null; eol_from: string | null; eoes_from: string | null; discontinued_from: string | null; latest: string | null; status: string; status_ru: string; severity: string; condition: string; installed_hosts: number; installed_items: number }
+export interface EolProductCard { name: string; label: string; category: string; tags: string[]; labels: Record<string, string>; links: Record<string, string>; identifiers: { type: string; id: string }[]; aliases: string[]; releases: EolRelease[]; updated_at: string }
+export interface EolHostRow { host_id: number; name: string; ip: string; os: string; last_connected: string | null; active: boolean | null; online: boolean | null; group: string; zones: string[] }
+export interface EolMapping { id: string; catalog_key: string; catalog_name: string; eol_product: string | null; eol_label: string; action: "map" | "exclude"; note: string; created_by: string; created_at: string }
+export interface DevUser { login: string; domain: string; resolved: boolean; kind: "user" | "service" | "system"; now: boolean; last_session_at: string | null; first_seen_at: string | null; initial: boolean }
+export interface DeviceRow { source_id: string; source: string; host_id: number; name: string; ip: string; os: string; group: string; zones: string[]; last_connected: string | null; active: boolean; online: boolean | null; eol: number; eol_level: "" | "eol" | "extended" | "upcoming"; current: DevUser[]; last_user: DevUser | null; week: DevUser[]; week_n: number; history: DevUser[] }
+export type DevicesPage = { total: number; items: DeviceRow[]; all_sources: boolean; limits: string; not_ready: string[] };
+export interface DevicesStatus { enabled: boolean; interval_minutes: number; hide_service: boolean; limits: string; items: { source_id: string; source: string; supported: boolean; polled_at: string | null; first_poll_at: string | null; rows_seen: number; error: string | null; queued: boolean }[] }
+export interface DeviceCard { source_id: string; source: string; host_id: number; name: string; ip: string; os: string; group: string; zones: string[]; last_connected: string | null; active: boolean; online: boolean | null; current: DevUser[]; last_user: DevUser | null; week: DevUser[]; history: DevUser[]; hidden_service: number; eol: EolFinding[]; limits: string }
+
 let csrf = "";
 let sourceId: string | null = null;
+let allSources = false;
+/** Разделы, которые умеют работать со всеми источниками сразу (заголовок X-Source-Id: all); остальные получают выбранный источник. */
+const ALL_OK = /^\/(eol|devices|quick\/preview|reports)(\/|\?|$)/;
 let onUnauthorized: (() => void) | null = null;
 export const setCsrf = (t: string) => { csrf = t; };
 export const setSourceId = (id: string | null) => { sourceId = id; };
+export const setAllSources = (on: boolean) => { allSources = on; };
+const sourceHeader = (path: string) => (allSources && ALL_OK.test(path) ? "all" : sourceId);
 export const setUnauthorizedHandler = (fn: (() => void) | null) => { onUnauthorized = fn; };
 
 export class ApiError extends Error {
@@ -160,7 +182,8 @@ async function req<T>(method: string, path: string, body?: unknown, opts: { raw?
   const headers: Record<string, string> = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET" && method !== "HEAD") headers["X-CSRF-Token"] = csrf;
-  if (sourceId) headers["X-Source-Id"] = sourceId;
+  const sh = sourceHeader(path);
+  if (sh) headers["X-Source-Id"] = sh;
   const r = await fetch(`/api/v1${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin" });
   if (r.status === 401 && onUnauthorized && !path.startsWith("/auth/login")) onUnauthorized();
   if (!r.ok) {
@@ -245,6 +268,24 @@ export const api = {
   hosts: {
     list: (p: Record<string, string | number | boolean | undefined>) => req<Page<Host> & { hidden: number; activity_days: number; fetched_at: string }>("GET", `/hosts${qs(p)}`),
     one: (id: number) => req<{ host: Host; activity_days: number; fetched_at: string; software: { install_id: number; product_id: number; name: string; version: string; publisher: string; install_date: string | null }[]; kaspersky: { product_code: string; product: string; build: string; state: string; av_bases_date: string | null; is_av: boolean; has_rtp: boolean }[] }>("GET", `/hosts/${id}`),
+  },
+  eol: {
+    summary: (zone = "") => req<EolSummary>("GET", `/eol/summary${qs({ zone })}`),
+    infra: (p: Record<string, string | number | boolean | undefined | null>) => req<EolInfra>("GET", `/eol/infra${qs(p)}`),
+    hosts: (p: Record<string, string | number | boolean | undefined | null>) => req<{ total: number; items: EolHostRow[] }>("GET", `/eol/infra/hosts${qs(p)}`),
+    products: (p: Record<string, string | number | boolean | undefined | null>) => req<{ total: number; categories: string[]; items: EolProductRow[] }>("GET", `/eol/products${qs(p)}`),
+    product: (name: string) => req<EolProductCard>("GET", `/eol/products/${encodeURIComponent(name)}`),
+    mappings: () => req<{ items: EolMapping[] }>("GET", "/eol/mappings"),
+    setMapping: (b: { catalog_key: string; eol_product?: string | null; action: "map" | "exclude"; note?: string }) => req<{ id: string }>("POST", "/eol/mappings", b),
+    delMapping: (id: string) => req<void>("DELETE", `/eol/mappings/${id}`),
+    unmatched: (q = "") => req<{ items: { catalog_key: string; name: string; publisher: string; hosts: number; source: string }[]; ambiguous: { catalog_key: string; name: string; publisher: string; hosts: number; reason: string; source: string }[] }>("GET", `/eol/unmatched${qs({ q })}`),
+    recalc: () => req<{ queued: number }>("POST", "/eol/recalc"),
+  },
+  devices: {
+    list: (p: Record<string, string | number | boolean | undefined | null>) => req<DevicesPage>("GET", `/devices${qs(p)}`),
+    status: () => req<DevicesStatus>("GET", "/devices/status"),
+    poll: () => req<{ queued: number }>("POST", "/devices/poll"),
+    card: (sid: string, hid: number, showService = false) => req<DeviceCard>("GET", `/devices/${sid}/${hid}${qs({ show_service: showService })}`),
   },
   vdb: {
     sources: () => req<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[]; storage: { db_bytes: number | null; tmp_bytes: number; free_bytes: number } }>("GET", "/vdb/sources"),

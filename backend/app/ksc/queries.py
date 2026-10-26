@@ -27,6 +27,10 @@ EOL_OS_HOSTS = ("SELECT TOP (%(n)s) h.nId AS host_id, h.wstrOSName AS os_name, h
                 "FROM dbo.v_akpub_host h WHERE h.nId > %(after)s AND {where} ORDER BY h.nId")
 EOL_APP_HOSTS = ("SELECT i.nHostId AS host_id, i.nProduct AS product_id, " + _ACTIVE + " AS active FROM dbo.hst_inventory_hstprds i JOIN dbo.v_akpub_host h ON h.nId = i.nHostId "
                  "WHERE i.bDeleted = 0 AND {where} AND i.nProduct IN ({ids})")
+# пользователи устройств: hst_user_visited — вошедшие сейчас (bActual = 1) и входившие ранее (0); дат во внутренних списках KSC нет. Порциями по nId.
+USERS_VISITED = ("SELECT TOP (%(n)s) v.nId AS row_id, v.nHost AS host_id, v.nUser AS user_id, v.bActual AS actual, CONVERT(varchar(34), v.binSidHash, 1) AS sid_hash, "
+                 "u.wstrSamAccountName AS login, u.wstrUserPrincipalName AS upn, u.wstrDisplayName AS display_name, u.nHostId AS local_host "
+                 "FROM dbo.hst_user_visited v LEFT JOIN dbo.ak_users u ON u.nId = v.nUser WHERE v.nId > %(after)s ORDER BY v.nId")
 COUNT_PRODUCTS = "SELECT COUNT(*) AS n FROM dbo.hst_inventory_products p WHERE EXISTS (SELECT 1 FROM dbo.hst_inventory_hstprds i WHERE i.nProduct = p.nId AND i.bDeleted = 0)"
 COUNT_INSTALLS = "SELECT COUNT(*) AS n FROM dbo.hst_inventory_hstprds i WHERE i.bDeleted = 0"
 
@@ -206,6 +210,7 @@ FEATURE_OBJECTS = {
     "vulnerabilities": ("vapm_vulnerability_occurence", "vapm_product_vulnerability", "vapm_vulnerability_descr", "vapm_vulnerability_names",
                         "vapm_product_exact_version", "v_vapm_product", "hst_inventory_products", "v_akpub_host"),
     "events": ("v_akpub_ev_event", "v_akpub_host"),
+    "users": ("hst_user_visited", "ak_users", "v_akpub_host"),
 }
 
 

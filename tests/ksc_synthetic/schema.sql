@@ -44,6 +44,12 @@ CREATE UNIQUE INDEX UK_hst_inventory_products__strID ON dbo.hst_inventory_produc
 CREATE INDEX IX_vapm_occ_host ON dbo.vapm_vulnerability_occurence (nHostId, nProductVulnerabilityId, tmDisappearanceTime, bIgnore);
 CREATE INDEX IX_vapm_occ_pv ON dbo.vapm_vulnerability_occurence (nProductVulnerabilityId, tmDisappearanceTime, bIgnore) INCLUDE (nHostId, bPatchesAvailable, strSoftwareInventoryProductId);
 CREATE INDEX IX_ev_host ON dbo.v_akpub_ev_event (nHostId, tmRiseTime);
+-- пользователи устройств (KSC 15.1): hst_user_visited — вошедшие сейчас (bActual = 1) и входившие ранее (bActual = 0), без дат; ak_users — учётные записи
+CREATE TABLE dbo.ak_users (nId int PRIMARY KEY, binId varbinary(16) NULL, wstrDisplayName nvarchar(256) NOT NULL DEFAULT N'', wstrUserPrincipalName nvarchar(256) NOT NULL DEFAULT N'',
+  wstrSamAccountName nvarchar(256) NOT NULL DEFAULT N'', nHostId bigint NULL, nDomain int NULL);
+CREATE TABLE dbo.hst_user_visited (nId int IDENTITY PRIMARY KEY, nHost bigint NOT NULL, nUser int NULL, bActual bit NOT NULL DEFAULT 0, binId varbinary(16) NULL, binSidHash varbinary(16) NULL,
+  nVServer int NULL, binDomainSamHash varbinary(16) NULL);
+CREATE INDEX IX_hst_user_visited_host ON dbo.hst_user_visited (nHost);
 GO
 -- Группы: 0 — корень управляемых, 1 — нераспределённые, 10 — Серверы, 11 — Web (внутри Серверов), 12 — Рабочие станции
 INSERT INTO dbo.v_akpub_adm_group VALUES (0, N'Управляемые устройства', 2, 0), (1, N'Нераспределенные устройства', NULL, 0), (10, N'Серверы', 0, 0), (11, N'Web', 10, 0), (12, N'Рабочие станции', 0, 0);
@@ -99,6 +105,12 @@ INSERT INTO dbo.v_akpub_hst_prdstate VALUES
  (6,'1103','1.0.0.0',N'Kaspersky Security Center Network Agent','15.1.0.22239',3,NULL,0,0),(6,'KES','11.0.0.0',N'Kaspersky Endpoint Security for Windows','12.6.0.438',3,DATEADD(hour,-1,GETUTCDATE()),1,1),
  (7,'1103','1.0.0.0',N'Kaspersky Security Center Network Agent','14.0.0.10902',0,NULL,0,0),(7,'KES','11.0.0.0',N'Kaspersky Endpoint Security for Windows','12.4.0.467',0,DATEADD(day,-21,GETUTCDATE()),1,1);
 INSERT INTO dbo.v_akpub_host_status VALUES (1,0,0),(2,0,0),(3,0,0),(4,2,256),(5,1,256+128),(6,0,0),(7,1,2+128+16384),(8,1,32);
+-- Пользователи: ivanov и petrova — доменные, svc_backup — служебная, DWM-1 и SYSTEM — системные, root — Linux; у строки без nUser учётная запись не сопоставлена
+INSERT INTO dbo.ak_users (nId, binId, wstrDisplayName, wstrUserPrincipalName, wstrSamAccountName, nHostId, nDomain) VALUES
+ (1, 0x01, N'Иванов Иван', N'ivanov@example.local', N'ivanov', NULL, 1), (2, 0x02, N'Петрова Мария', N'petrova@example.local', N'petrova', NULL, 1), (3, 0x03, N'Служба резервного копирования', N'svc_backup@example.local', N'svc_backup', NULL, 1),
+ (4, 0x04, N'', N'', N'DWM-1', 6, NULL), (5, 0x05, N'', N'', N'SYSTEM', 1, NULL), (6, 0x06, N'', N'', N'root', 2, NULL);
+INSERT INTO dbo.hst_user_visited (nHost, nUser, bActual, binId, binSidHash) VALUES
+ (6, 2, 1, 0x02, 0xA2), (6, 1, 0, 0x01, 0xA1), (6, 4, 1, 0x04, 0xA4), (7, 1, 0, 0x01, 0xA1), (1, 3, 1, 0x03, 0xA3), (1, 5, 1, 0x05, 0xA5), (2, 6, 1, 0x06, 0xA6), (2, 1, 0, 0x01, 0xA1), (3, NULL, 0, NULL, 0xB7);
 INSERT INTO dbo.vapm_vulnerability_descr VALUES (5001,N'KLA10001',4,N'https://threats.kaspersky.com/en/vulnerability/KLA10001',0),(5002,N'KLA10002',2,N'https://threats.kaspersky.com/en/vulnerability/KLA10002',0);
 INSERT INTO dbo.vapm_vulnerability_names VALUES (5001,3,N'CVE-2024-0001'),(5001,3,N'CVE-2024-0002'),(5002,3,N'CVE-2023-9999'),(5001,4,N'KLA10001');
 INSERT INTO dbo.v_vapm_product VALUES (7001,N'Google Chrome');

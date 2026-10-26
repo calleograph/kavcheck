@@ -103,18 +103,20 @@ async def test_due_follows_inputs_and_manual_request(app):
     sid = await seed(app)
     sm = app.state.session_maker
     svc = EolService(sm, app.state.settings_svc, app.state.sources)
-    assert await svc.due() == [sid]
+    assert await svc.due(TODAY) == [sid]
     async with sm() as db:
         src = await db.get(KscSource, sid)
     await C.compute_source(sm, FakeKsc({11: [(1, 1)]}, []), src, activity_days=30, today=TODAY)
-    assert await svc.due() == []                                                        # данные не менялись
+    assert await svc.due(TODAY) == []                                                        # данные не менялись
     async with sm() as db:
         p = await db.get(CatalogProduct, (sid, "php"))
         p.built_at = utcnow().replace(year=2030)
         await db.commit()
-    assert await svc.due() == [sid]                                                     # каталог пересобран
+    assert await svc.due(TODAY) == [sid]                                                     # каталог пересобран
     await C.compute_source(sm, FakeKsc({}, []), src, activity_days=30, today=TODAY)
-    assert await svc.due() == [] and await svc.request(sid) == 1 and await svc.due() == [sid]
+    assert await svc.due(TODAY) == [] and await svc.request(sid) == 1 and await svc.due(TODAY) == [sid]
+    await C.compute_source(sm, FakeKsc({}, []), src, activity_days=30, today=TODAY)
+    assert await svc.due(date(2026, 11, 20)) == [sid]                                   # у какой-то ветки (PostgreSQL 14: 12.11.2026) за это время сменился этап
 
 
 _ = login
@@ -151,3 +153,54 @@ async def test_api_summary_infra_hosts_mappings(client, app):
     await client.post("/api/v1/auth/logout")
     await login(client, "viewer", "Viewer-Passw0rd-123")
     assert (await client.post("/api/v1/eol/mappings", json={"catalog_key": "mystery", "action": "exclude"})).status_code == 403
+
+
+async def test_zone_counters_and_zone_filter_have_no_double_counting(client, app):
+    from app.models import ZcHost, ZcHostZone, ZcSource
+
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await seed(app)
+    sm = app.state.session_maker
+    async with sm() as db:
+        src = await db.get(KscSource, sid)
+        db.add(ZcSource(source_id=sid, gen=1, status="ready"))
+        for hid, active, zone in ((1, True, "z1"), (2, True, "z1"), (3, True, "z2"), (5, False, "z1")):
+            db.add(ZcHost(source_id=sid, host_id=hid, gen=1, name=f"srv-{hid}", active=active, os="Windows", data={"ip": f"192.0.2.{hid}", "zones": [zone]}))
+            db.add(ZcHostZone(source_id=sid, host_id=hid, gen=1, zone_id=zone))
+        await db.commit()
+    await C.compute_source(sm, FakeKsc({11: [(1, 1), (2, 1)], 12: [(5, 0)]}, hosts()), src, activity_days=30, today=TODAY)
+    async with sm() as db:
+        from app.eol import read as R
+
+        z = await R.zone_counts(db, [sid])
+    assert z["z1"]["hosts"] == 2 and z["z1"]["eol"] == 2 and z["z1"]["items"] == 4 and z["z1"]["os"] == 2          # устройства 1 и 2: у каждого PHP и Windows Server — устройство считается один раз; неактивное 5 не считается
+    assert "z2" not in z
+    h = {"X-Source-Id": str(sid)}
+    r = (await client.get("/api/v1/eol/infra", params={"zone": "z1"}, headers=h)).json()
+    assert {i["kind"]: i["hosts_active"] for i in r["items"]} == {"app": 2, "os": 2}
+    assert (await client.get("/api/v1/eol/infra", params={"zone": "z2"}, headers=h)).json()["total"] == 0
+    hs = (await client.get("/api/v1/eol/infra/hosts", params={"source_id": str(sid), "kind": "app", "subject": "php", "version": "7.4.16", "zone": "z1"}, headers=h)).json()
+    assert [i["name"] for i in hs["items"]] == ["srv-1", "srv-2"] and hs["items"][0]["ip"] == "192.0.2.1"
+    assert (await client.get("/api/v1/eol/summary", params={"zone": "z1"}, headers=h)).json()["devices"]["eol"] >= 1
+
+
+async def test_quick_eol_report_previews_and_exports_full_device_list(client, app):
+    from app.models import ZcHost, ZcSource
+
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await seed(app)
+    sm = app.state.session_maker
+    async with sm() as db:
+        src = await db.get(KscSource, sid)
+        db.add(ZcSource(source_id=sid, gen=1, status="ready"))
+        for hid in (1, 2, 5):
+            db.add(ZcHost(source_id=sid, host_id=hid, gen=1, name=f"srv-{hid}", active=True, os="Windows", data={"ip": f"192.0.2.{hid}", "zones": ["z1"], "group": "Серверы"}))
+        await db.commit()
+    await C.compute_source(sm, FakeKsc({11: [(1, 1), (2, 1)], 12: [(5, 1)]}, hosts()), src, activity_days=30, today=TODAY)
+    r = (await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"statuses": ["eol"]}, "source_ids": [str(sid)]}, headers={"X-Source-Id": str(sid)})).json()
+    assert r["total"] == 2 and {m["key"]: m["value"] for m in r["doc"]["metrics"]}["hosts"] == 3
+    assert {t["id"]: t["n"] for t in r["doc"]["tables"]} == {"rows": 2, "devices": 5}                     # PHP: 1, 2, 5; Windows Server: 1, 2 — устройство × проблема, без сокращений
+    r = (await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"kinds": ["os"], "devices": False}}, headers={"X-Source-Id": str(sid)})).json()
+    assert r["total"] == 1 and r["items"][0]["title"].startswith("Microsoft Windows Server 2012") and r["items"][0]["eol_from"]
+    bad = await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"statuses": ["bogus"]}}, headers={"X-Source-Id": str(sid)})
+    assert bad.status_code == 422

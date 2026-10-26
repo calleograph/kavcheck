@@ -766,7 +766,7 @@ class ZcHost(Base):
     ke: Mapped[str] = mapped_column(Text, nullable=False, default="")
     pk: Mapped[str] = mapped_column(Text, nullable=False, default="")
     pe: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    __table_args__ = (Index("ix_zc_hosts_gen", "source_id", "gen"),)
+    __table_args__ = (Index("ix_zc_hosts_gen", "source_id", "gen"), Index("ix_zc_hosts_ip", "source_id", "gen", "ip_num"))
 
 
 class ZcHostZone(Base):
@@ -916,6 +916,20 @@ class EolFinding(Base):
     __table_args__ = (Index("ix_eol_findings_status", "source_id", "status"), Index("ix_eol_findings_product", "eol_product"))
 
 
+class DevicesState(Base):
+    """Состояние опроса пользователей устройств по источнику KSC (опрос выполняет worker; страницы читают накопленное)."""
+    __tablename__ = "dev_state"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    polled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                        # начало последнего успешного опроса
+    first_poll_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                     # с этого времени KAV Checker ведёт наблюдения (раньше истории нет)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    rows_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)             # строк в списках KSC при последнем опросе
+    users_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    error_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    requested_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                     # опрос по требованию
+
+
 class EolState(Base):
     """Состояние расчёта сопоставления по источнику: отпечаток данных, от которых зависит результат (база EOL, каталог, решения), и время."""
     __tablename__ = "eol_state"
@@ -958,4 +972,5 @@ class DeviceUser(Base):
     last_session_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                              # последнее наблюдение в списке вошедших сейчас (bActual=1)
     session_now: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     seen_n: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    initial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)           # замечен при первом опросе источника: дата входа неизвестна, в «за 7 суток» не входит, пока не появился в списке вошедших
     __table_args__ = (Index("ix_dev_users_login", "login"), Index("ix_dev_users_host", "source_id", "host_id", "last_seen_at"))

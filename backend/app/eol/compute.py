@@ -75,8 +75,8 @@ async def load_index(db: AsyncSession) -> Index:
     return Index(list((await db.execute(select(EolProduct))).scalars().all()), list((await db.execute(select(EolRelease))).scalars().all()))
 
 
-def _finding(source_id, kind: str, subject: str, version: str, title: str, publisher: str, ep: EolProduct, rel: EolRelease, conf: str, today: date, **extra) -> EolFinding | None:
-    lc = classify(rel, ep.labels, today)
+def _finding(source_id, kind: str, subject: str, version: str, title: str, publisher: str, ep: EolProduct, rel: EolRelease, conf: str, today: date, soon: int = 180, **extra) -> EolFinding | None:
+    lc = classify(rel, ep.labels, today, soon_days=soon)
     if lc.status in ("supported", "unknown"):
         return None                                       # поддерживаемое и без дат не сохраняем: EOL автоматически не присваивается, список проблем остаётся компактным
     weak = conf == "name"
@@ -138,18 +138,39 @@ ID_CHUNK = 1500
 HOST_PAGE = 20000
 
 
-def inputs_hash(idx_sig: str, catalog_sig: str, maps_sig: str) -> str:
-    return hashlib.sha1(f"{idx_sig}|{catalog_sig}|{maps_sig}".encode()).hexdigest()[:40]
+def inputs_hash(idx_sig: str, catalog_sig: str, maps_sig: str, day_sig: str) -> str:
+    return hashlib.sha1(f"{idx_sig}|{catalog_sig}|{maps_sig}|{day_sig}".encode()).hexdigest()[:40]
 
 
-async def current_inputs(db: AsyncSession, source_id: uuid.UUID) -> str:
-    """Отпечаток исходных данных расчёта: база EOL (число и время продуктов), каталог источника (время сборки), решения администратора. Изменился — нужен пересчёт."""
+_DAY: dict = {}
+
+
+async def day_signature(db: AsyncSession, today: date, soon_days: int) -> str:
+    """Состояние всех веток на сегодня: пересчёт нужен, только когда у какой-либо ветки сегодня сменился этап (а не каждые сутки). Кэшируется на сутки и версию базы EOL."""
+    from sqlalchemy import func  # noqa: PLC0415
+
+    n, last = (await db.execute(select(func.count(), func.max(EolProduct.updated_at)))).one()
+    key = (today, soon_days, n, last)
+    if _DAY.get("key") != key:
+        idx = await load_index(db)
+        h = hashlib.sha1()
+        for pname, rels in sorted(idx.releases.items()):
+            labels = idx.products[pname].labels
+            for rname, r in sorted(rels.items()):
+                h.update(f"{pname}|{rname}|{classify(r, labels, today, soon_days=soon_days).status}\n".encode())
+        _DAY.clear()
+        _DAY.update(key=key, sig=h.hexdigest()[:20])
+    return _DAY["sig"]
+
+
+async def current_inputs(db: AsyncSession, source_id: uuid.UUID, today: date | None = None, soon_days: int = 180) -> str:
+    """Отпечаток исходных данных расчёта: база EOL (число и время продуктов), этапы веток на сегодня, каталог источника (время сборки), решения администратора, порог «приближается»."""
     from sqlalchemy import func  # noqa: PLC0415
 
     n, last = (await db.execute(select(func.count(), func.max(EolProduct.updated_at)))).one()
     cat = (await db.execute(select(func.count(), func.max(CatalogProduct.built_at)).where(CatalogProduct.source_id == source_id))).one()
     ms = (await db.execute(select(EolMapping.catalog_key, EolMapping.eol_product, EolMapping.action).order_by(EolMapping.catalog_key))).all()
-    return inputs_hash(f"{n}|{last}", f"{cat[0]}|{cat[1]}", "|".join(map(str, ms)))
+    return inputs_hash(f"{n}|{last}", f"{cat[0]}|{cat[1]}", "|".join(map(str, ms)), await day_signature(db, today or date.today(), soon_days))
 
 
 async def _app_links(client, findings: list[EolFinding], where: str, days: int, res=None) -> tuple[dict[tuple, set[int]], dict[tuple, int]]:
@@ -218,7 +239,7 @@ async def _os_links(client, rules: dict, where: str, days: int, res=None) -> tup
 
 
 async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceClient | None, src: KscSource, *, activity_days: int, exclude_slaves: bool = True, today: date | None = None,
-                         res=None, progress=None) -> dict:
+                         soon_days: int = 180, res=None, progress=None) -> dict:
     """Пересчитывает `eol_findings` и `eol_hosts` источника. client нужен для устройств и ОС; без него считаются только находки по программам каталога (без списков устройств)."""
     t0 = time.monotonic()
     today = today or date.today()
@@ -230,7 +251,7 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
             progress(text)
 
     async with sm() as db:
-        inputs = await current_inputs(db, src.id)
+        inputs = await current_inputs(db, src.id, today, soon_days)
         idx = await load_index(db)
         maps = {m.catalog_key: m for m in (await db.execute(select(EolMapping))).scalars().all()}
         prods = await light_catalog(db, src.id)
@@ -262,7 +283,7 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
                     rel = idx.release(eol, rname) if rname else None
                     if rel is None:
                         continue
-                    f = _finding(src.id, "app", key, ver, row.name, row.publisher, ep, rel, conf, today, product_ids=pids,
+                    f = _finding(src.id, "app", key, ver, row.name, row.publisher, ep, rel, conf, today, soon_days, product_ids=pids,
                                  hosts_all=int(v.get("hosts") or 0), hosts_active=int(v.get("hosts_active") or 0), installs_active=int(v.get("installs_active") or 0))
                     if f is not None:
                         out.append(f)
@@ -289,7 +310,7 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
                 hit = os_release(r.get("os_name") or "", r.get("os_major"), r.get("os_minor"), r.get("os_build"), windows_releases=win)
                 rel = idx.release(hit.product, hit.release) if hit and hit.product in idx.products else None
                 f = _finding(src.id, "os", str(r.get("os_name") or "")[:200], f"{r.get('os_major') or 0}.{r.get('os_minor') or 0}.{r.get('os_build') or 0}", str(r.get("os_name") or ""), "",
-                             idx.products[hit.product], rel, hit.confidence, today, os_key={"name": r.get("os_name"), "major": r.get("os_major"), "minor": r.get("os_minor"), "build": r.get("os_build")}) if rel else None
+                             idx.products[hit.product], rel, hit.confidence, today, soon_days, os_key={"name": r.get("os_name"), "major": r.get("os_major"), "minor": r.get("os_minor"), "build": r.get("os_build")}) if rel else None
                 if f is not None and hit.note:
                     f.condition = (f.condition + " " + hit.note)[:600]
                 cache[ck] = (f.kind, f.subject, f.version) if f else None

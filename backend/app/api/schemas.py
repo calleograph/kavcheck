@@ -256,6 +256,19 @@ class QuickExtVulns(QuickScope):
         return self
 
 
+class QuickEol(BaseModel):
+    """EOL в инфраструктуре: какие состояния поддержки, типы и производитель; список устройств включается отдельной таблицей (полный, без сокращений)."""
+    statuses: list[Literal["eol", "extended", "upcoming"]] = Field(default_factory=lambda: ["eol", "extended", "upcoming"], min_length=1)
+    kinds: list[Literal["app", "os"]] = Field(default_factory=lambda: ["app", "os"], min_length=1)
+    severity: Literal["", "critical", "high", "warning"] = ""
+    publisher: MaskText = None
+    q: MaskText = None
+    include_inactive: bool = False
+    devices: bool = True
+    active_days: int | None = Field(default=None, ge=1, le=3650)
+    zone: str = Field(default="", max_length=40)
+
+
 class QuickZone(BaseModel):
     """Состояние безопасности зон ответственности: зоны (или «none» — без ответственного), категории проблем, подробность, критичность и пороги."""
     zone_ids: list[str] = Field(min_length=1, max_length=100)
@@ -282,11 +295,11 @@ class QuickZone(BaseModel):
         return self
 
 
-QUICK_PARAMS = {"quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns}
+QUICK_PARAMS = {"quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol}
 
 
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)

@@ -18,6 +18,7 @@ from ..models import KscSource, MailOutbox, ReportSchedule, VulnTriage, ZcDashbo
 from ..search import any_field, matcher
 from ..services import mail as M
 from ..services.audit import write_audit
+from ..eol import read as EOLR
 from ..zones import csv_io, mailer
 from ..zones import dataset as D
 from ..zones import match as ZM
@@ -425,13 +426,15 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
     else:                                           # ограниченный доступ к источникам или сводки ещё нет: агрегаты SQL по доступным источникам
         stats = await ZR.group_stats(db, sids=sids, default_days=int(general.activity_days), zone_days=zdays)
         confl = {z: c for z, (_n, c) in (await ZR.conflict_counts(db, sids)).items()}
+    eol_on = bool((await request.app.state.settings_svc.get(db, "eol")).include_in_analytics)       # type: ignore[attr-defined]
+    eol = await EOLR.zone_counts(db, sids) if eol_on else {}
     rows = []
     unassigned = {"id": UNASSIGNED, "name": "Без ответственного", "description": "Компьютеры, не подошедшие ни одной зоне", "purpose": "", "priority": 0, "contacts": [], "enabled": True, "activity_days": None}
     for z in infos + [unassigned]:
         st = stats.get(z["id"]) or ZR._empty_stats()  # noqa: SLF001
         rows.append({"id": z["id"], "name": z["name"], "description": z["description"], "purpose": z["purpose"], "enabled": z["enabled"],
                      "stats": {k: st[k] for k in ("total", "active", "online", "critical", "other_vulns", "protection", "ok", "state", "inactive")},
-                     "problem_hosts": st["in_scope"] - st["ok"], "conflicts": confl.get(z["id"], 0),
+                     "problem_hosts": st["in_scope"] - st["ok"], "conflicts": confl.get(z["id"], 0), "eol": (eol.get(z["id"]) or EOLR.EMPTY) if eol_on else None,
                      "responsible": [(c["name"] or c["email"]) + (f" ({c['position']})" if c["position"] else "") for c in z["contacts"] if c["role"] == "responsible"][:3],
                      "contacts_n": len([c for c in z["contacts"] if c["enabled"]]), "activity_days": z["activity_days"] or general.activity_days})
     needle = matcher(q_)
@@ -487,7 +490,7 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
     else:                                           # нестандартные пороги, ограниченный доступ или сводки ещё нет: тот же агрегат SQL «на лету» (быстро, без KSC)
         stat = (await ZR.group_stats(db, sids=sids, zone_id=zid, bd=bases_days, sd=scan_days, ext=ext, default_days=int(general.activity_days), zone_days=zdays)).get(zid) or ZR._empty_stats()  # noqa: SLF001
         conflicts = (await ZR.conflict_counts(db, sids)).get(zid, (0, 0))[1]
-    stat = {**stat, "bars": {"severity": stat["severity"], "problems": stat["problems"], "vulns": stat["vulns"]}}
+    stat = {**stat, "bars": {"severity": stat["severity"], "problems": stat["problems"], "vulns": stat["vulns"]}, "eol": ((await EOLR.zone_counts(db, sids, zid)).get(zid) or EOLR.EMPTY) if (await request.app.state.settings_svc.get(db, "eol")).include_in_analytics else None}  # type: ignore[attr-defined]
     total, items = await ZR.hosts_page(db, zid, sids, bd=bases_days, sd=scan_days, ext=ext, default_days=int(general.activity_days), zone_days=zdays, state=state, severity=severity, problem=problem,
                                        q=q_, online=online, activity=activity, triage=triage, cve=cve, product=product, source_id=source_id, sort=sort, desc=desc, offset=offset, limit=limit)
     states = await ZR.source_states(db, sids)

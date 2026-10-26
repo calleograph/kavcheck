@@ -275,8 +275,13 @@ def test_mask_hosts_begin_middle_end_multiple():
     assert _host_names(qtext="*") == _host_names() and len(_host_names()) == 9 and _host_names(qtext="   ") == _host_names()          # «*» и пустой запрос — без отбора
 
 
+def test_search_injection_text_is_only_parameters():
+    # несколько значений через «;» и пробел — отдельные поисковые значения; текст никогда не попадает в SQL, только в параметры
+    assert "ws-001" in _host_names(qtext="ws-001; DROP TABLE x") and "DROP" not in H.hosts_where(qtext="ws-001; DROP TABLE x")[0]
+
+
 def test_mask_special_characters_are_literal():
-    for bad in ("ws_001", "ws-00%", "ws-0[0]1", "ws-0[0-9]1", "%", "_", "[", "ws-001'--", "ws-001; DROP TABLE x"):
+    for bad in ("ws_001", "ws-00%", "ws-0[0]1", "ws-0[0-9]1", "%", "_", "[", "ws-001'--"):
         assert _host_names(qtext=bad) == set(), bad                      # %, _ и [ из запроса — обычные символы, а не шаблон LIKE
     assert _host_names(qtext="ws-00_*") == set()
 
@@ -298,3 +303,25 @@ def test_mask_registry_and_vulnerabilities():
     assert {"CVE-2024-0001", "CVE-2024-0002"} <= got and all(c.startswith("CVE-2024-") for c in got) and "CVE-2023-9999" not in got
     assert {v["cve"] for v in asyncio.run(vulns.page(client, offset=0, limit=50, cve="*9999"))["items"]} == {"CVE-2023-9999"}
     assert {v["cve"] for v in asyncio.run(vulns.page(client, offset=0, limit=50, cve="*2023*9"))["items"]} == {"CVE-2023-9999"}
+
+
+def test_users_visited_query_and_unified_search():
+    """Пользователи устройств (KSC 15.1): выборка порциями по nId; единый поиск — имя, IP по числовому диапазону (CIDR, диапазон, маска) и логин."""
+    client = SourceClient(params(), name="test")
+    rows = asyncio.run(client.run(q.USERS_VISITED, {"n": 4, "after": 0}, max_rows=10))
+    assert len(rows) == 4 and rows[0]["row_id"] < rows[-1]["row_id"] and rows[0]["sid_hash"].startswith("0x")
+    rest = asyncio.run(client.run(q.USERS_VISITED, {"n": 100, "after": rows[-1]["row_id"]}, max_rows=200))
+    got = rows + rest
+    assert len(got) == 9 and {r["login"] for r in got if r["login"]} >= {"ivanov", "petrova", "svc_backup", "DWM-1", "SYSTEM", "root"}
+    assert any(r["user_id"] is None for r in got)                       # запись без сопоставленной учётной записи
+    assert sum(1 for r in got if r["actual"]) == 5
+
+    def names(text, users=False, **kw):
+        where, p = H.hosts_where(qtext=text, search_users=users, **kw)
+        return {r["name"] for r in asyncio.run(client.run(q.HOSTS_PAGE.format(where=where, order=H.hosts_order("name", False)), {**p, "offset": 0, "limit": 50}, max_rows=50))}
+
+    assert names("192.0.2.20/30") == {"web-01.example.local", "web-02.example.local", "app-01.example.local"}           # .20–.23
+    assert names("192.0.2.21-22") == {"web-01.example.local", "web-02.example.local"} and names("192.0.2.101") == {"ws-001"}
+    assert names("192.0.2.*") >= {"ksc-server", "ws-001"} and names("10.0.0.0/8") == set()
+    assert names("ws-001 192.0.2.10") == {"ws-001", "ksc-server"} and names("ws-00*") == {"ws-001", "ws-002", "ws-003"}
+    assert names("ivanov", users=True) == {"ws-001", "ws-002", "web-01.example.local"} and names("ivanov") == set()          # логин ищется, только если источник отдаёт таблицы пользователей

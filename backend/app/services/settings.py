@@ -187,8 +187,23 @@ class ZonecacheSettings(_Group):
         return v
 
 
+class EolSettings(_Group):
+    """Жизненный цикл ПО и ОС (EOL): как учитывается в аналитике и когда окончание поддержки считается приближающимся."""
+    include_in_analytics: bool = True          # EOL в общем списке проблем, дашбордах зон и сводках; выключено — остаётся отдельный раздел «EOL»
+    soon_days: int = Field(default=180, ge=30, le=730)          # за сколько суток до окончания стандартной поддержки показывать «приближается»
+
+
+class DevicesSettings(_Group):
+    """Пользователи устройств: KSC хранит списки «вошли сейчас» и «входили ранее» без дат, поэтому KAV Checker опрашивает их по расписанию и накапливает наблюдения."""
+    enabled: bool = True
+    interval_minutes: int = Field(default=60, ge=10, le=1440)         # как часто опрашивать списки пользователей в KSC (опрос лёгкий: одна выборка порциями)
+    retention_days: int = Field(default=90, ge=8, le=730)              # сколько хранить наблюдения за пользователями, которых KSC больше не показывает
+    hide_service: bool = True                                           # в таблицах не показывать служебные и системные учётные записи
+    service_masks: list[str] = Field(default_factory=lambda: ["svc*", "*_svc", "*-svc", "service*", "krbtgt", "iusr*", "iwam*"], max_length=100)   # маски служебных записей (звёздочка — любое число символов)
+
+
 GROUPS: dict[str, type[_Group]] = {"general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
-                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings}
+                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings}
 
 
 class SettingsService:

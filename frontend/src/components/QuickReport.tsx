@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type ApiError, type QuickCol, type QuickKind, type QuickPreview } from "../api";
 import { fmt, num, plural } from "../util";
+import { CompactList } from "./CompactList";
 import { Modal } from "./Dialogs";
 import { Icon } from "./Icons";
 import { Dock, Segmented } from "./ui";
@@ -47,11 +48,13 @@ function cell(c: QuickCol, v: string | number | null | undefined) {
   if (c.type === "sev") return <span className={`sev ${SEV_CLASS[String(v)] ?? "warn"}`}>{v}</span>;
   if (c.type === "date") return <span className="nowrap">{fmt(String(v))}</span>;
   if (c.type === "num") return <span className="num">{typeof v === "number" ? num(v) : v}</span>;
+  if (typeof v === "string" && v.includes("; ")) return <CompactList items={v.split("; ")} sep="; " />;       // списки значений в ячейке: три значения и «+N»; в файлах — полностью
   return c.type === "mono" ? <span className="mono small nowrap">{v}</span> : <>{v}</>;
 }
 
-export type QuickScopeOpts = { period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean };
+export type QuickScopeOpts = { period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean };
 const EXT_STATUSES: [string, string][] = [["confirmed", "Подтверждено источником"], ["potential", "Потенциально затронуто"], ["clarify", "Требуется уточнение"], ["insufficient", "Данных недостаточно"], ["fixed", "Исправлено (показать отдельно)"]];
+const EOL_STATUSES: [string, string][] = [["eol", "Стандартная поддержка закончилась (EOL)"], ["extended", "Только расширенная (платная) поддержка"], ["upcoming", "Окончание поддержки приближается"]];
 const SECTIONS: [string, string][] = [["software", "Установленное ПО"], ["vulns", "Уязвимости"], ["protection", "Состояние защиты"]];
 const FORMATS: [string, string][] = [["xlsx", "Excel (XLSX)"], ["html", "HTML для руководства"], ["csv", "CSV"]];
 const PREVIEW_SHOWN = 60;
@@ -120,7 +123,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
         {doc && (<>
           <div className="qr-hero">
             <span className="qr-big">{hosts ? num(Number(hosts.value)) : num(data!.total)}</span>
-            <span className="qr-cap">{hosts ? (kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
+            <span className="qr-cap">{hosts ? (kind === "quick_eol" ? plural(Number(hosts.value), "устройство с проблемой поддержки", "устройства с проблемой поддержки", "устройств с проблемой поддержки") : kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
               {hosts?.hint && <span className="muted small"> · {hosts.hint}</span>}</span>
           </div>
           <dl className="qr-cond">{doc.conditions.map((c) => <div key={c.label}><dt>{c.label}</dt><dd>{c.text}</dd></div>)}</dl>
@@ -166,6 +169,20 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
               <label className="check"><input type="checkbox" checked={!!params.refresh_data} onChange={(e) => setExtra({ ...extra, refresh_data: e.target.checked })} />Обновить данные зоны из KSC перед формированием (дольше; иначе — подготовленные, дата среза указана в отчёте)</label>
               <label className="check"><input type="checkbox" checked={!!params.show_excluded} onChange={(e) => setExtra({ ...extra, show_excluded: e.target.checked })} />Перечислить исключённые обнаружения с обоснованиями</label>
               <p className="muted small">Ложные срабатывания не входят в показатели; их число и правила исключения указываются в конце отчёта. Принятые риски учитываются отдельно.</p>
+            </>}
+            {options.eol && <>
+              <fieldset className="qr-sections"><legend>Состояние поддержки</legend>{EOL_STATUSES.map(([k, l]) => {
+                const cur = (params.statuses as string[] | undefined) ?? ["eol", "extended", "upcoming"];
+                return <label key={k} className="check"><input type="checkbox" checked={cur.includes(k)} disabled={cur.length === 1 && cur.includes(k)}
+                  onChange={(e) => setExtra({ ...extra, statuses: e.target.checked ? [...cur, k] : cur.filter((x) => x !== k) })} />{l}</label>; })}</fieldset>
+              <fieldset className="qr-sections"><legend>Что включить</legend>{([["app", "Программы"], ["os", "Операционные системы"]] as [string, string][]).map(([k, l]) => {
+                const cur = (params.kinds as string[] | undefined) ?? ["app", "os"];
+                return <label key={k} className="check"><input type="checkbox" checked={cur.includes(k)} disabled={cur.length === 1 && cur.includes(k)}
+                  onChange={(e) => setExtra({ ...extra, kinds: e.target.checked ? [...cur, k] : cur.filter((x) => x !== k) })} />{l}</label>; })}</fieldset>
+              <label className="field">Критичность<select value={String(params.severity ?? "")} onChange={(e) => setExtra({ ...extra, severity: e.target.value })}>
+                <option value="">Все уровни</option><option value="critical">Только критические</option><option value="high">Только высокие</option><option value="warning">Только предупреждения</option></select></label>
+              <label className="check"><input type="checkbox" checked={params.devices !== false} onChange={(e) => setExtra({ ...extra, devices: e.target.checked })} />Таблица устройств (полный список, без сокращений)</label>
+              <label className="check"><input type="checkbox" checked={!!params.include_inactive} onChange={(e) => setExtra({ ...extra, include_inactive: e.target.checked })} />Включить давно не подключавшиеся к KSC</label>
             </>}
             {options.zoneFilter && <ZoneField value={String(params.zone ?? "")} onChange={(v) => setExtra({ ...extra, zone: v })} />}
             {options.sections && <fieldset className="qr-sections"><legend>Что включить</legend>{SECTIONS.map(([k, l]) => {

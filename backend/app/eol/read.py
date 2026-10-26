@@ -15,6 +15,7 @@ SEV_RU = {"critical": "Критическая", "high": "Высокая", "warni
 KIND_RU = {"app": "Программа", "os": "Операционная система"}
 CONF_RU = {"mapped": "по решению администратора", "high": "по идентификаторам и названию", "name": "только по названию"}
 SEV_ORDER = case((EolFinding.severity == "critical", 3), (EolFinding.severity == "high", 2), (EolFinding.severity == "warning", 1), else_=0)
+EMPTY = {"hosts": 0, "eol": 0, "extended": 0, "upcoming": 0, "items": 0, "os": 0}
 PROBLEM_STATUSES = ("eol", "extended", "upcoming")                       # что считается проблемой инфраструктуры; «unknown» — вопрос к администратору (неоднозначное соответствие)
 
 

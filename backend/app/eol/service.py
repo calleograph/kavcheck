@@ -29,10 +29,11 @@ class EolService:
     def stop(self) -> None:
         self._stop.set()
 
-    async def due(self) -> list[uuid.UUID]:
+    async def due(self, today=None) -> list[uuid.UUID]:
         """Источники, которым нужен пересчёт: изменились исходные данные или пересчёт запрошен вручную. Ошибки не чаще, чем раз в RETRY_AFTER."""
         out = []
         async with self._sm() as db:
+            soon = int((await self._svc.get(db, "eol")).soon_days)  # type: ignore[attr-defined]
             if not (await db.execute(select(EolProduct.name).limit(1))).first():
                 return []                                                       # базы EOL ещё нет: сопоставлять не с чем
             for src in (await db.execute(select(KscSource).where(KscSource.is_active.is_(True)))).scalars().all():
@@ -42,7 +43,7 @@ class EolService:
                 st = await db.get(EolState, src.id)
                 if st is not None and st.error_at and utcnow() - st.error_at < RETRY_AFTER and st.inputs:
                     continue
-                if st is None or not st.inputs or st.inputs != await C.current_inputs(db, src.id):
+                if st is None or not st.inputs or st.inputs != await C.current_inputs(db, src.id, today, soon):
                     out.append(src.id)
         return out
 
@@ -61,7 +62,7 @@ class EolService:
             src = await db.get(KscSource, source_id)
             if src is None:
                 return None
-            general, reports = await self._svc.get(db, "general"), await self._svc.get(db, "reports")
+            general, reports, cfg = await self._svc.get(db, "general"), await self._svc.get(db, "reports"), await self._svc.get(db, "eol")
             st = await db.get(EolState, source_id)
             if st is None:
                 db.add(EolState(source_id=source_id))
@@ -71,7 +72,7 @@ class EolService:
             async with RES.heavy(f"EOL: {src.name}", 1):
                 client = self._sources.client(src)
                 try:
-                    res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), res=RES)  # type: ignore[attr-defined]
+                    res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), soon_days=int(cfg.soon_days), res=RES)  # type: ignore[attr-defined]  # type: ignore[attr-defined]
                 except MemoryPressure:
                     raise
                 except Exception as exc:  # noqa: BLE001 — KSC недоступен: прежние данные остаются, ошибка видна администратору

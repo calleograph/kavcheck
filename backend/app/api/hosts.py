@@ -11,6 +11,7 @@ from ..ksc import protection as P
 from ..ksc import queries as q
 from ..ksc.driver import KscError
 from ..models import KscSource
+from .vulns import unsupported
 
 router = APIRouter(prefix="/hosts", tags=["hosts"])
 
@@ -30,8 +31,9 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
     general = await request.app.state.settings_svc.get(db, "general")
     rcfg = await request.app.state.settings_svc.get(db, "reports")
     active_days = days or general.activity_days
+    users_ok = unsupported(src, "users") is None and "users" in ((src.last_check or {}).get("features") or {})          # логин ищем, только если проверка источника подтвердила таблицы пользователей
     where, params = H.hosts_where(qtext=q_, group_contains=group, os_contains=os, active_days=active_days if activity != "all" else None, inactive_only=activity == "inactive",
-                                  exclude_slaves=rcfg.exclude_slave_servers)
+                                  exclude_slaves=rcfg.exclude_slave_servers, search_users=users_ok)
     zsql = ""
     if zone:        # фильтр «Зона ответственности»: компьютеры зоны по сетям, группам и закреплениям
         from .zones import zone_host_ids  # noqa: PLC0415
@@ -45,7 +47,7 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
         total = int((await client.run(q.HOSTS_COUNT.format(where=where + zsql), params, max_rows=1))[0]["n"])
         hidden = 0
         if activity == "active":
-            w_all, p_all = H.hosts_where(qtext=q_, group_contains=group, os_contains=os, exclude_slaves=rcfg.exclude_slave_servers)
+            w_all, p_all = H.hosts_where(qtext=q_, group_contains=group, os_contains=os, exclude_slaves=rcfg.exclude_slave_servers, search_users=users_ok)
             w_all += zsql
             hidden = int((await client.run(q.HOSTS_COUNT.format(where=w_all), p_all, max_rows=1))[0]["n"]) - total
     except KscError as exc:

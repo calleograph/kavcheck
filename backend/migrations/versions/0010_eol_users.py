@@ -55,9 +55,14 @@ def upgrade() -> None:
         sa.Column("source_id", sa.Uuid(), sa.ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True), sa.Column("host_id", sa.BigInteger(), primary_key=True), sa.Column("user_key", sa.String(80), primary_key=True),
         sa.Column("login", sa.String(256), nullable=False, server_default=""), sa.Column("domain", sa.String(256), nullable=False, server_default=""), sa.Column("kind", sa.String(8), nullable=False, server_default="user"),
         sa.Column("resolved", sa.Boolean(), nullable=False, server_default=sa.text("true")), sa.Column("first_seen_at", TS, nullable=False), sa.Column("last_seen_at", TS, nullable=False), sa.Column("last_session_at", TS),
-        sa.Column("session_now", sa.Boolean(), nullable=False, server_default=sa.text("false")), sa.Column("seen_n", sa.Integer(), nullable=False, server_default="1"))
+        sa.Column("session_now", sa.Boolean(), nullable=False, server_default=sa.text("false")), sa.Column("seen_n", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column("initial", sa.Boolean(), nullable=False, server_default=sa.text("false")))
+    op.create_table("dev_state",
+        sa.Column("source_id", sa.Uuid(), sa.ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True), sa.Column("polled_at", TS), sa.Column("first_poll_at", TS), sa.Column("duration_ms", sa.Integer()),
+        sa.Column("rows_seen", sa.Integer(), nullable=False, server_default="0"), sa.Column("users_n", sa.Integer(), nullable=False, server_default="0"), sa.Column("error", sa.Text()), sa.Column("error_at", TS), sa.Column("requested_at", TS))
     op.create_index("ix_dev_users_login", "dev_users", ["login"])
     op.create_index("ix_dev_users_host", "dev_users", ["source_id", "host_id", "last_seen_at"])
+    op.create_index("ix_zc_hosts_ip", "zc_hosts", ["source_id", "gen", "ip_num"])
     if op.get_bind().dialect.name == "postgresql":
         has = op.get_bind().execute(sa.text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")).scalar()
         if has:
@@ -67,5 +72,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    for t in ("dev_users", "eol_hosts", "eol_state", "eol_findings", "eol_mappings", "eol_releases", "eol_products"):
+    op.drop_index("ix_zc_hosts_ip", "zc_hosts")
+    for t in ("dev_state", "dev_users", "eol_hosts", "eol_state", "eol_findings", "eol_mappings", "eol_releases", "eol_products"):
         op.drop_table(t)

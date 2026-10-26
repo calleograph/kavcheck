@@ -20,6 +20,7 @@ from .zones.mailer import Mailer
 from .zones.reporter import ZoneData
 from .zones.zjobs import ZoneCache
 from .eol.service import EolService
+from .devices.service import DevicesService
 from .services.resources import RES
 
 log = logging.getLogger("app.worker")
@@ -44,6 +45,7 @@ async def main() -> None:
     mailer = Mailer(sm, settings, svc, ZoneData(sm, settings, svc, sources), journal)
     zcache = ZoneCache(sm, settings, svc, sources, journal)
     eol = EolService(sm, svc, sources, journal)
+    devices = DevicesService(sm, svc, sources, journal)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -52,14 +54,15 @@ async def main() -> None:
 
     def pulse() -> dict:
         return {"version": settings.app_version, "commit": settings.app_git_commit, "reports_running": len(runner._tasks),  # noqa: SLF001
-                "catalog_building": len(catalog._running), "vdb_running": len(vdb._running), "zonecache_job": zcache.current, "eol_job": eol.current, "resources": RES.snapshot()}  # noqa: SLF001
+                "catalog_building": len(catalog._running), "vdb_running": len(vdb._running), "zonecache_job": zcache.current, "eol_job": eol.current, "devices_job": devices.current, "resources": RES.snapshot()}  # noqa: SLF001
 
-    tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"), asyncio.create_task(mailer.loop(), name="mail"), asyncio.create_task(zcache.loop(), name="zonecache"), asyncio.create_task(eol.loop(), name="eol"),
+    tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"), asyncio.create_task(mailer.loop(), name="mail"), asyncio.create_task(zcache.loop(), name="zonecache"), asyncio.create_task(eol.loop(), name="eol"), asyncio.create_task(devices.loop(), name="devices"),
              asyncio.create_task(jh.flush_loop(sm), name="journal-flush"), asyncio.create_task(heartbeat_loop(sm, "worker", pulse), name="heartbeat")]
     log.info("Воркер отчётов и каталога запущен", extra={"version": settings.app_version})
     await stop.wait()
     zcache.stop()
     eol.stop()
+    devices.stop()
     for task in tasks:
         task.cancel()
     for task in tasks:

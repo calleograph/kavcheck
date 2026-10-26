@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CompactList } from "../components/CompactList";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type HostState, type ProblemKey, type ZoneDash, type ZoneHost, type ZoneHostCard, type ZoneVulnRow, type ZoneOverview, type TriageRow } from "../api";
 import { NoSource, type Ctx } from "../App";
@@ -80,15 +81,15 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
         <table className="table compact zones-table">
           <thead><tr><SortTh k="name" label="Зона" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">Ответственные</th><SortTh k="hosts" label="Всего" sort={sort} desc={desc} onSort={onSort} className="num" /><th className="num" title={`Связывались с KSC за ${data.activity_days} сут`}>Активных</th>
             <th className="num hide-sm" title="Флаг KSC «видимо в сети» сейчас">В сети</th><SortTh k="critical" label="Критич." sort={sort} desc={desc} onSort={onSort} className="num" /><th className="num hide-sm" title="Высокие и предупреждения, без критических">Др. уязв.</th><SortTh k="protection" label="Защита" sort={sort} desc={desc} onSort={onSort} className="num" />
-            <SortTh k="problems" label="Проблемных" sort={sort} desc={desc} onSort={onSort} className="num" /><th className="hide-sm">Состояние</th></tr></thead>
+            <SortTh k="problems" label="Проблемных" sort={sort} desc={desc} onSort={onSort} className="num" />{data.items.some((z) => z.eol) && <th className="num hide-sm" title="Устройства зоны, у которых закончилась поддержка программы или ОС (EOL). Отдельный тип проблем: в «Проблемных» и CVE не входит">EOL</th>}<th className="hide-sm">Состояние</th></tr></thead>
           <tbody>{data.items.map((z) => (
             <tr key={z.id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/zones/${z.id}`); }}>
               <td><Link to={`/zones/${z.id}`} className="strong-link">{z.name}</Link>{!z.enabled && <span className="badge outline"> выключена</span>}{z.conflicts > 0 && <span className="zone-chip warn" title="Есть спорные компьютеры"> {z.conflicts} спорных</span>}<span className="sub">{z.description || z.purpose}</span></td>
-              <td className="small hide-sm resp">{z.responsible.length ? <>{z.responsible[0].replace(/\s*\(.*\)$/, "")}{z.responsible.length > 1 ? ` +${z.responsible.length - 1}` : ""}<span className="sub" title={z.responsible.join(", ")}>{(z.responsible[0].match(/\((.*)\)$/) ?? [])[1] ?? ""}</span></> : z.id === "none" ? "—" : <span className="warn-text">не назначены</span>}</td>
+              <td className="small hide-sm resp">{z.responsible.length ? <CompactList items={z.responsible} label="ответственные" render={(r) => r.replace(/\s*\(.*\)$/, "")} /> : z.id === "none" ? "—" : <span className="warn-text">не назначены</span>}</td>
               <td className="num">{num(z.stats.total)}</td><td className="num">{num(z.stats.active)}</td><td className="num hide-sm">{num(z.stats.online)}</td>
               <td className="num">{z.stats.critical ? <b className="bad-text">{num(z.stats.critical)}</b> : <span className="muted">0</span>}</td>
               <td className="num hide-sm">{num(z.stats.other_vulns)}</td><td className="num">{z.stats.protection ? <b className="warn-text">{num(z.stats.protection)}</b> : <span className="muted">0</span>}</td>
-              <td className="num">{num(z.problem_hosts)}</td><td className="hide-sm"><StateBar state={z.stats.state} total={z.stats.active} /></td></tr>))}
+              <td className="num">{num(z.problem_hosts)}</td>{data.items.some((x) => x.eol) && <td className="num hide-sm">{z.eol?.hosts ? <Link to="/eol" className={z.eol.eol ? "bad-text" : "warn-text"} title={`устройств с EOL: ${z.eol.eol}; только расширенная поддержка: ${z.eol.extended}; скоро: ${z.eol.upcoming}`}><b>{num(z.eol.hosts)}</b></Link> : <span className="muted">0</span>}</td>}<td className="hide-sm"><StateBar state={z.stats.state} total={z.stats.active} /></td></tr>))}
           </tbody>
         </table>)}
     </div>
@@ -165,6 +166,11 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
         <button type="button" className={`meter meter-btn ${f.state === "protection" ? "on" : ""}`} aria-pressed={f.state === "protection"} onClick={() => pick("state", "protection")}><span className="l">С проблемами защиты</span><span className={`v ${st?.protection ? "warn-text" : ""}`}>{st ? num(st.protection) : "…"}</span><span className="t">всего с проблемой защиты</span></button>
         <button type="button" className={`meter meter-btn ${f.state === "ok" ? "on" : ""}`} aria-pressed={f.state === "ok"} onClick={() => pick("state", "ok")}><span className="l">Без проблем</span><span className="v ok-text">{st ? num(st.ok) : "…"}</span><span className="t">среди активных</span></button>
       </div>
+      {st?.eol && <div className="meters dense zone-eol">
+        <div className="meter"><span className="l">EOL: поддержка закончилась</span><span className={`v ${st.eol.eol ? "bad-text" : ""}`}>{num(st.eol.eol)}</span><span className="t">устройств; программ и ОС: {num(st.eol.items)} (ОС: {num(st.eol.os)})</span></div>
+        <div className="meter"><span className="l">Только расширенная поддержка</span><span className={`v ${st.eol.extended ? "warn-text" : ""}`}>{num(st.eol.extended)}</span><span className="t">устройств; платная или по договору</span></div>
+        <div className="meter"><span className="l">Поддержка скоро закончится</span><span className="v">{num(st.eol.upcoming)}</span><span className="t">устройств · <Link to="/eol">раздел EOL</Link></span></div>
+      </div>}
       {st && <Charts st={st} f={f} pick={pick} ext={ext} />}
       {st && ext && d?.ext_cap ? <p className="muted small mt-sm">Показатели потенциальных совпадений с внешними базами учитывают все совпадения; в списке компьютера сохранены до {d.ext_cap} самых опасных (сначала из каталога CISA KEV).</p> : null}
       {st && (st.excluded > 0 || st.accepted > 0 || st.review > 0) && <p className="muted small mt-sm">Решения специалистов: ложных и неактуальных обнаружений исключено <b>{num(st.excluded)}</b>, принятых рисков <b>{num(st.accepted)}</b> (учитываются отдельно), ждут проверки <b>{num(st.review)}</b>. Исходные сведения не удаляются.</p>}
@@ -204,7 +210,7 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
                   <td className="nowrap small">{h.ksc.total ? <><span className="sev-row"><span className={`sev crit ${h.ksc.critical ? "" : "zero"}`} title="Критические"><b>{h.ksc.critical}</b></span><span className={`sev high ${h.ksc.high ? "" : "zero"}`} title="Высокие"><b>{h.ksc.high}</b></span><span className={`sev warn ${h.ksc.warning ? "" : "zero"}`} title="Предупреждения"><b>{h.ksc.warning}</b></span></span></> : <span className="muted">нет</span>}
                     {h.ext.total > 0 && <span className="sub" title="Потенциальные совпадения по внешним базам — не подтверждены KSC">потенц.: {h.ext.total}{h.ext.kev ? `, KEV ${h.ext.kev}` : ""}</span>}
                     {(h.ksc.accepted + h.ksc.excluded + h.ext.accepted + h.ext.excluded) > 0 && <span className="sub">обработано: {h.ksc.excluded + h.ext.excluded} искл., {h.ksc.accepted + h.ext.accepted} риск</span>}</td>
-                  <td>{h.problems.length ? <span className="badges">{h.problems.slice(0, 3).map((p) => <span key={p.key} className={`badge ${PROBLEM_TONE[p.key as ProblemKey]}`}>{PROBLEM_SHORT[p.key as ProblemKey]}</span>)}{h.problems.length > 3 && <span className="badge outline">+{h.problems.length - 3}</span>}</span> : <span className="badge ok">в порядке</span>}</td>
+                  <td>{h.problems.length ? <span className="badges"><CompactList items={h.problems} sep=" " label="проблемы" render={(p) => <span className={`badge ${PROBLEM_TONE[p.key as ProblemKey]}`}>{PROBLEM_SHORT[p.key as ProblemKey]}</span>} /></span> : <span className="badge ok">в порядке</span>}</td>
                 </tr>)} />
               {!list.items.length && !list.loading && <tr><td colSpan={9}><Empty icon="checkCircle" title={filtered ? "Ничего не найдено" : "Компьютеров нет"}>{filtered ? "По выбранным условиям компьютеров нет. Сбросьте фильтры или выберите другой сегмент диаграммы." : zid === "none" ? "Все компьютеры отнесены к зонам." : "Ни один компьютер не подошёл признакам зоны или активных за период нет. Проверьте сети в настройках зоны."}</Empty></td></tr>}
             </tbody>

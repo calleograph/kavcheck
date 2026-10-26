@@ -7,7 +7,7 @@ from . import queries as q
 from .driver import ConnParams, KscError, Session
 
 FEATURE_TITLES = {"hosts": "Компьютеры и активность", "software": "Реестр установленного ПО", "protection": "Состояние защиты",
-                  "vulnerabilities": "Уязвимости (KSC)", "events": "События безопасности"}
+                  "vulnerabilities": "Уязвимости (KSC)", "events": "События безопасности", "users": "Пользователи устройств"}
 
 
 def diagnose(params: ConnParams) -> dict:

@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { CompactList } from "../components/CompactList";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type CatalogProductFull } from "../api";
 import { NoSource, type Ctx } from "../App";
@@ -77,8 +78,8 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
                 <tr key={`${v.version}|${v.scheme}`} className={`${on ? "sel" : ""} ${hover && (v.branch || "∅") === hover ? "hot" : ""}`}>
                   <td className="mono"><b>{v.version || "—"}</b>{v.raw[0] && v.raw[0] !== v.version && <span className="sub mono" title={v.raw.join(", ")}>{v.raw[0]}{v.raw.length > 1 ? ` и ещё ${v.raw.length - 1}` : ""}</span>}</td>
                   <td className="mono">{v.branch || <span className="muted">—</span>}</td>
-                  <td className="small">{v.platform.join(", ")}</td>
-                  <td className="small">{v.names.slice(0, 2).join("; ")}{v.names.length > 2 ? "…" : ""}</td>
+                  <td className="small"><CompactList items={v.platform} label="платформы" /></td>
+                  <td className="small"><CompactList items={v.names} sep="; " label="названия записей" /></td>
                   <td className="num">{num(v.hosts)}</td>
                   <td className="actions">
                     <button className={`btn mini ${on ? "primary" : "ghost row-act"}`} onClick={() => setSel(on ? null : { version: v.version })} aria-pressed={on}><Icon name="monitor" size={15} />Компьютеры</button>

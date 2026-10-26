@@ -24,8 +24,8 @@ from ..ksc import vulns as V
 from ..ksc.driver import KscError, SourceClient
 from ..search import any_field, matcher
 
-QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns")
-KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам"}
+QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol")
+KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
 ONLINE_RU = {True: "в сети", False: "не в сети", None: "нет данных"}
@@ -45,6 +45,7 @@ class Ctx:
     source_id: object | None = None
     zone_name: str = ""
     zone_hosts: set | None = None                      # компьютеры выбранной зоны (фильтр «Зона ответственности»); None — без отбора
+    source_ids: list | None = None                     # источники отчёта, не привязанного к одному (EOL); None — только source_id
     org: dict = field(default_factory=dict)            # данные организации для шапки и подвала (настройки «Организация и оформление отчётов»)
 
 
@@ -499,6 +500,10 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
         from .quick_ext import build_extvulns  # noqa: PLC0415 — отложенный импорт: модуль использует помощники этого файла
 
         BUILDERS[kind] = build_extvulns
+    if kind == "quick_eol" and kind not in BUILDERS:
+        from .quick_eol import build_eol  # noqa: PLC0415
+
+        BUILDERS[kind] = build_eol
     if kind not in BUILDERS:
         raise KscError("kind", f"Неизвестный вид быстрого отчёта: {kind}")
     doc = await BUILDERS[kind](client, params, ctx)
