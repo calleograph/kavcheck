@@ -80,8 +80,10 @@ INSERT INTO dbo.v_akpub_host (nId, strName, wstrDisplayName, wstrDnsName, wstrDn
 SELECT i + 100, 'g-' + CAST(i AS varchar(10)),
   CASE WHEN i % 7 = 0 THEN N'srv-' + RIGHT('00000' + CAST(i AS varchar(10)), 5) + N'.example.local' ELSE N'ws-' + RIGHT('00000' + CAST(i AS varchar(10)), 5) END,
   CASE WHEN i % 7 = 0 THEN N'srv-' ELSE N'ws-' END + RIGHT('00000' + CAST(i AS varchar(10)), 5), N'example.local', CAST(3323068416 AS bigint) + i,
-  CASE WHEN i % 7 = 0 THEN CASE WHEN i % 3 = 0 THEN N'Linux' ELSE N'Ubuntu 24.04 LTS' END WHEN i % 11 = 0 THEN N'Microsoft Windows 10 Pro' ELSE N'Microsoft Windows 11 Pro' END,
-  CASE WHEN i % 7 = 0 THEN 6 ELSE 2 END, CASE WHEN i % 7 = 0 THEN 6 ELSE 10 END, CASE WHEN i % 7 = 0 THEN 8 ELSE 0 END, CASE WHEN i % 7 = 0 THEN 0 ELSE 22631 END,
+  CASE WHEN i % 7 = 0 THEN CASE WHEN i % 3 = 0 THEN N'Linux' WHEN i % 5 = 0 THEN N'Ubuntu 20.04.6 LTS' WHEN i % 2 = 0 THEN N'Ubuntu 22.04 LTS' ELSE N'Ubuntu 24.04 LTS' END
+       WHEN i % 13 = 0 THEN N'Microsoft Windows Server 2012 R2 Standard' WHEN i % 11 = 0 THEN N'Microsoft Windows 10 Pro' WHEN i % 19 = 0 THEN N'Microsoft Windows 7 Professional' ELSE N'Microsoft Windows 11 Pro' END,
+  CASE WHEN i % 7 = 0 THEN 6 ELSE 2 END, CASE WHEN i % 7 = 0 THEN 6 WHEN i % 13 = 0 OR i % 19 = 0 THEN 6 ELSE 10 END, CASE WHEN i % 7 = 0 THEN 8 WHEN i % 13 = 0 THEN 3 WHEN i % 19 = 0 THEN 1 ELSE 0 END,
+  CASE WHEN i % 7 = 0 THEN 0 WHEN i % 13 = 0 THEN 9600 WHEN i % 11 = 0 THEN 19045 WHEN i % 19 = 0 THEN 7601 ELSE 22631 END,
   CASE WHEN i % 7 = 0 THEN 10 + i % 2 WHEN i % 5 = 0 THEN 13 WHEN i % 5 = 1 THEN 14 WHEN i % 5 = 2 THEN 15 ELSE 12 END,
   CASE WHEN i % 20 < 14 THEN DATEADD(minute, -(i % 1440), GETUTCDATE()) WHEN i % 20 < 17 THEN DATEADD(day, -(1 + i % 29), GETUTCDATE()) WHEN i % 20 < 19 THEN DATEADD(day, -(31 + i % 300), GETUTCDATE()) ELSE NULL END,
   DATEADD(minute, -(i % 1440), GETUTCDATE()), DATEADD(minute, -(i % 1440), GETUTCDATE()), DATEADD(hour, -(i % 200), GETUTCDATE()), DATEADD(day, -(i % 60), GETUTCDATE()),
@@ -180,6 +182,19 @@ SELECT i, 101 + (i * 7919) % {H}, DATEADD(minute, -(i % 129600), GETUTCDATE()), 
   CASE WHEN i % 100 BETWEEN 85 AND 89 THEN N'EXAMPLE\\user' + CAST(i % 300 AS nvarchar(10)) ELSE NULL END,
   CASE WHEN i % 100 BETWEEN 85 AND 89 THEN CASE i % 4 WHEN 0 THEN N'60' WHEN 1 THEN N'61' WHEN 2 THEN N'65' ELSE N'62' END ELSE NULL END
 FROM n;""")
+    # пользователи: 5000 доменных учётных записей и несколько системных; у каждого компьютера — запись в истории, у части — вошедший сейчас, у части — ещё один пользователь, у 3 % запись без сопоставленной учётной записи
+    out.append(""";WITH n AS (SELECT TOP (5000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
+INSERT INTO dbo.ak_users (nId, binId, wstrDisplayName, wstrUserPrincipalName, wstrSamAccountName, nHostId, nDomain)
+SELECT i, CAST(i AS varbinary(16)), N'Сотрудник ' + CAST(i AS nvarchar(10)), N'user' + CAST(i AS nvarchar(10)) + N'@example.local', N'user' + CAST(i AS nvarchar(10)), NULL, 1 FROM n;
+INSERT INTO dbo.ak_users (nId, binId, wstrDisplayName, wstrUserPrincipalName, wstrSamAccountName, nHostId, nDomain) VALUES
+ (5001, 0x5001, N'', N'', N'SYSTEM', NULL, NULL), (5002, 0x5002, N'', N'', N'DWM-1', NULL, NULL), (5003, 0x5003, N'', N'svc_backup@example.local', N'svc_backup', NULL, 1), (5004, 0x5004, N'', N'', N'root', NULL, NULL);
+INSERT INTO dbo.hst_user_visited (nHost, nUser, bActual, binId, binSidHash)
+SELECT h.nId, 1 + (h.nId * 13) % 5000, CASE WHEN h.nId % 14 < 1 THEN 1 ELSE 0 END, CAST(1 + (h.nId * 13) % 5000 AS varbinary(16)), CAST(1 + (h.nId * 13) % 5000 AS varbinary(16)) FROM dbo.v_akpub_host h WHERE h.nId % 33 <> 0
+UNION ALL SELECT h.nId, 1 + (h.nId * 29) % 5000, CASE WHEN h.nId % 14 < 6 THEN 1 ELSE 0 END, CAST(1 + (h.nId * 29) % 5000 AS varbinary(16)), CAST(1 + (h.nId * 29) % 5000 AS varbinary(16)) FROM dbo.v_akpub_host h WHERE h.nId % 5 = 0
+UNION ALL SELECT h.nId, NULL, 0, NULL, CAST(h.nId AS varbinary(16)) FROM dbo.v_akpub_host h WHERE h.nId % 33 = 0
+UNION ALL SELECT h.nId, CASE WHEN h.nPlatformType = 6 THEN 5004 ELSE 5001 END, 1, NULL, 0x01 FROM dbo.v_akpub_host h WHERE h.nId % 3 = 0
+UNION ALL SELECT h.nId, 5002, 1, NULL, 0x02 FROM dbo.v_akpub_host h WHERE h.nPlatformType = 2 AND h.nId % 4 = 0
+UNION ALL SELECT h.nId, 5003, 1, NULL, 0x03 FROM dbo.v_akpub_host h WHERE h.nId % 50 = 0;""")
     out.append("DROP TABLE #prod; DROP TABLE #fam; DROP TABLE #vp; DROP TABLE #famvp;")
     print("\nGO\n".join(out) + "\nGO")
 

@@ -171,7 +171,9 @@ async def hosts_page(db: AsyncSession, zid: str, sids: list[uuid.UUID] | None, *
     if online:
         cond.append(H.online.is_(online == "yes"))
     if msearch.clean(q):
-        c = msearch.column_like(H.search, q) if msearch.is_mask(q) else H.search.like(msearch.local_like(q), escape="\\")
+        from ..devices.read import search_condition  # noqa: PLC0415 — единый поиск: имя, адрес (CIDR, диапазон, маска), логин; несколько значений
+
+        c = search_condition(q, sids or [])
         if c is not None:
             cond.append(c)
     one_filter = bool(msearch.clean(cve)) != bool(msearch.clean(product))

@@ -1,5 +1,6 @@
 import { ZoneSelect, HostZones } from "../components/ZoneBits";
 import { CompactList } from "../components/CompactList";
+import { EolList } from "../components/EolList";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type HostVuln, type QuickKind, type SavedCheck, type VulnDescr, type VulnHost, type VulnProduct, type VulnSummary } from "../api";
@@ -23,13 +24,24 @@ const SEV_OPTS: [Sev, string][] = [["", "Все"], ["critical", "Критиче�
 export default function VulnsPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
   const tab = (["list", "hosts", "products", "checks"].includes(sp.get("tab") ?? "") ? sp.get("tab") : "list") as Tab;
+  const [type, setType] = useKept<"all" | "cve" | "eol">("vulns.type", "all");
+  const [eol, setEol] = useState<Awaited<ReturnType<typeof api.eol.summary>> | null>(null);
+  useEffect(() => { if (ctx.current) api.eol.summary().then(setEol).catch(() => setEol(null)); }, [ctx.current?.id]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
+  const eolOn = !!eol?.base.include_in_analytics;                 // EOL включён в аналитику — отдельный тип записей рядом с CVE, без двойного подсчёта
+  const eolN = eol ? eol.findings.eol + eol.findings.extended + eol.findings.upcoming : 0;
+  const kind: "all" | "cve" | "eol" = eolOn ? type : "cve";
   return (
     <section>
       <PageHead title="Уязвимости" lede="Уязвимости программ, найденные Kaspersky Security Center: какие компьютеры и программы требуют внимания в первую очередь. Проверки версий — ваши собственные условия — показаны отдельно." />
+      {eolOn && <div className="toolbar"><Segmented<"all" | "cve" | "eol"> label="Тип записей" value={type} onChange={setType} options={[["all", "Все"], ["cve", "CVE"], ["eol", `EOL${eolN ? ` · ${eolN}` : ""}`]]} />
+        <span className="muted small">EOL — окончание поддержки программы или ОС; это отдельный тип проблем, он не входит в число CVE.</span></div>}
+      {kind !== "cve" && <div className="vdb-eol"><h3 className="h3">EOL: программы и ОС без поддержки производителя{eol ? ` (${eolN})` : ""}</h3><EolList limit={kind === "eol" ? 100 : 5} /></div>}
+      {kind !== "eol" && <>
       <Tabs label="Вид" value={tab} onChange={(t) => setSp((p) => { p.set("tab", t); return p; })}
         items={[{ id: "list", label: "Уязвимости" }, { id: "products", label: "Уязвимые программы" }, { id: "hosts", label: "Компьютеры" }, { id: "checks", label: "Проверки версий" }]} />
       {tab === "list" ? <ListView ctx={ctx} /> : tab === "hosts" ? <HostsView ctx={ctx} /> : tab === "products" ? <ProductsView ctx={ctx} /> : <ChecksView ctx={ctx} />}
+      </>}
     </section>
   );
 }

@@ -331,9 +331,15 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
         await db.execute(delete(EolFinding).where(EolFinding.source_id == src.id))
         db.add_all(out)
         await db.flush()
-        rows = [{"source_id": src.id, "kind": k[0], "subject": k[1], "version": k[2], "host_id": h} for k, hs in links.items() for h in hs]
-        for i in range(0, len(rows), 5000):
-            await db.execute(insert(EolHost), rows[i:i + 5000])
+        batch: list[dict] = []                                  # строки устройств пишутся порциями: общий список связей в памяти не строится
+        for k, hs in links.items():
+            for h in hs:
+                batch.append({"source_id": src.id, "kind": k[0], "subject": k[1], "version": k[2], "host_id": h})
+                if len(batch) >= 5000:
+                    await db.execute(insert(EolHost), batch)
+                    batch = []
+        if batch:
+            await db.execute(insert(EolHost), batch)
         st = await db.get(EolState, src.id)
         if st is None:
             st = EolState(source_id=src.id)
