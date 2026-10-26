@@ -49,7 +49,7 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
       {(extra?.not_ready?.length ?? 0) > 0 && <div className="alert info"><Icon name="info" /><div className="alert-body">Данные зон ещё не рассчитаны для: {extra!.not_ready!.join(", ")}. Устройства появятся после первого расчёта (Администрирование → Расчёт данных зон).</div></div>}
       {bad.map((s) => <div key={s.source_id} className="alert warn"><Icon name="alert" /><div className="alert-body">Источник «{s.source}»: {!s.supported ? "в базе KSC нет таблиц пользователей — столбцы пользователей пусты." : `опрос пользователей не удался (${s.error}). Показаны данные последнего успешного опроса${s.polled_at ? ` от ${fmt(s.polled_at)}` : ""}.`}</div></div>)}
       <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Поиск устройств" placeholder="Имя, логин или IP: srv-*, ivanov, 10.20.0.0/16, 10.1.2.5-40, 10.1.*  (несколько значений через пробел)" /></div>
+        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Поиск устройств" placeholder="Имя, логин или IP: srv-*, ivanov, 192.0.2.0/24, 10.1.2.5-40, 10.1.*  (несколько значений через пробел)" /></div>
         <Segmented<string> label="EOL" value={eol} onChange={setEol} options={[["", "Все"], ["any", "С проблемами поддержки"], ["eol", "С EOL"], ["none", "Без проблем"]]} />
         <details className="disclosure toolbar-more"><summary>Дополнительно</summary>
           <div className="toolbar-fields">

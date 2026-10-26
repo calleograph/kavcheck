@@ -48,3 +48,10 @@ gu-st.ru
 nuc-cdp.digital.gov.ru
 digital.gov.ru
 voskhod.ru
+# база endoflife.date (срез в тестах): публичные сайты производителей, идентификаторы и номера версий, похожие на адреса
+dev.mysql.com
+java.sun.com
+container-registry.oracle.com
+microsoft.netcore.app
+ip:26\.0\.2\.1
+ip:18\.0\.2\.1
