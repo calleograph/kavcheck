@@ -56,6 +56,16 @@ IP в SQL: `CAST((nIp / 16777216) % 256 AS varchar) + '.' + CAST((nIp / 65536) %
 
 `v_akpub_adm_group`: `nId`, `wstrName`, `nParentId`, `nVServer`. `nId = 0` — «Управляемые устройства» (его родитель скрыт), `nId = 1` — «Нераспределённые устройства». Полный путь собирается в коде по `nParentId` (KAV Checker: `hosts.group_path`). Устройства группы со всеми подгруппами — `grp_subgroups2` (пары «предок — потомок»).
 
+## Пользователи устройств
+
+| Объект | Что хранит |
+|---|---|
+| `hst_user_visited` (`nId`, `nHost`, `nUser`, `bActual`, `binId`, `binSidHash`, `binDomainSamHash`) | пользователи устройства: `bActual = 1` — в текущем списке вошедших, `bActual = 0` — входившие ранее. **Дат нет.** `nUser` может быть `NULL` (учётная запись не сопоставлена, остаётся только хэш SID) |
+| `v_akpub_hst_loggedin_users` | представление: `hst_user_visited` где `bActual <> 0 AND nUser IS NOT NULL` |
+| `ak_users` (`nId`, `binId`, `wstrSamAccountName`, `wstrUserPrincipalName`, `wstrDisplayName`, `nHostId`, `nDomain`) | учётные записи: доменные (`nDomain` задан) и локальные устройства (`nHostId` задан) |
+
+Запрос KAV Checker (`USERS_VISITED`): `hst_user_visited v LEFT JOIN ak_users u ON u.nId = v.nUser`, порциями по `v.nId`. Что из этого следует и чего в KSC нет («последний пользователь», время входа) — [docs/DEVICES.md](../DEVICES.md). На выборке настоящей базы KSC 15.1 в текущем списке было около 7 % записей, у ~28 % записей `nUser` пуст. Объекты, которых нет в базе (старые версии KSC, ограниченные права), — функция «Пользователи устройств» отключается без ошибок (`FEATURE_OBJECTS["users"]`).
+
 ## Несколько Серверов администрирования
 
 На одном SQL Server могут быть несколько баз KSC с одинаковой структурой — по базе на Сервер администрирования. KAV Checker подключает каждую отдельным источником.

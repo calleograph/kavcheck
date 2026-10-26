@@ -85,13 +85,13 @@ async def list_devices(db: AsyncSession, sids: list[uuid.UUID], src_names: dict,
     page = select(u).order_by((u.c.k.desc() if desc else u.c.k.asc()).nulls_last(), u.c.host_id).offset(offset).limit(limit)
     rows = (await db.execute(page)).all()
     users: dict[tuple, list[DeviceUser]] = {}
-    stat: dict[tuple, tuple[int, int]] = {}
+    stat: dict[tuple, tuple[int, int, int]] = {}
     for sid in {r.source_id for r in rows}:
         ids = [r.host_id for r in rows if r.source_id == sid]
         for u in (await db.execute(select(DeviceUser).where(DeviceUser.source_id == sid, DeviceUser.host_id.in_(ids), *users_vis).order_by(DeviceUser.last_session_at.desc().nulls_last(), DeviceUser.login))).scalars():
             users.setdefault((sid, u.host_id), []).append(u)
-        for r in (await db.execute(select(S.host_id, S.n, S.w).where(S.source_id == sid, S.host_id.in_(ids)))).all():
-            stat[(sid, r.host_id)] = (int(r.n), int(r.w))
+        for r in (await db.execute(select(S.host_id, S.n, S.n_crit, S.w).where(S.source_id == sid, S.host_id.in_(ids)))).all():
+            stat[(sid, r.host_id)] = (int(r.n), int(r.n_crit), int(r.w))
     items = []
     for r in rows:
         us = users.get((r.source_id, r.host_id), [])
@@ -99,9 +99,9 @@ async def list_devices(db: AsyncSession, sids: list[uuid.UUID], src_names: dict,
         cur = [u for u in us if u.session_now]                       # список уже без служебных записей, если они скрыты
         last = next((u for u in us if u.last_session_at and u.kind == "user"), None)
         week = [u for u in us if u.kind == "user" and seen_week_py(u, cut)]
-        n, w = stat.get((r.source_id, r.host_id), (0, 0))
+        n, nc, w = stat.get((r.source_id, r.host_id), (0, 0, 0))
         items.append({"source_id": str(r.source_id), "source": src_names.get(r.source_id, ""), "host_id": int(r.host_id), "name": r.name, "ip": d.get("ip", ""), "os": r.os or "", "group": d.get("group", ""),
-                      "zones": d.get("zones") or [], "last_connected": r.last_connected, "active": r.active, "online": r.online, "eol": n, "eol_level": {3: "eol", 2: "extended", 1: "upcoming"}.get(w, ""),
+                      "zones": d.get("zones") or [], "last_connected": r.last_connected, "active": r.active, "online": r.online, "eol": n, "eol_crit": nc, "eol_level": {3: "eol", 2: "extended", 1: "upcoming"}.get(w, ""),
                       "current": [user_out(u) for u in cur], "last_user": user_out(last) if last else None, "week": [user_out(u) for u in week], "week_n": len(week),
                       "history": [user_out(u) for u in us if u not in cur][:50]})
     return {"total": total, "items": items}

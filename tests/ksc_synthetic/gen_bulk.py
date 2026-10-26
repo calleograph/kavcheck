@@ -67,6 +67,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--hosts", type=int, default=20000)
     ap.add_argument("--db", default="KAVBIG")
+    ap.add_argument("--lean", action="store_true", help="только компьютеры, реестр ПО и пользователи (без уязвимостей, защиты и событий): для проверки EOL, устройств и поиска на сотнях тысяч компьютеров")
     a = ap.parse_args()
     H = a.hosts
     out: list[str] = [f"USE {a.db};", "SET NOCOUNT ON;"]
@@ -124,64 +125,65 @@ JOIN #prod p ON p.fid = f.fid AND p.vidx = CASE WHEN (h.nId + f.fid * 13) % 10 <
     out.append(""";WITH a AS (SELECT p.nId, ROW_NUMBER() OVER (ORDER BY p.nId) AS r FROM dbo.hst_inventory_products p WHERE p.nId >= 50000)
 INSERT INTO dbo.hst_inventory_hstprds (nHostId, nProduct, tmInstallDate, bDeleted)
 SELECT h.nId, a.nId, DATEADD(day, -((h.nId + a.nId) % 300), GETUTCDATE()), 0 FROM dbo.v_akpub_host h JOIN a ON (h.nId * 13 + a.r * 7) % 100 < 4 WHERE h.nPlatformType = 2;""")
-    # уязвимости: на каждую не новейшую версию уязвимого семейства — vidx * VAPM_VERSIONS_VULNS описаний
-    vapm = sorted({f[5] for f in FAMILIES if f[5]})
-    out.append("CREATE TABLE #vp (vp_id bigint, name nvarchar(256));")
-    out.append("INSERT INTO #vp VALUES " + ", ".join(f"({7000 + i}, {q(n)})" for i, n in enumerate(vapm, 1)) + ";")
-    out.append("INSERT INTO dbo.v_vapm_product SELECT vp_id, name FROM #vp;")
-    out.append("CREATE TABLE #famvp (fid int, vp_id bigint);")
-    out.append("INSERT INTO #famvp VALUES " + ", ".join(f"({fid}, {7000 + vapm.index(f[5]) + 1})" for fid, f in enumerate(FAMILIES, 1) if f[5]) + ";")
-    out.append("""INSERT INTO dbo.vapm_product_exact_version (nId, nProductId, strProductDisplVersion) SELECT p.nId + 100000, fv.vp_id, p.ver FROM #prod p JOIN #famvp fv ON fv.fid = p.fid WHERE p.vidx > 0;""")
-    out.append(f""";WITH n AS (SELECT TOP (3000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
-INSERT INTO dbo.vapm_vulnerability_descr (nId, wstrPrimaryName, nKlSeverity, wstrDescriptionURL, bIgnore)
-SELECT 100000 + i, N'KLA' + CAST(20000 + i AS nvarchar(10)), CASE WHEN i % 10 < 3 THEN 4 WHEN i % 10 < 7 THEN 2 ELSE 1 END,
-  N'https://threats.kaspersky.com/en/vulnerability/KLA' + CAST(20000 + i AS nvarchar(10)), 0 FROM n;
-;WITH n AS (SELECT TOP (3000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
-INSERT INTO dbo.vapm_vulnerability_names (nVulnerabilityDescrId, nSense, wstrName)
-SELECT 100000 + i, 3, N'CVE-2024-' + CAST(10000 + i AS nvarchar(10)) FROM n UNION ALL SELECT 100000 + i, 3, N'CVE-2023-' + CAST(30000 + i AS nvarchar(10)) FROM n WHERE i % 4 = 0
-UNION ALL SELECT 100000 + i, 6, CAST(5030000 + i AS nvarchar(10)) FROM n WHERE i % 5 = 0;
-;WITH n AS (SELECT TOP (60) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS k FROM sys.all_objects)
-INSERT INTO dbo.vapm_product_vulnerability (nId, nVulnerabilityDescrId, nProductExactVersionId, bIgnore)
-SELECT ROW_NUMBER() OVER (ORDER BY p.nId, n.k) + 200000, 100000 + 1 + (p.nId * 37 + n.k * 101) % 3000, p.nId + 100000, 0
-FROM #prod p JOIN #famvp fv ON fv.fid = p.fid JOIN n ON n.k <= p.vidx * {VAPM_VERSIONS_VULNS};
-INSERT INTO dbo.vapm_vulnerability_occurence (nId, nHostId, nProductVulnerabilityId, nVulnerabilityDescrId, strSoftwareInventoryProductId, tmDetectTime, tmDisappearanceTime, bIgnore, bPatchesAvailable)
-SELECT ROW_NUMBER() OVER (ORDER BY i.nId, pv.nId) + 300000, i.nHostId, pv.nId, NULL, p.strID, DATEADD(day, -((i.nHostId + pv.nId) % 200), GETUTCDATE()),
-  CASE WHEN (i.nHostId + pv.nId) % 23 = 0 THEN GETUTCDATE() ELSE NULL END, 0, CASE WHEN pv.nId % 3 = 0 THEN 1 ELSE 0 END
-FROM dbo.hst_inventory_hstprds i JOIN #prod p ON p.nId = i.nProduct JOIN dbo.vapm_product_vulnerability pv ON pv.nProductExactVersionId = p.nId + 100000 WHERE i.bDeleted = 0;""")
-    # состояние защиты: Агент на всех, защитный продукт — кроме каждого 43-го; базы устарели у части; продукт остановлен у части
-    out.append("""INSERT INTO dbo.v_akpub_hst_prdstate (nHost, wstrProductNameId, wstrProductVersionId, wstrProductDisplayName, wstrProductBuildNumber, nState, tmAvbasesDate, bAvProduct, bHasRtp)
-SELECT h.nId, '1103', '1.0.0.0', N'Kaspersky Security Center Network Agent', CASE WHEN h.nId % 9 = 0 THEN '14.0.0.10902' WHEN h.nId % 4 = 0 THEN '14.2.0.26967' ELSE '15.1.0.20748' END, 3, NULL, 0, 0
-FROM dbo.v_akpub_host h;
-INSERT INTO dbo.v_akpub_hst_prdstate (nHost, wstrProductNameId, wstrProductVersionId, wstrProductDisplayName, wstrProductBuildNumber, nState, tmAvbasesDate, bAvProduct, bHasRtp)
-SELECT h.nId, CASE WHEN h.nPlatformType = 6 THEN 'kesl' ELSE 'KES' END, CASE WHEN h.nPlatformType = 6 THEN '12.0.0.0' ELSE '11.0.0.0' END,
-  CASE WHEN h.nPlatformType = 6 THEN N'Kaspersky Endpoint Security for Linux' ELSE N'Kaspersky Endpoint Security for Windows' END,
-  CASE WHEN h.nPlatformType = 6 THEN CASE WHEN h.nId % 5 = 0 THEN '11.4.0.1096' ELSE '12.1.0.1297' END ELSE CASE WHEN h.nId % 6 = 0 THEN '11.11.0.452' WHEN h.nId % 3 = 0 THEN '12.4.0.467' ELSE '12.6.0.438' END END,
-  CASE WHEN h.nId % 37 = 0 THEN 0 ELSE 3 END, DATEADD(hour, -CASE WHEN h.nId % 13 = 0 THEN 24 * (8 + h.nId % 40) ELSE h.nId % 30 END, GETUTCDATE()), 1, 1
-FROM dbo.v_akpub_host h WHERE h.nId % 43 <> 0;
-INSERT INTO dbo.v_akpub_host_status (nId, nStatus, nStatusMask)
-SELECT h.nId, CASE WHEN h.nId % 43 = 0 OR h.nId % 37 = 0 THEN 1 WHEN h.nId % 13 = 0 OR h.nId % 17 = 0 THEN 2 ELSE 0 END,
-  (CASE WHEN h.nId % 43 = 0 THEN 32 ELSE 0 END) | (CASE WHEN h.nId % 37 = 0 THEN 4 ELSE 0 END) | (CASE WHEN h.nId % 13 = 0 THEN 128 ELSE 0 END) | (CASE WHEN h.nId % 17 = 0 THEN 64 ELSE 0 END)
-  | (CASE WHEN h.nId % 41 = 0 THEN 2 ELSE 0 END) | (CASE WHEN h.nId % 29 = 0 THEN 2048 ELSE 0 END) | (CASE WHEN h.nId % 59 = 0 THEN 512 ELSE 0 END)
-FROM dbo.v_akpub_host h;""")
-    # события за 90 суток: служебные, обнаружения, лечение, атаки
-    out.append(f""";WITH n AS (SELECT TOP ({H * 15}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN (SELECT TOP 20 1 AS x FROM sys.all_objects) c)
-INSERT INTO dbo.v_akpub_ev_event (nId, nHostId, tmRiseTime, tmRegistrationTime, strEventType, wstrEventTypeDisplayName, nSeverity, wstrProductNameId, wstrDescription, wstrPar1, wstrPar2, wstrPar3, wstrPar4, wstrPar5, wstrPar7, wstrPar8)
-SELECT i, 101 + (i * 7919) % {H}, DATEADD(minute, -(i % 129600), GETUTCDATE()), DATEADD(minute, -(i % 129600), GETUTCDATE()),
-  CASE WHEN i % 100 < 85 THEN 'KLEVP_GroupTaskSyncState' WHEN i % 100 < 90 THEN 'GNRL_EV_VIRUS_FOUND' WHEN i % 100 < 93 THEN 'GNRL_EV_OBJECT_DELETED' WHEN i % 100 < 94 THEN 'GNRL_EV_OBJECT_NOTCURED'
-       WHEN i % 100 < 95 THEN 'GNRL_EV_ATTACK_DETECTED' WHEN i % 100 < 97 THEN 'GNRL_EV_SUSPICIOUS_OBJECT_FOUND' ELSE 'KLSRV_HOST_STATUS_WARNING' END,
-  CASE WHEN i % 100 < 85 THEN N'Синхронизация задачи' WHEN i % 100 < 90 THEN N'Обнаружен вредоносный объект' WHEN i % 100 < 93 THEN N'Объект удалён' WHEN i % 100 < 94 THEN N'Объект не вылечен'
-       WHEN i % 100 < 95 THEN N'Обнаружена сетевая атака' WHEN i % 100 < 97 THEN N'Обнаружен подозрительный объект' ELSE N'Статус устройства изменён на «Предупреждение»' END,
-  CASE WHEN i % 100 < 85 THEN 1 WHEN i % 100 < 90 THEN 4 WHEN i % 100 < 93 THEN 2 WHEN i % 100 < 94 THEN 3 WHEN i % 100 < 95 THEN 4 WHEN i % 100 < 97 THEN 3 ELSE 2 END,
-  CASE WHEN i % 100 < 85 THEN N'1103' ELSE N'KES' END, N'Синтетическое событие',
-  CASE WHEN i % 100 = 94 THEN CASE WHEN i % 3 = 0 THEN N'Scan.Generic.PortScan.TCP' ELSE N'Intrusion.Win.MS17-010.o' END ELSE NULL END,
-  CASE WHEN i % 100 BETWEEN 85 AND 93 OR i % 100 IN (95, 96) THEN N'C:\\Users\\user\\Downloads\\file' + CAST(i % 500 AS nvarchar(10)) + N'.exe' WHEN i % 100 = 94 THEN N'TCP' ELSE NULL END,
-  CASE WHEN i % 100 = 94 THEN CAST(CAST(3325256704 AS bigint) + i % 250 AS nvarchar(20)) ELSE NULL END,
-  CASE WHEN i % 100 = 94 THEN N'445' ELSE NULL END,
-  CASE WHEN i % 100 BETWEEN 85 AND 89 OR i % 100 IN (93, 95, 96) THEN CASE i % 6 WHEN 0 THEN N'HEUR:Trojan.Win32.Generic' WHEN 1 THEN N'EICAR-Test-File' WHEN 2 THEN N'not-a-virus:RiskTool.Win32.Example'
-       WHEN 3 THEN N'Trojan-Downloader.Win32.Agent.gen' WHEN 4 THEN N'HEUR:Exploit.MSOffice.Generic' ELSE N'PDM:Trojan.Win32.Generic' END ELSE NULL END,
-  CASE WHEN i % 100 BETWEEN 85 AND 89 THEN N'EXAMPLE\\user' + CAST(i % 300 AS nvarchar(10)) ELSE NULL END,
-  CASE WHEN i % 100 BETWEEN 85 AND 89 THEN CASE i % 4 WHEN 0 THEN N'60' WHEN 1 THEN N'61' WHEN 2 THEN N'65' ELSE N'62' END ELSE NULL END
-FROM n;""")
+    if not a.lean:
+        # уязвимости: на каждую не новейшую версию уязвимого семейства — vidx * VAPM_VERSIONS_VULNS описаний
+        vapm = sorted({f[5] for f in FAMILIES if f[5]})
+        out.append("CREATE TABLE #vp (vp_id bigint, name nvarchar(256));")
+        out.append("INSERT INTO #vp VALUES " + ", ".join(f"({7000 + i}, {q(n)})" for i, n in enumerate(vapm, 1)) + ";")
+        out.append("INSERT INTO dbo.v_vapm_product SELECT vp_id, name FROM #vp;")
+        out.append("CREATE TABLE #famvp (fid int, vp_id bigint);")
+        out.append("INSERT INTO #famvp VALUES " + ", ".join(f"({fid}, {7000 + vapm.index(f[5]) + 1})" for fid, f in enumerate(FAMILIES, 1) if f[5]) + ";")
+        out.append("""INSERT INTO dbo.vapm_product_exact_version (nId, nProductId, strProductDisplVersion) SELECT p.nId + 100000, fv.vp_id, p.ver FROM #prod p JOIN #famvp fv ON fv.fid = p.fid WHERE p.vidx > 0;""")
+        out.append(f""";WITH n AS (SELECT TOP (3000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
+    INSERT INTO dbo.vapm_vulnerability_descr (nId, wstrPrimaryName, nKlSeverity, wstrDescriptionURL, bIgnore)
+    SELECT 100000 + i, N'KLA' + CAST(20000 + i AS nvarchar(10)), CASE WHEN i % 10 < 3 THEN 4 WHEN i % 10 < 7 THEN 2 ELSE 1 END,
+      N'https://threats.kaspersky.com/en/vulnerability/KLA' + CAST(20000 + i AS nvarchar(10)), 0 FROM n;
+    ;WITH n AS (SELECT TOP (3000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
+    INSERT INTO dbo.vapm_vulnerability_names (nVulnerabilityDescrId, nSense, wstrName)
+    SELECT 100000 + i, 3, N'CVE-2024-' + CAST(10000 + i AS nvarchar(10)) FROM n UNION ALL SELECT 100000 + i, 3, N'CVE-2023-' + CAST(30000 + i AS nvarchar(10)) FROM n WHERE i % 4 = 0
+    UNION ALL SELECT 100000 + i, 6, CAST(5030000 + i AS nvarchar(10)) FROM n WHERE i % 5 = 0;
+    ;WITH n AS (SELECT TOP (60) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS k FROM sys.all_objects)
+    INSERT INTO dbo.vapm_product_vulnerability (nId, nVulnerabilityDescrId, nProductExactVersionId, bIgnore)
+    SELECT ROW_NUMBER() OVER (ORDER BY p.nId, n.k) + 200000, 100000 + 1 + (p.nId * 37 + n.k * 101) % 3000, p.nId + 100000, 0
+    FROM #prod p JOIN #famvp fv ON fv.fid = p.fid JOIN n ON n.k <= p.vidx * {VAPM_VERSIONS_VULNS};
+    INSERT INTO dbo.vapm_vulnerability_occurence (nId, nHostId, nProductVulnerabilityId, nVulnerabilityDescrId, strSoftwareInventoryProductId, tmDetectTime, tmDisappearanceTime, bIgnore, bPatchesAvailable)
+    SELECT ROW_NUMBER() OVER (ORDER BY i.nId, pv.nId) + 300000, i.nHostId, pv.nId, NULL, p.strID, DATEADD(day, -((i.nHostId + pv.nId) % 200), GETUTCDATE()),
+      CASE WHEN (i.nHostId + pv.nId) % 23 = 0 THEN GETUTCDATE() ELSE NULL END, 0, CASE WHEN pv.nId % 3 = 0 THEN 1 ELSE 0 END
+    FROM dbo.hst_inventory_hstprds i JOIN #prod p ON p.nId = i.nProduct JOIN dbo.vapm_product_vulnerability pv ON pv.nProductExactVersionId = p.nId + 100000 WHERE i.bDeleted = 0;""")
+        # состояние защиты: Агент на всех, защитный продукт — кроме каждого 43-го; базы устарели у части; продукт остановлен у части
+        out.append("""INSERT INTO dbo.v_akpub_hst_prdstate (nHost, wstrProductNameId, wstrProductVersionId, wstrProductDisplayName, wstrProductBuildNumber, nState, tmAvbasesDate, bAvProduct, bHasRtp)
+    SELECT h.nId, '1103', '1.0.0.0', N'Kaspersky Security Center Network Agent', CASE WHEN h.nId % 9 = 0 THEN '14.0.0.10902' WHEN h.nId % 4 = 0 THEN '14.2.0.26967' ELSE '15.1.0.20748' END, 3, NULL, 0, 0
+    FROM dbo.v_akpub_host h;
+    INSERT INTO dbo.v_akpub_hst_prdstate (nHost, wstrProductNameId, wstrProductVersionId, wstrProductDisplayName, wstrProductBuildNumber, nState, tmAvbasesDate, bAvProduct, bHasRtp)
+    SELECT h.nId, CASE WHEN h.nPlatformType = 6 THEN 'kesl' ELSE 'KES' END, CASE WHEN h.nPlatformType = 6 THEN '12.0.0.0' ELSE '11.0.0.0' END,
+      CASE WHEN h.nPlatformType = 6 THEN N'Kaspersky Endpoint Security for Linux' ELSE N'Kaspersky Endpoint Security for Windows' END,
+      CASE WHEN h.nPlatformType = 6 THEN CASE WHEN h.nId % 5 = 0 THEN '11.4.0.1096' ELSE '12.1.0.1297' END ELSE CASE WHEN h.nId % 6 = 0 THEN '11.11.0.452' WHEN h.nId % 3 = 0 THEN '12.4.0.467' ELSE '12.6.0.438' END END,
+      CASE WHEN h.nId % 37 = 0 THEN 0 ELSE 3 END, DATEADD(hour, -CASE WHEN h.nId % 13 = 0 THEN 24 * (8 + h.nId % 40) ELSE h.nId % 30 END, GETUTCDATE()), 1, 1
+    FROM dbo.v_akpub_host h WHERE h.nId % 43 <> 0;
+    INSERT INTO dbo.v_akpub_host_status (nId, nStatus, nStatusMask)
+    SELECT h.nId, CASE WHEN h.nId % 43 = 0 OR h.nId % 37 = 0 THEN 1 WHEN h.nId % 13 = 0 OR h.nId % 17 = 0 THEN 2 ELSE 0 END,
+      (CASE WHEN h.nId % 43 = 0 THEN 32 ELSE 0 END) | (CASE WHEN h.nId % 37 = 0 THEN 4 ELSE 0 END) | (CASE WHEN h.nId % 13 = 0 THEN 128 ELSE 0 END) | (CASE WHEN h.nId % 17 = 0 THEN 64 ELSE 0 END)
+      | (CASE WHEN h.nId % 41 = 0 THEN 2 ELSE 0 END) | (CASE WHEN h.nId % 29 = 0 THEN 2048 ELSE 0 END) | (CASE WHEN h.nId % 59 = 0 THEN 512 ELSE 0 END)
+    FROM dbo.v_akpub_host h;""")
+        # события за 90 суток: служебные, обнаружения, лечение, атаки
+        out.append(f""";WITH n AS (SELECT TOP ({H * 15}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN (SELECT TOP 20 1 AS x FROM sys.all_objects) c)
+    INSERT INTO dbo.v_akpub_ev_event (nId, nHostId, tmRiseTime, tmRegistrationTime, strEventType, wstrEventTypeDisplayName, nSeverity, wstrProductNameId, wstrDescription, wstrPar1, wstrPar2, wstrPar3, wstrPar4, wstrPar5, wstrPar7, wstrPar8)
+    SELECT i, 101 + (i * 7919) % {H}, DATEADD(minute, -(i % 129600), GETUTCDATE()), DATEADD(minute, -(i % 129600), GETUTCDATE()),
+      CASE WHEN i % 100 < 85 THEN 'KLEVP_GroupTaskSyncState' WHEN i % 100 < 90 THEN 'GNRL_EV_VIRUS_FOUND' WHEN i % 100 < 93 THEN 'GNRL_EV_OBJECT_DELETED' WHEN i % 100 < 94 THEN 'GNRL_EV_OBJECT_NOTCURED'
+           WHEN i % 100 < 95 THEN 'GNRL_EV_ATTACK_DETECTED' WHEN i % 100 < 97 THEN 'GNRL_EV_SUSPICIOUS_OBJECT_FOUND' ELSE 'KLSRV_HOST_STATUS_WARNING' END,
+      CASE WHEN i % 100 < 85 THEN N'Синхронизация задачи' WHEN i % 100 < 90 THEN N'Обнаружен вредоносный объект' WHEN i % 100 < 93 THEN N'Объект удалён' WHEN i % 100 < 94 THEN N'Объект не вылечен'
+           WHEN i % 100 < 95 THEN N'Обнаружена сетевая атака' WHEN i % 100 < 97 THEN N'Обнаружен подозрительный объект' ELSE N'Статус устройства изменён на «Предупреждение»' END,
+      CASE WHEN i % 100 < 85 THEN 1 WHEN i % 100 < 90 THEN 4 WHEN i % 100 < 93 THEN 2 WHEN i % 100 < 94 THEN 3 WHEN i % 100 < 95 THEN 4 WHEN i % 100 < 97 THEN 3 ELSE 2 END,
+      CASE WHEN i % 100 < 85 THEN N'1103' ELSE N'KES' END, N'Синтетическое событие',
+      CASE WHEN i % 100 = 94 THEN CASE WHEN i % 3 = 0 THEN N'Scan.Generic.PortScan.TCP' ELSE N'Intrusion.Win.MS17-010.o' END ELSE NULL END,
+      CASE WHEN i % 100 BETWEEN 85 AND 93 OR i % 100 IN (95, 96) THEN N'C:\\Users\\user\\Downloads\\file' + CAST(i % 500 AS nvarchar(10)) + N'.exe' WHEN i % 100 = 94 THEN N'TCP' ELSE NULL END,
+      CASE WHEN i % 100 = 94 THEN CAST(CAST(3325256704 AS bigint) + i % 250 AS nvarchar(20)) ELSE NULL END,
+      CASE WHEN i % 100 = 94 THEN N'445' ELSE NULL END,
+      CASE WHEN i % 100 BETWEEN 85 AND 89 OR i % 100 IN (93, 95, 96) THEN CASE i % 6 WHEN 0 THEN N'HEUR:Trojan.Win32.Generic' WHEN 1 THEN N'EICAR-Test-File' WHEN 2 THEN N'not-a-virus:RiskTool.Win32.Example'
+           WHEN 3 THEN N'Trojan-Downloader.Win32.Agent.gen' WHEN 4 THEN N'HEUR:Exploit.MSOffice.Generic' ELSE N'PDM:Trojan.Win32.Generic' END ELSE NULL END,
+      CASE WHEN i % 100 BETWEEN 85 AND 89 THEN N'EXAMPLE\\user' + CAST(i % 300 AS nvarchar(10)) ELSE NULL END,
+      CASE WHEN i % 100 BETWEEN 85 AND 89 THEN CASE i % 4 WHEN 0 THEN N'60' WHEN 1 THEN N'61' WHEN 2 THEN N'65' ELSE N'62' END ELSE NULL END
+    FROM n;""")
     # пользователи: 5000 доменных учётных записей и несколько системных; у каждого компьютера — запись в истории, у части — вошедший сейчас, у части — ещё один пользователь, у 3 % запись без сопоставленной учётной записи
     out.append(""";WITH n AS (SELECT TOP (5000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
 INSERT INTO dbo.ak_users (nId, binId, wstrDisplayName, wstrUserPrincipalName, wstrSamAccountName, nHostId, nDomain)
@@ -195,7 +197,7 @@ UNION ALL SELECT h.nId, NULL, 0, NULL, CAST(h.nId AS varbinary(16)) FROM dbo.v_a
 UNION ALL SELECT h.nId, CASE WHEN h.nPlatformType = 6 THEN 5004 ELSE 5001 END, 1, NULL, 0x01 FROM dbo.v_akpub_host h WHERE h.nId % 3 = 0
 UNION ALL SELECT h.nId, 5002, 1, NULL, 0x02 FROM dbo.v_akpub_host h WHERE h.nPlatformType = 2 AND h.nId % 4 = 0
 UNION ALL SELECT h.nId, 5003, 1, NULL, 0x03 FROM dbo.v_akpub_host h WHERE h.nId % 50 = 0;""")
-    out.append("DROP TABLE #prod; DROP TABLE #fam; DROP TABLE #vp; DROP TABLE #famvp;")
+    out.append("DROP TABLE #prod; DROP TABLE #fam;" + ("" if a.lean else " DROP TABLE #vp; DROP TABLE #famvp;"))
     print("\nGO\n".join(out) + "\nGO")
 
 

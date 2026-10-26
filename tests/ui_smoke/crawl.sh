@@ -13,7 +13,7 @@ if agent-browser eval "!document.querySelector('.sidenav')" | grep -q true; then
   agent-browser find label "Имя пользователя" fill "$KC_USER" >/dev/null; agent-browser find label "Пароль" fill "$KC_PASS" >/dev/null
   agent-browser find role button click --name "Войти" >/dev/null; sleep 2
 fi
-ROUTES="/ /software /hosts /vulnerabilities /vdb /vdb?tab=mine /protection /events /reports /security /admin?tab=system /admin?tab=sources /admin?tab=users /admin?tab=ldap /admin?tab=general /admin?tab=catalog /admin?tab=vdb /admin?tab=updates /admin?tab=journal /admin?tab=audit"
+ROUTES="/ /software /hosts /devices /eol /eol?tab=products /eol?tab=mappings /zones /vulnerabilities /vdb /vdb?tab=mine /protection /events /reports /security /admin?tab=system /admin?tab=sources /admin?tab=users /admin?tab=ldap /admin?tab=general /admin?tab=eolcfg /admin?tab=zcache /admin?tab=catalog /admin?tab=vdb /admin?tab=updates /admin?tab=journal /admin?tab=audit"
 for vp in "1366 768" "1280 800" "390 844"; do
   agent-browser set viewport $vp >/dev/null; w=${vp%% *}
   for r in $ROUTES; do

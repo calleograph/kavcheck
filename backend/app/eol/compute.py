@@ -348,12 +348,12 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
             await db.execute(insert(EolHost), batch)
         await db.flush()
         problem = ("eol", "extended", "upcoming")                  # итоги по устройствам: одним запросом в самой базе, без выгрузки связей в Python
-        agg = (select(EolHost.source_id, EolHost.host_id, func.count(), func.sum(case((EolFinding.kind == "os", 1), else_=0)),
+        agg = (select(EolHost.source_id, EolHost.host_id, func.count(), func.sum(case((EolFinding.kind == "os", 1), else_=0)), func.sum(case((EolFinding.severity == "critical", 1), else_=0)),
                       func.max(case((EolFinding.status == "eol", 3), (EolFinding.status == "extended", 2), else_=1)), func.max(case((EolHost.active.is_(True), 1), else_=0)) > 0)
                .select_from(EolHost.__table__.join(EolFinding.__table__, (EolFinding.source_id == EolHost.source_id) & (EolFinding.kind == EolHost.kind) & (EolFinding.subject == EolHost.subject)
                                                    & (EolFinding.version == EolHost.version)))
                .where(EolHost.source_id == src.id, EolFinding.status.in_(problem)).group_by(EolHost.source_id, EolHost.host_id))
-        await db.execute(insert(EolHostStat).from_select(["source_id", "host_id", "n", "n_os", "w", "active"], agg))
+        await db.execute(insert(EolHostStat).from_select(["source_id", "host_id", "n", "n_os", "n_crit", "w", "active"], agg))
         st = await db.get(EolState, src.id)
         if st is None:
             st = EolState(source_id=src.id)

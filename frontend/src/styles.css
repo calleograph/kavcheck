@@ -1119,3 +1119,4 @@ tr.expand > td { background: var(--surface-2, var(--accent-soft)); padding: 10px
 .pick > .small { grid-column: 1 / -1; }
 .vdb-eol { margin: 0 0 18px; }
 .zone-eol { margin-top: 10px; }
+h3.h3 { margin: 22px 0 8px; }

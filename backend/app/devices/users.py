@@ -22,7 +22,7 @@ from ..models import DevicesState, DeviceUser, KscSource, utcnow
 from ..search import matcher
 
 log = logging.getLogger("app.devices")
-PAGE = 20000
+PAGE = 10000
 SYSTEM_RE = re.compile(r"^(system|local ?service|network ?service|localsystem|anonymous logon|defaultaccount|wdagutilityaccount|guest|dwm-\d+|umfd-\d+|font driver host.*|window manager.*|"
                        r"nt authority.*|nt service.*|root|daemon|bin|sys|nobody|gdm|sddm|lightdm|www-data|systemd-.*|messagebus|polkitd|sshd|avahi|colord|rtkit)$", re.I)
 

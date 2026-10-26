@@ -923,6 +923,7 @@ class EolHostStat(Base):
     host_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)          # проблемных программ и ОС
     n_os: Mapped[int] = mapped_column(Integer, nullable=False, default=0)       # из них операционных систем
+    n_crit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)     # из них критических (стандартная поддержка закончилась, соответствие подтверждено)
     w: Mapped[int] = mapped_column(Integer, nullable=False, default=0)          # наихудшее состояние: 3 — EOL, 2 — только расширенная поддержка, 1 — скоро
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 

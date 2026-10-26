@@ -53,7 +53,7 @@ def upgrade() -> None:
     op.create_index("ix_eol_hosts_host", "eol_hosts", ["source_id", "host_id"])
     op.create_table("eol_host_stat",
         sa.Column("source_id", sa.Uuid(), sa.ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True), sa.Column("host_id", sa.BigInteger(), primary_key=True),
-        sa.Column("n", sa.Integer(), nullable=False, server_default="0"), sa.Column("n_os", sa.Integer(), nullable=False, server_default="0"), sa.Column("w", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("n", sa.Integer(), nullable=False, server_default="0"), sa.Column("n_os", sa.Integer(), nullable=False, server_default="0"), sa.Column("n_crit", sa.Integer(), nullable=False, server_default="0"), sa.Column("w", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.text("false")))
     op.create_table("dev_users",
         sa.Column("source_id", sa.Uuid(), sa.ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True), sa.Column("host_id", sa.BigInteger(), primary_key=True), sa.Column("user_key", sa.String(80), primary_key=True),
@@ -72,10 +72,10 @@ def upgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         has = op.get_bind().execute(sa.text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")).scalar()
         if has:
-            op.execute("CREATE INDEX ix_eol_products_search_trgm ON eol_products USING gin (search gin_trgm_ops)")
-            op.execute("CREATE INDEX ix_dev_users_login_trgm ON dev_users USING gin (lower(login) gin_trgm_ops)")
-            op.execute("CREATE INDEX ix_zc_hosts_search_trgm ON zc_hosts USING gin (search gin_trgm_ops)")
-            op.execute("CREATE INDEX ix_zc_hosts_name_trgm ON zc_hosts USING gin (lower(name) gin_trgm_ops)")
+            op.execute("CREATE INDEX IF NOT EXISTS ix_eol_products_search_trgm ON eol_products USING gin (search gin_trgm_ops)")
+            op.execute("CREATE INDEX IF NOT EXISTS ix_dev_users_login_trgm ON dev_users USING gin (lower(login) gin_trgm_ops)")
+            op.execute("CREATE INDEX IF NOT EXISTS ix_zc_hosts_search_trgm ON zc_hosts USING gin (search gin_trgm_ops)")
+            op.execute("CREATE INDEX IF NOT EXISTS ix_zc_hosts_name_trgm ON zc_hosts USING gin (lower(name) gin_trgm_ops)")
 
 
 def downgrade() -> None:
@@ -83,5 +83,6 @@ def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS ix_zc_hosts_active")
     op.execute("DROP INDEX IF EXISTS ix_zc_hosts_lname")
     op.execute("DROP INDEX IF EXISTS ix_zc_hosts_name_trgm")
+    op.execute("DROP INDEX IF EXISTS ix_zc_hosts_search_trgm")
     for t in ("dev_state", "dev_users", "eol_host_stat", "eol_hosts", "eol_state", "eol_findings", "eol_mappings", "eol_releases", "eol_products"):
         op.drop_table(t)

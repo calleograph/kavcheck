@@ -68,7 +68,7 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
           <table className="table">
             <thead><tr><SortTh k="name" label="Устройство" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-md" />
               <th className="hide-md">Группа и зона</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Пользователи</th><th className="num hide-sm" title="Пользователи, замеченные в сеансе за 7 суток или появившиеся в списках после начала наблюдений">За 7 сут</th>
-              <SortTh k="eol" label="EOL" sort={sort} desc={desc} onSort={onSort} className="num" />{multi && <th className="hide-sm">Источник</th>}</tr></thead>
+              <SortTh k="eol" label="EOL (крит.)" sort={sort} desc={desc} onSort={onSort} className="num" />{multi && <th className="hide-sm">Источник</th>}</tr></thead>
             <tbody>
               {list.items.map((d) => (
                 <tr key={`${d.source_id}:${d.host_id}`} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button")) setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; }); }}>
@@ -82,8 +82,8 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
                     {d.current.length === 0 && !d.last_user && (d.history.length > 0 ? <span className="block"><span className="muted">входили ранее (дат нет): </span><CompactList items={d.history} label="входившие ранее" render={(u) => <UserChip u={u} />} /></span> : <span className="muted">нет данных</span>)}
                   </td>
                   <td className="num hide-sm">{d.week_n ? <span title={d.week.map(who).join(", ")}>{num(d.week_n)}</span> : <span className="muted">—</span>}</td>
-                  <td className="num">{d.eol ? <Link to={`/devices?card=${d.source_id}:${d.host_id}`} title={d.eol_level === "eol" ? "есть программа или ОС без поддержки производителя" : "есть проблемы поддержки"}>
-                    <span className={`badge ${d.eol_level === "eol" ? "err" : "warn"}`}>{num(d.eol)}</span></Link> : <span className="muted">0</span>}</td>
+                  <td className="num">{d.eol ? <button type="button" className="link-btn" onClick={() => setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; })}
+                    title={`критических: ${d.eol_crit}; всего проблем поддержки: ${d.eol}`}><span className={`badge ${d.eol_crit ? "err" : "warn"}`}>{num(d.eol_crit || d.eol)}</span>{d.eol_crit > 0 && d.eol > d.eol_crit && <span className="sub small muted">из {num(d.eol)}</span>}</button> : <span className="muted">0</span>}</td>
                   {multi && <td className="small hide-sm">{d.source}</td>}
                 </tr>))}
               {!list.items.length && !list.loading && <tr><td colSpan={9}><Empty icon="search" title="Устройства не найдены">{applied || zone || eol || osq || uq ? "Измените запрос или фильтры." : "Подготовленных данных зон ещё нет или нет активных устройств."}</Empty></td></tr>}
