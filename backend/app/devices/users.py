@@ -12,9 +12,9 @@ import hashlib
 import logging
 import re
 import time
-from datetime import timedelta
+from datetime import timedelta, timezone
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..ksc import queries as q
@@ -73,7 +73,11 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
         elif st.first_poll_at is None:
             st.first_poll_at = started
         await db.commit()
-    after, seen_rows, touched = 0, 0, 0
+    async with sm() as db:                                # кто числился «вошёл сейчас» до опроса: после опроса те, кого в списке вошедших не застали, помечаются вышедшими
+        active_before = {(int(h), k) for h, k in (await db.execute(select(DeviceUser.host_id, DeviceUser.user_key).where(DeviceUser.source_id == sid, DeviceUser.session_now.is_(True)))).all()}
+    seen_active: set[tuple[int, str]] = set()
+    after, seen_rows, touched, written = 0, 0, 0, 0
+    stale = started - timedelta(hours=12)                 # без изменений строка переписывается раз в 12 часов (для срока хранения), а не при каждом опросе: писать сотни тысяч строк ежечасно незачем
     while True:
         rows = await client.run(q.USERS_VISITED, {"n": PAGE, "after": after}, max_rows=PAGE + 10)
         if not rows:
@@ -91,32 +95,37 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
                 agg[k] = {"login": login, "domain": domain, "resolved": resolved, "actual": actual, "kind": classify(login, domain, masks) if resolved else "user"}
             else:
                 a["actual"] = a["actual"] or actual
+        seen_active |= {k for k, a in agg.items() if a["actual"]}
         hosts = sorted({h for h, _ in agg})
         async with sm() as db:
             have = {(u.host_id, u.user_key): u for u in (await db.execute(select(DeviceUser).where(DeviceUser.source_id == sid, DeviceUser.host_id.in_(hosts)))).scalars()}
             for (h, key), a in agg.items():
+                touched += 1
                 u = have.get((h, key))
                 if u is None:
-                    u = DeviceUser(source_id=sid, host_id=h, user_key=key, login=a["login"][:256], domain=a["domain"][:256], kind=a["kind"], resolved=a["resolved"], first_seen_at=started,
-                                   last_seen_at=started, seen_n=0, initial=first)
-                    db.add(u)
-                u.last_seen_at, u.seen_n = started, (u.seen_n or 0) + 1
-                u.session_now = a["actual"]
-                if a["actual"]:
-                    u.last_session_at = started
-                u.kind = a["kind"]
-                u.login, u.domain = a["login"][:256], a["domain"][:256]
-                touched += 1
+                    db.add(DeviceUser(source_id=sid, host_id=h, user_key=key, login=a["login"][:256], domain=a["domain"][:256], kind=a["kind"], resolved=a["resolved"], first_seen_at=started,
+                                      last_seen_at=started, seen_n=1, initial=first, session_now=a["actual"], last_session_at=started if a["actual"] else None))
+                    written += 1
+                    continue
+                ls = u.last_seen_at.replace(tzinfo=timezone.utc) if u.last_seen_at.tzinfo is None else u.last_seen_at
+                if (u.session_now != a["actual"] or a["actual"] or u.kind != a["kind"] or u.login != a["login"][:256] or u.domain != a["domain"][:256] or ls < stale):
+                    u.session_now, u.last_seen_at, u.seen_n = a["actual"], started, (u.seen_n or 0) + 1
+                    if a["actual"]:
+                        u.last_session_at = started
+                    u.kind, u.login, u.domain = a["kind"], a["login"][:256], a["domain"][:256]
+                    written += 1
             await db.commit()
         if res is not None:
             await res.breathe("опрос пользователей")
         if len(rows) < PAGE:
             break
+    gone = sorted(active_before - seen_active)
     async with sm() as db:
-        await db.execute(update(DeviceUser).where(DeviceUser.source_id == sid, DeviceUser.session_now.is_(True), DeviceUser.last_seen_at < started).values(session_now=False))
+        for i in range(0, len(gone), 2000):
+            await db.execute(update(DeviceUser).where(DeviceUser.source_id == sid, tuple_(DeviceUser.host_id, DeviceUser.user_key).in_(gone[i:i + 2000])).values(session_now=False))
         await db.execute(delete(DeviceUser).where(DeviceUser.source_id == sid, DeviceUser.last_seen_at < started - timedelta(days=retention_days)))
         st = await db.get(DevicesState, sid)
         st.polled_at, st.duration_ms, st.rows_seen, st.users_n, st.error, st.error_at, st.requested_at = started, int((time.monotonic() - t0) * 1000), seen_rows, touched, None, None, None
         await db.commit()
-    return {"rows": seen_rows, "users": touched, "seconds": round(time.monotonic() - t0, 1), "initial": first}
+    return {"rows": seen_rows, "users": touched, "written": written, "seconds": round(time.monotonic() - t0, 1), "initial": first}
 

@@ -23,6 +23,6 @@ def test_ip_and_group_path():
 
 def test_hosts_where_filters():
     where, params = H.hosts_where(qtext="web", active_days=7)
-    assert "h.bIsSlaveServer = 0" in where and "DATEADD(day, -%(days)s" in where and params == {"q": "%web%", "days": 7}
+    assert "h.bIsSlaveServer = 0" in where and "DATEADD(day, -%(days)s" in where and params == {"q0": "%web%", "days": 7}
     where, params = H.hosts_where(active_days=7, inactive_only=True)
     assert "IS NULL OR" in where

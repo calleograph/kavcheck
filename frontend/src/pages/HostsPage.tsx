@@ -14,6 +14,7 @@ import { Kev, StatusBadge } from "../components/VdbBits";
 import { HostVulns } from "./VulnsPage";
 import { fmt, fmtDate, num } from "../util";
 import { HostZones, ZoneSelect } from "../components/ZoneBits";
+import { HostEol } from "../components/EolBits";
 
 const DAYS = [1, 3, 7, 14, 30];
 type Activity = "all" | "active" | "inactive";
@@ -133,6 +134,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
           {st && st.reasons.length > 0 && (
             <div className={`alert flat ${st.status === "критический" ? "error" : "warn"}`}><Icon name="alert" />
               <div className="alert-body"><b>Причины статуса «{st.status}»</b><ul className="reasons">{st.reasons.map((r) => <li key={r}>{r}</li>)}</ul></div></div>)}
+          {ctx.current && <HostEol sourceId={ctx.current.id} hostId={h.host_id} />}
           <div className="card flush">
             <div className="card-head"><h2>Продукты Kaspersky</h2></div>
             {!d.kaspersky.length ? <Empty icon="shieldPulse" title="Нет сведений о продуктах">Агент не передавал данные о защитных продуктах, или объект v_akpub_hst_prdstate недоступен.</Empty> : (

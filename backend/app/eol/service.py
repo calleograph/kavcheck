@@ -41,7 +41,7 @@ class EolService:
                 if cs is None or cs.status != "ready":
                     continue                                                    # каталог источника ещё не построен
                 st = await db.get(EolState, src.id)
-                if st is not None and st.error_at and utcnow() - st.error_at < RETRY_AFTER and st.inputs:
+                if st is not None and st.error_at and utcnow() - st.error_at < RETRY_AFTER:
                     continue
                 if st is None or not st.inputs or st.inputs != await C.current_inputs(db, src.id, today, soon):
                     out.append(src.id)

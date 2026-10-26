@@ -255,7 +255,7 @@ async def test_sync_all_sources_merge_one_card(app, client):
     for key in ("kev", "nvd", "osv", "bdu"):
         assert await sync.run_source(key, "manual"), key
     async with app.state.session_maker() as db:
-        srcs = {s.key: s for s in (await db.execute(__import__("sqlalchemy").select(VdbSource))).scalars().all()}
+        srcs = {s.key: s for s in (await db.execute(__import__("sqlalchemy").select(VdbSource))).scalars().all() if s.key != "eol"}      # endoflife.date — отдельный источник, свои тесты
         assert all(s.status == "ok" and s.last_ok_at for s in srcs.values()) and srcs["kev"].records == 4 and srcs["bdu"].records == 2 and srcs["nvd"].records == 3
         v = await db.get(VdbVuln, "CVE-2023-4863")
         assert v.exploited and set(v.sources.split(",")) >= {"nvd", "kev"}
@@ -265,7 +265,7 @@ async def test_sync_all_sources_merge_one_card(app, client):
     assert {r["source"] for r in card["records"]} >= {"nvd", "kev"} and card["exploited"] and card["records"][0]["affected"] is not None
     assert (await client.get("/api/v1/vdb/vulns/BDU:2024-00001")).json()["key"] == "CVE-2024-99001"                  # карточка открывается по любому идентификатору
     s = (await client.get("/api/v1/vdb/sources")).json()
-    assert [i["key"] for i in s["items"]] == ["bdu", "kev", "nvd", "osv"] and s["vulns"] >= 6 and s["items"][1]["runs"][0]["status"] == "ok"
+    assert [i["key"] for i in s["items"]] == ["bdu", "eol", "kev", "nvd", "osv"] and s["vulns"] >= 6 and s["items"][2]["runs"][0]["status"] == "ok"
 
 
 async def test_failed_update_keeps_last_good_data(app):

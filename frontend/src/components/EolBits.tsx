@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { type EolFinding, type EolStatus } from "../api";
+import { api, type EolFinding, type EolStatus } from "../api";
 import { fmtDate, num, plural } from "../util";
 
 export const EOL_STATUS_TEXT: Record<EolStatus, string> = { eol: "EOL: поддержка закончилась", extended: "Только расширенная поддержка", upcoming: "Поддержка скоро закончится", unknown: "Нет данных" };
@@ -32,4 +33,20 @@ export function EolDates({ f }: { f: Pick<EolFinding, "eol_from" | "eoes_from" |
 export const deviceLink = (sourceId: string, hostId: number) => `/devices?card=${sourceId}:${hostId}`;
 export function DeviceLink({ sourceId, hostId, name }: { sourceId: string; hostId: number; name: string }) {
   return <Link to={deviceLink(sourceId, hostId)} className="strong-link">{name}</Link>;
+}
+
+/** Блок карточки компьютера: программы и ОС без поддержки производителя (готовые результаты EOL, KSC не опрашивается). */
+export function HostEol({ sourceId, hostId }: { sourceId: string; hostId: number }) {
+  const [items, setItems] = useState<EolFinding[] | null>(null);
+  useEffect(() => { setItems(null); api.eol.host(sourceId, hostId).then((r) => setItems(r.items)).catch(() => setItems([])); }, [sourceId, hostId]);
+  if (items === null || items.length === 0) return null;                 // нет проблем или сопоставление ещё не рассчитано — блок не показывается
+  return (
+    <div className="card flush">
+      <div className="card-head"><h2>EOL: поддержка закончилась или заканчивается</h2></div>
+      <div className="table-scroll"><table className="table compact"><thead><tr><th>Критичность</th><th>Программа или ОС</th><th>Поддержка</th></tr></thead>
+        <tbody>{items.map((f) => <tr key={`${f.kind}${f.subject}${f.version}`}><td><EolSev f={f} /></td><td><strong>{f.title}</strong>{f.kind === "app" && <span className="sub mono small">{f.version}</span>}<span className="sub small">{f.eol_label}, ветка {f.eol_release}</span></td>
+          <td><EolBadge s={f.status} short /><EolDates f={f} /></td></tr>)}</tbody></table></div>
+      <p className="muted small pad-x"><Link to="/eol">Раздел EOL</Link></p>
+    </div>
+  );
 }

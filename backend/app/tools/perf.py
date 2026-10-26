@@ -1,6 +1,6 @@
 """Замер потребления памяти и времени тяжёлых фоновых операций на данных текущей установки (инструмент разработчика и нагрузочных испытаний).
-    python -m app.tools.perf <analyze|analyze-keys|catalog|scores|zones|extindex> [--source ИМЯ]
-Пиковая память процесса (RSS) измеряется отдельным потоком по /proc/self/status. Изменения в базе не фиксируются (транзакции откатываются), KSC — только чтение."""
+    python -m app.tools.perf <analyze|analyze-keys|catalog|scores|zones|extindex|eol|users> [--source ИМЯ]
+Пиковая память процесса (RSS) измеряется отдельным потоком по /proc/self/status. Изменения в базе не фиксируются (транзакции откатываются), KSC — только чтение. Исключение — «eol» и «users»: пересчитывают и сохраняют производные данные (результаты EOL, наблюдения за пользователями)."""
 from __future__ import annotations
 
 import argparse
@@ -88,6 +88,23 @@ async def main() -> None:
 
                 fams, stats = await asyncio.to_thread(work)
                 res = f"продуктов {stats['products']}, установок {stats['installs']}, компьютеров {stats['hosts']}"
+            elif a.scenario in ("eol", "users"):
+                from ..security.secretbox import SecretBox  # noqa: PLC0415
+                from ..services.settings import SettingsService  # noqa: PLC0415
+                from ..services.sources import SourceRegistry  # noqa: PLC0415
+
+                svc = SettingsService(SecretBox(cfg.app_master_key))
+                client = SourceRegistry(cfg, svc).client(s)
+                if a.scenario == "eol":
+                    from ..eol import compute as EC  # noqa: PLC0415
+
+                    r = await EC.compute_source(sm, client, s, activity_days=30)
+                    res = f"находок {r['items']}, связей устройство–находка {r['links']}"
+                else:
+                    from ..devices import users as DU  # noqa: PLC0415
+
+                    r = await DU.poll_source(sm, client, s, ["svc*", "*_svc"])
+                    res = f"строк KSC {r['rows']}, учётных записей на устройствах {r['users']}"
             elif a.scenario == "zonedoc":
                 from ..services.settings import SettingsService  # noqa: PLC0415
                 from ..security.secretbox import SecretBox  # noqa: PLC0415

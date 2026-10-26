@@ -65,12 +65,17 @@ Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=
 
 Загрузчики, локальная база, сопоставление с каталогом и отчёт `quick_extvulns` — пакет `app/vdb`, `app/reports/quick_ext.py`, `app/api/vdb.py`; как добавить источник и как устроены статусы — в [VULNDB.md](VULNDB.md). Загрузка выполняется воркером (`VdbSync.loop`), API только ставит запрос на запуск.
 
+## EOL, устройства и пользователи
+
+`app/eol/` (правила — `classify.py`, ОС — `osmatch.py`, загрузка — `sync.py` как источник `eol` подсистемы vdb, сопоставление и устройства — `compute.py`, фон — `service.py`, чтение — `read.py`), `app/devices/` (`users.py` — опрос и наблюдения, `read.py` — таблица устройств), `app/netsearch.py` (единый поиск: имя, IP, CIDR, диапазоны, логин), `app/api/{eol,devices}.py`, отчёт `reports/quick_eol.py`. Страницы читают готовые таблицы PostgreSQL; к KSC обращается только worker, порциями (`EOL_OS_HOSTS`, `EOL_APP_HOSTS`, `USERS_VISITED` в `ksc/queries.py`). Тесты: `tests/test_eol_rules.py` (правила на срезе настоящих данных API, `tests/fixtures/eol_sample.json`), `tests/test_eol_compute.py`, `tests/test_devices.py`, живые SQL — `tests/test_ksc_live.py`. «Все источники» — зависимость `source_scope` (`auth/deps.py`): новые endpoints, которые это умеют, берут `srcs: list[KscSource] = Depends(source_scope)`, остальные остаются на `current_source`.
+
 ## Память и нагрузка
 
 Правила для фоновых задач и страниц: страница или запрос API не читает KSC и не загружает целиком источник, каталог или базу уязвимостей в память — читает порции или готовые агрегаты PostgreSQL; тяжёлое выполняется только в worker, порциями, с `RES.heavy(...)` (ограничитель в `services/resources.py`) и `RES.breathe(...)` на границе порции; записи баз читаются строками (`select(*columns)`), не объектами ORM; результат порции фиксируется сразу (транзакция не держится на время вычислений); прерванную задачу можно безопасно повторить. Замеры:
 
 ```bash
 docker compose exec worker python -m app.tools.perf analyze|catalog|scores|zonedoc   # пик RSS и время операции на данных установки, без записи
+docker compose exec worker python -m app.tools.perf eol|users --source "…"          # пересчёт EOL и опрос пользователей источника (сохраняют производные данные)
 python3 tests/perf/dash_load.py http://127.0.0.1:18080 admin 'пароль' 10             # открытие зон, фильтры, параллельные клиенты
 ```
 

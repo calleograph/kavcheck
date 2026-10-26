@@ -204,3 +204,29 @@ async def test_quick_eol_report_previews_and_exports_full_device_list(client, ap
     assert r["total"] == 1 and r["items"][0]["title"].startswith("Microsoft Windows Server 2012") and r["items"][0]["eol_from"]
     bad = await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"statuses": ["bogus"]}}, headers={"X-Source-Id": str(sid)})
     assert bad.status_code == 422
+
+
+async def test_failed_recalculation_keeps_previous_results_and_reports_the_error(app):
+    from app.models import EolState
+
+    sid = await seed(app)
+    sm = app.state.session_maker
+    async with sm() as db:
+        src = await db.get(KscSource, sid)
+    await C.compute_source(sm, FakeKsc({11: [(1, 1)]}, hosts()), src, activity_days=30, today=TODAY)
+
+    class Down:
+        def client(self, _src):
+            class Dead:
+                async def run(self, *a, **k):
+                    raise ConnectionError("KSC недоступен")
+            return Dead()
+
+    svc = EolService(sm, app.state.settings_svc, Down())
+    await svc.request(sid)
+    assert await svc.run_source(sid) is None
+    async with sm() as db:
+        st = await db.get(EolState, sid)
+        n = len((await db.execute(select(EolFinding).where(EolFinding.source_id == sid))).scalars().all())
+    assert st.error and "KSC недоступен" in st.error and st.error_at and n == 2                  # прежние результаты на месте, причина записана
+    assert await svc.due(TODAY) == []                                                              # повтор не сразу: пауза после ошибки не даёт долбить недоступный KSC

@@ -280,6 +280,7 @@ export const api = {
     delMapping: (id: string) => req<void>("DELETE", `/eol/mappings/${id}`),
     unmatched: (q = "") => req<{ items: { catalog_key: string; name: string; publisher: string; hosts: number; source: string }[]; ambiguous: { catalog_key: string; name: string; publisher: string; hosts: number; reason: string; source: string }[] }>("GET", `/eol/unmatched${qs({ q })}`),
     recalc: () => req<{ queued: number }>("POST", "/eol/recalc"),
+    host: (sid: string, hid: number) => req<{ items: EolFinding[] }>("GET", `/eol/hosts/${sid}/${hid}`),
   },
   devices: {
     list: (p: Record<string, string | number | boolean | undefined | null>) => req<DevicesPage>("GET", `/devices${qs(p)}`),

@@ -80,6 +80,8 @@ async def test_poll_accumulates_observations_and_never_invents_dates(app):
     assert us[(6, "ivanov")].session_now and us[(6, "ivanov")].last_session_at is not None
     assert not us[(6, "sidorov")].initial and us[(6, "sidorov")].last_session_at is None                           # новый в истории: входил между опросами, но не «сейчас»
     assert not us[(1, "svc_backup")].session_now                                                                    # хост 1 больше не отдаёт запись — сеанс не считается идущим
+    r3 = await U.poll_source(sm, second, src, MASKS)
+    assert r3["rows"] == 3 and r3["written"] == 1                                                                   # ничего не изменилось: переписывается только вошедший сейчас, а не все строки
     assert second.queries and all("hst_user_visited" in s for s in second.queries)
     from app.ksc import guard
 
