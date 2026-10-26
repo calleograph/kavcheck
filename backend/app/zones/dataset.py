@@ -57,6 +57,7 @@ def host_record(r: dict, hv: dict, he: dict, a: dict, *, agg_only: bool, floor: 
                            "zone_pinned", "zone_candidates", "zone_via", "ksc_status", "av", "mask", "agent_build", "rtp_label", "rtp_state", "last_full_scan", "uncured", "os_version")}
     hv = {**hv, "current": [x for x in hv["current"] if SEV_RANK[x["severity"]] >= floor]} if not agg_only else hv
     he = {**he, "current": ec}
+    h["hw"] = r.get("hw")                                                      # оборудование Linux-сервера и проблемы ресурсов (None — не Linux или нет данных)
     h.update(source_id=source_id, source=source_name, problems=problems, ksc=ksc, ext=ext, max_sev=worst, max_sev_basis=("ksc" if SEV_RANK[ksc["worst"]] >= SEV_RANK[ext["worst"]] and ksc["worst"] else "ext" if ext["worst"] else ""),
              state=state, rows={"ksc": hv, "ext": he})
     h["summary"] = short_text(h)

@@ -50,6 +50,14 @@ CREATE TABLE dbo.ak_users (nId int PRIMARY KEY, binId varbinary(16) NULL, wstrDi
 CREATE TABLE dbo.hst_user_visited (nId int IDENTITY PRIMARY KEY, nHost bigint NOT NULL, nUser int NULL, bActual bit NOT NULL DEFAULT 0, binId varbinary(16) NULL, binSidHash varbinary(16) NULL,
   nVServer int NULL, binDomainSamHash varbinary(16) NULL);
 CREATE INDEX IX_hst_user_visited_host ON dbo.hst_user_visited (nHost);
+-- оборудование (инвентаризация Агента): компоненты устройства; XPar2 — объём накопителя, XPar3 — объём модуля ОЗУ или свободное место накопителя (байты)
+CREATE TABLE dbo.hwinv_dev_name (nId int IDENTITY PRIMARY KEY, wstrName nvarchar(256) NOT NULL);
+CREATE TABLE dbo.hwinv_dev_descr (nId int IDENTITY PRIMARY KEY, wstrDescr nvarchar(256) NOT NULL);
+CREATE TABLE dbo.hwinv_dev_manuf (nId int IDENTITY PRIMARY KEY, wstrManuf nvarchar(256) NOT NULL);
+CREATE TABLE dbo.hst_hwinv_dev (nId int IDENTITY PRIMARY KEY, nHostId bigint NOT NULL, wstrDevId nvarchar(200) NOT NULL DEFAULT N'', nDevType int NOT NULL, nNameId int NOT NULL, nDescrId int NULL, nManufId int NULL,
+  wstrSerialNum nvarchar(100) NULL, XPar1 nvarchar(256) NULL, XPar2 bigint NULL, XPar3 bigint NULL, strBiosManuf varchar(100) NULL, strBiosVersion varchar(100) NULL, dtBiosRelease datetime NULL,
+  nCpuSpeed int NULL, nCpuCores int NULL, nCpuThreads int NULL, bDeleted bit NOT NULL DEFAULT 0);
+CREATE INDEX IX_hst_hwinv_dev_host ON dbo.hst_hwinv_dev (nHostId, bDeleted);
 GO
 -- Группы: 0 — корень управляемых, 1 — нераспределённые, 10 — Серверы, 11 — Web (внутри Серверов), 12 — Рабочие станции
 INSERT INTO dbo.v_akpub_adm_group VALUES (0, N'Управляемые устройства', 2, 0), (1, N'Нераспределенные устройства', NULL, 0), (10, N'Серверы', 0, 0), (11, N'Web', 10, 0), (12, N'Рабочие станции', 0, 0);
@@ -105,6 +113,16 @@ INSERT INTO dbo.v_akpub_hst_prdstate VALUES
  (6,'1103','1.0.0.0',N'Kaspersky Security Center Network Agent','15.1.0.22239',3,NULL,0,0),(6,'KES','11.0.0.0',N'Kaspersky Endpoint Security for Windows','12.6.0.438',3,DATEADD(hour,-1,GETUTCDATE()),1,1),
  (7,'1103','1.0.0.0',N'Kaspersky Security Center Network Agent','14.0.0.10902',0,NULL,0,0),(7,'KES','11.0.0.0',N'Kaspersky Endpoint Security for Windows','12.4.0.467',0,DATEADD(day,-21,GETUTCDATE()),1,1);
 INSERT INTO dbo.v_akpub_host_status VALUES (1,0,0),(2,0,0),(3,0,0),(4,2,256),(5,1,256+128),(6,0,0),(7,1,2+128+16384),(8,1,32);
+-- Оборудование: web-01 (2 ядра, 4 ГБ), web-02 (1 ядро, 1 ГБ), app-01 (4 ядра, 8 ГБ), ws-001 (Windows, 1 ядро, 2 ГБ — правила к Windows не применяются), у old-srv (5) и остальных данных нет; у web-02 — ещё раздел и том LVM
+INSERT INTO dbo.hwinv_dev_name (wstrName) VALUES (N'Intel(R) Xeon(R) CPU'), (N'Physical Memory 0'), (N'Physical Memory 1'), (N'/dev/vda'), (N'/dev/vda1'), (N'/dev/mapper/vg0-root (LVM logical volume)'), (N'Virtual Machine');
+INSERT INTO dbo.hwinv_dev_manuf (wstrManuf) VALUES (N'Intel'), (N'QEMU');
+INSERT INTO dbo.hst_hwinv_dev (nHostId, wstrDevId, nDevType, nNameId, nManufId, XPar1, XPar2, XPar3, strBiosManuf, strBiosVersion, nCpuSpeed, nCpuCores, nCpuThreads) VALUES
+ (2, N'cpu0', 1, 1, 1, NULL, 0, 0, NULL, NULL, 2400, 2, 2), (2, N'm0', 2, 2, NULL, NULL, 0, 2147483648, NULL, NULL, NULL, NULL, NULL), (2, N'm1', 2, 3, NULL, NULL, 0, 2147483648, NULL, NULL, NULL, NULL, NULL),
+ (2, N'vda', 3, 4, NULL, N'SN-W1', 120000000000, 40000000000, NULL, NULL, NULL, NULL, NULL), (2, N'board', 0, 7, 2, NULL, 0, 0, N'SeaBIOS', N'1.16.0', NULL, NULL, NULL),
+ (3, N'cpu0', 1, 1, 1, NULL, 0, 0, NULL, NULL, 2400, 1, 1), (3, N'm0', 2, 2, NULL, NULL, 0, 1073741824, NULL, NULL, NULL, NULL, NULL),
+ (3, N'vda', 3, 4, NULL, N'SN-W2', 50000000000, 10000000000, NULL, NULL, NULL, NULL, NULL), (3, N'vda1', 3, 5, NULL, NULL, 49000000000, 9000000000, NULL, NULL, NULL, NULL, NULL), (3, N'lvm', 3, 6, NULL, NULL, 40000000000, 8000000000, NULL, NULL, NULL, NULL, NULL),
+ (4, N'cpu0', 1, 1, 1, NULL, 0, 0, NULL, NULL, 3000, 4, 8), (4, N'm0', 2, 2, NULL, NULL, 0, 4294967296, NULL, NULL, NULL, NULL, NULL), (4, N'm1', 2, 3, NULL, NULL, 0, 4294967296, NULL, NULL, NULL, NULL, NULL),
+ (6, N'cpu0', 1, 1, 1, NULL, 0, 0, NULL, NULL, 2400, 1, 2), (6, N'm0', 2, 2, NULL, NULL, 0, 2147483648, NULL, NULL, NULL, NULL, NULL);
 -- Пользователи: ivanov и petrova — доменные, svc_backup — служебная, DWM-1 и SYSTEM — системные, root — Linux; у строки без nUser учётная запись не сопоставлена
 INSERT INTO dbo.ak_users (nId, binId, wstrDisplayName, wstrUserPrincipalName, wstrSamAccountName, nHostId, nDomain) VALUES
  (1, 0x01, N'Иванов Иван', N'ivanov@example.local', N'ivanov', NULL, 1), (2, 0x02, N'Петрова Мария', N'petrova@example.local', N'petrova', NULL, 1), (3, 0x03, N'Служба резервного копирования', N'svc_backup@example.local', N'svc_backup', NULL, 1),

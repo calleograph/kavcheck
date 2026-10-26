@@ -744,6 +744,9 @@ class ZcHost(Base):
     p_inf: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     p_lic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     p_reb: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    p_hwc: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)                 # Linux-сервер: мало ядер CPU
+    p_hwr: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)                 # Linux-сервер: мало ОЗУ
+    hw_crit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)               # среди проблем ресурсов есть критическая
     k_crit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     k_high: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     k_warn: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

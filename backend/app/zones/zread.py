@@ -35,7 +35,7 @@ class X:
         limit = case(*[(zone_col == z, d) for z, d in zone_days.items()], else_=default_days) if (zone_days and zone_col is not None) else literal(default_days)
         self.active = and_(H.days_since.is_not(None), H.days_since <= limit)
         self.flags = {"no_av": H.p_no_av, "rtp_off": H.p_rtp, "infected": H.p_inf, "bases_old": and_(H.has_av, or_(H.bases_age.is_(None), H.bases_age > bd)),
-                      "license": H.p_lic, "scan_old": and_(H.has_av, or_(H.scan_age.is_(None), H.scan_age > sd)), "reboot": H.p_reb}
+                      "license": H.p_lic, "scan_old": and_(H.has_av, or_(H.scan_age.is_(None), H.scan_age > sd)), "reboot": H.p_reb, "hw_cpu": H.p_hwc, "hw_ram": H.p_hwr}
         self.prob_n = reduce(add, [case((f, 1), else_=0) for f in self.flags.values()])
         self.has_prob = self.prob_n > 0
         self.e_total = H.e_total if ext else literal(0)
@@ -141,13 +141,13 @@ def host_out(row, x_days: int, bd: int, sd: int, ext: bool, src_names: dict, zon
     e = {"total": et[3], "critical": et[0], "high": et[1], "warning": et[2], "kev": et[4], "confirmed": et[5], "worst": SEV_NAME[3 if et[0] else 2 if et[1] else 1 if et[2] else 0],
          "accepted": h.e_acc if ext else 0, "excluded": h.e_exc if ext else 0}
     probs = [k for k in PROBLEM_KEYS if {"no_av": h.p_no_av, "rtp_off": h.p_rtp, "infected": h.p_inf, "license": h.p_lic, "reboot": h.p_reb,
-                                         "bases_old": h.has_av and (h.bases_age is None or h.bases_age > bd), "scan_old": h.has_av and (h.scan_age is None or h.scan_age > sd)}[k]]
+                                         "bases_old": h.has_av and (h.bases_age is None or h.bases_age > bd), "scan_old": h.has_av and (h.scan_age is None or h.scan_age > sd), "hw_cpu": h.p_hwc, "hw_ram": h.p_hwr}[k]]
     worst = ksc["worst"] if D.SEV_RANK[ksc["worst"]] >= D.SEV_RANK[e["worst"]] else e["worst"]
     state = "critical" if ksc["critical"] else "vulns" if ksc["total"] else "protection" if probs else "potential" if e["total"] else "ok"
     out = {"source_id": str(h.source_id), "source": src_names.get(str(h.source_id), ""), "host_id": h.host_id, "name": h.name, "fqdn": d.get("fqdn", ""), "ip": d.get("ip", ""), "os": d.get("os", ""),
            "group": d.get("group", ""), "last_connected": h.last_connected, "days_since_connection": h.days_since, "active": h.days_since is not None and h.days_since <= x_days, "online": h.online,
            "max_sev": worst, "max_sev_ru": D.SEV_RU[worst], "max_sev_basis": ("ksc" if D.SEV_RANK[ksc["worst"]] >= D.SEV_RANK[e["worst"]] and ksc["worst"] else "ext" if e["worst"] else ""),
-           "ksc": ksc, "ext": e, "problems": [{"key": k, "title": P.PROBLEMS[k][0]} for k in probs], "state": state, "zones": zones, "zone_conflict": h.conflict, "zone_pinned": h.pinned}
+           "ksc": ksc, "ext": e, "problems": [{"key": k, "title": P.PROBLEMS[k][0], "detail": next((x["text"] for x in ((d.get("hw") or {}).get("problems") or []) if x["key"] == k), ""), "level": next((x["level"] for x in ((d.get("hw") or {}).get("problems") or []) if x["key"] == k), "")} for k in probs], "state": state, "zones": zones, "zone_conflict": h.conflict, "zone_pinned": h.pinned}
     out["summary"] = D.short_text({"ksc": ksc, "ext": e, "problems": probs})
     return out
 

@@ -56,6 +56,8 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
     ["/protection?problem=no_av", "Без антивируса", ok(prot) ? prot.problems.find((p) => p.key === "no_av")?.hosts ?? 0 : null, "нет продукта Kaspersky", "bad-text", "prot"],
     ["/protection?problem=rtp_off", "Защита не работает", ok(prot) ? prot.problems.find((p) => p.key === "rtp_off")?.hosts ?? 0 : null, "остановлена или в сбое", "bad-text", "prot"],
     ["/events?type=notcured", "Не вылечено за 7 сут", ok(ev) ? ev.totals.notcured : null, ok(ev) ? `обнаружено угроз: ${num(ev.totals.detections)}` : "", "bad-text", "ev"],
+    // Linux-серверы с нехваткой ядер CPU или ОЗУ для KESL: показывается, только если такие есть
+    ...(ok(prot) && prot.hw && prot.hw.critical + prot.hw.warning > 0 ? [["/protection?problem=hw", "Мало ресурсов (Linux)", prot.hw.critical + prot.hw.warning, `критических: ${num(prot.hw.critical)}, ядра CPU и ОЗУ`, prot.hw.critical ? "bad-text" : "warn-text", "prot"] as (typeof protMeters)[number]] : []),
   ];
   return (
     <section>

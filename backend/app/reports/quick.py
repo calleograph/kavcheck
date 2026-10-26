@@ -45,6 +45,7 @@ class Ctx:
     source_id: object | None = None
     zone_name: str = ""
     zone_hosts: set | None = None                      # компьютеры выбранной зоны (фильтр «Зона ответственности»); None — без отбора
+    hw_cfg: object | None = None                       # настройки контроля аппаратных ресурсов Linux-серверов (None — без оценки)
     source_ids: list | None = None                     # источники отчёта, не привязанного к одному (EOL); None — только source_id
     org: dict = field(default_factory=dict)            # данные организации для шапки и подвала (настройки «Организация и оформление отчётов»)
 
@@ -348,7 +349,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
 # ------------------------------------------------------------------------------------------------ состояние защиты
 async def build_protection(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     groups = await H.groups_map(client)
-    base = await ctx.protection_loader() if ctx.protection_loader else await P.load(client, exclude_slaves=ctx.exclude_slaves, groups=groups)
+    base = await ctx.protection_loader() if ctx.protection_loader else await P.load(client, exclude_slaves=ctx.exclude_slaves, groups=groups, hw_cfg=ctx.hw_cfg)
     bases_days, scan_days = int(p.get("bases_days") or 3), int(p.get("scan_days") or 30)
     if ctx.zone_hosts is not None:
         base = [h for h in base if h["host_id"] in ctx.zone_hosts]

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type Host, type HostVulnsAll } from "../api";
 import { HostVulnsTable } from "../components/HostVulnsTable";
+import { HardwareTab, HwProblems, useHardware } from "../components/HostHardware";
 import { NoSource, type Ctx } from "../App";
 import { ActivityBadge, Fetched, OnlineBadge } from "../components/Common";
 import { ListFoot, VirtualRows, staticList, useInfinite, useKept, type Chunk } from "../components/Infinite";
@@ -85,13 +86,13 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
   );
 }
 
-type HostTab = "software" | "vulns" | "events";
+type HostTab = "software" | "vulns" | "events" | "hardware";
 
 export function HostPage({ ctx }: { ctx: Ctx }) {
   const { hostId } = useParams();
   const [sp, setSp] = useSearchParams();
   const rawTab = sp.get("tab") === "vdb" ? "vulns" : sp.get("tab");                     // прежняя вкладка «Внешние базы» объединена с «Уязвимостями»
-  const tab = (["software", "vulns", "events"].includes(rawTab ?? "") ? rawTab : "software") as HostTab;
+  const tab = (["software", "vulns", "events", "hardware"].includes(rawTab ?? "") ? rawTab : "software") as HostTab;
   const [vulns, setVulns] = useState<HostVulnsAll | null>(null);
   const [vErr, setVErr] = useState("");
   const [evGroup, setEvGroup] = useState<EvFilter>(""); const [evThreat, setEvThreat] = useState(""); const [report, setReport] = useState(false);
@@ -106,6 +107,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
     api.hosts.vulns(id).then((r) => { if (live) { setVulns(r); setVErr(""); } }).catch((e) => { if (live) setVulns((cur) => (cur ? { ...cur, notes: [...cur.notes, `Проверка по внешним базам не выполнена: ${(e as ApiError).message}`], external_checked: true } : cur)); });
     return () => { live = false; };
   }, [ctx.current, hostId]);
+  const hwq = useHardware(Number(hostId), !!ctx.current && !!hostId);      // одна выборка из KSC для строки «Сведения», предупреждений и вкладки
   const [d, setD] = useState<Awaited<ReturnType<typeof api.hosts.one>> | null>(null);
   const [err, setErr] = useState("");
   const [filter, setFilter] = useState("");
@@ -121,6 +123,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   const sw = d.software.filter((s) => !hit || hit(s.name, s.version, s.publisher));
   const swList = staticList(`host-sw:${h.host_id}:${filter}`, sw);
   const facts: [string, React.ReactNode][] = [["FQDN", h.fqdn || "—"], ["IP-адрес", <span className="mono">{h.ip || "—"}</span>], ["Операционная система", `${h.os} ${h.os_version}`.trim() || "—"], ["Дистрибутив Linux", h.linux_release ? <span className="mono">{h.linux_release}</span> : "—"],
+    ["Аппаратная часть", hwq.d ? (hwq.d.hw.known ? <span className={hwq.d.problems.length ? "warn-text" : ""}>{hwq.d.hw.line}{hwq.d.hw.virtual ? " (ВМ)" : ""}</span> : <span className="muted">Нет данных</span>) : hwq.err ? <span className="muted">Нет данных</span> : <span className="muted">…</span>],
     ["Группа администрирования", h.group || "—"], ["Подключение к KSC", fmt(h.last_connected)], ["Последняя видимость", fmt(h.last_visible)], ["Обновление антивирусных баз", fmt(h.last_av_update)],
     ["Полная проверка", fmt(h.last_full_scan)], ["Постоянная защита", h.rtp_state_label || "—"], ["Идентификатор в KSC", <span className="mono">{h.host_id}</span>]];
   const st = h.ksc_status;
@@ -141,6 +144,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
           {st && st.reasons.length > 0 && (
             <div className={`alert flat ${st.status === "критический" ? "error" : "warn"}`}><Icon name="alert" />
               <div className="alert-body"><b>Причины статуса «{st.status}»</b><ul className="reasons">{st.reasons.map((r) => <li key={r}>{r}</li>)}</ul></div></div>)}
+          {hwq.d && <HwProblems d={hwq.d} />}
           {ctx.current && <HostEol sourceId={ctx.current.id} hostId={h.host_id} />}
           <div className="card flush">
             <div className="card-head"><h2>Продукты Kaspersky</h2></div>
@@ -152,7 +156,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       </div>
       <div className="mt">
         <Tabs<HostTab> label="Сведения о компьютере" value={tab} onChange={(t) => setSp((p) => { if (t === "software") p.delete("tab"); else p.set("tab", t); return p; }, { replace: true })}
-          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: vulns && !vulns.external_checked ? "Уязвимости (идёт проверка по внешним базам)" : "Уязвимости", count: vulns?.counts.total }, { id: "events", label: "События безопасности" }]} />
+          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: vulns && !vulns.external_checked ? "Уязвимости (идёт проверка по внешним базам)" : "Уязвимости", count: vulns?.counts.total }, { id: "events", label: "События безопасности" }, { id: "hardware", label: "Аппаратная часть", ...(hwq.d && hwq.d.problems.length ? { count: hwq.d.problems.length } : {}) }]} />
       </div>
       {tab === "software" && <>
         <div className="section-head"><span className="muted small">Программ: {num(d.software.length)}</span><div className="spacer" />
@@ -169,6 +173,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       {tab === "vulns" && (vErr ? <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{vErr}</div></div>
         : !vulns ? <div className="card"><SkelRows rows={4} cols={5} /></div>
           : <><HostVulnsTable data={vulns} /><p className="muted small mt-sm"><Link to={`/vulnerabilities/hosts/${h.host_id}`}>Сводка уязвимостей KSC</Link> — счётчики по уровням опасности.</p></>)}
+      {tab === "hardware" && <HardwareTab d={hwq.d} err={hwq.err} />}
       {tab === "events" && <><p className="muted small">События обнаружения за 30 суток: новые сверху.</p><EventList ctx={ctx} days={30} hostId={h.host_id} group={evGroup} threat={evThreat} onGroup={setEvGroup} onThreat={setEvThreat} /></>}
     </section>
   );

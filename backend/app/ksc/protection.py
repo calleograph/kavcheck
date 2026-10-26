@@ -34,6 +34,8 @@ PROBLEMS = {
     "license": ("Лицензия истекла", "по статусу KSC"),
     "scan_old": ("Нет свежей полной проверки", "полная проверка не выполнялась дольше выбранного порога"),
     "reboot": ("Требуется перезагрузка", "по статусу KSC"),
+    "hw_cpu": ("Недостаточно ядер CPU", "Linux-сервер: мало ядер процессора (по оборудованию из KSC, пороги — в настройках)"),
+    "hw_ram": ("Недостаточно ОЗУ", "Linux-сервер: мало оперативной памяти (по оборудованию из KSC, порог — в настройках)"),
 }
 
 
@@ -80,7 +82,8 @@ def problems(r: dict, now: datetime, *, bases_days: int, scan_days: int) -> list
         out.append("scan_old")
     if mask & 2048:
         out.append("reboot")
-    return sorted(out, key=list(PROBLEMS).index)
+    out += [p["key"] for p in ((r.get("hw") or {}).get("problems") or [])]          # аппаратные ресурсы Linux-серверов: отдельная проблема, не связанная с уязвимостями
+    return sorted(set(out), key=list(PROBLEMS).index)
 
 
 def _by_version(counter: Counter) -> list[dict]:
@@ -109,13 +112,21 @@ def versions(records: list[dict]) -> list[dict]:
     return out
 
 
-async def load(client: SourceClient, *, exclude_slaves: bool, groups: dict | None) -> list[dict]:
+async def load(client: SourceClient, *, exclude_slaves: bool, groups: dict | None, hw_cfg=None) -> list[dict]:
     hosts = await client.run(q.PROTECTION_HOSTS.format(where="h.bIsSlaveServer = 0" if exclude_slaves else "1 = 1"), max_rows=500_000)
     by_host: dict[int, list[dict]] = {}
     for p in await client.run(q.PROTECTION_PRODUCTS, max_rows=2_000_000):
         by_host.setdefault(int(p["host_id"]), []).append(p)
     now = datetime.now(timezone.utc)
-    return [record(h, by_host.get(int(h["host_id"]), []), groups, now) for h in hosts]
+    recs = [record(h, by_host.get(int(h["host_id"]), []), groups, now) for h in hosts]
+    if hw_cfg is not None and hw_cfg.enabled:                      # оборудование Linux-серверов одним запросом; нет объектов или данных — оценка не выполняется
+        from . import hardware as HW  # noqa: PLC0415
+
+        try:
+            HW.attach(recs, await HW.load_linux(client), hw_cfg)
+        except Exception:  # noqa: BLE001 — старый KSC без таблицы оборудования: защита показывается без оценки ресурсов
+            pass
+    return recs
 
 
 def scope(base: list[dict], *, now: datetime, activity_days: int, include_inactive: bool, online_only: bool, bases_days: int, scan_days: int) -> tuple[list[dict], dict]:
@@ -134,7 +145,7 @@ def scope(base: list[dict], *, now: datetime, activity_days: int, include_inacti
     return out, {"hidden": hidden, "offline": offline, "online_data": online_data, "online_only": bool(online_only and online_data)}
 
 
-def pick(hosts: list[dict], *, problem: str = "", product: str = "", build: str = "", q: str = "", group: str = "", host_ids: list[int] | None = None) -> list[dict]:
+def pick(hosts: list[dict], *, problem: str = "", product: str = "", build: str = "", q: str = "", group: str = "", host_ids: list[int] | None = None, hw_level: str = "") -> list[dict]:
     """Отбор компьютеров по категории проблемы, версии продукта, тексту, группе и выбранным строкам (одинаково для страницы и отчёта)."""
     items = hosts
     if host_ids:
@@ -142,8 +153,12 @@ def pick(hosts: list[dict], *, problem: str = "", product: str = "", build: str 
         items = [h for h in items if h["host_id"] in ids]
     if problem == "ok":
         items = [h for h in items if not h["problems"]]
+    elif problem == "hw":                                            # любая нехватка аппаратных ресурсов (Linux-серверы)
+        items = [h for h in items if {"hw_cpu", "hw_ram"} & set(h["problems"])]
     elif problem:
         items = [h for h in items if problem in h["problems"]]
+    if hw_level:                                                     # критичность проблемы ресурсов: critical — недостаточно ядер CPU; warning — остальное
+        items = [h for h in items if any(x["level"] == hw_level for x in ((h.get("hw") or {}).get("problems") or []))]
     if product:
         def ver(h: dict) -> str | None:
             av = h["av"] or {}

@@ -220,7 +220,7 @@ class QuickHosts(QuickScope):
 
 
 class QuickProtection(QuickScope):
-    problem: str = Field(default="", pattern=r"^(|ok|no_av|rtp_off|infected|bases_old|license|scan_old|reboot)$")
+    problem: str = Field(default="", pattern=r"^(|ok|no_av|rtp_off|infected|bases_old|license|scan_old|reboot|hw_cpu|hw_ram)$")
     product: str = Field(default="", max_length=64)
     build: str = Field(default="", max_length=64)
     bases_days: int = Field(default=3, ge=1, le=90)
@@ -272,7 +272,7 @@ class QuickEol(BaseModel):
 class QuickZone(BaseModel):
     """Состояние безопасности зон ответственности: зоны (или «none» — без ответственного), категории проблем, подробность, критичность и пороги."""
     zone_ids: list[str] = Field(min_length=1, max_length=100)
-    categories: list[Literal["ksc_vulns", "ksc_critical", "ext_vulns", "no_av", "rtp_off", "bases_old", "infected", "license", "scan_old", "reboot", "inactive"]] = Field(
+    categories: list[Literal["ksc_vulns", "ksc_critical", "ext_vulns", "no_av", "rtp_off", "bases_old", "infected", "license", "scan_old", "hw_cpu", "hw_ram", "reboot", "inactive"]] = Field(
         default_factory=lambda: ["ksc_vulns", "ext_vulns", "no_av", "rtp_off", "bases_old", "infected", "inactive"], min_length=1)
     level: Literal["management", "technical"] = "management"
     severity: Literal["", "critical", "high"] = ""

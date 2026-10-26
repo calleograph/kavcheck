@@ -121,3 +121,27 @@ async def host_vulnerabilities(host_id: int, request: Request, external: bool = 
         notes.append("Каталог программ источника ещё не построен: проверка по внешним базам не выполнялась.")
     rows = HV.merge(ksc_items, ext_items)
     return {"items": rows[:1000], "counts": HV.counts(rows), "notes": notes, "external_checked": external, "fetched_at": datetime.now(timezone.utc)}
+
+
+@router.get("/{host_id}/hardware")
+async def host_hardware(host_id: int, request: Request, su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+    """Аппаратная часть компьютера по инвентаризации Агента (из KSC): процессоры, ОЗУ, накопители (физические отдельно от логических), сеть, плата. Для Linux-серверов — оценка достаточности ресурсов.
+    Нет данных — «Нет данных», ложных предупреждений нет."""
+    from ..ksc import hardware as HW  # noqa: PLC0415
+    from .vulns import unsupported  # noqa: PLC0415
+
+    cfg = await request.app.state.settings_svc.get(db, "hardware")
+    if unsupported(src, "hardware"):
+        return {"supported": False, "hw": {"known": False, "line": "Нет данных"}, "problems": [], "linux": False, "thresholds": cfg.model_dump()}
+    client = request.app.state.sources.client(src)
+    try:
+        rows = await client.run(q.HW_HOST, {"id": host_id}, max_rows=2000)
+        host = await client.run(q.HOST_ONE, {"id": host_id}, max_rows=1)
+    except KscError as exc:
+        raise _ksc(exc) from None
+    if not host:
+        raise HTTPException(status_code=404, detail="Устройство не найдено")
+    hw = HW.finish(HW.summarize(rows))
+    linux = host[0].get("platform_type") == 6
+    problems = HW.evaluate(hw, cfg, host[0].get("name") or "") if linux and hw["known"] else []
+    return {"supported": True, "hw": hw, "linux": linux, "problems": problems, "thresholds": cfg.model_dump(), "fetched_at": datetime.now(timezone.utc)}

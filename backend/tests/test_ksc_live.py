@@ -325,3 +325,16 @@ def test_users_visited_query_and_unified_search():
     assert names("192.0.2.*") >= {"ksc-server", "ws-001"} and names("10.0.0.0/8") == set()
     assert names("ws-001 192.0.2.10") == {"ws-001", "ksc-server"} and names("ws-00*") == {"ws-001", "ws-002", "ws-003"}
     assert names("ivanov", users=True) == {"ws-001", "ws-002", "web-01.example.local"} and names("ivanov") == set()          # логин ищется, только если источник отдаёт таблицы пользователей
+
+
+def test_hardware_queries():
+    """Оборудование (hst_hwinv_dev): компоненты хоста, агрегаты по Linux и по списку; Windows в агрегат Linux не попадает."""
+    from app.ksc import hardware as HW
+
+    client = SourceClient(params(), name="test")
+    agg = asyncio.run(HW.load_linux(client))
+    assert set(agg) == {2, 3, 4} and (agg[2]["cores"], agg[2]["ram_mb"]) == (2, 4096) and (agg[3]["cores"], agg[3]["ram_mb"]) == (1, 1024) and agg[4]["cores"] == 4
+    assert set(asyncio.run(HW.load_for(client, [2, 6, 99]))) == {2, 6}       # по списку — любая платформа; нет данных — нет записи
+    h = HW.finish(HW.summarize(asyncio.run(client.run(q.HW_HOST, {"id": 3}, max_rows=500))))
+    assert h["known"] and h["cores"] == 1 and h["ram_mb"] == 1024 and h["disk_total_gb"] == 50 and h["logical"] and "CPU: 1 ядро" in h["line"]
+    assert HW.summarize(asyncio.run(client.run(q.HW_HOST, {"id": 5}, max_rows=500)))["known"] is False

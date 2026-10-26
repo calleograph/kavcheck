@@ -89,6 +89,7 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
     general = await request.app.state.settings_svc.get(db, "general")
     rcfg = await request.app.state.settings_svc.get(db, "reports")
+    hw = await request.app.state.settings_svc.get(db, "hardware")
     client = request.app.state.sources.client(src)
     ttl = request.app.state.settings.cache_ttl_seconds
     cache = request.app.state.cache
@@ -104,7 +105,7 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
 
     async def make() -> dict:
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
-                        protection_loader=lambda: _cached_protection(request, src, rcfg.exclude_slave_servers), sm=request.app.state.session_maker, source_id=src.id,
+                        protection_loader=lambda: _cached_protection(request, src, rcfg.exclude_slave_servers, hw), hw_cfg=hw, sm=request.app.state.session_maker, source_id=src.id,
                         zone_hosts=zset, zone_name=zname)
         doc = await quick.build(body.kind, client, params, ctx)
         main = doc["tables"][0]
@@ -120,13 +121,13 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
     return {**data, "fetched_at": data["at"], "preview_rows": PREVIEW_ROWS, "html_row_limit": quick_export.HTML_ROW_LIMIT}
 
 
-async def _load_protection(request: Request, src: KscSource, exclude_slaves: bool) -> list[dict]:
-    return await P.load(request.app.state.sources.client(src), exclude_slaves=exclude_slaves, groups=await groups_cached(request, src))
+async def _load_protection(request: Request, src: KscSource, exclude_slaves: bool, hw=None) -> list[dict]:
+    return await P.load(request.app.state.sources.client(src), exclude_slaves=exclude_slaves, groups=await groups_cached(request, src), hw_cfg=hw)
 
 
-async def _cached_protection(request: Request, src: KscSource, exclude_slaves: bool) -> list[dict]:
+async def _cached_protection(request: Request, src: KscSource, exclude_slaves: bool, hw=None) -> list[dict]:
     """Набор «Состояния защиты» из того же кэша, что у страницы: просмотр отчёта по защите не перечитывает KSC."""
-    val, _ = await request.app.state.cache.get((str(src.id), "protection", exclude_slaves), request.app.state.settings.cache_ttl_seconds, lambda: _load_protection(request, src, exclude_slaves))
+    val, _ = await request.app.state.cache.get((str(src.id), "protection", exclude_slaves, hw.model_dump_json() if hw else ""), request.app.state.settings.cache_ttl_seconds, lambda: _load_protection(request, src, exclude_slaves, hw))
     return val
 
 

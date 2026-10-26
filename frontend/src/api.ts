@@ -36,11 +36,18 @@ export interface HostVulnRow { id: string; keys: string[]; kla_id: string; title
   ksc: { url: string; patches_available: boolean; kb: string[]; detected: string | null } | null; external: { key: string; status: string; status_ru: string; basis: string; databases: string[] } | null }
 export interface HostVulnsAll { external_checked: boolean; items: HostVulnRow[]; notes: string[]; fetched_at: string; counts: { total: number; confirmed_ksc: number; confirmed_ext: number; potential: number; critical: number; high: number; warning: number } }
 export interface HostVuln { occurrence_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label: string; url: string; product: string; product_version: string; app_name: string; app_version: string; publisher: string; detected: string | null; patches_available: boolean; cve: string[]; mssb: string[]; kb: string[] }
-export type ProblemKey = "no_av" | "rtp_off" | "infected" | "bases_old" | "license" | "scan_old" | "reboot";
-export interface ProtHost { zone?: string; host_id: number; name: string; fqdn: string; ip: string; os: string; platform: string; group: string; last_connected: string | null; days_since_connection: number | null; activity: string; last_full_scan: string | null; online: boolean | null; last_visible: string | null; last_info_update: string | null;
+export type ProblemKey = "no_av" | "rtp_off" | "infected" | "bases_old" | "license" | "scan_old" | "reboot" | "hw_cpu" | "hw_ram";
+export interface HwProblem { key: "hw_cpu" | "hw_ram"; level: "critical" | "warning"; level_ru: string; title: string; actual: number; threshold: number; text: string }
+export interface HwDisk { name: string; descr: string; manuf: string; serial: string; total_gb: number | null; free_gb: number | null }
+export interface HostHardware { supported: boolean; linux: boolean; problems: HwProblem[]; fetched_at?: string; thresholds: { enabled: boolean; cpu_ok_cores: number; cpu_critical_cores: number; ram_min_mb: number };
+  hw: { known: boolean; line: string; virtual?: boolean; cores?: number | null; threads?: number | null; sockets?: number | null; ram_mb?: number | null; disk_total_gb?: number | null; disk_free_gb?: number | null; disks_logical_only?: boolean;
+    cpus?: { name: string; manuf: string; mhz: number | null; cores: number | null; threads: number | null }[]; ram_modules?: { name: string; mb: number | null; mhz: number | null }[]; disks?: HwDisk[]; logical?: HwDisk[];
+    nics?: { name: string; mac: string; speed_mbit: number | null }[]; board?: { board: string; manuf: string; bios_manuf: string; bios_version: string; bios_date: string | null } | null; other?: { type: string; name: string }[] } }
+export interface ProtHost { hw?: { problems: HwProblem[]; cores?: number | null; ram_mb?: number | null } | null; zone?: string; host_id: number; name: string; fqdn: string; ip: string; os: string; platform: string; group: string; last_connected: string | null; days_since_connection: number | null; activity: string; last_full_scan: string | null; online: boolean | null; last_visible: string | null; last_info_update: string | null;
   av: { code: string; product: string; build: string; state: number | null; state_label: string; bases: string | null; has_rtp: boolean } | null; agent_build: string; rtp_state: number | null; rtp_label: string; ksc_status: string | null; uncured: number; problems: ProblemKey[] }
 export interface ProtVersions { code: string; product: string; hosts: number; latest: string; on_latest: number; versions: { build: string; hosts: number }[] }
 export interface ProtSummary { hosts: number; hidden_hosts: number; offline_hosts: number; online_only: boolean; online_data: boolean; activity_days: number; bases_days: number; scan_days: number; ok: number; protected: number; problems: { key: ProblemKey; title: string; hint: string; hosts: number }[];
+  hw: { linux: number; with_data: number; critical: number; warning: number; thresholds: HostHardware["thresholds"] };
   ksc_status: Record<string, number>; reasons: { bit: number; title: string; hosts: number }[]; versions: ProtVersions[]; fetched_at: string }
 export type EvGroup = "detections" | "notcured" | "resolved" | "attacks";
 export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: string; title: string; group: EvGroup; n: number; hosts: number }[]; totals: Record<EvGroup, number>; hosts: Record<EvGroup | "any_hosts", number>;
@@ -270,6 +277,7 @@ export const api = {
     list: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<SecEvent> & { days?: number; unsupported?: string[] }>("GET", `/events${qs(p)}`),
   },
   hosts: {
+    hardware: (id: number) => req<HostHardware>("GET", `/hosts/${id}/hardware`),
     vulns: (id: number, external = true) => req<HostVulnsAll>("GET", `/hosts/${id}/vulnerabilities${external ? "" : "?external=false"}`),
     list: (p: Record<string, string | number | boolean | undefined>) => req<Page<Host> & { hidden: number; activity_days: number; fetched_at: string }>("GET", `/hosts${qs(p)}`),
     one: (id: number) => req<{ host: Host; activity_days: number; fetched_at: string; software: { install_id: number; product_id: number; name: string; version: string; publisher: string; install_date: string | null }[]; kaspersky: { product_code: string; product: string; build: string; state: string; av_bases_date: string | null; is_av: boolean; has_rtp: boolean }[] }>("GET", `/hosts/${id}`),

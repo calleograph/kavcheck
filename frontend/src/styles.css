@@ -339,6 +339,7 @@ label.check > .switch { margin-top: 0; }
 .table td.actions .btn + .btn, .table td.actions .btn + a, .table td.actions a + .btn { margin-left: 4px; }
 .table td.check, .table th.check { width: 40px; padding-right: 0; }
 .table .sub { display: block; font-size: var(--fs-xs); color: var(--muted); margin-top: 1px; }
+.kv dd .sub { display: block; color: var(--muted); font-size: var(--fs-xs); margin-top: 1px; }
 .table.compact th, .table.compact td { padding: 5px 8px; font-size: var(--fs-sm); }
 .table.compact th { font-size: var(--fs-xs); }
 .table tr.detail > td { background: var(--surface-2); padding: 12px 16px; }

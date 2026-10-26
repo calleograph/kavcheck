@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
 from ..ksc import hosts as H
+from ..ksc import hardware as HW
 from ..ksc import protection as P
 from ..ksc import queries as q
 from ..ksc import vulns as V
@@ -141,6 +142,7 @@ def host_columns(r: dict, now: datetime, activity_days: int) -> dict:
             "os": (r.get("os") or "")[:200], "last_connected": r.get("last_connected"), "days_since": None if days is None else float(days), "active": days is not None and days <= activity_days,
             "online": r.get("online"), "has_av": av is not None, "bases_age": None if not bases else (now - bases).total_seconds() / 86400, "scan_age": None if not scan else (now - scan).total_seconds() / 86400,
             "p_no_av": "no_av" in pr, "p_rtp": "rtp_off" in pr, "p_inf": "infected" in pr, "p_lic": "license" in pr, "p_reb": "reboot" in pr,
+            "p_hwc": "hw_cpu" in pr, "p_hwr": "hw_ram" in pr, "hw_crit": any(x["level"] == "critical" for x in ((r.get("hw") or {}).get("problems") or [])),
             "conflict": bool(r.get("zone_conflict")), "pinned": bool(r.get("zone_pinned"))}
 
 
@@ -245,7 +247,7 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
         stage = -int(time.time()) if partial else cur + 1                       # поколение обновления зоны — минус время начала (по нему находятся хвосты прерванных заданий)
         zs.status = "building" if cur == 0 else zs.status
         zs.started_at, zs.progress = started, "подготовка"
-        general, rcfg = await bc.svc.get(db, "general"), await bc.svc.get(db, "reports")
+        general, rcfg, hwcfg = await bc.svc.get(db, "general"), await bc.svc.get(db, "reports"), await bc.svc.get(db, "hardware")
         zindex = await S.index(db)
         zones_days = {str(z.id): z.activity_days for z in (await db.execute(select(Zone))).scalars() if z.activity_days}
         tindex = await T.load(db, sid, started)
@@ -290,6 +292,14 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
             for p in await client.run(q.PROTECTION_PRODUCTS_FOR.format(ids=idl), max_rows=cz * 200):
                 by_host.setdefault(int(p["host_id"]), []).append(p)
             recs = ZM.annotate([P.record(h, by_host.get(int(h["host_id"]), []), groups, started) for h in hrows], zindex, str(sid))
+            if hwcfg.enabled:                                    # оборудование Linux-серверов порции (ядра и ОЗУ): нет данных или объектов — оценки ресурсов нет
+                linux = [int(h["host_id"]) for h in hrows if h.get("platform_type") == 6]
+                try:
+                    HW.attach(recs, await HW.load_for(client, linux) if linux else {}, hwcfg)
+                except Exception as exc:  # noqa: BLE001
+                    notes_hw = f"Оборудование не прочитано: {type(exc).__name__}"
+                    if notes_hw not in notes:
+                        notes.append(notes_hw)
             rows_h, rows_z = [], []
             for r in recs:
                 zl = r["zones"] or [UNASSIGNED]

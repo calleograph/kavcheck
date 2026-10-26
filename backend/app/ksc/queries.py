@@ -31,6 +31,18 @@ EOL_APP_HOSTS = ("SELECT i.nHostId AS host_id, i.nProduct AS product_id, " + _AC
 USERS_VISITED = ("SELECT TOP (%(n)s) v.nId AS row_id, v.nHost AS host_id, v.nUser AS user_id, v.bActual AS actual, CONVERT(varchar(34), v.binSidHash, 1) AS sid_hash, "
                  "u.wstrSamAccountName AS login, u.wstrUserPrincipalName AS upn, u.wstrDisplayName AS display_name, u.nHostId AS local_host "
                  "FROM dbo.hst_user_visited v LEFT JOIN dbo.ak_users u ON u.nId = v.nUser WHERE v.nId > %(after)s ORDER BY v.nId")
+# оборудование (инвентаризация Агента): hst_hwinv_dev — по строке на компонент; типы nDevType: 0 плата, 1 процессор, 2 модуль ОЗУ, 3 накопитель, 4 видео, 5 звук, 6 сеть, 7 монитор, 8 привод.
+# XPar1 — серийный номер (накопитель, монитор) или MAC (сеть); XPar2 — объём накопителя в байтах / скорость сети; XPar3 — объём модуля ОЗУ в байтах / свободное место накопителя в байтах
+HW_HOST = ("SELECT d.nId AS id, d.nDevType AS dev_type, n.wstrName AS name, ds.wstrDescr AS descr, m.wstrManuf AS manuf, d.wstrDevId AS dev_id, d.wstrSerialNum AS serial, d.XPar1 AS x1, "
+           "d.XPar2 AS x2, d.XPar3 AS x3, d.nCpuSpeed AS cpu_mhz, d.nCpuCores AS cpu_cores, d.nCpuThreads AS cpu_threads, d.strBiosManuf AS bios_manuf, d.strBiosVersion AS bios_version, "
+           "d.dtBiosRelease AS bios_date FROM dbo.hst_hwinv_dev d LEFT JOIN dbo.hwinv_dev_name n ON n.nId = d.nNameId LEFT JOIN dbo.hwinv_dev_descr ds ON ds.nId = d.nDescrId "
+           "LEFT JOIN dbo.hwinv_dev_manuf m ON m.nId = d.nManufId WHERE d.bDeleted = 0 AND d.nHostId = %(id)s ORDER BY d.nDevType, d.nId")
+_HW_AGG = ("SELECT d.nHostId AS host_id, SUM(CASE WHEN d.nDevType = 1 THEN 1 ELSE 0 END) AS cpus, SUM(CASE WHEN d.nDevType = 1 AND d.nCpuCores IS NOT NULL THEN 1 ELSE 0 END) AS cpus_known, "
+           "SUM(CASE WHEN d.nDevType = 1 THEN ISNULL(d.nCpuCores, 0) ELSE 0 END) AS cores, SUM(CASE WHEN d.nDevType = 1 THEN ISNULL(d.nCpuThreads, 0) ELSE 0 END) AS threads, "
+           "SUM(CASE WHEN d.nDevType = 2 THEN 1 ELSE 0 END) AS ram_modules, SUM(CASE WHEN d.nDevType = 2 THEN ISNULL(d.XPar3, 0) ELSE 0 END) AS ram_bytes "
+           "FROM dbo.hst_hwinv_dev d {join} WHERE d.bDeleted = 0 AND d.nDevType IN (1, 2) AND {where} GROUP BY d.nHostId")
+HW_AGG_LINUX = _HW_AGG.format(join="JOIN dbo.v_akpub_host h ON h.nId = d.nHostId", where="h.nPlatformType = 6")
+HW_AGG_FOR = _HW_AGG.format(join="", where="d.nHostId IN ({ids})")
 COUNT_PRODUCTS = "SELECT COUNT(*) AS n FROM dbo.hst_inventory_products p WHERE EXISTS (SELECT 1 FROM dbo.hst_inventory_hstprds i WHERE i.nProduct = p.nId AND i.bDeleted = 0)"
 COUNT_INSTALLS = "SELECT COUNT(*) AS n FROM dbo.hst_inventory_hstprds i WHERE i.bDeleted = 0"
 
@@ -211,6 +223,7 @@ FEATURE_OBJECTS = {
                         "vapm_product_exact_version", "v_vapm_product", "hst_inventory_products", "v_akpub_host"),
     "events": ("v_akpub_ev_event", "v_akpub_host"),
     "users": ("hst_user_visited", "ak_users", "v_akpub_host"),
+    "hardware": ("hst_hwinv_dev", "hwinv_dev_name", "hwinv_dev_descr", "hwinv_dev_manuf", "v_akpub_host"),
 }
 
 

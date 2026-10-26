@@ -15,7 +15,7 @@ from . import triage as T
 
 CATEGORIES = {"ksc_vulns": "Уязвимости, подтверждённые KSC", "ksc_critical": "Только критические уязвимости KSC", "ext_vulns": "Потенциальные уязвимости ПО по внешним базам",
               "no_av": P.PROBLEMS["no_av"][0], "rtp_off": P.PROBLEMS["rtp_off"][0], "bases_old": P.PROBLEMS["bases_old"][0], "infected": P.PROBLEMS["infected"][0],
-              "license": P.PROBLEMS["license"][0], "scan_old": P.PROBLEMS["scan_old"][0], "reboot": P.PROBLEMS["reboot"][0], "inactive": "Давно не подключавшиеся к KSC компьютеры"}
+              "license": P.PROBLEMS["license"][0], "scan_old": P.PROBLEMS["scan_old"][0], "reboot": P.PROBLEMS["reboot"][0], "hw_cpu": P.PROBLEMS["hw_cpu"][0], "hw_ram": P.PROBLEMS["hw_ram"][0], "inactive": "Давно не подключавшиеся к KSC компьютеры"}
 DEFAULT_CATEGORIES = ["ksc_vulns", "ext_vulns", "no_av", "rtp_off", "bases_old", "infected", "inactive"]
 PROTECTION_KEYS = tuple(P.PROBLEMS)
 SEV_BADGE = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение", "": ""}
@@ -51,7 +51,8 @@ def _detail(h: dict, key: str, bases_days: int, scan_days: int) -> str:
             "rtp_off": f"постоянная защита: {h['rtp_label'] or av.get('state_label') or 'не работает'}",
             "bases_old": f"базы от {_fmt_dt(av.get('bases')) or 'неизвестно'} (порог {bases_days} сут)",
             "infected": f"невылеченных объектов: {h.get('uncured') or 'есть'}", "license": "лицензия истекла (по статусу KSC)",
-            "scan_old": f"полная проверка: {_fmt_dt(h['last_full_scan']) or 'не выполнялась'} (порог {scan_days} сут)", "reboot": "требуется перезагрузка (по статусу KSC)"}.get(key, "")
+            "scan_old": f"полная проверка: {_fmt_dt(h['last_full_scan']) or 'не выполнялась'} (порог {scan_days} сут)", "reboot": "требуется перезагрузка (по статусу KSC)",
+            "hw_cpu": next((x["text"] for x in (h.get("hw") or {}).get("problems", []) if x["key"] == "hw_cpu"), ""), "hw_ram": next((x["text"] for x in (h.get("hw") or {}).get("problems", []) if x["key"] == "hw_ram"), "")}.get(key, "")
 
 
 def anchor(h: dict) -> str:

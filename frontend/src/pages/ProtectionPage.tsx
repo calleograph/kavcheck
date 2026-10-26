@@ -10,8 +10,8 @@ import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum, Mas
 import { fmt, fmtDate, num, plural } from "../util";
 import { ZoneSelect } from "../components/ZoneBits";
 
-export const PROBLEM_TONE: Record<ProblemKey, "err" | "warn"> = { no_av: "err", rtp_off: "err", infected: "err", license: "err", bases_old: "warn", scan_old: "warn", reboot: "warn" };
-export const PROBLEM_SHORT: Record<ProblemKey, string> = { no_av: "нет антивируса", rtp_off: "защита не работает", infected: "невылеченные объекты", bases_old: "старые базы", license: "лицензия истекла", scan_old: "нет полной проверки", reboot: "нужна перезагрузка" };
+export const PROBLEM_TONE: Record<ProblemKey, "err" | "warn"> = { no_av: "err", rtp_off: "err", infected: "err", license: "err", bases_old: "warn", scan_old: "warn", reboot: "warn", hw_cpu: "warn", hw_ram: "warn" };
+export const PROBLEM_SHORT: Record<ProblemKey, string> = { no_av: "нет антивируса", rtp_off: "защита не работает", infected: "невылеченные объекты", bases_old: "старые базы", license: "лицензия истекла", scan_old: "нет полной проверки", reboot: "нужна перезагрузка", hw_cpu: "мало ядер CPU", hw_ram: "мало ОЗУ" };
 export const shortProduct = (s: string) => s.replace(/^Kaspersky\s+/, "").replace(" for ", " для ");
 const daysAgo = (iso: string | null) => (iso ? Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)) : null);
 
@@ -25,7 +25,7 @@ export function ProblemBadges({ problems }: { problems: ProblemKey[] }) {
 export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
   const navigate = useNavigate();
-  const problem = sp.get("problem") ?? ""; const product = sp.get("product") ?? ""; const build = sp.get("build") ?? "";
+  const problem = sp.get("problem") ?? ""; const hwLevel = sp.get("hw_level") ?? ""; const product = sp.get("product") ?? ""; const build = sp.get("build") ?? "";
   const onlineOnly = sp.get("online") !== "0";   // по умолчанию — только устройства, которые KSC сейчас видит в сети
   const [basesDays, setBasesDays] = useKept("prot.bases", "3"); const [scanDays, setScanDays] = useKept("prot.scan", "30");
   const [q, setQ] = useKept("prot.q", ""); const [group, setGroup] = useKept("prot.group", ""); const [applied, setApplied] = useState({ q, group });
@@ -33,9 +33,9 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   const [zone, setZone] = useKept("prot.zone", sp.get("zone") ?? "");
   const force = useRef(false);
   useEffect(() => { const t = window.setTimeout(() => setApplied({ q, group }), 350); return () => window.clearTimeout(t); }, [q, group]);
-  const list = useInfinite<ProtHost>(`protection:${ctx.current?.id}`, [problem, product, build, basesDays, scanDays, applied, all, onlineOnly, sort, desc, zone], (offset, limit) => {
+  const list = useInfinite<ProtHost>(`protection:${ctx.current?.id}`, [problem, hwLevel, product, build, basesDays, scanDays, applied, all, onlineOnly, sort, desc, zone], (offset, limit) => {
     const refresh = (force.current && offset === 0) || undefined; force.current = false;
-    return api.protection({ problem, product, build, bases_days: basesDays, scan_days: scanDays, ...applied, all_hosts: all, online: onlineOnly, zone, sort, desc, offset, limit, refresh }) as unknown as Promise<Chunk<ProtHost>>;
+    return api.protection({ problem, hw_level: hwLevel, product, build, bases_days: basesDays, scan_days: scanDays, ...applied, all_hosts: all, online: onlineOnly, zone, sort, desc, offset, limit, refresh }) as unknown as Promise<Chunk<ProtHost>>;
   });
   const data = list.extra as { summary?: ProtSummary | null; unsupported?: string[] } | null;
   const busy = list.loading;
@@ -55,9 +55,9 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   const s = data?.summary;
   const count = (k: ProblemKey) => s?.problems.find((p) => p.key === k)?.hosts ?? 0;
   const pct = (n: number) => (s?.hosts ? Math.round((n / s.hosts) * 100) : 0);
-  const pTitle = s?.problems.find((p) => p.key === problem)?.title ?? (problem === "ok" ? "Без проблем" : problem);
+  const pTitle = s?.problems.find((p) => p.key === problem)?.title ?? (problem === "ok" ? "Без проблем" : problem === "hw" ? "Недостаток аппаратных ресурсов" : problem);
   const vTitle = product ? `${shortProduct(s?.versions.find((v) => v.code === product)?.product ?? product)}${build ? ` ${build}` : ""}` : "";
-  const filtered = !!(problem || product || applied.q || applied.group || zone);
+  const filtered = !!(problem || hwLevel || product || applied.q || applied.group || zone);
   if (data?.unsupported) return <section><PageHead title="Состояние защиты" /><div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет объектов состояния защиты ({data.unsupported.join(", ")}). Раздел недоступен для этого источника.</div></div></section>;
   return (
     <section>
@@ -96,6 +96,14 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                   </button></li>);
               })}
             </ul>)}
+          {s && s.hw.linux > 0 && (
+            <div className="card-foot hw-foot">
+              <span className="small"><b>Аппаратные ресурсы Linux-серверов</b> (отдельно от уязвимостей и событий): критических {num(s.hw.critical)}, предупреждений {num(s.hw.warning)}
+                {s.hw.with_data < s.hw.linux ? `; у ${num(s.hw.linux - s.hw.with_data)} из ${num(s.hw.linux)} Linux-устройств нет данных об оборудовании — оценка по ним не выполняется` : ""}.
+                Пороги: ядер от {s.hw.thresholds.cpu_ok_cores} — норма, {s.hw.thresholds.cpu_critical_cores} — критично, ОЗУ меньше {s.hw.thresholds.ram_min_mb} МБ — предупреждение{ctx.me.user.is_admin ? <> (<Link to="/admin?tab=eolcfg">настроить</Link>)</> : ""}.</span>
+              <span className="row tight"><Segmented label="Уровень проблемы ресурсов" value={problem === "hw" || problem.startsWith("hw_") ? hwLevel : "-"} onChange={(v) => setParams({ problem: problem.startsWith("hw") ? problem : "hw", hw_level: v === "-" ? "" : v }, true)}
+                options={[["", "Все ресурсы"], ["critical", "Критические"], ["warning", "Предупреждения"]]} />{(problem === "hw" || hwLevel) && <button type="button" className="link-btn" onClick={() => setParams({ problem: "", hw_level: "" })}>Сбросить</button>}</span>
+            </div>)}
           <div className="card-foot">
             <span className="muted small">Пороги:</span>
             <span className="row tight"><span className="small">базы старше</span><Segmented label="Порог актуальности баз, суток" value={basesDays} onChange={setBasesDays} options={[["1", "1"], ["3", "3"], ["7", "7"]]} /><span className="small">сут</span></span>
@@ -154,7 +162,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                     <td className="small hide-sm">{h.av ? (h.problems.includes("rtp_off") ? <span className="bad-text">{h.av.state_label && h.av.state_label !== "запущен" ? `продукт ${h.av.state_label}` : h.rtp_label || "не работает"}</span> : h.rtp_label || h.av.state_label || "—") : "—"}</td>
                     <td className="nowrap">{h.av ? (h.av.bases ? <span className={old ? "warn-text" : ""}>{fmtDate(h.av.bases)}<span className="sub">{b === 0 ? "сегодня" : `${b} сут назад`}</span></span> : <span className="warn-text">нет сведений</span>) : "—"}</td>
                     <td className="nowrap small hide-sm">{h.av ? (h.last_full_scan ? <span className={h.problems.includes("scan_old") ? "warn-text" : ""}>{fmtDate(h.last_full_scan)}</span> : <span className="muted">не выполнялась</span>) : "—"}</td>
-                    <td><ProblemBadges problems={h.problems} /></td>
+                    <td><ProblemBadges problems={h.problems} />{h.hw?.problems.map((p) => <span key={p.key} className="sub small" title={p.level_ru}>{p.text}</span>)}</td>
                     <td className="nowrap small hide-sm">{fmt(h.last_connected)}</td>
                   </tr>);
               }} />

@@ -59,6 +59,7 @@ zones/            зоны ответственности: match (принадл
 ## EOL, устройства и пользователи
 
 * `app/eol/` — жизненный цикл ПО и ОС: `classify` (правила), `osmatch` (ОС → ветка), `sync` (загрузка endoflife.date), `compute` (сопоставление каталога и ОС, устройства), `service` (фоновый пересчёт), `read` (чтение для страниц). Подробно: [EOL.md](EOL.md).
+* `app/ksc/hardware.py` — сводка оборудования устройства из `hst_hwinv_dev` и оценка ресурсов Linux-серверов (ядра, ОЗУ). Подробно: [HARDWARE.md](HARDWARE.md).
 * `app/devices/` — опрос пользователей KSC (`users`, `service`) и чтение таблицы устройств (`read`). Подробно: [DEVICES.md](DEVICES.md).
 * `app/netsearch.py` — единый поиск (имя, IP, CIDR, диапазоны, логин) для всех списков устройств.
 * `auth/deps.py: source_scope` — «Все источники» (`X-Source-Id: all`).

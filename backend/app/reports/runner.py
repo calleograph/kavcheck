@@ -148,6 +148,7 @@ class Runner:
             rcfg: ReportsSettings = await self._svc.get(db, "reports")  # type: ignore[assignment]
             general = await self._svc.get(db, "general")
             org = (await self._svc.get(db, "organization")).model_dump()
+            hw = await self._svc.get(db, "hardware")
         if src is None:
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
@@ -164,7 +165,7 @@ class Runner:
 
         watcher = asyncio.create_task(watch())
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
-                        progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"], sm=self._sm, source_id=src.id, org=org)
+                        progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"], sm=self._sm, source_id=src.id, org=org, hw_cfg=hw)
         if job.kind == "quick_eol":
             ctx.source_ids = [uuid.UUID(str(x)) for x in (job.source_ids or [str(job.source_id)])]
         try:
