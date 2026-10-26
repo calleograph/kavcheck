@@ -43,17 +43,16 @@ def test_missing_data_is_shown_as_no_data_and_never_evaluated():
 def test_cpu_and_ram_thresholds_and_exclusions():
     cfg = HardwareSettings()
     ev = lambda cores=None, ram=None, name="": [(p["key"], p["level"]) for p in HW.evaluate({"cores": cores, "ram_mb": ram}, cfg, name)]  # noqa: E731
-    assert ev(4, 8192) == [] and ev(3, 8192) == [] and ev(2, 8192) == []                    # два и больше — норма
-    assert ev(1, 8192) == [("hw_cpu", "critical")]
-    strict = HardwareSettings(cpu_ok_cores=3)                                                # администратор может поднять норму: тогда 2 ядра — предупреждение
-    w = HW.evaluate({"cores": 2}, strict)[0]
-    assert (w["level"], w["title"], w["actual"], w["threshold"]) == ("warning", "Мало ядер CPU", 2, 3)
+    assert ev(4, 8192) == [] and ev(3, 8192) == []                                          # три и больше — норма
+    assert ev(2, 8192) == [("hw_cpu", "warning")] and ev(1, 8192) == [("hw_cpu", "critical")]
+    assert ev(2, 1900) == [("hw_cpu", "warning")] and ev(4, 2048) == [] and ev(4, 1900) == []   # сервер «с 2 ГБ» (в том числе 1,9 ГБ по данным KSC) проходит; ниже 1,75 ГБ — предупреждение
+    assert ev(4, 1500) == [("hw_ram", "warning")]
     assert ev(4, 1024) == [("hw_ram", "warning")] and ev(1, 512) == [("hw_cpu", "critical"), ("hw_ram", "warning")]
-    p = HW.evaluate({"cores": 1, "ram_mb": 1024}, cfg)
-    assert p[0]["title"] == "Недостаточно ядер CPU" and p[0]["actual"] == 1 and p[0]["threshold"] == 2 and p[1]["title"] == "Недостаточно ОЗУ" and p[1]["actual"] == 1024 and "порог" in p[1]["text"]
+    p = HW.evaluate({"cores": 2, "ram_mb": 1024}, cfg)
+    assert p[0]["title"] == "Мало ядер CPU" and p[0]["actual"] == 2 and p[0]["threshold"] == 3 and p[1]["title"] == "Недостаточно ОЗУ" and p[1]["actual"] == 1024 and "порог" in p[1]["text"]
     assert HW.evaluate({"cores": 1, "ram_mb": 100}, HardwareSettings(enabled=False)) == []
     assert ev(1, 100, "lab-srv-01") != [] and HW.evaluate({"cores": 1}, HardwareSettings(exclude_masks=["lab-*"]), "lab-srv-01") == []
-    assert HW.evaluate({"cores": 2, "ram_mb": 3000}, HardwareSettings(ram_min_mb=4096))[0]["key"] == "hw_ram"      # пороги настраиваются
+    assert HW.evaluate({"cores": 2, "ram_mb": 3000}, HardwareSettings(cpu_ok_cores=2, ram_min_mb=4096))[0]["key"] == "hw_ram"      # пороги настраиваются
 
 
 def rec(host_id, platform):
@@ -85,7 +84,7 @@ async def test_host_hardware_endpoint_with_full_partial_and_missing_data(client,
 
     monkeypatch.setattr(app.state.sources, "client", lambda src: Fake())
     r = (await client.get("/api/v1/hosts/7/hardware")).json()
-    assert r["linux"] and r["hw"]["line"].startswith("Диски: 120 ГБ · CPU: 2 ядра") and [p["key"] for p in r["problems"]] == ["hw_ram"] and r["thresholds"]["ram_min_mb"] == 2048 and r["thresholds"]["cpu_ok_cores"] == 2
+    assert r["linux"] and r["hw"]["line"].startswith("Диски: 120 ГБ · CPU: 2 ядра") and [p["key"] for p in r["problems"]] == ["hw_cpu", "hw_ram"] and r["thresholds"]["ram_min_mb"] == 1792
     r = (await client.get("/api/v1/hosts/8/hardware")).json()
     assert r["problems"] == [] and r["hw"]["cores"] is None                                 # ядер нет — оценка пропущена
     r = (await client.get("/api/v1/hosts/9/hardware")).json()
