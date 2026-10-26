@@ -985,6 +985,9 @@ class EolState(Base):
     error: Mapped[str | None] = mapped_column(Text)
     error_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     progress: Mapped[str | None] = mapped_column(String(200))
+    attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                       # начало последней попытки расчёта (успешной или нет): отличает свежую ошибку от оставшейся с прошлых попыток
+    error_detail: Mapped[str | None] = mapped_column(Text)                                  # техническая причина последней ошибки (этап, операция, ключ) — только для администратора
+    diag: Mapped[dict | None] = mapped_column(JSONType)                                      # сведения последнего расчёта: объединённые дубли, конфликты при записи, число попыток
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                       # расчёт идёт сейчас (очищается по завершении; после падения worker сбрасывается при запуске)
 
 

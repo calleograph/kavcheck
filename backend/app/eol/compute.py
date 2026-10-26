@@ -265,6 +265,55 @@ def merge_versions(versions: list[dict]) -> list[dict]:
     return list(out.values())
 
 
+_STATUS_RANK = {"eol": 3, "extended": 2, "upcoming": 1}
+_SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
+
+
+def merge_findings(rows: list[EolFinding]) -> tuple[list[EolFinding], dict]:
+    """Одинаковые находки (источник, вид, продукт или ОС, версия) объединяются до записи: остаётся более серьёзная по состоянию поддержки и критичности, записи реестра складываются в один список,
+    счётчики устройств берутся наибольшие (это один и тот же факт, а не сумма). Находки с разными ключами не затрагиваются. Возвращает (строки, сведения для диагностики: сколько ключей объединено и примеры)."""
+    by: dict[tuple, EolFinding] = {}
+    merged: list[tuple] = []
+    for f in rows:
+        k = (f.kind, f.subject, f.version)
+        cur = by.get(k)
+        if cur is None:
+            by[k] = f
+            continue
+        merged.append(k)
+        best, other = (f, cur) if (_STATUS_RANK.get(f.status, 0), _SEV_RANK.get(f.severity, 0)) > (_STATUS_RANK.get(cur.status, 0), _SEV_RANK.get(cur.severity, 0)) else (cur, f)
+        best.product_ids = sorted({*(best.product_ids or []), *(other.product_ids or [])})
+        for a in ("hosts_all", "hosts_active", "installs_active"):
+            setattr(best, a, max(int(getattr(best, a) or 0), int(getattr(other, a) or 0)))
+        by[k] = best
+    return list(by.values()), {"merged_keys": len({*merged}), "merged_rows": len(merged), "examples": [f"{k[0]}:{k[1][:60]}|{k[2][:40]}" for k in list(dict.fromkeys(merged))[:5]]}
+
+
+async def write_findings(db: AsyncSession, rows: list[EolFinding], batch: int = 500) -> int:
+    """Запись находок пакетами с разрешением конфликта ключа обновлением (ON CONFLICT DO UPDATE): к этому моменту ключи в `rows` уникальны, а строки источника удалены в той же транзакции,
+    поэтому конфликт возможен только при чужой параллельной записи; наши данные в этом случае побеждают, а не теряются. Возвращает число конфликтов (для диагностики; в SQLite не считается)."""
+    from sqlalchemy import literal_column  # noqa: PLC0415
+
+    pg = db.bind.dialect.name == "postgresql"
+    if pg:
+        from sqlalchemy.dialects.postgresql import insert as ins  # noqa: PLC0415
+    else:
+        from sqlalchemy.dialects.sqlite import insert as ins  # noqa: PLC0415
+    cols = [c.key for c in EolFinding.__table__.c]
+    pk = [c.key for c in EolFinding.__table__.primary_key.columns]
+    conflicts = 0
+    for i in range(0, len(rows), batch):
+        values = [{c: getattr(f, c) for c in cols} for f in rows[i:i + batch]]
+        stmt = ins(EolFinding.__table__).values(values)
+        stmt = stmt.on_conflict_do_update(index_elements=pk, set_={c: stmt.excluded[c] for c in cols if c not in pk})
+        if pg:
+            res = await db.execute(stmt.returning(literal_column("(xmax = 0)")))
+            conflicts += sum(1 for (inserted,) in res if not inserted)
+        else:
+            await db.execute(stmt)
+    return conflicts
+
+
 def check_unique(rows: list[EolFinding]) -> None:
     """Инвариант записи: ключ находки уникален. Нарушение — ошибка расчёта с понятным текстом, а не отказ базы посреди вставки."""
     seen: set[tuple] = set()
@@ -275,18 +324,9 @@ def check_unique(rows: list[EolFinding]) -> None:
         seen.add(k)
 
 
-async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceClient | None, src: KscSource, *, activity_days: int, exclude_slaves: bool = True, today: date | None = None,
-                         soon_days: int = 180, res=None, progress=None) -> dict:
-    """Пересчитывает `eol_findings` и `eol_hosts` источника. client нужен для устройств и ОС; без него считаются только находки по программам каталога (без списков устройств)."""
-    t0 = time.monotonic()
-    today = today or date.today()
-    where = "h.bIsSlaveServer = 0" if exclude_slaves else "1 = 1"
+async def catalog_findings(sm: async_sessionmaker[AsyncSession], src: KscSource, today: date, soon_days: int, res=None, step=lambda _t: None) -> tuple[str, Index, list[dict], list[EolFinding]]:
+    """Находки по программам каталога источника (без обращения к KSC): отпечаток исходных данных, база EOL, ветки Windows и список находок. Читает только внутреннюю базу — используется и расчётом, и диагностикой."""
     out: list[EolFinding] = []
-
-    def step(text: str) -> None:
-        if progress:
-            progress(text)
-
     async with sm() as db:
         inputs = await current_inputs(db, src.id, today, soon_days)
         idx = await load_index(db)
@@ -327,6 +367,21 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
             if res is not None:
                 await res.breathe("EOL: программы")
         win = [{"name": r.name, "latest_name": r.latest_name} for r in idx.releases.get("windows", {}).values()]
+    return inputs, idx, win, out
+
+
+async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceClient | None, src: KscSource, *, activity_days: int, exclude_slaves: bool = True, today: date | None = None,
+                         soon_days: int = 180, res=None, progress=None) -> dict:
+    """Пересчитывает `eol_findings` и `eol_hosts` источника. client нужен для устройств и ОС; без него считаются только находки по программам каталога (без списков устройств)."""
+    t0 = time.monotonic()
+    today = today or date.today()
+    where = "h.bIsSlaveServer = 0" if exclude_slaves else "1 = 1"
+
+    def step(text: str) -> None:
+        if progress:
+            progress(text)
+
+    inputs, idx, win, out = await catalog_findings(sm, src, today, soon_days, res, step)
 
     links: dict[tuple, array] = {}
     act: set[int] = set()                                    # устройства со связью за период активности (по ответам KSC)
@@ -362,16 +417,16 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
             out.append(f)
         links.update(os_l)
     out = [f for f in out if f.kind == "app" or f.hosts_all]
+    out, diag = merge_findings(out)                                 # одинаковые находки объединяются, а не роняют расчёт; факт объединения виден администратору
     check_unique(out)
     sig = signature(out)
-    # этап «сохранение» не пишется отдельно: запись состояния конкурировала бы с самой транзакцией замены результатов
+    step("сохранение")
     async with sm() as db:
         await xact_lock(db, f"eol:{src.id}")                    # замена результатов источника — только по одному процессу
         await db.execute(delete(EolHostStat).where(EolHostStat.source_id == src.id))
         await db.execute(delete(EolHost).where(EolHost.source_id == src.id))
         await db.execute(delete(EolFinding).where(EolFinding.source_id == src.id))
-        db.add_all(out)
-        await db.flush()
+        diag["write_conflicts"] = await write_findings(db, out)
         batch: list[dict] = []                                  # строки устройств пишутся порциями: общий список связей в памяти не строится
         for k, hs in links.items():
             for h in hs:
@@ -394,7 +449,8 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
             st = EolState(source_id=src.id)
             db.add(st)
         st.computed_at, st.duration_ms, st.items, st.error, st.error_at, st.progress, st.started_at = utcnow(), int((time.monotonic() - t0) * 1000), len(out), None, None, None, None
+        st.error_detail, st.diag = None, diag
         changed = st.rev != sig
         st.rev, st.inputs = sig, inputs
         await db.commit()
-    return {"items": len(out), "links": sum(len(v) for v in links.values()), "changed": changed, "signature": sig, "seconds": round(time.monotonic() - t0, 1)}
+    return {"diag": diag, "items": len(out), "links": sum(len(v) for v in links.values()), "changed": changed, "signature": sig, "seconds": round(time.monotonic() - t0, 1)}

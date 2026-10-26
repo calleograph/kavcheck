@@ -427,10 +427,14 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
         stats = await ZR.group_stats(db, sids=sids, default_days=int(general.activity_days), zone_days=zdays)
         confl = {z: c for z, (_n, c) in (await ZR.conflict_counts(db, sids)).items()}
     eol_on = bool((await request.app.state.settings_svc.get(db, "eol")).include_in_analytics)       # type: ignore[attr-defined]
-    eol_missing = await EOLR.not_ready(db, sids) if eol_on else []
+    eol_ready, eol_missing = await EOLR.readiness(db, sids) if eol_on else ([], [])
     if eol_missing:
-        eol_on = False                                  # расчёта EOL нет хотя бы по одному источнику: нули не показываем (колонка скрыта, причина — в `eol_missing`)
-    eol = (await request.app.state.cache.get(("eol-zones", tuple(sorted(map(str, sids or [])))), 60, lambda: EOLR.zone_counts(db, sids)))[0] if eol_on else {}       # раз в минуту: не агрегировать итоги EOL при каждом открытии
+        eol_sids = eol_ready                            # итоги — только по рассчитанным источникам; по остальным сообщается `eol_missing` (данные неполные, нули не показываем как результат)
+        if not eol_ready:
+            eol_on = False                              # не рассчитан ни один источник: колонка скрыта
+    else:
+        eol_sids = sids
+    eol = (await request.app.state.cache.get(("eol-zones", tuple(sorted(map(str, eol_sids or [])))), 60, lambda: EOLR.zone_counts(db, eol_sids)))[0] if eol_on else {}       # раз в минуту: не агрегировать итоги EOL при каждом открытии
     rows = []
     unassigned = {"id": UNASSIGNED, "name": "Без ответственного", "description": "Компьютеры, не подошедшие ни одной зоне", "purpose": "", "priority": 0, "contacts": [], "enabled": True, "activity_days": None}
     for z in infos + [unassigned]:
@@ -494,6 +498,7 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
         stat = (await ZR.group_stats(db, sids=sids, zone_id=zid, bd=bases_days, sd=scan_days, ext=ext, default_days=int(general.activity_days), zone_days=zdays)).get(zid) or ZR._empty_stats()  # noqa: SLF001
         conflicts = (await ZR.conflict_counts(db, sids)).get(zid, (0, 0))[1]
     stat = {**stat, "bars": {"severity": stat["severity"], "problems": stat["problems"], "vulns": stat["vulns"]}, "eol": ((await EOLR.zone_counts(db, sids, zid)).get(zid) or EOLR.EMPTY) if (await request.app.state.settings_svc.get(db, "eol")).include_in_analytics else None}  # type: ignore[attr-defined]
+    stat["eol_missing"] = (await EOLR.readiness(db, sids))[1] if stat.get("eol") is not None else []          # EOL по этим источникам не рассчитан: числа выше неполные
     total, items = await ZR.hosts_page(db, zid, sids, bd=bases_days, sd=scan_days, ext=ext, default_days=int(general.activity_days), zone_days=zdays, state=state, severity=severity, problem=problem,
                                        q=q_, online=online, activity=activity, triage=triage, cve=cve, product=product, source_id=source_id, sort=sort, desc=desc, offset=offset, limit=limit)
     states = await ZR.source_states(db, sids)

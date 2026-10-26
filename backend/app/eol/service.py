@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models import CatalogState, EolProduct, EolState, KscSource, utcnow
+from .errors import describe
 from ..services.resources import RES, MemoryPressure
 from ..services.settings import SettingsService
 from ..services.sources import SourceRegistry
@@ -77,12 +78,18 @@ class EolService:
             if st is None:
                 db.add(EolState(source_id=source_id))
                 await db.flush()
-            await db.execute(update(EolState).where(EolState.source_id == source_id).values(started_at=utcnow(), progress="запуск"))
+            await db.execute(update(EolState).where(EolState.source_id == source_id).values(started_at=utcnow(), attempt_at=utcnow(), progress="запуск"))
             await db.commit()
         self.current = src.name
         tasks: set[asyncio.Task] = set()
 
+        stage = {"v": "запуск"}
+
         def progress(text: str) -> None:                                         # этап расчёта для страницы «Выполняется: …»; ошибка записи не влияет на расчёт
+            stage["v"] = text
+            if text == "сохранение":                                             # запись состояния не должна конкурировать с транзакцией замены результатов
+                return
+
             async def write() -> None:
                 try:
                     async with self._sm() as db:
@@ -96,22 +103,32 @@ class EolService:
         try:
             async with RES.heavy(f"EOL: {src.name}", 1):
                 client = self._sources.client(src)
-                try:
-                    res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), soon_days=int(cfg.soon_days), res=RES, progress=progress)  # type: ignore[attr-defined]
-                except MemoryPressure:
-                    raise
-                except Exception as exc:  # noqa: BLE001 — KSC недоступен: прежние данные остаются, ошибка видна администратору
-                    msg = f"{type(exc).__name__}: {str(exc)[:300]}"
-                    log.warning("EOL: расчёт источника не удался", extra={"source": src.name, "error": msg})
-                    async with self._sm() as db:
-                        await db.execute(update(EolState).where(EolState.source_id == source_id).values(error=msg, error_at=utcnow(), progress=None, started_at=None))
-                        await db.commit()
-                    if self._journal:
-                        await self._journal.emit("system", "eol_compute_failed", level="warning", message=f"EOL «{src.name}»: {msg[:200]}", data={"source": src.name})
-                    return None
-            return res
-        except MemoryPressure as exc:
+                for attempt in (1, 2):
+                    try:
+                        res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), soon_days=int(cfg.soon_days), res=RES, progress=progress)  # type: ignore[attr-defined]
+                        if res and res.get("diag"):
+                            self._note(src.name, res["diag"])
+                        return res
+                    except Exception as exc:  # noqa: BLE001 — прежние данные остаются; причина видна: пользователю — понятно, администратору — подробно
+                        d = describe(exc, stage["v"], "расчёт EOL источника")
+                        if attempt == 1 and d.code == "database" and d.transient:
+                            log.warning("EOL: временный сбой базы, повтор расчёта", extra={"source": src.name, "error": d.technical})
+                            await asyncio.sleep(5)
+                            continue
+                        log.warning("EOL: расчёт источника не удался", extra={"source": src.name, "stage": stage["v"], "code": d.code, "error": d.technical})
+                        async with self._sm() as db:
+                            await db.execute(update(EolState).where(EolState.source_id == source_id).values(error=d.friendly, error_detail=d.technical[:2000], error_at=utcnow(), progress=None, started_at=None,
+                                                                                                          diag={"stage": stage["v"], "code": d.code, "attempts": attempt}))
+                            await db.commit()
+                        if self._journal:
+                            await self._journal.emit("system", "eol_compute_failed", level="warning", message=f"EOL «{src.name}»: {d.friendly}", data={"source": src.name, "stage": stage["v"], "code": d.code, "detail": d.technical[:600]})
+                        return None
+        except MemoryPressure as exc:                                          # ожидание места для тяжёлой задачи: расчёт отложен, прежний результат цел
+            d = describe(exc, "ожидание ресурсов", "запуск расчёта")
             log.warning("EOL: расчёт отложен: %s", exc)
+            async with self._sm() as db:
+                await db.execute(update(EolState).where(EolState.source_id == source_id).values(error=d.friendly, error_detail=d.technical[:2000], error_at=utcnow(), diag={"stage": "ожидание ресурсов", "code": d.code, "attempts": 0}))
+                await db.commit()
             return None
         finally:
             self.current = None
@@ -123,6 +140,15 @@ class EolService:
                     await db.commit()
             except Exception:  # noqa: BLE001
                 log.warning("EOL: не снято состояние расчёта", exc_info=True)
+
+    def _note(self, source: str, diag: dict) -> None:
+        """Объединённые дубли и конфликты записи — не ошибка расчёта, но признак проблемы в данных или параллельной записи: журнал администратора."""
+        if not (diag.get("merged_keys") or diag.get("write_conflicts")):
+            return
+        log.warning("EOL: при расчёте разрешены повторы или конфликты ключей", extra={"source": source, **{k: diag[k] for k in ("merged_keys", "merged_rows", "write_conflicts", "examples") if k in diag}})
+        if self._journal:
+            asyncio.get_running_loop().create_task(self._journal.emit("system", "eol_keys_resolved", level="warning", message=f"EOL «{source}»: объединено повторных находок {diag.get('merged_keys', 0)}, конфликтов записи {diag.get('write_conflicts', 0)}",
+                                                                       data={"source": source, **{k: diag.get(k) for k in ("merged_keys", "merged_rows", "write_conflicts", "examples")}}))
 
     async def recover(self) -> int:
         """При запуске worker: расчёты, прерванные падением процесса, больше не «выполняются» — ближайший цикл запустит их заново; прежний результат не тронут."""

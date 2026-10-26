@@ -70,10 +70,14 @@ async def summary(request: Request, zone: str = Query("", max_length=40), source
     for src in srcs:
         st = states.get(src.id)
         state = await _calc_state(db, src.id, st, soon, bool(n_prod))
-        current[str(src.id)] = {"source": src.name, "computed_at": st.computed_at if st else None, "error": st.error if st else None, "error_at": st.error_at if st else None,
-                                "progress": st.progress if st else None, "started_at": st.started_at if st else None, "items": st.items if st else 0, "ready": bool(st and st.computed_at),
-                                "state": state, "state_ru": STATE_RU[state]}
-    return {"base": base, "all_sources": is_all(request), "findings": items, "kinds": kinds, "devices": z, "ambiguous": unknown, "sources": current}
+        item = {"source": src.name, "computed_at": st.computed_at if st else None, "error": st.error if st else None, "error_at": st.error_at if st else None,
+                "attempt_at": st.attempt_at if st else None, "progress": st.progress if st else None, "started_at": st.started_at if st else None, "items": st.items if st else 0,
+                "ready": bool(st and st.computed_at), "state": state, "state_ru": STATE_RU[state]}
+        if su.is_admin and st is not None:                                    # техническая причина и сведения расчёта — только администратору
+            item["error_detail"], item["diag"] = st.error_detail, st.diag
+        current[str(src.id)] = item
+    incomplete = [v["source"] for v in current.values() if v["state"] in ("none", "error", "running")]
+    return {"base": base, "all_sources": is_all(request), "findings": items, "kinds": kinds, "devices": z, "ambiguous": unknown, "sources": current, "complete": not incomplete, "incomplete": incomplete}
 
 
 STATE_RU = {"none": "Не рассчитано", "running": "Выполняется", "error": "Ошибка", "ready": "Готово", "stale": "Данные устарели"}

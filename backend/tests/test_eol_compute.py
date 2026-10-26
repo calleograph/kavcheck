@@ -232,7 +232,7 @@ async def test_failed_recalculation_keeps_previous_results_and_reports_the_error
     async with sm() as db:
         st = await db.get(EolState, sid)
         n = len((await db.execute(select(EolFinding).where(EolFinding.source_id == sid))).scalars().all())
-    assert st.error and "KSC недоступен" in st.error and st.error_at and n == 2                  # прежние результаты на месте, причина записана
+    assert st.error and "Предыдущие результаты сохранены" in st.error and "KSC недоступен" not in st.error and "KSC недоступен" in (st.error_detail or "") and st.error_at and st.attempt_at and n == 2                  # прежние результаты на месте, причина записана
     assert await svc.due(TODAY) == []                                                              # повтор не сразу: пауза после ошибки не даёт долбить недоступный KSC
 
 

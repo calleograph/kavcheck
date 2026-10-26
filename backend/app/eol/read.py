@@ -175,3 +175,14 @@ async def not_ready(db: AsyncSession, sids: list[uuid.UUID] | None) -> list[str]
     if sids is not None:
         q = q.where(KscSource.id.in_(sids))
     return list((await db.execute(q.order_by(KscSource.name))).scalars().all())
+
+
+async def readiness(db: AsyncSession, sids: list[uuid.UUID] | None) -> tuple[list[uuid.UUID], list[str]]:
+    """(источники с успешным расчётом, названия источников без него): итоги по нескольким источникам считаются только по первым, о вторых сообщается явно (данные неполные)."""
+    from ..models import EolState, KscSource  # noqa: PLC0415
+
+    q = select(KscSource.id, KscSource.name, EolState.computed_at).outerjoin(EolState, EolState.source_id == KscSource.id).where(KscSource.is_active.is_(True))
+    if sids is not None:
+        q = q.where(KscSource.id.in_(sids))
+    rows = (await db.execute(q.order_by(KscSource.name))).all()
+    return [r[0] for r in rows if r[2] is not None], [r[1] for r in rows if r[2] is None]
