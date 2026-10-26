@@ -20,6 +20,7 @@ from .zones.mailer import Mailer
 from .zones.reporter import ZoneData
 from .zones.zjobs import ZoneCache
 from .eol.service import EolService
+from .services.jobs import JOBS
 from .devices.service import DevicesService
 from .services.resources import RES
 
@@ -37,6 +38,12 @@ async def main() -> None:
         log.error("APP_MASTER_KEY некорректен — пароли источников недоступны")
         box = None
     svc, journal = SettingsService(box), Journal(sm)
+    JOBS.configure(sm, ttl=settings.job_lease_seconds, version=settings.app_version)
+    try:
+        if n := await JOBS.recover_own():
+            log.warning("Аренды заданий прежнего процесса сняты, задания будут запущены заново: %s", n)
+    except Exception:  # noqa: BLE001 — например, миграция ещё не применена
+        log.warning("Не удалось снять аренды прежнего процесса", exc_info=True)
     runner = Runner(sm, settings, svc, journal)
     catalog = CatalogScheduler(sm, settings, svc, journal)
     runner.catalog = catalog
@@ -45,6 +52,7 @@ async def main() -> None:
     mailer = Mailer(sm, settings, svc, ZoneData(sm, settings, svc, sources), journal)
     zcache = ZoneCache(sm, settings, svc, sources, journal)
     eol = EolService(sm, svc, sources, journal)
+    eol.version = settings.app_version
     devices = DevicesService(sm, svc, sources, journal)
     try:
         if await eol.recover():
@@ -59,12 +67,13 @@ async def main() -> None:
 
     def pulse() -> dict:
         return {"version": settings.app_version, "commit": settings.app_git_commit, "reports_running": len(runner._tasks),  # noqa: SLF001
-                "catalog_building": len(catalog._running), "vdb_running": len(vdb._running), "zonecache_job": zcache.current, "eol_job": eol.current, "devices_job": devices.current, "resources": RES.snapshot()}  # noqa: SLF001
+                "catalog_building": len(catalog._tasks), "vdb_running": len(vdb._running), "zonecache_job": zcache.current, "eol_job": eol.current, "devices_job": devices.current, "resources": RES.snapshot()}  # noqa: SLF001
 
     tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"), asyncio.create_task(mailer.loop(), name="mail"), asyncio.create_task(zcache.loop(), name="zonecache"), asyncio.create_task(eol.loop(), name="eol"), asyncio.create_task(devices.loop(), name="devices"),
-             asyncio.create_task(jh.flush_loop(sm), name="journal-flush"), asyncio.create_task(heartbeat_loop(sm, "worker", pulse), name="heartbeat")]
+             asyncio.create_task(jh.flush_loop(sm), name="journal-flush"), asyncio.create_task(JOBS.beat_loop(), name="job-leases"), asyncio.create_task(heartbeat_loop(sm, "worker", pulse), name="heartbeat")]
     log.info("Воркер отчётов и каталога запущен", extra={"version": settings.app_version})
     await stop.wait()
+    JOBS.stop()
     zcache.stop()
     eol.stop()
     devices.stop()

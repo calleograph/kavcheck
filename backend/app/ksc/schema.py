@@ -58,6 +58,11 @@ def diagnose(params: ConnParams) -> dict:
         except KscError as exc:
             stage("ksc", None, f"Версия KSC не определена: {exc.message}", t)
         t = time.perf_counter()
+        try:                                                       # идентичность сервера и базы: по ней находят повторное подключение к одному и тому же KSC
+            ident = s.query(q.SERVER_IDENTITY, max_rows=1)[0]
+            out["server_identity"] = {"server": str(ident.get("server") or ""), "db": str(ident.get("db") or "")}
+        except KscError:
+            out["server_identity"] = None
         if out["features"]["hosts"]["ok"]:
             n = s.query(q.COUNT_HOSTS, max_rows=1)[0]["n"]
             out["hosts"] = int(n)

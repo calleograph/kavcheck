@@ -97,8 +97,11 @@ async def delete_user(user_id: uuid.UUID, su: SessionUser = Depends(require_admi
 # ----------------------------------------------------------------------------------------------- источники KSC
 @router.get("/sources")
 async def sources(su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    from ..services.sources import find_overlaps  # noqa: PLC0415
+
     rows = (await db.execute(select(KscSource).order_by(KscSource.position, KscSource.name))).scalars().all()
-    return {"items": [source_out(s, full=True) for s in rows]}
+    ov = find_overlaps(list(rows))
+    return {"items": [{**source_out(s, full=True), "overlaps": ov.get(str(s.id), [])} for s in rows]}
 
 
 def _apply_source(src: KscSource, body: SourceIn, svc) -> None:
@@ -271,7 +274,8 @@ async def catalog_states(su: SessionUser = Depends(require_admin), db: AsyncSess
     srcs = (await db.execute(select(KscSource).order_by(KscSource.position, KscSource.name))).scalars().all()
     out = []
     for s in srcs:
-        out.append({"source_id": str(s.id), "source": s.name, "is_active": s.is_active, **csvc.state_out(await db.get(CatalogState, s.id))})
+        cst = await db.get(CatalogState, s.id)
+        out.append({"source_id": str(s.id), "source": s.name, "is_active": s.is_active, **csvc.state_out(cst, await csvc.effective_status(cst))})
     return {"items": out}
 
 
@@ -366,6 +370,12 @@ def _worker_mem(hb) -> str:
     return f"; память {r['rss_mb']} МБ (пик {r.get('peak_mb', '?')}, предел {r.get('soft_mb', '?')}/{r.get('hard_mb', '?')}), тяжёлых задач {r.get('used', 0)}" if r.get("rss_mb") is not None else ""
 
 
+async def _catalog_effective(cs) -> str:
+    from ..services import catalog as csvc  # noqa: PLC0415
+
+    return await csvc.effective_status(cs)
+
+
 async def _jobs_status(db: AsyncSession, hb, srcs: list) -> dict:
     """Наблюдаемость фоновых расчётов: память worker, текущие задачи, по каждому источнику — последние успешные расчёты (длительность, ошибки), очередь и длительность отчётов, долгие запросы PostgreSQL."""
     from ..models import DevicesState, EolState, ZcSource  # noqa: PLC0415
@@ -378,12 +388,20 @@ async def _jobs_status(db: AsyncSession, hb, srcs: list) -> dict:
         per.append({"source": x.name, "eol": {"computed_at": eol.computed_at, "duration_ms": eol.duration_ms, "items": eol.items, "error": eol.error, "error_at": eol.error_at, "running": bool(eol.started_at), "progress": eol.progress} if eol else None,
                     "zones": {"status": zc.status, "built_at": zc.built_at, "finished_at": zc.finished_at, "duration_ms": zc.duration_ms, "error": zc.error, "hosts": zc.hosts_n, "progress": zc.progress} if zc else None,
                     "devices": {"polled_at": dv.polled_at, "duration_ms": dv.duration_ms, "error": dv.error} if dv else None,
-                    "catalog": {"status": cs.status, "built_at": cs.built_at} if cs else None})
+                    "catalog": {"status": await _catalog_effective(cs), "built_at": cs.built_at} if cs else None})
     done = (await db.execute(select(ReportJob.created_at, ReportJob.started_at, ReportJob.finished_at, ReportJob.rows).where(ReportJob.status == "done", ReportJob.finished_at.is_not(None), ReportJob.started_at.is_not(None))
                              .order_by(ReportJob.finished_at.desc()).limit(20))).all()
     secs = sorted((f - st).total_seconds() for _c, st, f, _r in done)
     failed_24h = (await db.execute(select(func.count()).select_from(ReportJob).where(ReportJob.status == "failed", ReportJob.finished_at >= utcnow() - timedelta(hours=24)))).scalar_one()
-    out: dict[str, Any] = {"worker": {"rss_mb": res.get("rss_mb"), "peak_mb": res.get("peak_mb"), "soft_mb": res.get("soft_mb"), "hard_mb": res.get("hard_mb"), "active": res.get("active") or [], "deferred": res.get("deferred"),
+    from ..models import JobLease, JobRun  # noqa: PLC0415
+
+    names = {str(x.id): x.name for x in srcs}
+    now = utcnow()
+    leases = (await db.execute(select(JobLease).order_by(JobLease.kind, JobLease.scope))).scalars().all()
+    interrupted = int((await db.execute(select(func.count()).select_from(JobRun).where(JobRun.status.in_(("interrupted", "lost")), JobRun.finished_at >= now - timedelta(hours=24)))).scalar_one())
+    out: dict[str, Any] = {"leases": [{"kind": x.kind, "scope": names.get(x.scope, x.scope), "owner": x.owner, "stage": x.stage, "started_at": x.started_at, "heartbeat_age_s": int((now - x.heartbeat_at).total_seconds()),
+                                       "alive": x.lease_until >= now, "app_version": x.app_version} for x in leases], "interrupted_24h": interrupted,
+                           "worker": {"rss_mb": res.get("rss_mb"), "peak_mb": res.get("peak_mb"), "soft_mb": res.get("soft_mb"), "hard_mb": res.get("hard_mb"), "active": res.get("active") or [], "deferred": res.get("deferred"),
                                       "started_at": hb.started_at if hb is not None else None},
                            "sources": per, "reports": {"median_s": round(secs[len(secs) // 2], 1) if secs else None, "max_s": round(secs[-1], 1) if secs else None, "done_sample": len(secs), "failed_24h": int(failed_24h)}}
     if db.bind.dialect.name == "postgresql":
@@ -449,7 +467,7 @@ async def system(request: Request, su: SessionUser = Depends(require_admin), db:
     for x in srcs:
         cs = await db.get(CatalogState, x.id)
         out["sources"].append({"id": str(x.id), "name": x.name, "is_active": x.is_active, "last_check_at": x.last_check_at, "last_check_ok": x.last_check_ok,
-                               "ksc_version": (x.last_check or {}).get("ksc_version"), "catalog_status": cs.status if cs else "empty", "catalog_built_at": cs.built_at if cs else None})
+                               "ksc_version": (x.last_check or {}).get("ksc_version"), "catalog_status": await _catalog_effective(cs), "catalog_built_at": cs.built_at if cs else None})
     out["counts"] = {"users": (await db.execute(select(func.count()).select_from(User))).scalar_one(), "sources": len(srcs),
                      "reports": (await db.execute(select(func.count()).select_from(ReportJob))).scalar_one(),
                      "events_24h": (await db.execute(select(func.count()).select_from(EventLog).where(EventLog.at >= utcnow() - timedelta(hours=24)))).scalar_one(),

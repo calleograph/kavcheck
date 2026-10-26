@@ -28,8 +28,8 @@ from .settings import SettingsService
 log = logging.getLogger("app.catalog")
 CHECK_EVERY = timedelta(minutes=15)
 MAX_AGE = timedelta(hours=12)
-STALE_BUILD = timedelta(hours=2)
 RETRY_FAILED = timedelta(minutes=30)
+CRASH_LOOP = 3             # столько прерванных или неудачных построений за RETRY_FAILED подряд — повтор откладывается (защита от бесконечных перезапусков, например при нехватке памяти)
 
 
 # ------------------------------------------------------------------------------------------------ ручные корректировки
@@ -63,10 +63,21 @@ async def get_state(db: AsyncSession, source_id: uuid.UUID) -> CatalogState:
     return st
 
 
-def state_out(st: CatalogState | None) -> dict:
+async def effective_status(st: CatalogState | None) -> str:
+    """Состояние для интерфейса: «строится» показывается, только если построение действительно идёт (есть действующая аренда); иначе — «прервано»: след остановившегося процесса не выдаётся за работу."""
+    from .jobs import JOBS  # noqa: PLC0415
+
+    if st is None:
+        return "empty"
+    if st.status == "building" and not await JOBS.is_live("catalog", str(st.source_id)):
+        return "interrupted"
+    return st.status
+
+
+def state_out(st: CatalogState | None, status: str | None = None) -> dict:
     if st is None:
         return {"status": "empty"}
-    return {"status": st.status, "built_at": st.built_at, "started_at": st.started_at, "requested_at": st.requested_at, "activity_days": st.activity_days,
+    return {"status": status or st.status, "usable": st.built_at is not None, "built_at": st.built_at, "started_at": st.started_at, "requested_at": st.requested_at, "activity_days": st.activity_days,
             "progress": st.progress, "error": st.error, "stats": st.stats, "duration_ms": st.duration_ms}
 
 
@@ -98,7 +109,7 @@ async def request_rebuild(db: AsyncSession, source_id: uuid.UUID) -> CatalogStat
 class CatalogScheduler:
     def __init__(self, sm: async_sessionmaker[AsyncSession], settings: Settings, svc: SettingsService, journal: Journal):
         self._sm, self._cfg, self._svc, self._journal = sm, settings, svc, journal
-        self._running: set[uuid.UUID] = set()
+        self._tasks: set[asyncio.Task] = set()
 
     async def _activity_days(self, db: AsyncSession) -> int:
         return int((await self._svc.get(db, "general")).activity_days)  # type: ignore[attr-defined]
@@ -109,11 +120,20 @@ class CatalogScheduler:
         return conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}"))
 
     async def due(self, db: AsyncSession, src: KscSource, activity_days: int, rev: str) -> str | None:
-        """Причина пересборки или None."""
+        """Причина пересборки или None. «Строится» без действующей аренды — след прерванного процесса: состояние сбрасывается и построение запускается снова (последний готовый каталог всё это время доступен)."""
+        from .jobs import JOBS  # noqa: PLC0415
+
         st = await get_state(db, src.id)
         now = utcnow()
-        if st.status == "building" and st.started_at and now - st.started_at < STALE_BUILD:
-            return None
+        if st.status == "building":
+            if await JOBS.is_live("catalog", str(src.id)):
+                return None
+            st.status = "ready" if st.built_at is not None else "empty"
+            st.progress = "прервано (перезапуск или сбой), будет повторено"
+            await db.commit()
+            if await JOBS.failures_since("catalog", str(src.id), now - RETRY_FAILED) >= CRASH_LOOP:
+                return None                                         # построение прерывается снова и снова: пауза, чтобы не гонять источник по кругу
+            return "прервано предыдущее построение"
         if st.status in ("empty",) or st.built_at is None:
             return "первая сборка" if not (st.status == "failed" and st.started_at and now - st.started_at < RETRY_FAILED) else None
         if st.status == "failed" and st.started_at and now - st.started_at < RETRY_FAILED:
@@ -143,10 +163,14 @@ class CatalogScheduler:
             return CB.signature(s)
 
     async def build(self, source_id: uuid.UUID, reason: str = "") -> None:
-        if source_id in self._running:
+        """Построить каталог источника под арендой: второй исполнитель того же источника невозможен, результат публикуется одной транзакцией и только если аренда ещё наша."""
+        from .jobs import JOBS, LeaseLost  # noqa: PLC0415
+
+        lease = await JOBS.acquire("catalog", str(source_id), "запуск")
+        if lease is None:
             return
-        self._running.add(source_id)
         started = time.perf_counter()
+        status, error = "success", None
         try:
             async with self._sm() as db:
                 src = await db.get(KscSource, source_id)
@@ -162,7 +186,7 @@ class CatalogScheduler:
             loop = asyncio.get_running_loop()
 
             def progress(text: str) -> None:
-                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._progress(source_id, text)))
+                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._progress(source_id, text, lease)))
 
             def work():
                 with Session(params) as s:
@@ -171,9 +195,11 @@ class CatalogScheduler:
                     return sig, fams, stats
 
             async with RES.heavy("сборка каталога", 1):
+                await lease.stage("чтение данных KSC")
                 sig, fams, stats = await asyncio.to_thread(work)
             ms = int((time.perf_counter() - started) * 1000)
             async with self._sm() as db:
+                await lease.fence(db)                                  # публикация нового поколения — только если аренда не перехвачена: запоздавший результат не затрёт новый
                 now = utcnow()
                 await store(db, source_id, fams, now)
                 st = await get_state(db, source_id)
@@ -182,8 +208,15 @@ class CatalogScheduler:
                 await db.commit()
             await self._journal.emit("catalog", "catalog_built", source=name, duration_ms=ms,
                                      message=f"Каталог построен ({reason or 'обновление'}): продуктов {stats['products']}, установок {stats['installs']}")
+        except LeaseLost as exc:                                       # выполнение перехвачено другим: состояние и данные принадлежат новому, не трогаем
+            log.warning("Построение каталога прервано: аренда перехвачена", extra={"source_id": str(source_id)})
+            status, error = "lost", str(exc)
+        except asyncio.CancelledError:
+            status, error = "interrupted", "выполнение отменено"
+            raise
         except (KscError, CB.Cancelled, Exception) as exc:  # noqa: BLE001
             msg = exc.message if isinstance(exc, KscError) else f"{type(exc).__name__}: {exc}"[:300]
+            status, error = "error", msg
             if not isinstance(exc, KscError):
                 log.exception("Сбой сборки каталога", extra={"source_id": str(source_id)})
             async with self._sm() as db:
@@ -195,10 +228,12 @@ class CatalogScheduler:
                 await db.commit()
             await self._journal.emit("catalog", "catalog_failed", level="error", message=f"Каталог не построен: {msg}", data={"source_id": str(source_id)})
         finally:
-            self._running.discard(source_id)
+            await lease.finish(status, error)
 
-    async def _progress(self, source_id: uuid.UUID, text: str) -> None:
+    async def _progress(self, source_id: uuid.UUID, text: str, lease=None) -> None:
         try:
+            if lease is not None:
+                await lease.stage(text[:160])
             async with self._sm() as db:
                 st = await db.get(CatalogState, source_id)
                 if st is not None and st.status == "building":       # запоздавшее сообщение не затирает итог сборки
@@ -218,10 +253,14 @@ class CatalogScheduler:
                     continue
                 reason = await self.due(db, src, activity_days, rev)
                 if reason:
-                    todo.append((src.id, reason))
+                    st = await db.get(CatalogState, src.id)
+                    todo.append(((st.stats or {}).get("hosts") or 0, src.id, reason))
             await db.commit()
-        for sid, reason in todo:
-            await self.build(sid, reason)
+        todo = [(sid, reason) for _size, sid, reason in sorted(todo, key=lambda x: x[0])]      # сначала небольшие источники: большой не заставляет ждать маленькие
+        for sid, reason in todo:                       # каждый источник — своя задача: недоступный или огромный источник не задерживает остальные; тяжёлую работу ограничивает RES.heavy
+            t = asyncio.get_running_loop().create_task(self.build(sid, reason))
+            self._tasks.add(t)
+            t.add_done_callback(self._tasks.discard)
 
     async def loop(self) -> None:
         await asyncio.sleep(5)

@@ -10,7 +10,8 @@ from datetime import timedelta
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..models import CatalogState, EolProduct, EolState, KscSource, utcnow
+from ..models import CatalogState, EolProduct, EolState, JobRun, KscSource, utcnow
+from ..services.jobs import JOBS, LeaseLost
 from .errors import describe
 from ..services.resources import RES, MemoryPressure
 from ..services.settings import SettingsService
@@ -26,7 +27,8 @@ class EolService:
         self._sm, self._svc, self._sources, self._journal = sm, svc, sources, journal
         self._stop = asyncio.Event()
         self.current: str | None = None
-        self._busy: set[uuid.UUID] = set()
+        self._tasks: set[asyncio.Task] = set()
+        self.version = ""
 
     def stop(self) -> None:
         self._stop.set()
@@ -40,8 +42,10 @@ class EolService:
                 return []                                                       # базы EOL ещё нет: сопоставлять не с чем
             for src in (await db.execute(select(KscSource).where(KscSource.is_active.is_(True)))).scalars().all():
                 cs = await db.get(CatalogState, src.id)
-                if cs is None or cs.status != "ready":
-                    continue                                                    # каталог источника ещё не построен
+                if cs is None or cs.built_at is None:
+                    continue                                                    # каталога ещё ни разу не было; «строится» новая версия — считаем по последнему готовому, а после публикации нового отпечаток изменится и расчёт повторится сам
+                if await JOBS.is_live("eol", str(src.id)):
+                    continue                                                    # расчёт этого источника уже идёт (у этого или другого worker)
                 st = await db.get(EolState, src.id)
                 if st is not None and st.error_at and utcnow() - st.error_at < RETRY_AFTER:
                     continue
@@ -60,15 +64,29 @@ class EolService:
         return n
 
     async def run_source(self, source_id: uuid.UUID) -> dict | None:
-        if source_id in self._busy:                                             # тот же источник уже считается в этом процессе: второй расчёт не запускается
+        """Расчёт источника под арендой: если его уже выполняет другой (этот или иной worker), второй запуск не стартует. Аренда продлевается, пока процесс жив."""
+        lease = await JOBS.acquire("eol", str(source_id), "запуск")
+        if lease is None:
             return None
-        self._busy.add(source_id)
+        status, error = "success", None
         try:
-            return await self._run_source(source_id)
+            res = await self._run_source(source_id, lease)
+            if res is None:
+                status = "error"
+                async with self._sm() as db:
+                    st = await db.get(EolState, source_id)
+                    error = (st.error_detail or st.error) if st is not None else None
+            return res
+        except LeaseLost as exc:
+            status, error = "lost", str(exc)
+            return None
+        except asyncio.CancelledError:
+            status, error = "interrupted", "выполнение отменено"
+            raise
         finally:
-            self._busy.discard(source_id)
+            await lease.finish(status, error)
 
-    async def _run_source(self, source_id: uuid.UUID) -> dict | None:
+    async def _run_source(self, source_id: uuid.UUID, lease) -> dict | None:
         async with self._sm() as db:
             src = await db.get(KscSource, source_id)
             if src is None:
@@ -78,7 +96,7 @@ class EolService:
             if st is None:
                 db.add(EolState(source_id=source_id))
                 await db.flush()
-            await db.execute(update(EolState).where(EolState.source_id == source_id).values(started_at=utcnow(), attempt_at=utcnow(), progress="запуск"))
+            await db.execute(update(EolState).where(EolState.source_id == source_id).values(started_at=utcnow(), attempt_at=utcnow(), app_version=(self.version or JOBS.version) or None, progress="запуск"))
             await db.commit()
         self.current = src.name
         tasks: set[asyncio.Task] = set()
@@ -87,6 +105,7 @@ class EolService:
 
         def progress(text: str) -> None:                                         # этап расчёта для страницы «Выполняется: …»; ошибка записи не влияет на расчёт
             stage["v"] = text
+            asyncio.get_running_loop().create_task(lease.stage(text))
             if text == "сохранение":                                             # запись состояния не должна конкурировать с транзакцией замены результатов
                 return
 
@@ -105,10 +124,12 @@ class EolService:
                 client = self._sources.client(src)
                 for attempt in (1, 2):
                     try:
-                        res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), soon_days=int(cfg.soon_days), res=RES, progress=progress)  # type: ignore[attr-defined]
+                        res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), soon_days=int(cfg.soon_days), res=RES, progress=progress, lease=lease)  # type: ignore[attr-defined]
                         if res and res.get("diag"):
                             self._note(src.name, res["diag"])
                         return res
+                    except LeaseLost:
+                        raise
                     except Exception as exc:  # noqa: BLE001 — прежние данные остаются; причина видна: пользователю — понятно, администратору — подробно
                         d = describe(exc, stage["v"], "расчёт EOL источника")
                         if attempt == 1 and d.code == "database" and d.transient:
@@ -151,17 +172,34 @@ class EolService:
                                                                        data={"source": source, **{k: diag.get(k) for k in ("merged_keys", "merged_rows", "write_conflicts", "examples")}}))
 
     async def recover(self) -> int:
-        """При запуске worker: расчёты, прерванные падением процесса, больше не «выполняются» — ближайший цикл запустит их заново; прежний результат не тронут."""
+        """При запуске worker: ошибки, оставшиеся от прежних версий приложения, переносятся в историю и больше не выдаются за текущую причину отказа (новая попытка ещё не выполнялась);
+        признаки «выполняется» снимаются (действующих аренд у только что запущенного процесса нет). Прежние результаты не тронуты. Возвращает число перенесённых ошибок."""
+        n = 0
         async with self._sm() as db:
-            n = (await db.execute(update(EolState).where(EolState.started_at.is_not(None)).values(started_at=None, progress=None))).rowcount or 0
+            await db.execute(update(EolState).where(EolState.started_at.is_not(None)).values(started_at=None, progress=None))
+            for st in (await db.execute(select(EolState).where(EolState.error.is_not(None)))).scalars().all():
+                if st.app_version and st.app_version == (self.version or JOBS.version):
+                    continue                                                  # ошибка последней попытки этой версии — она и есть текущая причина
+                db.add(JobRun(kind="eol", scope=str(st.source_id), run_id=uuid.uuid4(), owner="прежняя версия", app_version=st.app_version or "до 0.9.6", started_at=st.attempt_at or st.error_at or utcnow(),
+                              finished_at=st.error_at or utcnow(), status="error", stage=str((st.diag or {}).get("stage") or ""), error=" | ".join(x for x in (st.error, st.error_detail) if x)[:2000]))
+                st.error, st.error_detail, st.error_at = None, None, None
+                n += 1
             await db.commit()
         return n
 
     async def tick(self) -> None:
-        for sid in await self.due():
+        """Каждый источник — отдельная задача: сбой или медленный KSC одного не задерживает остальные; тяжёлые расчёты по очереди ограничивает RES.heavy. Сначала небольшие источники."""
+        due = await self.due()
+        if not due:
+            return
+        async with self._sm() as db:
+            size = {s_id: int(((cs.stats or {}).get("hosts")) or 0) for s_id in due if (cs := await db.get(CatalogState, s_id)) is not None}
+        for sid in sorted(due, key=lambda i: size.get(i, 0)):
             if self._stop.is_set():
                 return
-            await self.run_source(sid)
+            t = asyncio.get_running_loop().create_task(self.run_source(sid))
+            self._tasks.add(t)
+            t.add_done_callback(self._tasks.discard)
 
     async def loop(self) -> None:
         await asyncio.sleep(45)

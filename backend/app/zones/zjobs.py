@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
 from ..ksc.driver import KscError
+from ..services.jobs import JOBS
 from ..models import KscSource, ZcHost, ZcHostZone, ZcJob, ZcSource, utcnow
 from ..services.audit import Journal
 from ..services.resources import RES, MemoryPressure
@@ -151,8 +152,9 @@ class ZoneCache:
 
     async def recover(self, db: AsyncSession) -> None:
         """Задания, которые выполнял завершившийся процесс, возвращаются в очередь; после лимита попыток — ошибка."""
-        old = utcnow() - STALE_JOB
-        for j in (await db.execute(select(ZcJob).where(ZcJob.status == "running", func.coalesce(ZcJob.heartbeat_at, ZcJob.started_at) < old))).scalars().all():
+        for j in (await db.execute(select(ZcJob).where(ZcJob.status == "running"))).scalars().all():
+            if await JOBS.is_live("zjob", str(j.id)):              # задание ведёт живой исполнитель (этот или другой worker): аренда продлевается
+                continue
             if j.attempts >= MAX_ATTEMPTS:
                 j.status, j.finished_at, j.error = "failed", utcnow(), "Расчёт прерван (перезапуск службы) слишком много раз подряд"
             else:
@@ -197,13 +199,20 @@ class ZoneCache:
 
     async def run_job(self, jid: uuid.UUID) -> None:
         async with self.sm() as db:
-            job = await db.get(ZcJob, jid)
-            if job is None or job.status != "queued":
+            now = utcnow()
+            claimed = (await db.execute(update(ZcJob).where(ZcJob.id == jid, ZcJob.status == "queued")          # атомарный захват: два worker не возьмут одно задание
+                                        .values(status="running", started_at=now, heartbeat_at=now, attempts=ZcJob.attempts + 1, error=None, progress="ожидание ресурсов", pct=0))).rowcount
+            if claimed != 1:
+                await db.rollback()
                 return
-            job.status, job.started_at, job.heartbeat_at, job.attempts, job.error, job.progress, job.pct = "running", utcnow(), utcnow(), job.attempts + 1, None, "ожидание ресурсов", 0
+            job = await db.get(ZcJob, jid)
+            await db.refresh(job)
             kind, zone_id, trigger, attempts = job.kind, job.zone_id, job.trigger, job.attempts
             zc, _gtz = await self.settings(db)
             await db.commit()
+        lease = await JOBS.acquire("zjob", str(jid), "запуск")
+        if lease is None:                                          # аренда занята: задание ведёт другой исполнитель
+            return
         self.current = str(jid)
         self._prog = ("ожидание ресурсов", 0)
         t0 = time.monotonic()
@@ -234,6 +243,7 @@ class ZoneCache:
         finally:
             beat.cancel()
             self.current = None
+            await lease.finish("success" if status == "done" else "deferred" if status == "queued" else "error", error)
         async with self.sm() as db:
             job = await db.get(ZcJob, jid)
             if job is not None:
@@ -277,7 +287,11 @@ class ZoneCache:
                 if not gen:
                     hosts = None                                  # источника ещё нет в подготовленных данных: считаем его целиком
             try:
-                res = await SN.build_source(bc, s, hosts=hosts)
+                async with JOBS.run("zonecache", str(s.id)) as slease:       # один расчёт данных источника за раз, независимо от вида задания и числа worker
+                    if slease is None:
+                        errors.append(f"{s.name}: расчёт уже выполняется другим заданием")
+                        continue
+                    res = await SN.build_source(bc, s, hosts=hosts)
                 touched |= set(res["zones"])
             except (MemoryPressure, RuntimeError):
                 raise
@@ -317,6 +331,8 @@ class ZoneCache:
         """При запуске worker выполняющихся заданий у него нет: «running» — след прерванного процесса. Они возвращаются в очередь сразу (поколение не подменено, повтор безопасен)."""
         async with self.sm() as db:
             for j in (await db.execute(select(ZcJob).where(ZcJob.status == "running"))).scalars().all():
+                if await JOBS.is_live("zjob", str(j.id)):          # у только что запущенного worker своих заданий нет, но другой worker может вести это задание — не трогаем
+                    continue
                 if j.attempts >= MAX_ATTEMPTS:
                     j.status, j.finished_at, j.error = "failed", utcnow(), "Расчёт прерван (перезапуск службы) слишком много раз подряд"
                 else:

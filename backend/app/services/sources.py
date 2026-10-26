@@ -33,6 +33,31 @@ class SourceRegistry:
         self._clients.pop(source_id, None)
 
 
+def _norm_host(h: str) -> str:
+    return (h or "").strip().lower().rstrip(".")
+
+
+def find_overlaps(sources: list[KscSource]) -> dict[str, list[dict]]:
+    """Подключения, которые, возможно, ведут к одному и тому же KSC (дубли в общей статистике): id источника → [{other, level, reason}].
+    exact — совпадают сервер, порт и база; likely — по последней проверке совпадают имя сервера SQL, база, версия KSC и число устройств, хотя адреса разные (имя и IP, разные имена одного сервера).
+    Только предупреждение: данные не объединяются и не удаляются; администратор решает сам. Независимые KSC с одинаковыми именами компьютеров дублями не считаются."""
+    out: dict[str, list[dict]] = {}
+    for i, a in enumerate(sources):
+        for b in sources[i + 1:]:
+            hit = None
+            if (_norm_host(a.host), a.port, (a.database or "").lower()) == (_norm_host(b.host), b.port, (b.database or "").lower()):
+                hit = ("exact", "совпадают сервер, порт и база данных")
+            else:
+                ia, ib = (a.last_check or {}).get("server_identity"), (b.last_check or {}).get("server_identity")
+                ha, hb = (a.last_check or {}).get("hosts"), (b.last_check or {}).get("hosts")
+                if ia and ib and ia == ib and ia.get("server") and ha and ha == hb and (a.last_check or {}).get("ksc_version") == (b.last_check or {}).get("ksc_version"):
+                    hit = ("likely", f"по последней проверке совпадают сервер SQL «{ia['server']}», база, версия KSC и число устройств ({ha})")
+            if hit:
+                out.setdefault(str(a.id), []).append({"other": b.name, "other_id": str(b.id), "level": hit[0], "reason": hit[1]})
+                out.setdefault(str(b.id), []).append({"other": a.name, "other_id": str(a.id), "level": hit[0], "reason": hit[1]})
+    return out
+
+
 def source_out(src: KscSource, *, full: bool = False) -> dict:
     out = {"id": str(src.id), "name": src.name, "host": src.host, "port": src.port, "database": src.database, "is_active": src.is_active,
            "last_check_at": src.last_check_at, "last_check_ok": src.last_check_ok, "ksc_version": (src.last_check or {}).get("ksc_version"),

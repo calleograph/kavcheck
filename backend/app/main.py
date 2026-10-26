@@ -96,6 +96,9 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
     async def lifespan(app: FastAPI):
         engine = create_engine(settings)
         session_maker = create_session_maker(engine)
+        from .services.jobs import JOBS  # noqa: PLC0415
+
+        JOBS.configure(session_maker, ttl=settings.job_lease_seconds, version=settings.app_version)       # backend только читает аренды (состояния в интерфейсе); продлевает и захватывает worker
         try:
             box = SecretBox(settings.app_master_key) if settings.app_master_key else None
         except SecretBoxError:

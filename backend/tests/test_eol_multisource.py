@@ -185,7 +185,7 @@ async def test_all_sources_summary_marks_incomplete_data(client, app):
     await run(app, a)
     async with app.state.session_maker() as db:
         await db.execute(update(EolState).where(EolState.source_id == a).values(started_at=None))
-        db.add(EolState(source_id=b, error="Не удалось рассчитать EOL", error_detail="этап «сохранение»: тест", error_at=utcnow(), attempt_at=utcnow()))
+        db.add(EolState(source_id=b, error="Не удалось рассчитать EOL", error_detail="этап «сохранение»: тест", error_at=utcnow(), attempt_at=utcnow(), app_version=app.state.settings.app_version))
         await db.commit()
     s = (await client.get("/api/v1/eol/summary", headers={"X-Source-Id": "all"})).json()
     assert s["complete"] is False and s["incomplete"] == ["KSC-2"] and s["findings"]["eol"] >= 1                 # итоги — по рассчитанному источнику, неполнота названа
@@ -232,5 +232,5 @@ async def test_read_only_diagnostics_report_state_and_do_not_change_data(app):
     before = await rows(app, a)
     d = await diagnose(app.state.session_maker)
     text = render(d)
-    assert {s["source"] for s in d["sources"]} == {"KSC-1", "KSC-2"} and "KSC-2" in text and "ошибка осталась от прошлой версии" in text
+    assert {s["source"] for s in d["sources"]} == {"KSC-1", "KSC-2"} and "KSC-2" in text and "новая попытка расчёта ещё не выполнялась" in text
     assert next(s for s in d["sources"] if s["source"] == "KSC-1")["duplicate_keys_in_db"] == 0 and await rows(app, a) == before

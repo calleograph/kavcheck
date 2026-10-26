@@ -371,7 +371,7 @@ async def catalog_findings(sm: async_sessionmaker[AsyncSession], src: KscSource,
 
 
 async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceClient | None, src: KscSource, *, activity_days: int, exclude_slaves: bool = True, today: date | None = None,
-                         soon_days: int = 180, res=None, progress=None) -> dict:
+                         soon_days: int = 180, res=None, progress=None, lease=None) -> dict:
     """Пересчитывает `eol_findings` и `eol_hosts` источника. client нужен для устройств и ОС; без него считаются только находки по программам каталога (без списков устройств)."""
     t0 = time.monotonic()
     today = today or date.today()
@@ -381,6 +381,12 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
         if progress:
             progress(text)
 
+    from ..models import CatalogState  # noqa: PLC0415
+    from ..services.jobs import JOBS  # noqa: PLC0415
+
+    async with sm() as db:
+        cstate = await db.get(CatalogState, src.id)
+        based_on = cstate.built_at.isoformat() if cstate is not None and cstate.built_at else None          # расчёт основан на последнем готовом каталоге
     inputs, idx, win, out = await catalog_findings(sm, src, today, soon_days, res, step)
 
     links: dict[tuple, array] = {}
@@ -421,8 +427,14 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
     check_unique(out)
     sig = signature(out)
     step("сохранение")
+    try:
+        diag["catalog_built_at"], diag["catalog_updating"] = based_on, await JOBS.is_live("catalog", str(src.id))       # новый каталог строится: после публикации отпечаток изменится, расчёт повторится сам
+    except Exception:  # noqa: BLE001 — таблица аренд недоступна: расчёт важнее пометки
+        pass
     async with sm() as db:
         await xact_lock(db, f"eol:{src.id}")                    # замена результатов источника — только по одному процессу
+        if lease is not None:
+            await lease.fence(db)                               # запоздавший расчёт с потерянной арендой ничего не записывает
         await db.execute(delete(EolHostStat).where(EolHostStat.source_id == src.id))
         await db.execute(delete(EolHost).where(EolHost.source_id == src.id))
         await db.execute(delete(EolFinding).where(EolFinding.source_id == src.id))

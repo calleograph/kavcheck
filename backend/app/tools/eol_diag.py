@@ -82,7 +82,9 @@ async def diagnose(sm, only: str = "") -> dict:
                 "will_run": not why, "why_not": why, "saved_findings": n_find, "duplicate_keys_in_db": dup,
                 "catalog_checks": dict(stats), "examples": examples, "would_build": planned, "keys_to_merge": merged_keys}
         # «старая ошибка»: после неё была более поздняя попытка, но ни успеха, ни новой ошибки (процесс прерван), либо попыток не было вообще
-        if st and st.error and (not st.attempt_at or (st.error_at and st.attempt_at <= st.error_at)):
+        if st and st.error and st.app_version != get_settings().app_version:
+            item["error_is_stale"] = f"ошибка записана версией {st.app_version or 'до 0.9.6'}, сейчас {get_settings().app_version}: после обновления новая попытка расчёта ещё не выполнялась (при запуске worker такая ошибка переносится в историю)"
+        elif st and st.error and (not st.attempt_at or (st.error_at and st.attempt_at <= st.error_at)):
             item["error_is_stale"] = "последняя попытка расчёта не новее ошибки: расчёт после этой ошибки не запускался" if st.attempt_at else "попыток расчёта этой версией не было — ошибка осталась от прошлой версии"
         out["sources"].append(item)
     return out

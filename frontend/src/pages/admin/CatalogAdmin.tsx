@@ -9,7 +9,7 @@ import { fmt, num } from "../../util";
 import RulesAdmin from "./RulesAdmin";
 
 const KIND: Record<string, string> = { merge: "Объединение", split: "Выделение записей", rename: "Переименование" };
-const STATUS: Record<string, [string, string]> = { ready: ["построен", "ok"], building: ["строится", "accent"], failed: ["ошибка", "err"], empty: ["не построен", "warn"] };
+const STATUS: Record<string, [string, string]> = { ready: ["построен", "ok"], interrupted: ["прервано, будет повторено", "warn"], building: ["строится", "accent"], failed: ["ошибка", "err"], empty: ["не построен", "warn"] };
 
 /** Каталог программ: состояние по источникам, ручные исправления (общие для всех источников) и правила группировки для опытных. */
 export default function CatalogAdmin() {

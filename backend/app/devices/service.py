@@ -29,6 +29,7 @@ class DevicesService:
         self._sm, self._svc, self._sources, self._journal = sm, svc, sources, journal
         self._stop = asyncio.Event()
         self.current: str | None = None
+        self._tasks: set[asyncio.Task] = set()
 
     def stop(self) -> None:
         self._stop.set()
@@ -68,6 +69,14 @@ class DevicesService:
             cfg = await self._svc.get(db, "devices")
         if src is None:
             return None
+        from ..services.jobs import JOBS  # noqa: PLC0415
+
+        async with JOBS.run("devices", str(sid)) as lease:                  # опрос источника ведёт один исполнитель; недоступный источник занимает только свою задачу
+            if lease is None:
+                return None
+            return await self._poll(sid, src, cfg)
+
+    async def _poll(self, sid: uuid.UUID, src, cfg) -> dict | None:
         self.current = src.name
         try:
             async with RES.heavy(f"пользователи: {src.name}", 1):
@@ -96,7 +105,9 @@ class DevicesService:
         for sid in await self.due():
             if self._stop.is_set():
                 return
-            await self.run_source(sid)
+            t = asyncio.get_running_loop().create_task(self.run_source(sid))     # источники опрашиваются независимо: медленный или недоступный не задерживает остальные
+            self._tasks.add(t)
+            t.add_done_callback(self._tasks.discard)
 
     async def loop(self) -> None:
         await asyncio.sleep(60)

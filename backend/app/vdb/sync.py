@@ -23,6 +23,7 @@ from . import match as M
 from . import sources as S
 from . import store
 from .classmap import class_map
+from ..services.jobs import JOBS
 from .fetch import FetchError, Http, builtin_ca, make_ssl
 
 log = logging.getLogger("app.vdb")
@@ -69,9 +70,13 @@ class VdbSync:
                     await db.commit()
             await self._journal.emit("system", "vdb_sync_failed", level="error", message=f"{S.INFO[key]['title']}: {msg}", data={"source": key, "trigger": trigger})
             return False
+        lease = await JOBS.acquire("vdb_sync", key)                 # загрузку источника выполняет один исполнитель (между несколькими worker тоже)
+        if lease is None:
+            return False
         self._running.add(key)
         started = time.perf_counter()
         run_id = 0
+        outcome = ["success", None]
         try:
             async with self._sm() as db:
                 row = await db.get(VdbSource, key)
@@ -129,11 +134,20 @@ class VdbSync:
                 await db.commit()
             await self._journal.emit("system", "vdb_sync_done" if not error else "vdb_sync_failed", level="info" if not error else "error", message=f"{S.INFO[key]['title']}: "
                                      + (f"записей получено {ctx.fetched}, изменено {ctx.changed}" if not error else error[:300]), duration_ms=ms, data={"source": key, "trigger": trigger})
+            if error:
+                outcome[:] = ["error", error[:500]]
             if not error and ctx.keys and len(ctx.keys) <= 3000:
                 await self.analyze_keys(ctx.keys)               # больше — полный пересчёт по изменению ревизии данных (analysis_tick)
             return not error
+        except asyncio.CancelledError:
+            outcome[:] = ["interrupted", "выполнение отменено"]
+            raise
+        except BaseException as exc:
+            outcome[:] = ["error", f"{type(exc).__name__}: {exc}"[:500]]
+            raise
         finally:
             self._running.discard(key)
+            await lease.finish(outcome[0], outcome[1])
 
     # ------------------------------------------------------------------------------------------ расписание
     async def tick(self) -> None:
@@ -142,10 +156,13 @@ class VdbSync:
             rows = (await db.execute(select(VdbSource))).scalars().all()
             todo = []
             for r in rows:
-                if r.status == "running" and r.last_started_at and now - _utc(r.last_started_at) > STALE and r.key not in self._running:
-                    r.status, r.last_error, r.progress = "error", "Загрузка прервана (перезапуск службы)", None
+                if r.status == "running" and r.key not in self._running and not await JOBS.is_live("vdb_sync", r.key):
+                    # «выполняется» без действующей аренды — след остановившегося процесса: снимаем сразу и повторяем (при частых прерываниях — через 30 минут)
+                    r.status, r.last_error, r.progress = "error", "Загрузка прервана (перезапуск или сбой службы); будет повторена автоматически", None
+                    if await JOBS.failures_since("vdb_sync", r.key, now - timedelta(minutes=30)) < 3:
+                        r.last_started_at = None
                     continue
-                if r.key in self._running or r.status == "running":
+                if r.key in self._running or r.status == "running" or await JOBS.is_live("vdb_sync", r.key):
                     continue
                 wait = timedelta(minutes=30) if r.status == "error" else timedelta(hours=max(1, r.interval_hours))       # после ошибки — повтор через 30 минут, а не через сутки
                 due = r.requested_at is not None or (r.enabled and (r.last_started_at is None or now - _utc(r.last_started_at) >= wait))
@@ -184,7 +201,7 @@ class VdbSync:
         n = 0
         async with self._sm() as db:
             for r in (await db.execute(select(VdbSource))).scalars().all():
-                if r.status == "running":
+                if r.status == "running" and not await JOBS.is_live("vdb_sync", r.key):          # загрузку, которую ведёт другой worker, не трогаем
                     r.status, r.last_error, r.progress, n = "error", "Загрузка прервана (перезапуск службы); будет повторена автоматически", None, n + 1
                 keep = [g for g in (r.active_generation, r.prev_generation) if g is not None]
                 for model in (VdbAffected, VdbRecord):
@@ -219,7 +236,7 @@ class VdbSync:
     async def analysis_tick(self) -> None:
         """Полный пересчёт находок источника KSC, когда изменились данные, от которых зависит сопоставление: загрузка баз, решения администратора, перестроение каталога."""
         async with self._sm() as db:
-            states = (await db.execute(select(CatalogState).where(CatalogState.status == "ready"))).scalars().all()
+            states = (await db.execute(select(CatalogState).where(CatalogState.built_at.is_not(None)))).scalars().all()
             has = (await db.execute(select(func.count()).select_from(VdbVuln))).scalar_one()
             todo = []
             if has:
@@ -231,8 +248,8 @@ class VdbSync:
             if time.monotonic() < self._retry_at.get(sid, 0):
                 continue
             try:
-                await self.analyze_full(sid)
-                self._analyzed[sid] = rev
+                if await self.analyze_full(sid) is not None:          # None — анализ этого источника уже ведёт другой исполнитель: не считаем сделанным
+                    self._analyzed[sid] = rev
             except MemoryPressure as exc:               # память на пределе: сделанное сохранено порциями, повторим позже
                 self._retry_at[sid] = time.monotonic() + 600
                 log.warning("Анализ уязвимостей отложен: %s", exc)
@@ -242,15 +259,21 @@ class VdbSync:
             async with self._sm() as db:
                 sids = [s for s in (await db.execute(select(KscSource.id).where(KscSource.is_active.is_(True)))).scalars().all()]
                 for sid in sids:
-                    await analyze(db, sid, keys=sorted(keys), res=RES)
-                    self._analyzed[sid] = await store.revision(db, sid)
+                    async with JOBS.run("vdb_analyze", str(sid)) as lease:                 # один анализ источника за раз (между worker тоже); идёт чужой — пропускаем: полный анализ по ревизии догонит
+                        if lease is None:
+                            continue
+                        await analyze(db, sid, keys=sorted(keys), res=RES)
+                        self._analyzed[sid] = await store.revision(db, sid)
                 await db.commit()
 
-    async def analyze_full(self, source_id: uuid.UUID) -> int:
+    async def analyze_full(self, source_id: uuid.UUID) -> int | None:
         async with RES.heavy("анализ уязвимостей", RES.slots):         # тяжёлые задачи (каталог, анализ, расчёт дашбордов) идут по одной
-            async with self._sm() as db:
-                n = await analyze(db, source_id, keys=None, res=RES)
-                await db.commit()
+            async with JOBS.run("vdb_analyze", str(source_id)) as lease:
+                if lease is None:
+                    return None
+                async with self._sm() as db:
+                    n = await analyze(db, source_id, keys=None, res=RES)
+                    await db.commit()
         return n
 
 

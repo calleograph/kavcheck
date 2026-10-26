@@ -19,6 +19,7 @@ DB_ROLES = ("SELECT IS_MEMBER('db_datareader') AS datareader, IS_MEMBER('db_data
 KSC_VERSION = "SELECT TOP (1) p.wstrProductBuildNumber AS build FROM dbo.v_akpub_hst_prdstate p WHERE p.wstrProductNameId = '1093' ORDER BY p.nHost"
 
 # --- сводка главной страницы
+SERVER_IDENTITY = "SELECT CAST(@@SERVERNAME AS nvarchar(256)) AS server, DB_NAME() AS db"
 COUNT_HOSTS = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0"
 COUNT_HOSTS_ACTIVE = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0 AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())"
 # EOL: компьютеры (ОС) порциями по nId и устройства с заданными записями реестра ПО; признак активности считается в SQL (даты KSC — UTC)

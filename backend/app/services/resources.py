@@ -80,8 +80,9 @@ class Resources:
     deferred: int = 0
 
     def _cond(self) -> asyncio.Condition:
-        if self._sem is None:
-            self._sem = asyncio.Condition()
+        loop = asyncio.get_running_loop()
+        if self._sem is None or getattr(self, "_sem_loop", None) is not loop:        # условие привязывается к циклу событий при первом ожидании: новый цикл (перезапуск, тесты) — новое условие
+            self._sem, self._sem_loop = asyncio.Condition(), loop
         return self._sem
 
     def configure(self, *, slots: int | None = None, pause_ms: int | None = None) -> None:

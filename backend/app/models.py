@@ -387,6 +387,40 @@ class AccessRule(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
 
 
+class JobLease(Base):
+    """Аренда фонового задания: пока исполнитель жив, он продлевает `lease_until` (heartbeat). Нет продления — аренда истекает, задание считается прерванным и любой worker вправе его перехватить.
+    Одна строка на (вид, область): два исполнителя одной задачи невозможны. `run_id` — идентификатор выполнения: запись результата проверяет, что аренда всё ещё принадлежит этому выполнению."""
+    __tablename__ = "job_leases"
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)            # catalog | eol | vdb_sync | vdb_analyze | zonecache | report | devices …
+    scope: Mapped[str] = mapped_column(String(80), primary_key=True, default="")   # источник KSC, ключ источника базы уязвимостей, задание и т. п.; пусто — задача без области
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    owner: Mapped[str] = mapped_column(String(160), nullable=False)             # хост/процесс/экземпляр исполнителя
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    lease_until: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, index=True)
+    stage: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    progress: Mapped[str | None] = mapped_column(String(300))
+    app_version: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+
+
+class JobRun(Base):
+    """История выполнений фоновых заданий (последние по каждой области): результат, этап, причина ошибки, версия приложения. Прежние ошибки остаются здесь и не выдаются за текущую причину отказа."""
+    __tablename__ = "job_runs"
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    owner: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    app_version: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    status: Mapped[str] = mapped_column(String(14), nullable=False)             # success | error | interrupted | deferred | lost
+    stage: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    error: Mapped[str | None] = mapped_column(Text)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    __table_args__ = (Index("ix_job_runs_scope", "kind", "scope", "finished_at"),)
+
+
 class ServiceHeartbeat(Base):
     """Пульс фоновых служб (worker): для раздела «Состояние системы»."""
     __tablename__ = "service_heartbeats"
@@ -985,6 +1019,7 @@ class EolState(Base):
     error: Mapped[str | None] = mapped_column(Text)
     error_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     progress: Mapped[str | None] = mapped_column(String(200))
+    app_version: Mapped[str | None] = mapped_column(String(40))                           # версия приложения, в которой сделана последняя попытка: ошибка прежней версии не считается текущей причиной отказа
     attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                       # начало последней попытки расчёта (успешной или нет): отличает свежую ошибку от оставшейся с прошлых попыток
     error_detail: Mapped[str | None] = mapped_column(Text)                                  # техническая причина последней ошибки (этап, операция, ключ) — только для администратора
     diag: Mapped[dict | None] = mapped_column(JSONType)                                      # сведения последнего расчёта: объединённые дубли, конфликты при записи, число попыток

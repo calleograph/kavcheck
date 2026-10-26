@@ -69,32 +69,46 @@ async def summary(request: Request, zone: str = Query("", max_length=40), source
     current = {}
     for src in srcs:
         st = states.get(src.id)
-        state = await _calc_state(db, src.id, st, soon, bool(n_prod))
+        state = await _calc_state(db, src.id, st, soon, bool(n_prod), request.app.state.settings.app_version)
         item = {"source": src.name, "computed_at": st.computed_at if st else None, "error": st.error if st else None, "error_at": st.error_at if st else None,
                 "attempt_at": st.attempt_at if st else None, "progress": st.progress if st else None, "started_at": st.started_at if st else None, "items": st.items if st else 0,
                 "ready": bool(st and st.computed_at), "state": state, "state_ru": STATE_RU[state]}
-        if su.is_admin and st is not None:                                    # техническая причина и сведения расчёта — только администратору
+        if st is not None and st.error_at and state in ("error", "deferred", "retrying"):
+            item["retry_at"] = st.error_at + timedelta(minutes=15)
+        if st is not None and state in ("ready", "stale", "running", "waiting", "interrupted", "none"):
+            item["error"] = None                                            # ошибка прежней версии или давняя при уже актуальном результате — не текущая причина (она в истории)
+        if su.is_admin and st is not None:                                    # техническая причина, сведения расчёта и история — только администратору
             item["error_detail"], item["diag"] = st.error_detail, st.diag
+            from ..services.jobs import JOBS  # noqa: PLC0415
+
+            item["history"] = [{"status": r.status, "at": r.finished_at, "stage": r.stage, "error": r.error, "version": r.app_version} for r in await JOBS.runs("eol", str(src.id), 5)]
         current[str(src.id)] = item
-    incomplete = [v["source"] for v in current.values() if v["state"] in ("none", "error", "running")]
+    incomplete = [v["source"] for v in current.values() if not v["ready"] or v["state"] in ("error", "deferred", "retrying", "interrupted")]       # нет результата либо последняя попытка неудачна
     return {"base": base, "all_sources": is_all(request), "findings": items, "kinds": kinds, "devices": z, "ambiguous": unknown, "sources": current, "complete": not incomplete, "incomplete": incomplete}
 
 
-STATE_RU = {"none": "Не рассчитано", "running": "Выполняется", "error": "Ошибка", "ready": "Готово", "stale": "Данные устарели"}
-RUN_LIMIT = timedelta(hours=3)          # дольше — расчёт считается зависшим (процесс упал); worker сбрасывает такие при запуске
+STATE_RU = {"none": "Не рассчитано", "waiting": "Ожидает запуска", "running": "Выполняется", "retrying": "Повторяется после ошибки", "deferred": "Отложено из-за нагрузки", "interrupted": "Прервано, будет повторено",
+            "error": "Ошибка", "ready": "Готово", "stale": "Данные устарели"}
 STALE_AFTER = timedelta(days=7)
 
 
-async def _calc_state(db: AsyncSession, source_id: uuid.UUID, st: EolState | None, soon: int, base_loaded: bool) -> str:
-    """none — результата нет; running — расчёт идёт; error — последний расчёт не удался (если результат раньше был, он остаётся, но состояние — ошибка); stale — исходные данные
-    (база EOL, каталог, решения) изменились после расчёта или он старше недели; ready — актуально."""
+async def _calc_state(db: AsyncSession, source_id: uuid.UUID, st: EolState | None, soon: int, base_loaded: bool, version: str) -> str:
+    """Состояние расчёта источника. «Выполняется» — только при действующей аренде (процесс жив); ошибка считается текущей, только если это итог последней попытки ЭТОЙ версии приложения
+    (ошибки прежних версий хранятся в истории и не выдаются за причину отказа); «устарело» — результат корректен, но исходные данные изменились или ему больше недели."""
+    from ..services.jobs import JOBS  # noqa: PLC0415
+
     now = datetime.now(timezone.utc)
-    if st is not None and st.started_at and now - st.started_at < RUN_LIMIT:
-        return "running"
-    if st is not None and st.error and (st.error_at or now) >= (st.computed_at or datetime.min.replace(tzinfo=timezone.utc)):
-        return "error"
-    if st is None or not st.computed_at:
-        return "none"
+    has_data = bool(st and st.computed_at)
+    current_error = bool(st and st.error and st.app_version == version)         # ошибка без версии — след прежней версии приложения: не текущая
+    if await JOBS.is_live("eol", str(source_id)):
+        return "retrying" if current_error else "running"
+    if current_error and (st.error_at or now) >= (st.computed_at or datetime.min.replace(tzinfo=timezone.utc)):
+        return "deferred" if (st.diag or {}).get("code") == "memory" else "error"
+    if not has_data:
+        if not base_loaded:
+            return "none"
+        last = await JOBS.runs("eol", str(source_id), 1)
+        return "interrupted" if last and last[0].status in ("interrupted", "lost") else "waiting"
     if now - st.computed_at > STALE_AFTER or (base_loaded and st.inputs and st.inputs != await C.current_inputs(db, source_id, None, soon)):
         return "stale"
     return "ready"

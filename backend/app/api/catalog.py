@@ -32,7 +32,8 @@ def _ksc(exc: KscError) -> HTTPException:
 async def _state(db: AsyncSession, source_id: uuid.UUID) -> dict:
     from ..models import CatalogState  # noqa: PLC0415
 
-    return svc.state_out(await db.get(CatalogState, source_id))
+    st = await db.get(CatalogState, source_id)
+    return svc.state_out(st, await svc.effective_status(st))
 
 
 @router.get("/catalog")

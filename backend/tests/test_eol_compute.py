@@ -278,40 +278,51 @@ async def test_same_version_under_two_schemes_does_not_duplicate_findings(app):
     assert res["items"] >= 2
 
 
-async def test_calculation_states_none_running_error_stale_ready(client, app):
-    """Состояния расчёта в сводке: «Не рассчитано» не выдаётся за ноль находок, «Выполняется» не зависает навсегда, ошибка после успеха — «Ошибка», изменение данных — «Данные устарели»."""
+async def test_calculation_states_waiting_running_error_stale_ready(client, app):
+    """Состояния расчёта: «Ожидает запуска» не выдаётся за ноль находок; «Выполняется» — только при живой аренде (след упавшего процесса не в счёт); ошибка прежней версии — в истории, а не текущая причина."""
     from datetime import timedelta
 
     from sqlalchemy import update
+
+    from app.models import JobLease
+    from app.services.jobs import JOBS
 
     await login(client, "admin", "Admin-Passw0rd-123")
     sid = await seed(app)
     sm = app.state.session_maker
     h = {"X-Source-Id": str(sid)}
+    ver = app.state.settings.app_version
 
     async def state():
         return (await client.get("/api/v1/eol/summary", headers=h)).json()["sources"][str(sid)]
 
-    assert (await state())["state"] == "none"
+    assert (await state())["state"] == "waiting"
     async with sm() as db:
         src = await db.get(KscSource, sid)
-    await C.compute_source(sm, FakeKsc({11: [(1, 1)]}, hosts()), src, activity_days=30, today=TODAY)
+    await C.compute_source(sm, FakeKsc({11: [(1, 1)]}, hosts()), src, activity_days=30)       # сегодняшняя дата: API сверяет отпечаток тоже на сегодня
     assert (await state())["state"] == "ready"
+    lease = await JOBS.acquire("eol", str(sid), "устройства: программы")
+    assert lease is not None and (await state())["state"] == "running"                                  # аренда живая — расчёт идёт
     async with sm() as db:
-        await db.execute(update(EolState).where(EolState.source_id == sid).values(started_at=utcnow(), progress="устройства: программы"))
+        await db.execute(update(JobLease).values(lease_until=utcnow() - timedelta(seconds=5)))
+        await db.commit()
+    assert (await state())["state"] == "ready"                                                           # исполнитель не продлевает аренду — «выполняется» не показывается
+    async with sm() as db:
+        await db.execute(update(EolState).where(EolState.source_id == sid).values(error="Не удалось рассчитать EOL", error_at=utcnow(), app_version="0.0.0-old"))
         await db.commit()
     s = await state()
-    assert s["state"] == "running" and s["state_ru"] == "Выполняется" and s["progress"]
+    assert s["state"] == "ready" and s["error"] is None                                                  # ошибка прежней версии не показывается как текущая
     async with sm() as db:
-        await db.execute(update(EolState).where(EolState.source_id == sid).values(started_at=utcnow() - timedelta(hours=5)))
+        await db.execute(update(EolState).where(EolState.source_id == sid).values(app_version=ver))
         await db.commit()
-    assert (await state())["state"] != "running"                                              # зависший расчёт не показывается как идущий
+    s = await state()
+    assert s["state"] == "error" and s["error"] and s["retry_at"]                                         # ошибка последней попытки этой версии — текущая
     svc = EolService(sm, app.state.settings_svc, None)
-    assert await svc.recover() == 1
+    svc.version = "9.9.9"
+    assert await svc.recover() == 1                                                                       # после обновления старая ошибка переносится в историю
     async with sm() as db:
-        await db.execute(update(EolState).where(EolState.source_id == sid).values(error="KSC недоступен", error_at=utcnow()))
-        await db.commit()
-    assert (await state())["state"] == "error"
+        st = await db.get(EolState, sid)
+    assert st.error is None and any(r.status == "error" and "Не удалось рассчитать EOL" in (r.error or "") for r in await JOBS.runs("eol", str(sid), 5))
     async with sm() as db:
         await db.execute(update(EolState).where(EolState.source_id == sid).values(error=None, error_at=None, inputs="old"))
         await db.commit()

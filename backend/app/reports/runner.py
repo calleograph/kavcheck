@@ -68,6 +68,28 @@ class Runner:
     RETRY_DELAYS = (30, 120)
 
     async def run_job(self, job: ReportJob) -> None:
+        from ..services.jobs import JOBS  # noqa: PLC0415
+
+        lease = await JOBS.acquire("report", str(job.id), "запуск")
+        if lease is None:                                       # задание уже ведёт другой исполнитель
+            return
+        status, error = "success", None
+        try:
+            await self._run_job(job)
+            async with self._sm() as db:
+                cur = await db.get(ReportJob, job.id)
+            if cur is not None and cur.status == "failed":
+                status, error = "error", cur.error
+        except asyncio.CancelledError:
+            status, error = "interrupted", "выполнение отменено"
+            raise
+        except BaseException as exc:
+            status, error = "error", f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            await lease.finish(status, error)
+
+    async def _run_job(self, job: ReportJob) -> None:
         async with self._sem:
             async with RES.heavy(f"отчёт {job.kind}", 1, interactive=True):          # отчёты идут под общим ограничителем: при занятых слотах или нехватке памяти ждут, а не копят память
                 for attempt in range(len(self.RETRY_DELAYS) + 1):
@@ -298,7 +320,16 @@ class Runner:
                         notes.append(f"{src.name}: каталог программ ещё не построен")
                     else:
                         await self._set(job.id, progress=f"{src.name}: построение каталога программ")
-                        await self.catalog.build(src.id, "нужен для отчёта")
+                        await self.catalog.build(src.id, "нужен для отчёта")        # если каталог уже строит другой исполнитель, build вернётся сразу — ждём его завершения
+                        for _ in range(180):
+                            async with self._sm() as db3:
+                                if await catalog_svc.catalog_ready(db3, src.id):
+                                    break
+                            from ..services.jobs import JOBS  # noqa: PLC0415
+
+                            if not await JOBS.is_live("catalog", str(src.id)):
+                                break
+                            await asyncio.sleep(5)
                 async with self._sm() as db2:
                     resolved, missing = await catalog_svc.resolve_items(db2, src.id, items)
             try:
@@ -397,12 +428,22 @@ class Runner:
         export.write_xlsx(d / "report.xlsx", kind, rows, summary, meta)
 
     async def recover_orphans(self) -> int:
-        """Задания, оставшиеся «в работе» после перезапуска воркера, закрываются как прерванные."""
+        """Задания «в работе» без действующей аренды (исполнитель завершился или завис) возвращаются в очередь сразу, а не через часы; при повторяющихся прерываниях — ошибка.
+        Задание, которое ведёт другой worker, не трогается."""
+        from ..services.jobs import JOBS  # noqa: PLC0415
+
+        n = 0
         async with self._sm() as db:
-            res = await db.execute(update(ReportJob).where(ReportJob.status == "running", ReportJob.started_at < utcnow() - timedelta(hours=3))
-                                   .values(status="failed", finished_at=utcnow(), error="Формирование прервано перезапуском сервиса"))
+            for j in (await db.execute(select(ReportJob).where(ReportJob.status == "running"))).scalars().all():
+                if await JOBS.is_live("report", str(j.id)):
+                    continue
+                if await JOBS.failures_since("report", str(j.id), utcnow() - timedelta(days=1)) >= 3:
+                    j.status, j.finished_at, j.error, j.progress = "failed", utcnow(), "Формирование прерывалось несколько раз подряд (перезапуск или нехватка памяти)", "ошибка"
+                else:
+                    j.status, j.started_at, j.progress = "queued", None, "возвращено в очередь после прерывания"
+                n += 1
             await db.commit()
-            return res.rowcount
+        return n
 
     async def cleanup(self, keep_days: int) -> int:
         """Удаление отчётов старше срока хранения (файлы и записи)."""
@@ -419,6 +460,7 @@ class Runner:
     async def loop(self) -> None:
         await self.recover_orphans()
         last_cleanup = utcnow() - timedelta(hours=2)
+        last_orphan = utcnow()
         while True:
             try:
                 job = await self._claim() if len(self._tasks) < self._cfg.report_concurrency else None        # лишние задания ждут в очереди (видны как «в очереди»), а не занимают «в работе»
@@ -427,6 +469,9 @@ class Runner:
                     self._tasks.add(t)
                     t.add_done_callback(self._tasks.discard)
                     continue
+                if utcnow() - last_orphan > timedelta(seconds=60):
+                    last_orphan = utcnow()
+                    await self.recover_orphans()
                 if utcnow() - last_cleanup > timedelta(hours=1):
                     async with self._sm() as db:
                         keep = (await self._svc.get(db, "general")).report_keep_days  # type: ignore[attr-defined]
