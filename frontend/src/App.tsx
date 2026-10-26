@@ -29,7 +29,7 @@ const DevicesPage = lazy(() => import("./pages/DevicesPage"));
 export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; /** выбрано «Все источники» (разделы, которые это умеют, показывают данные всех доступных источников) */ all: boolean; reloadSources: () => Promise<void> }
 
 /** Разделы, работающие со всеми источниками сразу; остальные показывают выбранный источник. */
-export const ALL_PAGES = ["/eol", "/devices", "/reports"];
+export const ALL_PAGES = ["/eol", "/devices", "/reports", "/zones"];
 
 const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/", label: "Главная", icon: "home", end: true },
@@ -222,7 +222,7 @@ export default function App() {
   const [sources, setSources] = useState<SourceRef[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [all, setAll] = useState<boolean>(() => { try { return localStorage.getItem("kc:scope-all") === "1"; } catch { return false; } });
-  useEffect(() => { setAllSources(all && sources.length > 1); }, [all, sources.length]);
+  useLayoutEffect(() => { setAllSources(all && sources.length > 1); }, [all, sources.length]);      // до эффектов страниц: их первый запрос уже должен идти с заголовком «все источники»
   const onAll = useCallback((on: boolean) => { setAll(on); try { localStorage.setItem("kc:scope-all", on ? "1" : "0"); } catch { /* не запомнится */ } }, []);
   const navigate = useNavigate();
   const { pathname } = useLocation();

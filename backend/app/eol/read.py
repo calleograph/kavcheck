@@ -71,14 +71,14 @@ async def list_findings(db: AsyncSession, sids: list[uuid.UUID], src_names: dict
                         zone: str = "", all_hosts: bool = False, sort: str = "hosts", desc: bool = True, offset: int = 0, limit: int = 50) -> dict:
     zsub = zone_agg(zone, sids) if zone else None
 
-    def sel(*cols, status_=status):
+    def sel(*cols, status_=status, extras=False):
         c, n_all, n_act = _filters(sids, q=q, kind=kind, product=product, publisher=publisher, severity=severity, status=status_, zone_sub=zsub, all_hosts=all_hosts)
-        s = select(*cols, n_all.label("n_all"), n_act.label("n_act")) if cols else None
-        if zsub is not None and s is not None:
+        s = select(*cols, *((n_all.label("n_all"), n_act.label("n_act")) if extras else ()))
+        if zsub is not None:
             s = s.select_from(EolFinding.__table__.join(zsub, and_(zsub.c.sid == EolFinding.source_id, zsub.c.k == EolFinding.kind, zsub.c.s == EolFinding.subject, zsub.c.v == EolFinding.version)))
         return s, c, n_all
 
-    s, c, n_all = sel(EolFinding)
+    s, c, n_all = sel(EolFinding, extras=True)
     shown = n_all if all_hosts else (zsub.c.na if zsub is not None else EolFinding.hosts_active)
     order = {"hosts": shown, "severity": SEV_ORDER, "eol_from": func.coalesce(EolFinding.eol_from, date(9999, 1, 1)), "title": func.lower(EolFinding.title), "release": EolFinding.eol_release}.get(sort, shown)
     s = s.where(*c).order_by(order.desc() if desc else order.asc(), SEV_ORDER.desc(), func.lower(EolFinding.title)).offset(offset).limit(limit)

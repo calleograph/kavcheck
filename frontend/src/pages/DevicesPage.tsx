@@ -35,7 +35,7 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
     (offset, limit) => api.devices.list({ q: applied, zone, eol, os: osq, user: uq, source_id: ctx.all ? srcId : "", all_hosts: all || undefined, show_service: service || undefined, sort, desc, offset, limit }), 50);
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const extra = list.extra as { limits?: string; not_ready?: string[] } | null;
-  const multi = ctx.all || ctx.sources.length > 1;
+  const multi = ctx.all;
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } };
   const card = sp.get("card");
   const poll = async () => { try { const r = await api.devices.poll(); show(r.queued ? "Опрос поставлен в очередь: результат появится в течение минуты" : "Нет источников, которые отдают списки пользователей"); } catch (e) { show((e as ApiError).message, "error"); } };
@@ -73,7 +73,7 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
               {list.items.map((d) => (
                 <tr key={`${d.source_id}:${d.host_id}`} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button")) setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; }); }}>
                   <td><button type="button" className="link-btn strong-link" onClick={() => setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; })}>{d.name}</button>{!d.active && <span className="badge">не активно</span>}</td>
-                  <td className="mono small hide-sm">{d.ip || "—"}</td><td className="small hide-md">{d.os || "—"}</td>
+                  <td className="mono small nowrap hide-sm">{d.ip || "—"}</td><td className="small hide-md">{d.os || "—"}</td>
                   <td className="small hide-md">{d.group || "—"}<span className="sub"><CompactList items={d.zones} label="зоны" /></span></td>
                   <td className="nowrap small">{fmt(d.last_connected)}</td>
                   <td className="small users-cell">

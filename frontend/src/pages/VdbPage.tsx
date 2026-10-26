@@ -220,7 +220,7 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
   const canReport = ctx.me.user.role !== "viewer";
   const [type, setType] = useKept<"all" | "cve" | "eol">("vdbm.type", "all");
   const [eol, setEol] = useState<Awaited<ReturnType<typeof api.eol.summary>> | null>(null);
-  useEffect(() => { api.eol.summary().then(setEol).catch(() => setEol(null)); }, [ctx.current?.id, ctx.all]);
+  useEffect(() => { api.eol.summary("", ctx.current?.id ?? "").then(setEol).catch(() => setEol(null)); }, [ctx.current?.id]);
   const eolOn = !!eol?.base.include_in_analytics;             // EOL включён в аналитику: в общем списке есть тип «EOL»
   const kind: "all" | "cve" | "eol" = eolOn ? type : "cve";
   const eolN = eol ? eol.findings.eol + eol.findings.extended + eol.findings.upcoming : 0;
@@ -234,7 +234,7 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
     <>
       {eolOn && <div className="toolbar"><Segmented<"all" | "cve" | "eol"> label="Тип записей" value={type} onChange={setType} options={[["all", "Все"], ["cve", "CVE"], ["eol", `EOL${eolN ? ` · ${eolN}` : ""}`]]} />
         <span className="muted small">CVE и EOL — разные типы проблем: они считаются отдельно и не складываются. EOL выключается в Администрирование → База уязвимостей.</span></div>}
-      {kind !== "cve" && <div className="vdb-eol"><h3 className="h3">EOL: программы и ОС без поддержки производителя{eol ? ` (${eolN})` : ""}</h3><EolList limit={kind === "eol" ? 100 : 5} sources={ctx.all} /></div>}
+      {kind !== "cve" && <div className="vdb-eol"><h3 className="h3">EOL: программы и ОС без поддержки производителя{eol ? ` (${eolN})` : ""}</h3><EolList limit={kind === "eol" ? 100 : 5} sourceId={ctx.current?.id} /></div>}
       {kind !== "eol" && <>
       <div className="meters">
         <div className="meter"><span className="l">Новых</span><span className={`v ${s?.new ? "warn-text" : ""}`}>{s ? num(s.new) : "…"}</span><span className="t">не просмотрены специалистом</span></div>

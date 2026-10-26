@@ -45,6 +45,7 @@ async def seed(app):
     sid = uuid.uuid4()
     async with sm() as db:
         db.add(KscSource(id=sid, name="KSC-A", host="a.example.local", port=1433, database="KAV", username="u", password_enc="x", is_active=True))
+        await db.flush()
         db.add(CatalogState(source_id=sid, status="ready", built_at=utcnow(), activity_days=30))
         db.add(cat(sid, "php", "PHP", "The PHP Group", [("7.4.16", [11, 12]), ("8.3.2", [13])]))
         db.add(cat(sid, "mystery", "Mystery Tool", "Nobody", [("9.9", [21])]))
@@ -198,10 +199,13 @@ async def test_quick_eol_report_previews_and_exports_full_device_list(client, ap
         await db.commit()
     await C.compute_source(sm, FakeKsc({11: [(1, 1), (2, 1)], 12: [(5, 1)]}, hosts()), src, activity_days=30, today=TODAY)
     r = (await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"statuses": ["eol"]}, "source_ids": [str(sid)]}, headers={"X-Source-Id": str(sid)})).json()
+    r0 = r
     assert r["total"] == 2 and {m["key"]: m["value"] for m in r["doc"]["metrics"]}["hosts"] == 3
     assert {t["id"]: t["n"] for t in r["doc"]["tables"]} == {"rows": 2, "devices": 5}                     # PHP: 1, 2, 5; Windows Server: 1, 2 — устройство × проблема, без сокращений
     r = (await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"kinds": ["os"], "devices": False}}, headers={"X-Source-Id": str(sid)})).json()
     assert r["total"] == 1 and r["items"][0]["title"].startswith("Microsoft Windows Server 2012") and r["items"][0]["eol_from"]
+    lv = {x["key"]: x["value"] for x in r0["doc"]["severity"]["levels"]}
+    assert sum(lv.values()) == 3 and lv["critical"] == 3                                                       # у устройства — наивысшая критичность: сумма уровней равна числу устройств
     bad = await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"statuses": ["bogus"]}}, headers={"X-Source-Id": str(sid)})
     assert bad.status_code == 422
 
@@ -230,3 +234,22 @@ async def test_failed_recalculation_keeps_previous_results_and_reports_the_error
         n = len((await db.execute(select(EolFinding).where(EolFinding.source_id == sid))).scalars().all())
     assert st.error and "KSC недоступен" in st.error and st.error_at and n == 2                  # прежние результаты на месте, причина записана
     assert await svc.due(TODAY) == []                                                              # повтор не сразу: пауза после ошибки не даёт долбить недоступный KSC
+
+
+async def test_quick_eol_refuses_oversized_device_table_with_guidance(app):
+    import pytest
+
+    from app.ksc.driver import KscError
+    from app.reports import quick
+
+    sid = await seed(app)
+    sm = app.state.session_maker
+    async with sm() as db:
+        src = await db.get(KscSource, sid)
+    await C.compute_source(sm, FakeKsc({11: [(1, 1), (2, 1)], 12: [(5, 1)]}, hosts()), src, activity_days=30, today=TODAY)
+    ctx = quick.Ctx(source_name="KSC-A", activity_days=30, sm=sm, source_id=sid, source_ids=[sid], max_rows=2)
+    with pytest.raises(KscError) as e:
+        await quick.build("quick_eol", None, {"statuses": ["eol"]}, ctx)       # type: ignore[arg-type]
+    assert e.value.code == "too_many_rows" and "таблицу устройств" in e.value.message
+    doc = await quick.build("quick_eol", None, {"statuses": ["eol"], "devices": False}, ctx)         # type: ignore[arg-type]
+    assert doc["tables"][1]["rows"] == [] and len(doc["tables"][0]["rows"]) == 2                      # без таблицы устройств отчёт строится

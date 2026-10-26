@@ -2,13 +2,12 @@
 Данные берутся из готовых результатов KAV Checker (PostgreSQL), к KSC отчёт не обращается. Несколько источников — в одном отчёте, у каждой строки указан источник; в таблице устройств список полный (без сокращений «+N»)."""
 from __future__ import annotations
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, or_, select
 
 from ..eol import read as R
 from ..ksc.driver import KscError, SourceClient
-from ..models import EolFinding, EolHost, KscSource, ZcHost, ZcSource
+from ..models import EolFinding, EolHost, KscSource, ZcHost, ZcHostZone, ZcSource
 from ..search import any_of
-from ..zones import zread as ZR
 from .quick import Ctx, col, metric
 
 SEV_LABEL = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
@@ -56,31 +55,33 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
             o["confirmed_ru"] = "да" if f.confirmed else "нет: зависит от подписки или договора, либо соответствие по названию"
             rows.append(o)
         devices: list[dict] = []
+        est = sum(r["hosts"] if p.get("include_inactive") else r["hosts_active"] for r in rows)         # строк в таблице устройств (устройство × проблема)
+        if p.get("devices", True) and est > ctx.max_rows:
+            raise KscError("too_many_rows", f"Строк в таблице устройств около {est}, предел отчёта — {ctx.max_rows}: отключите таблицу устройств, выберите зону, состояние или критичность либо повысьте предел в «Администрирование → Общие настройки»")
         if p.get("devices", True):
-            by_key = {(f.source_id, f.kind, f.subject, f.version): f for f in findings}
-            for sid in sids:
-                keys = {k[1:]: f for k, f in by_key.items() if k[0] == sid}
-                if not keys:
-                    continue
-                in_zone = await ZR.host_ids_in_zone(db, sid, zone) if zone else None
-                ids = (await db.execute(select(EolHost.kind, EolHost.subject, EolHost.version, EolHost.host_id).where(EolHost.source_id == sid))).all()
-                gen = (await db.get(ZcSource, sid))
-                hosts = {}
-                if gen is not None and gen.gen:
-                    for h in (await db.execute(select(ZcHost.host_id, ZcHost.name, ZcHost.os, ZcHost.last_connected, ZcHost.active, ZcHost.data).where(ZcHost.source_id == sid, ZcHost.gen == gen.gen))).all():
-                        hosts[int(h.host_id)] = h
-                for kind, subject, version, hid in ids:
-                    f = keys.get((kind, subject, version))
-                    h = hosts.get(int(hid))
-                    if f is None or (in_zone is not None and int(hid) not in in_zone) or (h is not None and not h.active and not p.get("include_inactive")):
-                        continue
-                    d = (h.data or {}) if h is not None else {}
-                    devices.append({"severity": f.severity, "severity_ru": R.SEV_RU.get(f.severity, ""), "source": names.get(sid, ""), "name": (h.name if h is not None else f"#{hid}"), "ip": d.get("ip", ""),
-                                    "os": (h.os if h is not None else ""), "group": d.get("group", ""), "zones": ", ".join(str(z) for z in d.get("zones") or []), "last_connected": h.last_connected if h is not None else None,
-                                    "active": ("да" if h.active else "нет") if h is not None else "нет данных", "kind_ru": R.KIND_RU.get(f.kind, f.kind), "title": f.title, "version": f.version,
-                                    "status_ru": R.STATUS_RU.get(f.status, f.status), "eol_from": f.eol_from, "host_key": (str(sid), int(hid))})
-            devices.sort(key=lambda r: (-{"critical": 3, "high": 2, "warning": 1}.get(r["severity"], 0), r["name"].lower(), r["title"].lower()))
-    level = {k: len({r["host_key"] for r in devices if r["severity"] == k}) for k in ("critical", "high", "warning")}
+            # одним потоковым запросом: устройства находок + данные подготовленных зон (только нужные поля, без загрузки всех компьютеров источника)
+            J = (EolHost.__table__.join(EolFinding.__table__, and_(EolFinding.source_id == EolHost.source_id, EolFinding.kind == EolHost.kind, EolFinding.subject == EolHost.subject, EolFinding.version == EolHost.version))
+                 .outerjoin(ZcSource.__table__, and_(ZcSource.source_id == EolHost.source_id, ZcSource.gen > 0))
+                 .outerjoin(ZcHost.__table__, and_(ZcHost.source_id == EolHost.source_id, ZcHost.host_id == EolHost.host_id, ZcHost.gen == ZcSource.gen)))
+            dcond = list(cond)
+            if zone:
+                J = J.join(ZcHostZone.__table__, and_(ZcHostZone.source_id == EolHost.source_id, ZcHostZone.host_id == EolHost.host_id, ZcHostZone.gen == ZcSource.gen, ZcHostZone.zone_id == zone))
+            if not p.get("include_inactive"):
+                dcond.append(or_(ZcHost.active.is_(True), ZcHost.host_id.is_(None)))
+            q = (select(EolHost.source_id, EolHost.host_id, EolFinding.severity, EolFinding.kind, EolFinding.title, EolFinding.version, EolFinding.status, EolFinding.eol_from, ZcHost.host_id.label("zh"), ZcHost.name,
+                        ZcHost.os, ZcHost.last_connected, ZcHost.active, ZcHost.data["ip"].as_string().label("ip"), ZcHost.data["group"].as_string().label("grp"), ZcHost.data["zones"].as_json().label("zones"))
+                 .select_from(J).where(*dcond).order_by(R.SEV_ORDER.desc(), func.lower(ZcHost.name), EolFinding.title, EolHost.host_id))
+            async for r in await db.stream(q.execution_options(yield_per=5000)):
+                hid, known = int(r.host_id), r.zh is not None
+                devices.append({"severity": r.severity, "severity_ru": R.SEV_RU.get(r.severity, ""), "source": names.get(r.source_id, ""), "name": (r.name if known else f"#{hid}"), "ip": r.ip or "",
+                                "os": (r.os if known else "") or "", "group": r.grp or "", "zones": ", ".join(str(z) for z in (r.zones or [])), "last_connected": r.last_connected if known else None,
+                                "active": ("да" if r.active else "нет") if known else "нет данных", "kind_ru": R.KIND_RU.get(r.kind, r.kind), "title": r.title, "version": r.version,
+                                "status_ru": R.STATUS_RU.get(r.status, r.status), "eol_from": r.eol_from, "host_key": (str(r.source_id), hid)})
+    rank = {"critical": 3, "high": 2, "warning": 1}
+    worst: dict[tuple, int] = {}                                              # у устройства учитывается наивысшая критичность: сумма по уровням равна числу устройств
+    for r in devices:
+        worst[r["host_key"]] = max(worst.get(r["host_key"], 0), rank.get(r["severity"], 0))
+    level = {k: sum(1 for v in worst.values() if v == rank[k]) for k in rank}
     uniq = {r.pop("host_key") for r in devices}
     metrics = [metric("hosts", "Устройств с проблемой поддержки", len(uniq), "устройство с несколькими проблемами считается один раз", "danger" if uniq else "ok"),
                metric("items", "Программ и ОС (версий)", len(rows)), metric("eol", "Стандартная поддержка закончилась", sum(1 for r in rows if r["status"] == "eol"), "", "danger" if any(r["status"] == "eol" for r in rows) else "ok"),

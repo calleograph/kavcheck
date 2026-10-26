@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type ApiError, type Dashboard, type EvSummary, type ProtSummary } from "../api";
+import { api, type ApiError, type Dashboard, type EolSummary, type EvSummary, type ProtSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Icon, type IconName } from "../components/Icons";
 import { Empty, PageHead, Spectrum } from "../components/ui";
@@ -23,9 +23,11 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
   // защита и события — отдельными запросами: главная не ждёт тяжёлых сводок, а при их ошибке остаётся рабочей
   const [prot, setProt] = useState<ProtSummary | null | "err">(null);
   const [ev, setEv] = useState<EvSummary | null | "err">(null);
+  const [eol, setEol] = useState<EolSummary | null>(null);
   useEffect(() => {
     if (!ctx.current) return;
     api.protection({ limit: 0, online: true }).then((r) => setProt(r.summary ?? "err")).catch(() => setProt("err"));
+    api.eol.summary("", ctx.current.id).then(setEol).catch(() => setEol(null));
     api.events.summary(7).then((r) => setEv(r.unsupported ? "err" : r)).catch(() => setEv("err"));
   }, [ctx.current]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
@@ -78,6 +80,14 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
             <span className="t">{foot}</span>
           </Link>))}
       </div>
+
+      {eol && eol.base.include_in_analytics && eol.base.products > 0 && <>
+        <div className="section-head"><h2>Жизненный цикл ПО и ОС</h2><span className="muted small">окончание поддержки производителя (EOL)</span></div>
+        <div className="meters three" aria-label="EOL">
+          <Link to="/eol" className="meter meter-link"><span className="l">Поддержка закончилась (EOL)</span><span className={`v ${eol.findings.eol ? "bad-text" : ""}`}>{num(eol.findings.eol)}</span><span className="t">программ и ОС; устройств: {num(eol.devices.eol)}</span></Link>
+          <Link to="/eol" className="meter meter-link"><span className="l">Только расширенная поддержка</span><span className={`v ${eol.findings.extended ? "warn-text" : ""}`}>{num(eol.findings.extended)}</span><span className="t">платная или по договору</span></Link>
+          <Link to="/eol" className="meter meter-link"><span className="l">Скоро закончится</span><span className="v">{num(eol.findings.upcoming)}</span><span className="t">в ближайшие {eol.base.soon_days} сут</span></Link>
+        </div></>}
 
       <div className="section-head"><h2>Компьютеры и программы</h2><span className="muted small">{t}</span></div>
       <div className="meters three" aria-label="Компьютеры и программы">

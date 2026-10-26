@@ -270,7 +270,7 @@ export const api = {
     one: (id: number) => req<{ host: Host; activity_days: number; fetched_at: string; software: { install_id: number; product_id: number; name: string; version: string; publisher: string; install_date: string | null }[]; kaspersky: { product_code: string; product: string; build: string; state: string; av_bases_date: string | null; is_av: boolean; has_rtp: boolean }[] }>("GET", `/hosts/${id}`),
   },
   eol: {
-    summary: (zone = "") => req<EolSummary>("GET", `/eol/summary${qs({ zone })}`),
+    summary: (zone = "", sourceId = "") => req<EolSummary>("GET", `/eol/summary${qs({ zone, source_id: sourceId })}`),
     infra: (p: Record<string, string | number | boolean | undefined | null>) => req<EolInfra>("GET", `/eol/infra${qs(p)}`),
     hosts: (p: Record<string, string | number | boolean | undefined | null>) => req<{ total: number; items: EolHostRow[] }>("GET", `/eol/infra/hosts${qs(p)}`),
     products: (p: Record<string, string | number | boolean | undefined | null>) => req<{ total: number; categories: string[]; items: EolProductRow[] }>("GET", `/eol/products${qs(p)}`),

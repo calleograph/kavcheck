@@ -70,7 +70,8 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
   const [initial, setInitial] = useState<Initial>(() => initialFromUrl(sp, ctx.current?.id ?? ""));
   const [delJob, setDelJob] = useState<Job | null>(null);
   const [delCheck, setDelCheck] = useState<SavedCheck | null>(null);
-  const [allSources, setAllSources] = useState(false);
+  const [allSources, setAllSources] = useState(ctx.all);           // «Все источники» в верхней панели включает и список отчётов всех источников
+  useEffect(() => setAllSources(ctx.all), [ctx.all]);
   const [zonePick, setZonePick] = useState(false); const [zoneIds, setZoneIds] = useState<string[] | null>(null);
   const [preview, setPreview] = useState<PreviewState>(null);
   const [toast, show] = useToast();

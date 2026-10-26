@@ -29,7 +29,7 @@ export default function EolPage({ ctx }: { ctx: Ctx }) {
   const canReport = ctx.me.user.role !== "viewer";
   const f = sum?.findings;
   const states = sum ? Object.entries(sum.sources) : [];
-  const pending = states.filter(([, s]) => !s.ready);
+  const pending = states.filter(([, s]) => !s.ready && !s.error);
   const failed = states.filter(([, s]) => s.error);
   return (
     <section>
@@ -67,7 +67,7 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
   const [sort, setSort] = useKept("eol.sort", "severity"); const [desc, setDesc] = useKept("eol.desc", true);
   const [open, setOpen] = useState<string | null>(null); const [toast, show] = useToast();
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 350); return () => window.clearTimeout(t); }, [q]);
-  const multi = ctx.all || ctx.sources.length > 1;
+  const multi = ctx.all;                 // колонка «Источник» нужна, только когда показаны данные нескольких источников
   const list = useInfinite<EolFinding>(`eol:${ctx.current?.id}:${ctx.all}`, [applied, kind, status, sev, pub, prod, srcId, all, sort, desc, zone],
     (offset, limit) => api.eol.infra({ q: applied, kind, status, severity: sev, publisher: pub, product: prod, source_id: ctx.all ? srcId : "", all_hosts: all || undefined, zone, sort, desc, offset, limit }), 50);
   const extra = list.extra as { by_status?: Record<string, number>; computed_at?: string | null; publishers?: string[] } | null;
@@ -81,9 +81,9 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Программа, производитель, продукт: Windows Server 2012*, *Java*" aria-label="Поиск по программам и ОС" /><MaskHint /></div>
         <Segmented<Kind> label="Тип" value={kind} onChange={setKind} options={[["", "Всё"], ["app", "Программы"], ["os", "Операционные системы"]]} />
         <Segmented<St> label="Состояние поддержки" value={status} onChange={setStatus} options={[["", "Все"], ["eol", `EOL${extra?.by_status?.eol ? ` · ${extra.by_status.eol}` : ""}`], ["extended", "Расширенная"], ["upcoming", "Скоро"]]} />
-        <label className="field">Критичность<select value={sev} onChange={(e) => setSev(e.target.value)}><option value="">Любая</option><option value="critical">Критическая</option><option value="high">Высокая</option><option value="warning">Предупреждение</option></select></label>
         <details className="disclosure toolbar-more"><summary>Дополнительно</summary>
           <div className="toolbar-fields">
+            <label className="field">Критичность<select value={sev} onChange={(e) => setSev(e.target.value)}><option value="">Любая</option><option value="critical">Критическая</option><option value="high">Высокая</option><option value="warning">Предупреждение</option></select></label>
             <label className="field">Производитель<select value={pub} onChange={(e) => setPub(e.target.value)}><option value="">Любой</option>{(extra?.publishers ?? []).map((p) => <option key={p} value={p}>{p}</option>)}</select></label>
             <label className="field">Продукт endoflife.date<input value={prod} onChange={(e) => setProd(e.target.value.trim())} placeholder="например, windows-server" className="mono" /></label>
             {ctx.all && <label className="field">Источник KSC<select value={srcId} onChange={(e) => setSrcId(e.target.value)}><option value="">Все</option>{ctx.sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
@@ -108,7 +108,7 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
                     <td><EolSev f={f} />{!f.confirmed && <span className="sub small" title={f.condition}>не подтверждено</span>}</td>
                     <td><strong>{f.title}</strong>{f.kind === "app" && <span className="sub mono small">{f.version}</span>}{f.publisher && <span className="sub small">{f.publisher}</span>}<span className="sub small">{f.kind_ru}</span></td>
                     <td className="hide-sm"><a href={`https://endoflife.date/${f.eol_product}`} target="_blank" rel="noopener noreferrer">{f.eol_label}</a><span className="sub mono small">ветка {f.eol_release}</span>
-                      <span className="sub small muted">{f.confidence_ru}</span></td>
+                      {f.confidence !== "high" && <span className="sub small muted">{f.confidence_ru}</span>}</td>
                     <td><EolBadge s={f.status} /><EolDates f={f} />{f.condition && f.status !== "eol" && <span className="sub small">{f.condition}</span>}</td>
                     <td className="num"><button type="button" className="link-btn" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : k)}>{num(all ? f.hosts : f.hosts_active)}</button>
                       {!all && f.hosts > f.hosts_active && <span className="sub small muted">всего {num(f.hosts)}</span>}</td>
@@ -196,11 +196,11 @@ function ProductModal({ name, onClose }: { name: string; onClose: () => void }) 
       {d && <>
         <p className="small"><a href={d.links.html || `https://endoflife.date/${d.name}`} target="_blank" rel="noopener noreferrer">endoflife.date/{d.name}<Icon name="external" size={12} /></a>
           {d.links.releasePolicy && <> · <a href={d.links.releasePolicy} target="_blank" rel="noopener noreferrer">политика поддержки производителя<Icon name="external" size={12} /></a></>}</p>
-        {Object.keys(d.labels).length > 0 && <p className="muted small">Как производитель называет этапы: {Object.entries(d.labels).map(([k, v]) => `${k} — «${v}»`).join("; ")}.</p>}
+        {Object.values(d.labels).some(Boolean) && <p className="muted small">Как производитель называет этапы: {Object.entries(d.labels).filter(([, v]) => v).map(([k, v]) => `${({ eoas: "конец активной поддержки", eol: "конец стандартной", eoes: "конец расширенной", discontinued: "снят с продажи" } as Record<string, string>)[k] ?? k} — «${v}»`).join("; ")}.</p>}
         <div className="table-scroll"><table className="table compact"><thead><tr><th>Ветка</th><th>Состояние</th><th>Стандартная поддержка до</th><th className="hide-sm">Расширенная до</th><th className="hide-sm">Последняя версия</th><th className="num">У нас</th></tr></thead>
           <tbody>{d.releases.map((r) => (
             <tr key={r.name}><td><b className="mono">{r.name}</b>{r.label && r.label !== r.name && <span className="sub small">{r.label}</span>}{r.lts && <span className="badge accent">LTS</span>}</td>
-              <td><EolBadge s={(r.status as "eol") || "unknown"} short />{r.condition && r.status !== "eol" && r.status !== "supported" && <span className="sub small">{r.condition}</span>}{r.status === "supported" && <span className="badge ok">Поддерживается</span>}</td>
+              <td>{r.status === "supported" ? <span className="badge ok">Поддерживается</span> : <EolBadge s={(r.status as "eol") || "unknown"} short />}{r.condition && r.status !== "eol" && r.status !== "supported" && <span className="sub small">{r.condition}</span>}</td>
               <td className="nowrap small">{r.eol_from ? fmtDate(r.eol_from) : "—"}</td><td className="nowrap small hide-sm">{r.eoes_from ? fmtDate(r.eoes_from) : "—"}</td><td className="small mono hide-sm">{r.latest ?? "—"}</td>
               <td className="num">{r.installed_hosts ? <b>{num(r.installed_hosts)}</b> : <span className="muted">—</span>}</td></tr>))}</tbody></table></div>
         <p className="muted small">«EOL» присваивается, только когда закончилась стандартная поддержка безопасности. Расширенная поддержка (платная или по договору) показывается отдельно и не считается подтверждённой.</p>

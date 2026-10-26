@@ -17,13 +17,28 @@ from app.services import local_admin as la
 MASTER_KEY = base64.b64encode(b"0" * 32).decode()
 
 
+PG_URL = os.environ.get("TEST_PG_URL")      # например postgresql+asyncpg://postgres:pw@127.0.0.1:15432/postgres: тот же набор тестов на настоящем PostgreSQL (SQLite не проверяет GROUP BY, длины строк и типы)
+
+
 @pytest_asyncio.fixture
 async def app():
-    tmp = tempfile.mkdtemp()
-    settings = Settings(database_url=f"sqlite+aiosqlite:///{tmp}/test.db", app_master_key=MASTER_KEY, cookie_secure="false", app_public_url="http://testserver", data_dir=tmp)
-    application = create_app(settings, start_workers=False)
     from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
 
+    tmp = tempfile.mkdtemp()
+    pg_name = ""
+    if PG_URL:
+        import uuid  # noqa: PLC0415
+
+        pg_name = f"t_{uuid.uuid4().hex[:12]}"
+        admin = create_async_engine(PG_URL, isolation_level="AUTOCOMMIT")
+        async with admin.connect() as c:
+            await c.exec_driver_sql(f'CREATE DATABASE "{pg_name}"')
+        await admin.dispose()
+        db_url = PG_URL.rsplit("/", 1)[0] + "/" + pg_name
+    else:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+    settings = Settings(database_url=db_url, app_master_key=MASTER_KEY, cookie_secure="false", app_public_url="http://testserver", data_dir=tmp)
+    application = create_app(settings, start_workers=False)
     engine = create_async_engine(settings.database_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -34,6 +49,12 @@ async def app():
             await la.create_local(db, "viewer", "Viewer-Passw0rd-123", role="viewer", must_change=False)
             await db.commit()
         yield application
+    if pg_name:
+        await application.state.engine.dispose() if hasattr(application.state, "engine") else None
+        admin = create_async_engine(PG_URL, isolation_level="AUTOCOMMIT")
+        async with admin.connect() as c:
+            await c.exec_driver_sql(f'DROP DATABASE IF EXISTS "{pg_name}" WITH (FORCE)')
+        await admin.dispose()
 
 
 @pytest_asyncio.fixture

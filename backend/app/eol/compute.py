@@ -20,7 +20,6 @@ from ..ksc import queries as q
 from ..ksc.driver import SourceClient
 from ..models import CatalogProduct, EolFinding, EolHost, EolMapping, EolProduct, EolRelease, EolState, KscSource, utcnow
 from ..vdb import match as M
-from ..vdb.normalize import norm
 from .classify import classify, pick_release
 from .osmatch import os_release
 
@@ -134,7 +133,8 @@ def candidates(idx: Index, matcher: M.Matcher, maps: dict[str, EolMapping]) -> d
     return out
 
 
-ID_CHUNK = 1500
+ID_CHUNK = 1500              # записей реестра в одном запросе к KSC
+ROWS_PER_QUERY = 150_000     # и ожидаемых строк (устройство × запись) в одной порции: память — одна порция, а не вся инфраструктура
 HOST_PAGE = 20000
 
 
@@ -178,10 +178,10 @@ async def _app_links(client, findings: list[EolFinding], where: str, days: int, 
     links: dict[tuple, set[int]] = {}
     active: dict[tuple, int] = {}
     batch: list[EolFinding] = []
-    pending = 0
+    pending = est = 0
 
     async def flush() -> None:
-        nonlocal batch, pending
+        nonlocal batch, pending, est
         if not batch:
             return
         pids: dict[int, list[tuple]] = {}
@@ -199,16 +199,17 @@ async def _app_links(client, findings: list[EolFinding], where: str, days: int, 
                         seen_active.setdefault(key, set()).add(int(r["host_id"]))
         for k, v in seen_active.items():
             active[k] = len(v)
-        batch, pending = [], 0
+        batch, pending, est = [], 0, 0
         if res is not None:
             await res.breathe("EOL: устройства программ")
 
     for f in findings:
         n = len(f.product_ids)
-        if pending and pending + n > ID_CHUNK:
+        if pending and (pending + n > ID_CHUNK or est + f.hosts_all > ROWS_PER_QUERY):
             await flush()
         batch.append(f)
         pending += n
+        est += f.hosts_all
     await flush()
     return links, active
 

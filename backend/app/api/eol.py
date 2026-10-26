@@ -40,9 +40,11 @@ def _opt_source(srcs: list[KscSource], source_id: str) -> list[uuid.UUID]:
 
 # ------------------------------------------------------------------------------------------------ сводка
 @router.get("/summary")
-async def summary(request: Request, zone: str = Query("", max_length=40), su: SessionUser = Depends(require_user), srcs: list[KscSource] = Depends(source_scope), db: AsyncSession = Depends(get_db)):
-    """Показатели раздела: состояние базы EOL, число проблемных программ и ОС, устройств, расчёт по источникам."""
-    sids = [s.id for s in srcs]
+async def summary(request: Request, zone: str = Query("", max_length=40), source_id: str = Query("", max_length=40), su: SessionUser = Depends(require_user),
+                  srcs: list[KscSource] = Depends(source_scope), db: AsyncSession = Depends(get_db)):
+    """Показатели раздела: состояние базы EOL, число проблемных программ и ОС, устройств, расчёт по источникам. source_id — только этот источник (страницы одного источника)."""
+    sids = _opt_source(srcs, source_id)
+    srcs = [s for s in srcs if s.id in sids]
     vs = await db.get(VdbSource, "eol")
     n_prod, n_rel = int((await db.execute(select(func.count()).select_from(EolProduct))).scalar_one()), int((await db.execute(select(func.count()).select_from(EolRelease))).scalar_one())
     cfg = await request.app.state.settings_svc.get(db, "eol")
