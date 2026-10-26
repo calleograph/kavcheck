@@ -13,12 +13,12 @@ import time
 import uuid
 from datetime import date
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import case, delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..ksc import queries as q
 from ..ksc.driver import SourceClient
-from ..models import CatalogProduct, EolFinding, EolHost, EolMapping, EolProduct, EolRelease, EolState, KscSource, utcnow
+from ..models import CatalogProduct, EolFinding, EolHost, EolHostStat, EolMapping, EolProduct, EolRelease, EolState, KscSource, utcnow
 from ..vdb import match as M
 from .classify import classify, pick_release
 from .osmatch import os_release
@@ -173,7 +173,7 @@ async def current_inputs(db: AsyncSession, source_id: uuid.UUID, today: date | N
     return inputs_hash(f"{n}|{last}", f"{cat[0]}|{cat[1]}", "|".join(map(str, ms)), await day_signature(db, today or date.today(), soon_days))
 
 
-async def _app_links(client, findings: list[EolFinding], where: str, days: int, res=None) -> tuple[dict[tuple, set[int]], dict[tuple, int]]:
+async def _app_links(client, findings: list[EolFinding], where: str, days: int, act: set[int], res=None) -> tuple[dict[tuple, set[int]], dict[tuple, int]]:
     """finding.key → устройства (все / активные). Находки группируются так, чтобы все записи реестра одной находки читались одним запросом (дубликатов нет)."""
     links: dict[tuple, set[int]] = {}
     active: dict[tuple, int] = {}
@@ -197,6 +197,7 @@ async def _app_links(client, findings: list[EolFinding], where: str, days: int, 
                     links.setdefault(key, set()).add(int(r["host_id"]))
                     if r["active"]:
                         seen_active.setdefault(key, set()).add(int(r["host_id"]))
+                        act.add(int(r["host_id"]))
         for k, v in seen_active.items():
             active[k] = len(v)
         batch, pending, est = [], 0, 0
@@ -214,7 +215,7 @@ async def _app_links(client, findings: list[EolFinding], where: str, days: int, 
     return links, active
 
 
-async def _os_links(client, rules: dict, where: str, days: int, res=None) -> tuple[dict[tuple, set[int]], dict[tuple, int], dict[tuple, int]]:
+async def _os_links(client, rules: dict, where: str, days: int, act: set[int], res=None) -> tuple[dict[tuple, set[int]], dict[tuple, int], dict[tuple, int]]:
     """Страницами по компьютерам: по каждой отличающейся комбинации (название, версия, сборка) ОС определяется ветка один раз. Возвращает (ключ находки → устройства, активные, счётчик по комбинации)."""
     links: dict[tuple, set[int]] = {}
     active: dict[tuple, int] = {}
@@ -224,6 +225,8 @@ async def _os_links(client, rules: dict, where: str, days: int, res=None) -> tup
         if not rows:
             break
         for r in rows:
+            if r["active"]:
+                act.add(int(r["host_id"]))
             key = rules["resolve"](r)
             if key is None:
                 continue
@@ -293,9 +296,10 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
         win = [{"name": r.name, "latest_name": r.latest_name} for r in idx.releases.get("windows", {}).values()]
 
     links: dict[tuple, set[int]] = {}
+    act: set[int] = set()                                    # устройства со связью за период активности (по ответам KSC)
     if client is not None:
         step("устройства: программы")
-        app_links, app_active = await _app_links(client, [f for f in out if f.kind == "app" and f.product_ids and f.status != "unknown"], where, activity_days, res)
+        app_links, app_active = await _app_links(client, [f for f in out if f.kind == "app" and f.product_ids and f.status != "unknown"], where, activity_days, act, res)
         links.update(app_links)
         for f in out:
             k = (f.kind, f.subject, f.version)
@@ -319,7 +323,7 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
                     made[cache[ck]] = f
             return cache[ck]
 
-        os_l, os_active, _ = await _os_links(client, {"resolve": resolve}, where, activity_days, res)
+        os_l, os_active, _ = await _os_links(client, {"resolve": resolve}, where, activity_days, act, res)
         for k, f in made.items():
             f.hosts_all, f.hosts_active, f.installs_active = len(os_l.get(k, ())), os_active.get(k, 0), os_active.get(k, 0)
             out.append(f)
@@ -328,6 +332,7 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
     sig = signature(out)
     step("сохранение")
     async with sm() as db:
+        await db.execute(delete(EolHostStat).where(EolHostStat.source_id == src.id))
         await db.execute(delete(EolHost).where(EolHost.source_id == src.id))
         await db.execute(delete(EolFinding).where(EolFinding.source_id == src.id))
         db.add_all(out)
@@ -335,12 +340,20 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
         batch: list[dict] = []                                  # строки устройств пишутся порциями: общий список связей в памяти не строится
         for k, hs in links.items():
             for h in hs:
-                batch.append({"source_id": src.id, "kind": k[0], "subject": k[1], "version": k[2], "host_id": h})
+                batch.append({"source_id": src.id, "kind": k[0], "subject": k[1], "version": k[2], "host_id": h, "active": h in act})
                 if len(batch) >= 5000:
                     await db.execute(insert(EolHost), batch)
                     batch = []
         if batch:
             await db.execute(insert(EolHost), batch)
+        await db.flush()
+        problem = ("eol", "extended", "upcoming")                  # итоги по устройствам: одним запросом в самой базе, без выгрузки связей в Python
+        agg = (select(EolHost.source_id, EolHost.host_id, func.count(), func.sum(case((EolFinding.kind == "os", 1), else_=0)),
+                      func.max(case((EolFinding.status == "eol", 3), (EolFinding.status == "extended", 2), else_=1)), func.max(case((EolHost.active.is_(True), 1), else_=0)) > 0)
+               .select_from(EolHost.__table__.join(EolFinding.__table__, (EolFinding.source_id == EolHost.source_id) & (EolFinding.kind == EolHost.kind) & (EolFinding.subject == EolHost.subject)
+                                                   & (EolFinding.version == EolHost.version)))
+               .where(EolHost.source_id == src.id, EolFinding.status.in_(problem)).group_by(EolHost.source_id, EolHost.host_id))
+        await db.execute(insert(EolHostStat).from_select(["source_id", "host_id", "n", "n_os", "w", "active"], agg))
         st = await db.get(EolState, src.id)
         if st is None:
             st = EolState(source_id=src.id)

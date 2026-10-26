@@ -67,7 +67,7 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
         {list.initial ? <SkelRows cols={7} /> : (
           <table className="table">
             <thead><tr><SortTh k="name" label="Устройство" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-md" />
-              <th className="hide-md">Группа и зона</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Пользователи</th><SortTh k="users" label="За 7 сут" sort={sort} desc={desc} onSort={onSort} className="num hide-sm" />
+              <th className="hide-md">Группа и зона</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Пользователи</th><th className="num hide-sm" title="Пользователи, замеченные в сеансе за 7 суток или появившиеся в списках после начала наблюдений">За 7 сут</th>
               <SortTh k="eol" label="EOL" sort={sort} desc={desc} onSort={onSort} className="num" />{multi && <th className="hide-sm">Источник</th>}</tr></thead>
             <tbody>
               {list.items.map((d) => (

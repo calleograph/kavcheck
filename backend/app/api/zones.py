@@ -427,7 +427,7 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
         stats = await ZR.group_stats(db, sids=sids, default_days=int(general.activity_days), zone_days=zdays)
         confl = {z: c for z, (_n, c) in (await ZR.conflict_counts(db, sids)).items()}
     eol_on = bool((await request.app.state.settings_svc.get(db, "eol")).include_in_analytics)       # type: ignore[attr-defined]
-    eol = await EOLR.zone_counts(db, sids) if eol_on else {}
+    eol = (await request.app.state.cache.get(("eol-zones", tuple(sorted(map(str, sids or [])))), 60, lambda: EOLR.zone_counts(db, sids)))[0] if eol_on else {}       # раз в минуту: не агрегировать итоги EOL при каждом открытии
     rows = []
     unassigned = {"id": UNASSIGNED, "name": "Без ответственного", "description": "Компьютеры, не подошедшие ни одной зоне", "purpose": "", "priority": 0, "contacts": [], "enabled": True, "activity_days": None}
     for z in infos + [unassigned]:

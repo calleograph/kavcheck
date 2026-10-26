@@ -916,6 +916,17 @@ class EolFinding(Base):
     __table_args__ = (Index("ix_eol_findings_status", "source_id", "status"), Index("ix_eol_findings_product", "eol_product"))
 
 
+class EolHostStat(Base):
+    """Итоги EOL по устройству (сколько программ и ОС с проблемой поддержки, наихудшее состояние): считаются при расчёте, чтобы таблица устройств и дашборды зон не агрегировали миллионы связей при каждом открытии."""
+    __tablename__ = "eol_host_stat"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    host_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)          # проблемных программ и ОС
+    n_os: Mapped[int] = mapped_column(Integer, nullable=False, default=0)       # из них операционных систем
+    w: Mapped[int] = mapped_column(Integer, nullable=False, default=0)          # наихудшее состояние: 3 — EOL, 2 — только расширенная поддержка, 1 — скоро
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
 class DevicesState(Base):
     """Состояние опроса пользователей устройств по источнику KSC (опрос выполняет worker; страницы читают накопленное)."""
     __tablename__ = "dev_state"
@@ -952,6 +963,7 @@ class EolHost(Base):
     subject: Mapped[str] = mapped_column(String(200), primary_key=True)
     version: Mapped[str] = mapped_column(String(120), primary_key=True)
     host_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)            # связь с KSC за период активности (на момент расчёта): счётчики по зонам без обращения к данным зон
     __table_args__ = (Index("ix_eol_hosts_host", "source_id", "host_id"),)
 
 

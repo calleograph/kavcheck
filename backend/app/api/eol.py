@@ -14,7 +14,7 @@ from ..auth.deps import SessionUser, get_db, is_all, require_analyst, require_us
 from ..eol import compute as C
 from ..eol import read as R
 from ..eol.classify import STATUS_RU, classify
-from ..models import CatalogProduct, EolFinding, EolHost, EolMapping, EolProduct, EolRelease, EolState, KscSource, VdbSource
+from ..models import CatalogProduct, EolFinding, EolHost, EolHostStat, EolMapping, EolProduct, EolRelease, EolState, KscSource, VdbSource
 from ..search import any_of
 from ..services.audit import write_audit
 
@@ -49,19 +49,19 @@ async def summary(request: Request, zone: str = Query("", max_length=40), source
     n_prod, n_rel = int((await db.execute(select(func.count()).select_from(EolProduct))).scalar_one()), int((await db.execute(select(func.count()).select_from(EolRelease))).scalar_one())
     cfg = await request.app.state.settings_svc.get(db, "eol")
     base = {"include_in_analytics": bool(cfg.include_in_analytics), "soon_days": int(cfg.soon_days), "products": n_prod, "releases": n_rel, "enabled": bool(vs and vs.enabled), "status": vs.status if vs else "never", "last_ok_at": vs.last_ok_at if vs else None, "error": vs.last_error if vs else None}
-    zsub = R.zone_agg(zone, sids) if zone else None
-    n_all, n_act = (zsub.c.n, zsub.c.na) if zsub is not None else (EolFinding.hosts_all, EolFinding.hosts_active)
-    s = select(EolFinding.status, EolFinding.kind, func.count().label("items"), func.coalesce(func.sum(n_act), 0).label("devices")).where(EolFinding.source_id.in_(sids), EolFinding.status.in_(R.PROBLEM_STATUSES), n_act > 0)
-    if zsub is not None:
-        s = s.select_from(EolFinding.__table__.join(zsub, and_(zsub.c.sid == EolFinding.source_id, zsub.c.k == EolFinding.kind, zsub.c.s == EolFinding.subject, zsub.c.v == EolFinding.version)))
     items = {"eol": 0, "extended": 0, "upcoming": 0}
     kinds = {"app": 0, "os": 0}
-    for r in (await db.execute(s.group_by(EolFinding.status, EolFinding.kind))).all():
-        items[r.status] += int(r.items)
-        kinds[r.kind] += int(r.items)
-    zc = await R.zone_counts(db, sids, zone or None)
-    z = {k: sum(v[k] for v in zc.values()) for k in ("hosts", "eol", "extended", "upcoming")} if zc else {"hosts": 0, "eol": 0, "extended": 0, "upcoming": 0}
-    if not zone:                                  # устройство может входить в несколько зон: итог без зон считается отдельно, без повторов
+    if zone:
+        got = [(f, na) for f, _n, na in await R.zone_findings(db, sids, zone, q="", kind="", product="", publisher="", severity="", status="") if f.status in R.PROBLEM_STATUSES and na > 0]
+    else:
+        got = [(f, f.hosts_active) for f in (await db.execute(select(EolFinding).where(EolFinding.source_id.in_(sids), EolFinding.status.in_(R.PROBLEM_STATUSES), EolFinding.hosts_active > 0))).scalars()]
+    for f, _na in got:
+        items[f.status] += 1
+        kinds[f.kind] += 1
+    if zone:
+        zc = await R.zone_counts(db, sids, zone)
+        z = {k: sum(v[k] for v in zc.values()) for k in ("hosts", "eol", "extended", "upcoming")} if zc else {"hosts": 0, "eol": 0, "extended": 0, "upcoming": 0}
+    else:                                         # устройство может входить в несколько зон: общий итог считается отдельно, без повторов
         z = await _distinct_hosts(db, sids)
     unknown = int((await db.execute(select(func.count()).select_from(EolFinding).where(EolFinding.source_id.in_(sids), EolFinding.status == "unknown"))).scalar_one())
     states = {st.source_id: st for st in (await db.execute(select(EolState).where(EolState.source_id.in_(sids)))).scalars()}
@@ -74,14 +74,10 @@ async def summary(request: Request, zone: str = Query("", max_length=40), source
 
 
 async def _distinct_hosts(db: AsyncSession, sids: list[uuid.UUID]) -> dict:
-    j = EolHost.__table__.join(EolFinding.__table__, and_(EolFinding.source_id == EolHost.source_id, EolFinding.kind == EolHost.kind, EolFinding.subject == EolHost.subject, EolFinding.version == EolHost.version))
-    q = (select(EolHost.source_id, EolHost.host_id, func.max(case((EolFinding.status == "eol", 3), (EolFinding.status == "extended", 2), else_=1)).label("w")).select_from(j)
-         .where(EolHost.source_id.in_(sids), EolFinding.status.in_(R.PROBLEM_STATUSES)).group_by(EolHost.source_id, EolHost.host_id))
-    out = {"hosts": 0, "eol": 0, "extended": 0, "upcoming": 0}
-    for r in (await db.execute(q)).all():
-        out["hosts"] += 1
-        out["eol" if r.w == 3 else "extended" if r.w == 2 else "upcoming"] += 1
-    return out
+    S = EolHostStat
+    q = (select(S.w, func.count()).where(S.source_id.in_(sids), S.active.is_(True)).group_by(S.w))
+    got = {w: int(n) for w, n in (await db.execute(q)).all()}
+    return {"hosts": sum(got.values()), "eol": got.get(3, 0), "extended": got.get(2, 0), "upcoming": got.get(1, 0)}
 
 
 # ------------------------------------------------------------------------------------------------ все продукты

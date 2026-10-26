@@ -133,7 +133,7 @@ async def test_api_summary_infra_hosts_mappings(client, app):
     await C.compute_source(sm, FakeKsc({11: [(1, 1), (2, 0)], 12: [(5, 1)]}, hosts()), src, activity_days=30, today=TODAY)
     h = {"X-Source-Id": str(sid)}
     s = (await client.get("/api/v1/eol/summary", headers=h)).json()
-    assert s["findings"]["eol"] == 2 and s["devices"]["eol"] == 3 and s["kinds"] == {"app": 1, "os": 1}      # PHP: устройства 1, 2, 5; Windows Server 2012 R2: 1, 2 — вместе три, без двойного подсчёта
+    assert s["findings"]["eol"] == 2 and s["devices"]["eol"] == 2 and s["kinds"] == {"app": 1, "os": 1}      # PHP: устройства 1, 2, 5; Windows Server 2012 R2: 1, 2; активны (связь за период) 1 и 5 — два, без двойного подсчёта
     items = (await client.get("/api/v1/eol/infra", headers=h)).json()
     assert items["total"] == 2 and {i["kind"] for i in items["items"]} == {"app", "os"} and items["by_status"]["eol"] == 2
     php = next(i for i in items["items"] if i["kind"] == "app")

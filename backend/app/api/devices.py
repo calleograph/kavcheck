@@ -39,7 +39,7 @@ def _ids(srcs: list[KscSource], source_id: str) -> list[uuid.UUID]:
 @router.get("")
 async def devices(request: Request, q: str = Query("", max_length=400), zone: str = Query("", max_length=40), os_q: str = Query("", max_length=120, alias="os"), user: str = Query("", max_length=120),
                   eol: str = Query("", pattern=r"^(any|eol|none)?$"), source_id: str = Query("", max_length=40), all_hosts: bool = False, show_service: bool = False,
-                  sort: str = Query("name", pattern=r"^(name|ip|os|last_connected|eol|users)$"), desc: bool = False, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                  sort: str = Query("name", pattern=r"^(name|ip|os|last_connected|eol)$"), desc: bool = False, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
                   su: SessionUser = Depends(require_user), srcs: list[KscSource] = Depends(source_scope), db: AsyncSession = Depends(get_db)):
     """Таблица устройств с пользователями. Поиск `q` — имя, FQDN, IP (адрес, сеть CIDR, диапазон, маска по октетам) или логин; несколько значений через пробел или запятую."""
     sids = _ids(srcs, source_id)

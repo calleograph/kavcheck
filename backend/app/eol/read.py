@@ -7,7 +7,7 @@ from datetime import date
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import EolFinding, EolHost, EolProduct, ZcHost, ZcHostZone, ZcSource
+from ..models import EolFinding, EolHost, EolHostStat, EolProduct, ZcHost, ZcHostZone, ZcSource
 from ..search import any_of, column_like
 from .classify import STATUS_RU
 
@@ -19,15 +19,14 @@ EMPTY = {"hosts": 0, "eol": 0, "extended": 0, "upcoming": 0, "items": 0, "os": 0
 PROBLEM_STATUSES = ("eol", "extended", "upcoming")                       # что считается проблемой инфраструктуры; «unknown» — вопрос к администратору (неоднозначное соответствие)
 
 
-def zone_agg(zone: str, sids: list[uuid.UUID]):
-    """Подзапрос: по находкам — устройства (все и активные), входящие в зону (по подготовленным данным зон)."""
+async def zone_agg(db: AsyncSession, zone: str, sids: list[uuid.UUID]) -> dict[tuple, tuple[int, int]]:
+    """(источник, тип, предмет, версия) → (устройств в зоне, из них активных) одним запросом; активность — из связей EOL, без обращения к строкам компьютеров."""
     j = (EolHost.__table__
          .join(ZcSource.__table__, and_(ZcSource.source_id == EolHost.source_id, ZcSource.gen > 0))
-         .join(ZcHostZone.__table__, and_(ZcHostZone.source_id == EolHost.source_id, ZcHostZone.host_id == EolHost.host_id, ZcHostZone.gen == ZcSource.gen, ZcHostZone.zone_id == zone))
-         .join(ZcHost.__table__, and_(ZcHost.source_id == EolHost.source_id, ZcHost.host_id == EolHost.host_id, ZcHost.gen == ZcSource.gen)))
-    return (select(EolHost.source_id.label("sid"), EolHost.kind.label("k"), EolHost.subject.label("s"), EolHost.version.label("v"), func.count().label("n"),
-                   func.coalesce(func.sum(case((ZcHost.active.is_(True), 1), else_=0)), 0).label("na"))
-            .select_from(j).where(EolHost.source_id.in_(sids)).group_by(EolHost.source_id, EolHost.kind, EolHost.subject, EolHost.version).subquery())
+         .join(ZcHostZone.__table__, and_(ZcHostZone.source_id == EolHost.source_id, ZcHostZone.host_id == EolHost.host_id, ZcHostZone.gen == ZcSource.gen, ZcHostZone.zone_id == zone)))
+    q = (select(EolHost.source_id, EolHost.kind, EolHost.subject, EolHost.version, func.count(), func.coalesce(func.sum(case((EolHost.active.is_(True), 1), else_=0)), 0))
+         .select_from(j).where(EolHost.source_id.in_(sids)).group_by(EolHost.source_id, EolHost.kind, EolHost.subject, EolHost.version))
+    return {(r[0], r[1], r[2], r[3]): (int(r[4]), int(r[5])) for r in (await db.execute(q)).all()}
 
 
 def finding_out(f: EolFinding, n_all: int, n_active: int, src_names: dict, labels: dict[str, str], today: date | None = None) -> dict:
@@ -46,7 +45,7 @@ async def labels_for(db: AsyncSession, names: set[str]) -> dict[str, str]:
     return {n: l or n for n, l in (await db.execute(select(EolProduct.name, EolProduct.label).where(EolProduct.name.in_(names)))).all()}
 
 
-def _filters(sids, *, q, kind, product, publisher, severity, status, zone_sub, all_hosts):
+def _filters(sids, *, q, kind, product, publisher, severity, status):
     c = [EolFinding.source_id.in_(sids)]
     if q:
         c.append(any_of(q, EolFinding.title, EolFinding.publisher, EolFinding.eol_product, EolFinding.subject, EolFinding.eol_release))
@@ -62,59 +61,82 @@ def _filters(sids, *, q, kind, product, publisher, severity, status, zone_sub, a
         c.append(EolFinding.status == status)
     else:
         c.append(EolFinding.status.in_(PROBLEM_STATUSES))
-    n_all, n_act = (zone_sub.c.n, zone_sub.c.na) if zone_sub is not None else (EolFinding.hosts_all, EolFinding.hosts_active)
-    c.append((n_all if all_hosts else n_act) > 0)
-    return c, n_all, n_act
+    return c
+
+
+SORTS = {"severity": lambda f, n: (f.severity == "critical", f.severity == "high", f.severity == "warning"), "eol_from": lambda f, n: f.eol_from or date(9999, 1, 1), "title": lambda f, n: f.title.lower(),
+         "release": lambda f, n: f.eol_release, "hosts": lambda f, n: n}
 
 
 async def list_findings(db: AsyncSession, sids: list[uuid.UUID], src_names: dict, *, q: str = "", kind: str = "", product: str = "", publisher: str = "", severity: str = "", status: str = "",
                         zone: str = "", all_hosts: bool = False, sort: str = "hosts", desc: bool = True, offset: int = 0, limit: int = 50) -> dict:
-    zsub = zone_agg(zone, sids) if zone else None
-
-    def sel(*cols, status_=status, extras=False):
-        c, n_all, n_act = _filters(sids, q=q, kind=kind, product=product, publisher=publisher, severity=severity, status=status_, zone_sub=zsub, all_hosts=all_hosts)
-        s = select(*cols, *((n_all.label("n_all"), n_act.label("n_act")) if extras else ()))
-        if zsub is not None:
-            s = s.select_from(EolFinding.__table__.join(zsub, and_(zsub.c.sid == EolFinding.source_id, zsub.c.k == EolFinding.kind, zsub.c.s == EolFinding.subject, zsub.c.v == EolFinding.version)))
-        return s, c, n_all
-
-    s, c, n_all = sel(EolFinding, extras=True)
-    shown = n_all if all_hosts else (zsub.c.na if zsub is not None else EolFinding.hosts_active)
+    """Находки для таблицы. Обычный случай — страница по индексам PostgreSQL; для зоны счётчики устройств берутся одним запросом по связям, остальное — в памяти (находок на источник — тысячи, а не миллионы)."""
+    if zone:
+        return await _list_zone(db, sids, src_names, zone, q=q, kind=kind, product=product, publisher=publisher, severity=severity, status=status, all_hosts=all_hosts, sort=sort, desc=desc,
+                                offset=offset, limit=limit)
+    shown = EolFinding.hosts_all if all_hosts else EolFinding.hosts_active
+    c = _filters(sids, q=q, kind=kind, product=product, publisher=publisher, severity=severity, status=status) + [shown > 0]
     order = {"hosts": shown, "severity": SEV_ORDER, "eol_from": func.coalesce(EolFinding.eol_from, date(9999, 1, 1)), "title": func.lower(EolFinding.title), "release": EolFinding.eol_release}.get(sort, shown)
-    s = s.where(*c).order_by(order.desc() if desc else order.asc(), SEV_ORDER.desc(), func.lower(EolFinding.title)).offset(offset).limit(limit)
-    rows = (await db.execute(s)).all()
-    cnt, cc, _ = sel(func.count().label("c"))
-    total = int((await db.execute(cnt.where(*cc))).first().c)
-    by_status = {}
-    cs, cc2, _ = sel(EolFinding.status.label("st"), func.count().label("c"), status_="")
-    for r in (await db.execute(cs.where(*cc2).group_by(EolFinding.status))).all():
-        by_status[r.st] = int(r.c)
-    labels = await labels_for(db, {r[0].eol_product for r in rows if r[0].eol_product})
-    return {"total": total, "by_status": by_status,
-            "items": [finding_out(r[0], r.n_all, r.n_act, src_names, labels) for r in rows]}
+    rows = (await db.execute(select(EolFinding).where(*c).order_by(order.desc() if desc else order.asc(), SEV_ORDER.desc(), func.lower(EolFinding.title)).offset(offset).limit(limit))).scalars().all()
+    total = int((await db.execute(select(func.count()).select_from(EolFinding).where(*c))).scalar_one())
+    c2 = _filters(sids, q=q, kind=kind, product=product, publisher=publisher, severity=severity, status="") + [shown > 0]
+    by_status = {st: int(n) for st, n in (await db.execute(select(EolFinding.status, func.count()).where(*c2).group_by(EolFinding.status))).all()}
+    labels = await labels_for(db, {f.eol_product for f in rows if f.eol_product})
+    return {"total": total, "by_status": by_status, "items": [finding_out(f, f.hosts_all, f.hosts_active, src_names, labels) for f in rows]}
+
+
+async def zone_findings(db: AsyncSession, sids: list[uuid.UUID], zone: str, **filters) -> list[tuple[EolFinding, int, int]]:
+    """Находки с устройствами выбранной зоны: (находка, устройств, из них активных)."""
+    agg = await zone_agg(db, zone, sids)
+    rows = (await db.execute(select(EolFinding).where(*_filters(sids, **filters)))).scalars().all()
+    return [(f, *agg[k]) for f in rows if (k := (f.source_id, f.kind, f.subject, f.version)) in agg]
+
+
+async def _list_zone(db, sids, src_names, zone, *, q, kind, product, publisher, severity, status, all_hosts, sort, desc, offset, limit) -> dict:
+    base = dict(q=q, kind=kind, product=product, publisher=publisher, severity=severity)
+    got = [(f, n, na) for f, n, na in await zone_findings(db, sids, zone, status="", **base) if (n if all_hosts else na) > 0 and f.status in PROBLEM_STATUSES]
+    by_status: dict[str, int] = {}
+    for f, _n, _na in got:
+        by_status[f.status] = by_status.get(f.status, 0) + 1
+    sel = [x for x in got if not status or x[0].status == status]
+    key = SORTS.get(sort, SORTS["hosts"])
+    sel.sort(key=lambda x: (key(x[0], x[1] if all_hosts else x[2]), x[0].title.lower()), reverse=desc)
+    page = sel[offset:offset + limit]
+    labels = await labels_for(db, {f.eol_product for f, _n, _na in page if f.eol_product})
+    return {"total": len(sel), "by_status": by_status, "items": [finding_out(f, n, na, src_names, labels) for f, n, na in page]}
 
 
 async def finding_hosts(db: AsyncSession, sid: uuid.UUID, kind: str, subject: str, version: str, *, q: str = "", zone: str = "", active_only: bool = True, offset: int = 0, limit: int = 100) -> dict:
-    """Устройства находки: имя, адрес, ОС, последнее подключение, зоны — из подготовленных данных зон (если расчёта зон ещё нет, возвращаются только идентификаторы)."""
+    """Устройства находки: имя, адрес, ОС, последнее подключение, зоны — из подготовленных данных зон (если расчёта зон ещё нет, возвращаются только идентификаторы).
+    Отбор и страница — по связям EOL (индекс по находке); данные устройств читаются только для устройств страницы, имя в поиске — через подготовленные данные."""
     E = EolHost
-    base = [E.source_id == sid, E.kind == kind, E.subject == subject, E.version == version]
-    j = E.__table__.outerjoin(ZcSource.__table__, ZcSource.source_id == E.source_id).outerjoin(
-        ZcHost.__table__, and_(ZcHost.source_id == E.source_id, ZcHost.host_id == E.host_id, ZcHost.gen == ZcSource.gen))
-    if zone:
-        j = j.join(ZcHostZone.__table__, and_(ZcHostZone.source_id == E.source_id, ZcHostZone.host_id == E.host_id, ZcHostZone.gen == ZcSource.gen, ZcHostZone.zone_id == zone))
-    cond = list(base)
+    j = E.__table__
+    cond = [E.source_id == sid, E.kind == kind, E.subject == subject, E.version == version]
     if active_only:
-        cond.append(ZcHost.active.is_(True))
-    if q:
-        cond.append(any_of(q, ZcHost.name, ZcHost.search))
+        cond.append(E.active.is_(True))
+    gen = (await db.get(ZcSource, sid))
+    gen = int(gen.gen) if gen is not None else 0
+    if zone or q:
+        if not gen:
+            return {"total": 0, "items": []}
+        if zone:
+            j = j.join(ZcHostZone.__table__, and_(ZcHostZone.source_id == E.source_id, ZcHostZone.host_id == E.host_id, ZcHostZone.gen == gen, ZcHostZone.zone_id == zone))
+        if q:
+            j = j.join(ZcHost.__table__, and_(ZcHost.source_id == E.source_id, ZcHost.host_id == E.host_id, ZcHost.gen == gen))
+            cond.append(any_of(q, ZcHost.name, ZcHost.search))
     total = int((await db.execute(select(func.count()).select_from(j).where(*cond))).scalar_one())
-    rows = (await db.execute(select(E.host_id, ZcHost.name, ZcHost.os, ZcHost.last_connected, ZcHost.active, ZcHost.online, ZcHost.data).select_from(j).where(*cond)
-                             .order_by(func.lower(func.coalesce(ZcHost.name, "")), E.host_id).offset(offset).limit(limit))).all()
+    ids = [int(h) for (h,) in (await db.execute(select(E.host_id).select_from(j).where(*cond).order_by(E.host_id).offset(offset).limit(limit))).all()]
+    det = {}
+    if ids and gen:
+        det = {int(r.host_id): r for r in (await db.execute(select(ZcHost.host_id, ZcHost.name, ZcHost.os, ZcHost.last_connected, ZcHost.active, ZcHost.online, ZcHost.data).where(
+            ZcHost.source_id == sid, ZcHost.gen == gen, ZcHost.host_id.in_(ids)))).all()}
     items = []
-    for r in rows:
-        d = r.data or {}
-        items.append({"host_id": int(r.host_id), "name": r.name or f"#{r.host_id}", "ip": d.get("ip", ""), "os": r.os or "", "last_connected": r.last_connected, "active": r.active, "online": r.online,
-                      "group": d.get("group", ""), "zones": d.get("zones") or []})
+    for hid in ids:
+        r = det.get(hid)
+        d = (r.data or {}) if r is not None else {}
+        items.append({"host_id": hid, "name": r.name if r is not None else f"#{hid}", "ip": d.get("ip", ""), "os": (r.os if r is not None else "") or "", "last_connected": r.last_connected if r is not None else None,
+                      "active": r.active if r is not None else None, "online": r.online if r is not None else None, "group": d.get("group", ""), "zones": d.get("zones") or []})
+    items.sort(key=lambda x: (x["name"].lower(), x["host_id"]))
     return {"total": total, "items": items}
 
 
@@ -128,29 +150,18 @@ async def host_items(db: AsyncSession, sid: uuid.UUID, host_id: int) -> list[dic
 
 
 async def zone_counts(db: AsyncSession, sids: list[uuid.UUID] | None, zone: str | None = None) -> dict[str, dict]:
-    """По зонам: устройства с EOL (стандартная поддержка закончена — критическая), только расширенная поддержка, скоро заканчивается; проблемные программы и ОС — без двойного подсчёта устройства."""
-    H = ZcHost
-    j = (EolHost.__table__
-         .join(EolFinding.__table__, and_(EolFinding.source_id == EolHost.source_id, EolFinding.kind == EolHost.kind, EolFinding.subject == EolHost.subject, EolFinding.version == EolHost.version))
-         .join(ZcSource.__table__, and_(ZcSource.source_id == EolHost.source_id, ZcSource.gen > 0))
-         .join(ZcHostZone.__table__, and_(ZcHostZone.source_id == EolHost.source_id, ZcHostZone.host_id == EolHost.host_id, ZcHostZone.gen == ZcSource.gen))
-         .join(H.__table__, and_(H.source_id == EolHost.source_id, H.host_id == EolHost.host_id, H.gen == ZcSource.gen)))
-    w = [EolFinding.status.in_(PROBLEM_STATUSES), H.active.is_(True)]
+    """По зонам: устройства с EOL (стандартная поддержка закончена — критическая), только расширенная поддержка, скоро заканчивается; проблемные программы и ОС — без двойного подсчёта устройства.
+    Читает готовые итоги по устройствам (`eol_host_stat`): миллионы связей «устройство — находка» при открытии страницы не агрегируются."""
+    j = (EolHostStat.__table__
+         .join(ZcSource.__table__, and_(ZcSource.source_id == EolHostStat.source_id, ZcSource.gen > 0))
+         .join(ZcHostZone.__table__, and_(ZcHostZone.source_id == EolHostStat.source_id, ZcHostZone.host_id == EolHostStat.host_id, ZcHostZone.gen == ZcSource.gen)))
+    w = [EolHostStat.active.is_(True)]
     if sids is not None:
-        w.append(EolHost.source_id.in_(sids))
+        w.append(EolHostStat.source_id.in_(sids))
     if zone is not None:
         w.append(ZcHostZone.zone_id == zone)
-    q = (select(ZcHostZone.zone_id.label("z"), EolHost.source_id.label("sid"), EolHost.host_id.label("h"),
-                func.max(case((EolFinding.status == "eol", 3), (EolFinding.status == "extended", 2), else_=1)).label("w"),
-                func.count().label("items"), func.sum(case((EolFinding.kind == "os", 1), else_=0)).label("os_items"))
-         .select_from(j).where(*w).group_by(ZcHostZone.zone_id, EolHost.source_id, EolHost.host_id))
-    out: dict[str, dict] = {}
-    for r in (await db.execute(q)).all():
-        o = out.setdefault(r.z, {"hosts": 0, "eol": 0, "extended": 0, "upcoming": 0, "items": 0, "os": 0})
-        o["hosts"] += 1
-        o["eol" if r.w == 3 else "extended" if r.w == 2 else "upcoming"] += 1
-        o["items"] += int(r.items)
-        o["os"] += int(r.os_items)
-    return out
-
-
+    S = EolHostStat
+    q = (select(ZcHostZone.zone_id.label("z"), func.count().label("hosts"), func.coalesce(func.sum(case((S.w == 3, 1), else_=0)), 0).label("eol"), func.coalesce(func.sum(case((S.w == 2, 1), else_=0)), 0).label("extended"),
+                func.coalesce(func.sum(case((S.w == 1, 1), else_=0)), 0).label("upcoming"), func.coalesce(func.sum(S.n), 0).label("items"), func.coalesce(func.sum(S.n_os), 0).label("os"))
+         .select_from(j).where(*w).group_by(ZcHostZone.zone_id))
+    return {r.z: {"hosts": int(r.hosts), "eol": int(r.eol), "extended": int(r.extended), "upcoming": int(r.upcoming), "items": int(r.items), "os": int(r.os)} for r in (await db.execute(q)).all()}

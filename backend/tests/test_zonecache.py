@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import func, select
 
-from app.models import ZcDashboard, ZcDetection, ZcHost, ZcHostZone, ZcJob, ZcSource, utcnow
+from app.models import KscSource, ZcDashboard, ZcDetection, ZcHost, ZcHostZone, ZcJob, ZcSource, utcnow
 from app.services.resources import MemoryPressure, Resources
 from app.services.settings import ZonecacheSettings
 from app.zones import dataset as D
@@ -83,6 +83,8 @@ async def seed(app, n: int = 120, seed_: int = 7):
     rng = random.Random(seed_)
     hosts = []
     async with app.state.session_maker() as db:
+        db.add(KscSource(id=SID, name="Тест", host="t.example.local", port=1433, database="KAV", username="u", password_enc="x", is_active=True))
+        await db.flush()                                             # источник существует: на PostgreSQL внешние ключи проверяются
         db.add(ZcSource(source_id=SID, gen=1, status="ready", built_at=NOW))
         for i in range(1, n + 1):
             r = make_host(rng, i)

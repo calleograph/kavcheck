@@ -38,11 +38,9 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         zone = p.get("zone") or ""
         counts: dict[tuple, tuple[int, int]] = {}
         if zone:                                        # отчёт по зоне: считаются только устройства зоны (по подготовленным данным зон)
-            zsub = R.zone_agg(zone, sids)
-            q = select(EolFinding, zsub.c.n, zsub.c.na).join(zsub, and_(zsub.c.sid == EolFinding.source_id, zsub.c.k == EolFinding.kind, zsub.c.s == EolFinding.subject, zsub.c.v == EolFinding.version))
-            res = (await db.execute(q.where(*cond).order_by(R.SEV_ORDER.desc(), EolFinding.title))).all()
-            findings = [r[0] for r in res]
-            counts = {(r[0].source_id, r[0].kind, r[0].subject, r[0].version): (int(r.n), int(r.na)) for r in res}
+            agg = await R.zone_agg(db, zone, sids)
+            findings = [f for f in (await db.execute(select(EolFinding).where(*cond).order_by(R.SEV_ORDER.desc(), EolFinding.title))).scalars() if (f.source_id, f.kind, f.subject, f.version) in agg]
+            counts = {(f.source_id, f.kind, f.subject, f.version): agg[(f.source_id, f.kind, f.subject, f.version)] for f in findings}
         else:
             findings = (await db.execute(select(EolFinding).where(*cond).order_by(R.SEV_ORDER.desc(), EolFinding.title))).scalars().all()
         n_of = lambda f: counts.get((f.source_id, f.kind, f.subject, f.version), (f.hosts_all, f.hosts_active))  # noqa: E731
