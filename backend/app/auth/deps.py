@@ -140,6 +140,7 @@ async def current_source(request: Request, su: SessionUser = Depends(require_use
         raise HTTPException(status_code=409, detail={"code": "no_source", "message": "Источник не найден или выключен."})
     if not su.can_use_source(src.id):
         raise HTTPException(status_code=403, detail="Нет доступа к этому источнику KSC")
+    await db.commit()          # чтение сессии и источника закончено: соединение возвращается в пул и не стоит «в транзакции» все секунды, пока идёт запрос к KSC (источник остаётся загруженным)
     return src
 
 

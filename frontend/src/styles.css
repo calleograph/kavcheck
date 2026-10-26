@@ -339,6 +339,10 @@ label.check > .switch { margin-top: 0; }
 .table td.actions .btn + .btn, .table td.actions .btn + a, .table td.actions a + .btn { margin-left: 4px; }
 .table td.check, .table th.check { width: 40px; padding-right: 0; }
 .table .sub { display: block; font-size: var(--fs-xs); color: var(--muted); margin-top: 1px; }
+.table tr.grp.open > td { background: var(--surface-2); }
+.table tr.grp .linklike { text-decoration: none; font-weight: 600; text-align: left; }
+.table tr.grp-detail > td { padding: 0 0 var(--s-3, 12px) 22px; background: var(--surface-2); border-top: 0; }
+.table.nested { margin: 0; }
 .kv dd .sub { display: block; color: var(--muted); font-size: var(--fs-xs); margin-top: 1px; }
 .table.compact th, .table.compact td { padding: 5px 8px; font-size: var(--fs-sm); }
 .table.compact th { font-size: var(--fs-xs); }
@@ -1126,3 +1130,8 @@ h3.h3 { margin: 22px 0 8px; }
 .dd-about a:hover { color: var(--accent); }
 .qr-hosts { margin: 8px 0 10px; font-size: var(--fs-sm); line-height: 1.55; overflow-wrap: anywhere; }
 .table .sub.clamp2, .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 46ch; }
+
+/* План устранения (База уязвимостей): продукт в первой колонке не сжимается, категория выбирается на месте */
+.vdb-plan td:first-child { min-width: 13rem; }
+.vdb-plan td:nth-child(2) { min-width: 11rem; }
+.table select.mini-select { width: 100%; min-width: 10rem; padding: 3px 24px 3px 8px; font-size: var(--fs-sm); height: 28px; }

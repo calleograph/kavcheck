@@ -79,6 +79,12 @@ async def enqueue(request: Request, db: AsyncSession, su: SessionUser, *, kind: 
     if kind == "version_audit":
         params["_expect"] = [audit.item_condition(i) for i in params.get("items") or []]   # условия в виде, заданном пользователем: сверяются при выполнении
     title = title.strip() or default_title(kind, params)
+    ids = [str(s.id) for s in sources]
+    live = (await db.execute(select(ReportJob).where(ReportJob.status.in_(("queued", "running")), ReportJob.kind == kind, ReportJob.created_by_id == su.user_id)
+                             .order_by(ReportJob.created_at.desc()).limit(20))).scalars().all()
+    same = next((j for j in live if list(j.source_ids or [str(j.source_id)]) == ids and (j.params or {}) == params and j.title == title[:300]), None)
+    if same is not None:                                   # двойной щелчок или повторная отправка: тот же отчёт уже формируется — второе задание не создаётся
+        return same
     job = ReportJob(id=uuid.uuid4(), source_id=sources[0].id, source_ids=[str(s.id) for s in sources], source_name=", ".join(s.name for s in sources)[:600], kind=kind,
                     title=title[:300], params=params, created_by=su.display_name, created_by_id=su.user_id)
     db.add(job)

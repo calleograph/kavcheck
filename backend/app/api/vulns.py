@@ -70,7 +70,7 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
         return out
 
     try:
-        base, at = await request.app.state.cache.get(key, request.app.state.settings.cache_ttl_seconds, make, refresh=refresh)
+        base, at = await request.app.state.cache.get(key, request.app.state.settings.cache_ttl_seconds, make, refresh=refresh, swr=request.app.state.settings.cache_swr_seconds)
     except KscError as exc:
         raise _ksc(exc) from None
     items, hidden = [], 0
@@ -127,7 +127,7 @@ async def vulnerabilities(request: Request, q_: str = Query("", alias="q", max_l
     key = (str(src.id), "vuln_list", days, rcfg.exclude_slave_servers)
     try:
         base, at = await request.app.state.cache.get(key, request.app.state.settings.cache_ttl_seconds,
-                                                     lambda: V.descr_list(client, active_days=days, exclude_slaves=rcfg.exclude_slave_servers), refresh=refresh)
+                                                     lambda: V.descr_list(client, active_days=days, exclude_slaves=rcfg.exclude_slave_servers), refresh=refresh, swr=request.app.state.settings.cache_swr_seconds)
     except KscError as exc:
         raise _ksc(exc) from None
     items = base
@@ -164,7 +164,7 @@ async def products(request: Request, q_: str = Query("", alias="q", max_length=2
     key = (str(src.id), "vuln_products", cve, days)
     try:
         rows, at = await request.app.state.cache.get(key, request.app.state.settings.cache_ttl_seconds,
-                                                     lambda: V.products_aggregate(client, active_days=days, exclude_slaves=rcfg.exclude_slave_servers, cve=cve), refresh=refresh)
+                                                     lambda: V.products_aggregate(client, active_days=days, exclude_slaves=rcfg.exclude_slave_servers, cve=cve), refresh=refresh, swr=request.app.state.settings.cache_swr_seconds)
     except KscError as exc:
         raise _ksc(exc) from None
     items = [{"product_id": int(r["vp_id"] or 0) or None, "name": r.get("name") or "(не определена)", **{k: int(r.get(k) or 0) for k in ("hosts", "vulns", "critical", "high", "warning", "total", "patchable")},

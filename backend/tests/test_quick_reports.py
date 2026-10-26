@@ -88,7 +88,7 @@ async def test_exports_match_preview_and_are_standalone(client, app):
     assert len(rows) - 1 == 5 and rows[0][:3] == ("Опасность", "Уязвимость (KLA)", "CVE")
     hosts = list(wb["Компьютеры"].iter_rows(values_only=True))
     assert len(hosts) - 1 == 4 and len({r[0] for r in hosts[1:]}) == 4                                                                    # каждый компьютер — одна строка
-    summary = [r for r in wb["Сводка"].iter_rows(values_only=True)]
+    summary = [r for r in wb["Сводка"].iter_rows(values_only=True) if r]
     assert any(r[0] == "Затронуто компьютеров (уникальных)" and r[1] == 4 for r in summary) and any(r and r[0] == "Методика, источники и ограничения" for r in wb["Параметры отчёта"].iter_rows(values_only=True))
     html = (d / "report.html").read_text(encoding="utf-8")
     assert html.startswith("<!doctype html>") and "KLA10001" in html and "CVE-2024-0001" in html and "Затронуто компьютеров (уникальных)" in html and "@media print" in html

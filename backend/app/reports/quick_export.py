@@ -61,23 +61,21 @@ def _sheet_name(title: str, used: set[str]) -> str:
 
 
 def write_xlsx(path: Path, doc: dict) -> None:
-    from openpyxl import Workbook  # noqa: PLC0415
+    """XLSX: «Сводка», по листу на каждую таблицу, «Параметры отчёта». Запись потоковая (`reports/xlsx.py`): память не зависит от числа строк."""
     from openpyxl.styles import Alignment, Font, PatternFill  # noqa: PLC0415
-    from openpyxl.utils import get_column_letter  # noqa: PLC0415
 
-    wb = Workbook()
+    from .xlsx import Book  # noqa: PLC0415
+
+    bk = Book()
     bold, head_fill = Font(bold=True), PatternFill("solid", fgColor="E5E9ED")
     used: set[str] = set()
     org = org_lines(doc)
     blocks = L.resolve(doc)
-    s = wb.active
-    s.title = _sheet_name("Сводка", used)
+    s = bk.sheet(_sheet_name("Сводка", used))
+    s.widths(62, 40, 70)
 
     def put(row: list, *, font=None) -> None:
-        s.append([_cell(x) for x in row])
-        if font:
-            for c in s[s.max_row]:
-                c.font = font
+        s.append([_cell(x) for x in row], font=font)
 
     if org["name"]:
         put([org["name"]], font=Font(bold=True, size=12))
@@ -107,52 +105,37 @@ def write_xlsx(path: Path, doc: dict) -> None:
             put([c["title"] for c in b["columns"]], font=bold)
             for r in b["rows"]:
                 put([r.get(c["key"]) for c in b["columns"]])
-    s.column_dimensions["A"].width, s.column_dimensions["B"].width, s.column_dimensions["C"].width = 62, 40, 70
     for b in blocks:
         if b["entry"].get("inline") or (b["entry"].get("optional") and not b["rows"]):
             continue
         derived = bool(b["entry"].get("cols") or b["entry"].get("where"))       # краткий вид таблицы получает название блока, полный — прежнее название таблицы
-        ws = wb.create_sheet(_sheet_name(XLSX_NAMES.get(b["id"], b["title"]) if doc.get("kind") == "quick_zone" else b["title"] if derived else b["table"]["title"], used))
+        ws = bk.sheet(_sheet_name(XLSX_NAMES.get(b["id"], b["title"]) if doc.get("kind") == "quick_zone" else b["title"] if derived else b["table"]["title"], used))
         cols, rows = b["columns"], b["rows"]
-        ws.append([c["title"] for c in cols])
-        for c in ws[1]:
-            c.font, c.fill = bold, head_fill
-            c.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.widths(*[min(60, max(10, max([len(c["title"])] + [len(_fmt(r.get(c["key"]), c["type"])) for r in rows[:2000]]) + 2)) for c in cols])
+        ws.freeze()
+        ws.landscape_fit()                                               # печать: ширина листа по ширине страницы, заголовок на каждой странице
+        ws.append([c["title"] for c in cols], font=bold, fill=head_fill, align=Alignment(vertical="center", wrap_text=True))
+        dates = {i: "dd.mm.yyyy hh:mm" for i, c in enumerate(cols) if c["type"] == "date"}
         for r in rows:
-            ws.append([_cell(r.get(c["key"])) for c in cols])
-        for i, c in enumerate(cols, 1):
-            letter = get_column_letter(i)
-            width = max([len(c["title"])] + [len(_fmt(r.get(c["key"]), c["type"])) for r in rows[:2000]]) + 2
-            ws.column_dimensions[letter].width = min(60, max(10, width))
-            if c["type"] == "date":
-                for cell in ws[letter][1:]:
-                    cell.number_format = "dd.mm.yyyy hh:mm"
-        ws.freeze_panes = "A2"
-        ws.auto_filter.ref = ws.dimensions if rows else f"A1:{get_column_letter(len(cols))}1"
-        ws.page_setup.orientation = "landscape"                      # печать: ширина листа по ширине страницы, заголовок на каждой странице
-        ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
-        ws.sheet_properties.pageSetUpPr.fitToPage = True
-        ws.print_title_rows = "1:1"
-    m = wb.create_sheet(_sheet_name("Параметры отчёта", used))
-    m.append(["Параметр", "Значение"])
-    for c in m[1]:
-        c.font, c.fill = bold, head_fill
+            ws.append([_cell(r.get(c["key"])) for c in cols], formats=dates or None)
+        ws.filter(len(cols))
+    m = bk.sheet(_sheet_name("Параметры отчёта", used))
+    m.widths(40, 110)
+    m.append(["Параметр", "Значение"], font=bold, fill=head_fill)
     for c in doc["conditions"]:
         m.append([_cell(c["label"]), _cell(c["text"])])
     m.append(["Сформирован (UTC)", _fmt(doc.get("generated_at"), "date")])
     m.append(["Вид отчёта", doc.get("kind") or ""])
     if doc.get("notes"):
         m.append([])
-        m.append(["Методика, источники и ограничения"])
-        m[f"A{m.max_row}"].font = bold
+        m.append(["Методика, источники и ограничения"], font=bold)
         for n in doc["notes"]:
             m.append([_cell(n)])
     for x in (org["footnote"], org["signature"]):
         if x:
             m.append([])
             m.append([_cell(x)])
-    m.column_dimensions["A"].width, m.column_dimensions["B"].width = 40, 110
-    wb.save(path)
+    bk.save(path)
 
 
 # ------------------------------------------------------------------------------------------------ HTML

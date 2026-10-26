@@ -132,7 +132,7 @@ async def test_zone_report_order_xlsx_html_and_numbers(client, app):
     d = job_dir(app.state.settings, uuid.UUID(job["id"]))
     wb = load_workbook(d / "report.xlsx", read_only=True)
     assert wb.sheetnames[:4] == ["Сводка", "Проблемные компьютеры", "Уязвимости", "Проблемы защиты"] and wb.sheetnames[-1] == "Параметры отчёта"
-    summary = [r for r in wb["Сводка"].iter_rows(values_only=True)]
+    summary = [r for r in wb["Сводка"].iter_rows(values_only=True) if r]          # пустые строки-разделители в потоковой записи читаются как ()
     assert summary[0][0] == "Организация Тест" and any(r[0] == "Всего компьютеров в зоне" and r[1] == 3 for r in summary)
     probs = list(wb["Проблемные компьютеры"].iter_rows(values_only=True))
     assert {r[0] for r in probs[1:]} <= {"ws-001", "ws-002"} and probs[0][0] == "Компьютер"

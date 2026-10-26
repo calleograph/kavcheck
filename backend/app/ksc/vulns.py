@@ -1,6 +1,8 @@
 """Уязвимости, подтверждённые KSC (vapm_*): действующие обнаружения с CVE, опасностью и программой из реестра ПО."""
 from __future__ import annotations
 
+import asyncio
+
 from ..search import mssql_like
 from . import queries as q
 from .driver import SourceClient
@@ -171,8 +173,10 @@ async def descr_list(client: SourceClient, *, active_days: int | None, exclude_s
     if active_days:
         where += " AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())"
         params["days"] = int(active_days)
-    rows = await client.run(q.VULN_DESCR_AGG.format(where=where), params, max_rows=500_000)
-    prods = await client.run(q.VULN_DESCR_PRODUCTS.format(where=where), params, max_rows=1_000_000)
+    # два независимых агрегата идут параллельно (семафор источника ограничивает одновременные запросы): время страницы — самый долгий из них, а не сумма.
+    # Один проход с GROUPING SETS проверен и отвергнут: на крупной базе он в шесть раз медленнее двух отдельных запросов.
+    rows, prods = await asyncio.gather(client.run(q.VULN_DESCR_AGG.format(where=where), params, max_rows=500_000),
+                                       client.run(q.VULN_DESCR_PRODUCTS.format(where=where), params, max_rows=1_000_000))
     info: dict[int, dict] = {}
     for k in range(0, len(rows), 500):
         for d in await client.run(q.VULN_DESCR_INFO.format(ids=q.ids_list([int(r["descr_id"]) for r in rows[k:k + 500]])), max_rows=100_000):

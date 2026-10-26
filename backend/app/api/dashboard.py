@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +14,32 @@ from ..ksc.driver import KscError
 from ..models import KscSource, ReportJob
 
 router = APIRouter(tags=["dashboard"])
+_REFRESHING: set[tuple] = set()
+_TASKS: set[asyncio.Task] = set()
+STALE_MAX_S = 24 * 3600          # прежняя сводка допустима до суток: страница открывается сразу, свежая считается в фоне
+
+
+async def _refresh_in_background(request: Request, src_id, src_name: str, key: str, activity_days: int, features: dict) -> None:
+    """Обновление сводки после ответа: своя сессия базы, ошибка KSC не мешает — прежняя сводка остаётся."""
+    k = (str(src_id), key)
+    if k in _REFRESHING:
+        return
+    _REFRESHING.add(k)
+
+    async def run() -> None:
+        try:
+            async with request.app.state.session_maker() as db:
+                row = await db.get(KscSource, src_id)
+                payload = await D.summary(request.app.state.sources.client(row), activity_days=activity_days, features=features)
+                await D.store(db, src_id, key, payload)
+        except Exception:  # noqa: BLE001
+            logging.getLogger("app.dashboard").warning("Фоновое обновление сводки не удалось: %s", src_name, exc_info=True)
+        finally:
+            _REFRESHING.discard(k)
+
+    t = asyncio.get_running_loop().create_task(run())
+    _TASKS.add(t)
+    t.add_done_callback(_TASKS.discard)
 
 
 @router.get("/dashboard")
@@ -21,6 +50,10 @@ async def dashboard(request: Request, refresh: bool = False, su: SessionUser = D
     key = f"summary:{general.activity_days}"
     data = None if refresh else await D.cached(db, src.id, key, settings.cache_ttl_seconds)
     error = None
+    if data is None and not refresh and settings.cache_swr_seconds:
+        data = await D.cached(db, src.id, key, STALE_MAX_S)
+        if data is not None:                                              # срок истёк, но сводка есть: показываем сразу (с временем получения), свежую получаем в фоне
+            await _refresh_in_background(request, src.id, src.name, key, general.activity_days, (src.last_check or {}).get("features") or {})
     if data is None:
         try:
             payload = await D.summary(request.app.state.sources.client(src), activity_days=general.activity_days, features=(src.last_check or {}).get("features") or {})

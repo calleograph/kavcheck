@@ -338,3 +338,13 @@ def test_hardware_queries():
     h = HW.finish(HW.summarize(asyncio.run(client.run(q.HW_HOST, {"id": 3}, max_rows=500))))
     assert h["known"] and h["cores"] == 1 and h["ram_mb"] == 1024 and h["disk_total_gb"] == 50 and h["logical"] and "CPU: 1 ядро" in h["line"]
     assert HW.summarize(asyncio.run(client.run(q.HW_HOST, {"id": 5}, max_rows=500)))["known"] is False
+
+
+def test_vuln_descr_list_single_pass_matches_totals():
+    """Итог по уязвимости и разбивка по программам — один проход (GROUPING SETS): число компьютеров и обнаружений согласуется с построчной выборкой."""
+    from app.ksc import vulns as V
+
+    client = SourceClient(params(), name="test")
+    items = asyncio.run(V.descr_list(client, active_days=None, exclude_slaves=True))
+    assert items and all(i["hosts"] >= 1 and i["total"] >= i["hosts"] and i["products"] is not None for i in items)
+    assert len({i["descr_id"] for i in items}) == len(items) and sum(i["total"] for i in items) >= len(items)

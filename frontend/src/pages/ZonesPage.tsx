@@ -73,6 +73,7 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
     {data && data.totals.conflicts > 0 && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Компьютеров, подходящих нескольким зонам: <b>{num(data.totals.conflicts)}</b>. Они показаны в каждой зоне.{" "}
       {ctx.me.user.is_admin ? <Link to="/admin?tab=zones&view=conflicts">Разобрать пересечения</Link> : "Сообщите администратору."}</div></div>}
     {data?.notes.map((n) => <div key={n} className="alert info"><Icon name="info" /><div className="alert-body">{n}</div></div>)}
+    {!!data?.eol_missing?.length && <div className="alert info"><Icon name="info" /><div className="alert-body">EOL ещё не рассчитан для: {data.eol_missing.join(", ")}. Колонка EOL скрыта, чтобы нули не принимали за «проблем нет». Состояние расчёта — <Link to="/eol">раздел EOL</Link>.</div></div>}
     <div className="table-scroll">
       {!data ? <SkelRows cols={8} /> : data.items.length <= 1 && !data.totals.zones ? (
         <Empty icon="grid" title="Зоны ещё не созданы" action={ctx.me.user.is_admin ? <Link className="btn primary" to="/admin?tab=zones"><Icon name="plus" />Создать зоны</Link> : undefined}>

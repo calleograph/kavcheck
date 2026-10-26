@@ -89,6 +89,7 @@ async def heartbeat_loop(sm: async_sessionmaker[AsyncSession], name: str, data_f
                     db.add(row)
                 row.at, row.started_at, row.data = utcnow(), started, data_fn()
                 await db.commit()
+            Path(f"/tmp/{name}.alive").touch()                       # для healthcheck контейнера: пульс записан в базу, значит цикл событий жив
         except Exception:  # noqa: BLE001
             logging.getLogger("app.system").debug("Пульс службы не записан", extra={"_journal": True})
         await asyncio.sleep(30)

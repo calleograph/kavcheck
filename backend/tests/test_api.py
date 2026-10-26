@@ -86,3 +86,11 @@ async def test_user_source_access(client):
 @pytest.mark.parametrize("path", ["/api/v1/health/live", "/api/v1/health/ready", "/api/v1/version"])
 async def test_health(client, path):
     assert (await client.get(path)).status_code == 200
+
+
+async def test_system_status_exposes_background_jobs(client):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    r = await client.get("/api/v1/admin/system")
+    assert r.status_code == 200
+    j = r.json()["jobs"]
+    assert set(j) >= {"worker", "sources", "reports"} and "failed_24h" in j["reports"] and j["worker"]["active"] == []

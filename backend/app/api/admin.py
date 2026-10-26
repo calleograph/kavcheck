@@ -366,6 +366,36 @@ def _worker_mem(hb) -> str:
     return f"; память {r['rss_mb']} МБ (пик {r.get('peak_mb', '?')}, предел {r.get('soft_mb', '?')}/{r.get('hard_mb', '?')}), тяжёлых задач {r.get('used', 0)}" if r.get("rss_mb") is not None else ""
 
 
+async def _jobs_status(db: AsyncSession, hb, srcs: list) -> dict:
+    """Наблюдаемость фоновых расчётов: память worker, текущие задачи, по каждому источнику — последние успешные расчёты (длительность, ошибки), очередь и длительность отчётов, долгие запросы PostgreSQL."""
+    from ..models import DevicesState, EolState, ZcSource  # noqa: PLC0415
+
+    pulse = (hb.data or {}) if hb is not None else {}
+    res = pulse.get("resources") or {}
+    per: list[dict] = []
+    for x in srcs:
+        eol, zc, dv, cs = await db.get(EolState, x.id), await db.get(ZcSource, x.id), await db.get(DevicesState, x.id), await db.get(CatalogState, x.id)
+        per.append({"source": x.name, "eol": {"computed_at": eol.computed_at, "duration_ms": eol.duration_ms, "items": eol.items, "error": eol.error, "error_at": eol.error_at, "running": bool(eol.started_at), "progress": eol.progress} if eol else None,
+                    "zones": {"status": zc.status, "built_at": zc.built_at, "finished_at": zc.finished_at, "duration_ms": zc.duration_ms, "error": zc.error, "hosts": zc.hosts_n, "progress": zc.progress} if zc else None,
+                    "devices": {"polled_at": dv.polled_at, "duration_ms": dv.duration_ms, "error": dv.error} if dv else None,
+                    "catalog": {"status": cs.status, "built_at": cs.built_at} if cs else None})
+    done = (await db.execute(select(ReportJob.created_at, ReportJob.started_at, ReportJob.finished_at, ReportJob.rows).where(ReportJob.status == "done", ReportJob.finished_at.is_not(None), ReportJob.started_at.is_not(None))
+                             .order_by(ReportJob.finished_at.desc()).limit(20))).all()
+    secs = sorted((f - st).total_seconds() for _c, st, f, _r in done)
+    failed_24h = (await db.execute(select(func.count()).select_from(ReportJob).where(ReportJob.status == "failed", ReportJob.finished_at >= utcnow() - timedelta(hours=24)))).scalar_one()
+    out: dict[str, Any] = {"worker": {"rss_mb": res.get("rss_mb"), "peak_mb": res.get("peak_mb"), "soft_mb": res.get("soft_mb"), "hard_mb": res.get("hard_mb"), "active": res.get("active") or [], "deferred": res.get("deferred"),
+                                      "started_at": hb.started_at if hb is not None else None},
+                           "sources": per, "reports": {"median_s": round(secs[len(secs) // 2], 1) if secs else None, "max_s": round(secs[-1], 1) if secs else None, "done_sample": len(secs), "failed_24h": int(failed_24h)}}
+    if db.bind.dialect.name == "postgresql":
+        try:
+            rows = (await db.execute(text("SELECT state, count(*), COALESCE(max(EXTRACT(EPOCH FROM now() - xact_start)), 0)::int FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() "
+                                          "AND xact_start IS NOT NULL AND now() - xact_start > interval '60 seconds' GROUP BY state"))).all()
+            out["postgres"] = {"long_transactions": [{"state": r[0], "count": int(r[1]), "oldest_s": int(r[2])} for r in rows]}
+        except Exception:  # noqa: BLE001
+            out["postgres"] = None
+    return out
+
+
 @router.get("/system")
 async def system(request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     """Состояние компонентов (backend, worker, web, PostgreSQL, помощник обновлений), источников KSC, ресурсов сервера и данных; история обновлений, ошибки фоновых задач."""
@@ -425,6 +455,7 @@ async def system(request: Request, su: SessionUser = Depends(require_admin), db:
                      "events_24h": (await db.execute(select(func.count()).select_from(EventLog).where(EventLog.at >= utcnow() - timedelta(hours=24)))).scalar_one(),
                      "errors_24h": (await db.execute(select(func.count()).select_from(EventLog).where(EventLog.level == "error", EventLog.at >= utcnow() - timedelta(hours=24)))).scalar_one()}
     out["resources"] = sysmod.resources(s.data_dir)
+    out["jobs"] = await _jobs_status(db, hb, srcs)
     host = ch._json("system.json") or {}  # noqa: SLF001
     out["storage"] = {"database": pg.get("size"), "reports": await asyncio.to_thread(sysmod.dir_size, s.reports_dir), "backups": host.get("backups_bytes"),
                       "images": host.get("images_bytes"), "images_list": host.get("images", [])[:20], "docker_free": host.get("docker_free_bytes"),

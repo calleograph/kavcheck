@@ -11,6 +11,18 @@ from ..search import clean
 MaskText = Annotated[str | None, Field(max_length=200), AfterValidator(lambda v: v if v is None else clean(v))]     # текст поиска со звёздочкой: число звёздочек проверяется при приёме запроса
 
 
+class Params(BaseModel):
+    """Основа параметров отчётов: необязательное поле, переданное как null, получает значение по умолчанию (зона не выбрана — «все компьютеры»), а не ошибку «Input should be a valid string».
+    Поля, для которых null — допустимое значение (`int | None = None`), остаются как есть."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_means_default(cls, data):
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v is not None or (k in cls.model_fields and cls.model_fields[k].default is None)}
+        return data
+
+
 class LoginIn(BaseModel):
     login: str = Field(min_length=1, max_length=256)
     password: str = Field(min_length=1, max_length=512)
@@ -94,7 +106,7 @@ class RuleIn(BaseModel):
     enabled: bool = True
 
 
-class ReportParams(BaseModel):
+class ReportParams(Params):
     """Параметры отчёта: выбор программ (идентификаторы, правило + ветки, шаблон названия), диапазон версий, активность, платформа, группа."""
     product_ids: list[int] = []
     rule: str | None = Field(default=None, max_length=64)
@@ -113,7 +125,7 @@ class ReportParams(BaseModel):
     os_contains: MaskText = None
 
 
-class AuditItem(BaseModel):
+class AuditItem(Params):
     """Пункт проверки версий: программа (ключ каталога) или, в дополнительных настройках, шаблон названия / правило группировки."""
     kind: Literal["product", "pattern", "rule"] = "product"
     product_key: str | None = Field(default=None, max_length=160)
@@ -174,7 +186,7 @@ class AuditItem(BaseModel):
         return self
 
 
-class AuditParams(BaseModel):
+class AuditParams(Params):
     """Параметры проверки версий (вид отчёта version_audit)."""
     items: list[AuditItem] = Field(min_length=1, max_length=50)
     active_days: int | None = Field(default=None, ge=1, le=3650)
@@ -184,7 +196,7 @@ class AuditParams(BaseModel):
     zone: str = Field(default="", max_length=40)   # зона ответственности («none» — без ответственного); пусто — все компьютеры
 
 
-class QuickScope(BaseModel):
+class QuickScope(Params):
     """Общая область быстрых отчётов: давность связи с KSC, отдельно — «в сети сейчас», группа и поиск по компьютеру."""
     active_days: int | None = Field(default=None, ge=1, le=3650)
     include_inactive: bool = False
@@ -228,7 +240,7 @@ class QuickProtection(QuickScope):
     host_ids: list[int] = Field(default_factory=list, max_length=500)
 
 
-class QuickEvents(BaseModel):
+class QuickEvents(Params):
     days: Literal[1, 7, 30] = 7
     group: Literal["", "detections", "notcured", "resolved", "attacks"] = ""
     types: list[str] = Field(default_factory=list, max_length=10)
@@ -256,7 +268,7 @@ class QuickExtVulns(QuickScope):
         return self
 
 
-class QuickEol(BaseModel):
+class QuickEol(Params):
     """EOL в инфраструктуре: какие состояния поддержки, типы и производитель; список устройств включается отдельной таблицей (полный, без сокращений)."""
     statuses: list[Literal["eol", "extended", "upcoming"]] = Field(default_factory=lambda: ["eol", "extended", "upcoming"], min_length=1)
     kinds: list[Literal["app", "os"]] = Field(default_factory=lambda: ["app", "os"], min_length=1)
@@ -269,7 +281,7 @@ class QuickEol(BaseModel):
     zone: str = Field(default="", max_length=40)
 
 
-class QuickZone(BaseModel):
+class QuickZone(Params):
     """Состояние безопасности зон ответственности: зоны (или «none» — без ответственного), категории проблем, подробность, критичность и пороги."""
     zone_ids: list[str] = Field(min_length=1, max_length=100)
     categories: list[Literal["ksc_vulns", "ksc_critical", "ext_vulns", "no_av", "rtp_off", "bases_old", "infected", "license", "scan_old", "hw_cpu", "hw_ram", "reboot", "inactive"]] = Field(

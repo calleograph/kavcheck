@@ -168,6 +168,15 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         log.error("Внутренняя база недоступна", extra={"path": request.url.path, "error": type(exc.orig).__name__ if exc.orig else type(exc).__name__})
         return JSONResponse({"detail": "Внутренняя база данных временно недоступна. Повторите через несколько секунд."}, status_code=503, headers={"Retry-After": "5"})
 
+    from fastapi.exceptions import RequestValidationError
+
+    from .validation_text import explain
+
+    @app.exception_handler(RequestValidationError)
+    async def bad_request(request: Request, exc: RequestValidationError):
+        errors = [{k: v for k, v in e.items() if k != "ctx" and k != "input"} | {"ctx": {a: b for a, b in (e.get("ctx") or {}).items() if isinstance(b, (int, str, float))}} for e in exc.errors()]
+        return JSONResponse({"detail": "Проверьте параметры: " + explain(exc.errors()), "errors": errors}, status_code=422)
+
     @app.exception_handler(MaskError)
     async def bad_mask(request: Request, exc: MaskError):
         return JSONResponse({"detail": str(exc)}, status_code=422)

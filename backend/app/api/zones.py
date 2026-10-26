@@ -427,6 +427,9 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
         stats = await ZR.group_stats(db, sids=sids, default_days=int(general.activity_days), zone_days=zdays)
         confl = {z: c for z, (_n, c) in (await ZR.conflict_counts(db, sids)).items()}
     eol_on = bool((await request.app.state.settings_svc.get(db, "eol")).include_in_analytics)       # type: ignore[attr-defined]
+    eol_missing = await EOLR.not_ready(db, sids) if eol_on else []
+    if eol_missing:
+        eol_on = False                                  # расчёта EOL нет хотя бы по одному источнику: нули не показываем (колонка скрыта, причина — в `eol_missing`)
     eol = (await request.app.state.cache.get(("eol-zones", tuple(sorted(map(str, sids or [])))), 60, lambda: EOLR.zone_counts(db, sids)))[0] if eol_on else {}       # раз в минуту: не агрегировать итоги EOL при каждом открытии
     rows = []
     unassigned = {"id": UNASSIGNED, "name": "Без ответственного", "description": "Компьютеры, не подошедшие ни одной зоне", "purpose": "", "priority": 0, "contacts": [], "enabled": True, "activity_days": None}
@@ -452,7 +455,7 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
     dsample = next(iter(dashes.values()), None)
     fr = _freshness(states, dsample, job, [str(i) for i in sids])
     return {"items": rows, "totals": {"zones": len(infos), "hosts": tot["unique_hosts"], "unique_hosts": tot["unique_hosts"], "unassigned": (stats.get(UNASSIGNED) or {}).get("total", 0), "conflicts": tot["conflicts"]},
-            "sources": [s.name for s in srcs], "activity_days": general.activity_days, "notes": list(dict.fromkeys(n for ns in await _notes(db, sids) for n in ns)), "fetched_at": fr["data_at"], "freshness": fr}
+            "sources": [s.name for s in srcs], "activity_days": general.activity_days, "notes": list(dict.fromkeys(n for ns in await _notes(db, sids) for n in ns)), "fetched_at": fr["data_at"], "freshness": fr, "eol_missing": eol_missing}
 
 
 @router.get("/{zid}")

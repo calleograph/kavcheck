@@ -62,3 +62,43 @@ def counts(rows: list[dict]) -> dict:
     return {"total": len(rows), "confirmed_ksc": sum(1 for r in rows if r["verdict"] == "confirmed_ksc"), "confirmed_ext": sum(1 for r in rows if r["verdict"] == "confirmed_ext"),
             "potential": sum(1 for r in rows if r["verdict"] == "potential"), "critical": sum(1 for r in rows if r["severity"] == "critical"), "high": sum(1 for r in rows if r["severity"] == "high"),
             "warning": sum(1 for r in rows if r["severity"] == "warning")}
+
+
+def group_key(product: str, version: str) -> str:
+    return f"{(product or '').strip().lower()}\x1f{(version or '').strip()}"
+
+
+def groups(rows: list[dict], eol: list[dict] | None = None, sample: int = 3) -> list[dict]:
+    """Строки по установленному продукту и версии для компактной таблицы: максимальная критичность, число уникальных идентификаторов (CVE, БДУ…), из них в каталоге эксплуатируемых (KEV), первые `sample` идентификаторов.
+    Только представление: строки не теряются (полный список группы — `group_rows`), счётчики считаются по всем строкам. EOL — по совпадению названия и версии с находками EOL компьютера (если есть)."""
+    by: dict[str, dict] = {}
+    for r in rows:                                          # rows уже отсортированы: самые важные первыми
+        g = by.setdefault(group_key(r["product"], r["version"]), {"gid": group_key(r["product"], r["version"]), "product": r["product"] or "—", "version": r["version"] or "", "severity": r["severity"],
+                                                                 "keys": {}, "kev": set(), "confirmed_ksc": 0, "external_only": 0, "detected_by": set(), "rows": 0})
+        g["rows"] += 1
+        if SEV_ORDER[r["severity"]] > SEV_ORDER[g["severity"]]:
+            g["severity"] = r["severity"]
+        for k in r["keys"]:
+            g["keys"].setdefault(k, SEV_ORDER[r["severity"]])
+            if r["exploited"]:
+                g["kev"].add(k)
+        g["confirmed_ksc"] += r["verdict"] == "confirmed_ksc"
+        g["external_only"] += r["verdict"] != "confirmed_ksc"
+        g["detected_by"].update(r["detected_by"])
+    eol_by = {}
+    for e in eol or []:
+        eol_by.setdefault((str(e.get("title") or "").strip().lower(), str(e.get("version") or "").strip()), e)
+    out = []
+    for g in by.values():
+        keys = sorted(g["keys"], key=lambda k: (-g["keys"][k], k not in g["kev"], k))
+        e = eol_by.get((g["product"].strip().lower(), g["version"].strip()))
+        out.append({"gid": g["gid"], "product": g["product"], "version": g["version"], "severity": g["severity"], "severity_ru": SEV_RU[g["severity"]], "cves": len(keys), "kev": len(g["kev"]),
+                    "sample": keys[:sample], "more": max(0, len(keys) - sample), "rows": g["rows"], "confirmed_ksc": g["confirmed_ksc"], "external_only": g["external_only"], "detected_by": sorted(g["detected_by"]),
+                    "eol": {"status": e.get("status"), "status_ru": e.get("status_ru"), "severity": e.get("severity")} if e else None})
+    out.sort(key=lambda x: (-SEV_ORDER[x["severity"]], x["kev"] == 0, -x["cves"], x["product"].lower()))
+    return out
+
+
+def group_rows(rows: list[dict], product: str, version: str) -> list[dict]:
+    k = group_key(product, version)
+    return [r for r in rows if group_key(r["product"], r["version"]) == k]

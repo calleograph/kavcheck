@@ -40,7 +40,7 @@ async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_
         return await P.load(client, exclude_slaves=rcfg.exclude_slave_servers, groups=await groups_cached(request, src), hw_cfg=hw)
 
     try:
-        base, at = await request.app.state.cache.get((str(src.id), "protection", rcfg.exclude_slave_servers, hw.model_dump_json()), request.app.state.settings.cache_ttl_seconds, make, refresh=refresh)
+        base, at = await request.app.state.cache.get((str(src.id), "protection", rcfg.exclude_slave_servers, hw.model_dump_json()), request.app.state.settings.cache_ttl_seconds, make, refresh=refresh, swr=request.app.state.settings.cache_swr_seconds)
     except KscError as exc:
         raise _ksc(exc) from None
     if zone:

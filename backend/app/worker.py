@@ -29,7 +29,7 @@ log = logging.getLogger("app.worker")
 async def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_format)
-    engine = create_engine(settings)
+    engine = create_engine(settings, background=True)
     sm = create_session_maker(engine)
     try:
         box = SecretBox(settings.app_master_key) if settings.app_master_key else None
@@ -46,6 +46,11 @@ async def main() -> None:
     zcache = ZoneCache(sm, settings, svc, sources, journal)
     eol = EolService(sm, svc, sources, journal)
     devices = DevicesService(sm, svc, sources, journal)
+    try:
+        if await eol.recover():
+            log.warning("EOL: прерванные расчёты сброшены, будут запущены заново")
+    except Exception:  # noqa: BLE001 — например, миграция ещё не применена
+        log.warning("EOL: не удалось сбросить состояние расчётов", exc_info=True)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

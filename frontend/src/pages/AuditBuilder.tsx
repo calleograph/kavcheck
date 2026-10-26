@@ -78,7 +78,7 @@ export function AuditBuilder({ ctx, initial, editing, onSaved, onResult }: { ctx
   const canEdit = ctx.me.user.role !== "viewer";
   useEffect(() => { api.software.rules().then((r) => setRules(r.items)).catch(() => undefined); }, []);
   const set = (id: number, patch: Partial<Draft>) => setItems((xs) => xs.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  const params = (): AuditParams => ({ items: items.map(toItem), include_inactive: includeInactive, online_only: onlineOnly, active_days: days ? Number(days) : null, group_contains: group.trim() || null, zone: zone || null });
+  const params = (): AuditParams => ({ items: items.map(toItem), include_inactive: includeInactive, online_only: onlineOnly, active_days: days ? Number(days) : null, group_contains: group.trim() || null, zone });
   const problems = items.map(draftProblem);
   const ready = problems.every((p) => !p) && sources.length > 0;
   const preview = async (e?: FormEvent) => {

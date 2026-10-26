@@ -165,3 +165,13 @@ async def zone_counts(db: AsyncSession, sids: list[uuid.UUID] | None, zone: str 
                 func.coalesce(func.sum(case((S.w == 1, 1), else_=0)), 0).label("upcoming"), func.coalesce(func.sum(S.n), 0).label("items"), func.coalesce(func.sum(S.n_os), 0).label("os"))
          .select_from(j).where(*w).group_by(ZcHostZone.zone_id))
     return {r.z: {"hosts": int(r.hosts), "eol": int(r.eol), "extended": int(r.extended), "upcoming": int(r.upcoming), "items": int(r.items), "os": int(r.os)} for r in (await db.execute(q)).all()}
+
+
+async def not_ready(db: AsyncSession, sids: list[uuid.UUID] | None) -> list[str]:
+    """Названия источников, по которым EOL ещё не рассчитан (нет ни одного успешного расчёта): пока они есть, нули EOL в зонах и дашбордах показывать нельзя — это «нет результата», а не «проблем нет»."""
+    from ..models import EolState, KscSource  # noqa: PLC0415
+
+    q = select(KscSource.name).outerjoin(EolState, EolState.source_id == KscSource.id).where(KscSource.is_active.is_(True), EolState.computed_at.is_(None))
+    if sids is not None:
+        q = q.where(KscSource.id.in_(sids))
+    return list((await db.execute(q.order_by(KscSource.name))).scalars().all())

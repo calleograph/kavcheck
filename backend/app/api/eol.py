@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -65,12 +65,35 @@ async def summary(request: Request, zone: str = Query("", max_length=40), source
         z = await _distinct_hosts(db, sids)
     unknown = int((await db.execute(select(func.count()).select_from(EolFinding).where(EolFinding.source_id.in_(sids), EolFinding.status == "unknown"))).scalar_one())
     states = {st.source_id: st for st in (await db.execute(select(EolState).where(EolState.source_id.in_(sids)))).scalars()}
+    soon = int(cfg.soon_days)
     current = {}
     for src in srcs:
         st = states.get(src.id)
+        state = await _calc_state(db, src.id, st, soon, bool(n_prod))
         current[str(src.id)] = {"source": src.name, "computed_at": st.computed_at if st else None, "error": st.error if st else None, "error_at": st.error_at if st else None,
-                                "progress": st.progress if st else None, "items": st.items if st else 0, "ready": bool(st and st.computed_at)}
+                                "progress": st.progress if st else None, "started_at": st.started_at if st else None, "items": st.items if st else 0, "ready": bool(st and st.computed_at),
+                                "state": state, "state_ru": STATE_RU[state]}
     return {"base": base, "all_sources": is_all(request), "findings": items, "kinds": kinds, "devices": z, "ambiguous": unknown, "sources": current}
+
+
+STATE_RU = {"none": "Не рассчитано", "running": "Выполняется", "error": "Ошибка", "ready": "Готово", "stale": "Данные устарели"}
+RUN_LIMIT = timedelta(hours=3)          # дольше — расчёт считается зависшим (процесс упал); worker сбрасывает такие при запуске
+STALE_AFTER = timedelta(days=7)
+
+
+async def _calc_state(db: AsyncSession, source_id: uuid.UUID, st: EolState | None, soon: int, base_loaded: bool) -> str:
+    """none — результата нет; running — расчёт идёт; error — последний расчёт не удался (если результат раньше был, он остаётся, но состояние — ошибка); stale — исходные данные
+    (база EOL, каталог, решения) изменились после расчёта или он старше недели; ready — актуально."""
+    now = datetime.now(timezone.utc)
+    if st is not None and st.started_at and now - st.started_at < RUN_LIMIT:
+        return "running"
+    if st is not None and st.error and (st.error_at or now) >= (st.computed_at or datetime.min.replace(tzinfo=timezone.utc)):
+        return "error"
+    if st is None or not st.computed_at:
+        return "none"
+    if now - st.computed_at > STALE_AFTER or (base_loaded and st.inputs and st.inputs != await C.current_inputs(db, source_id, None, soon)):
+        return "stale"
+    return "ready"
 
 
 async def _distinct_hosts(db: AsyncSession, sids: list[uuid.UUID]) -> dict:

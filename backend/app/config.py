@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     ksc_concurrency: int = Field(default=3, ge=1, le=32)               # одновременных запросов к одному источнику
     report_concurrency: int = Field(default=2, ge=1, le=16)            # одновременных тяжёлых отчётов у воркера
     cache_ttl_seconds: int = Field(default=600, ge=30, le=86400)       # срок актуальности кэша справочников
+    cache_swr_seconds: int = Field(default=3600, ge=0, le=86400)      # после срока страницы защиты и уязвимостей ещё столько секунд сразу отдают прежние данные (с их временем) и обновляются в фоне; 0 — выключено
 
     @property
     def sqlalchemy_url(self) -> str | URL:

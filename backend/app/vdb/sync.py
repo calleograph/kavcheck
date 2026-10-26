@@ -15,13 +15,14 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
-from ..models import CaCertificate, CatalogState, KscSource, VdbAffected, VdbFinding, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
+from ..models import CaCertificate, CatalogState, KscSource, VdbAffected, VdbFinding, VdbFindingProduct, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
 from ..services.settings import SettingsService
 from ..services.audit import Journal
 from ..services.resources import RES, MemoryPressure, Resources
 from . import match as M
 from . import sources as S
 from . import store
+from .classmap import class_map
 from .fetch import FetchError, Http, builtin_ca, make_ssl
 
 log = logging.getLogger("app.vdb")
@@ -265,6 +266,7 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     if not prods:
         return 0
     matcher = M.Matcher(prods, maps)
+    classes = await class_map(db, prods)
     all_keys = await M.reverse_keys(db, prods, maps) if keys is None else sorted(set(keys))
     scope = None if keys is None else set(keys)
     matched: set[str] = set()
@@ -275,6 +277,7 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
         for m in matches:
             by.setdefault(m.vuln_key, []).append(m)
         del rows, matches
+        fp_rows: list[VdbFindingProduct] = []
         if by:
             ks = list(by)
             meta = {v.vuln_key: v for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_(ks)))).scalars().all()}
@@ -288,6 +291,11 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
                     p["versions"].append(m.version)
                     p["installs"] += m.installs_active
                     p["hosts"] += m.hosts_active
+                for pr in prod_rows.values():
+                    pm = [m for m in ms if m.product_key == pr["key"]]
+                    fp_rows.append(VdbFindingProduct(source_id=source_id, vuln_key=k, product_key=pr["key"], name=pr["name"][:300], category=classes.get(pr["key"], ("unclassified", ""))[0],
+                                                     status=max(pm, key=lambda m: M.STATUS_RANK[m.status]).status, sev_rank=v.sev_rank if v else 0, exploited=bool(v.exploited) if v else False,
+                                                     installs=pr["installs"], hosts=pr["hosts"], versions=sorted({m.version for m in pm if m.version})[:40]))
                 fields = dict(status=best, sev_rank=v.sev_rank if v else 0, exploited=bool(v.exploited) if v else False, products=sorted(prod_rows.values(), key=lambda p: -p["installs"])[:30],
                               installs=sum(p["installs"] for p in prod_rows.values()), hosts_max=sum(p["hosts"] for p in prod_rows.values()), updated_at=now)
                 f = existing.get(k)
@@ -299,6 +307,8 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
                     for a, b in fields.items():
                         setattr(f, a, b)
             matched |= set(by)
+            await db.execute(delete(VdbFindingProduct).where(VdbFindingProduct.source_id == source_id, VdbFindingProduct.vuln_key.in_(ks)))
+            db.add_all(fp_rows)
         await db.commit()                       # порция сохранена: транзакция не остаётся открытой на время вычислений следующей
         db.expunge_all()
         if res is not None:
@@ -307,5 +317,6 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     stale = [k for k in existing_keys if k not in matched and (scope is None or k in scope)]
     for i in range(0, len(stale), 400):
         await db.execute(delete(VdbFinding).where(VdbFinding.source_id == source_id, VdbFinding.vuln_key.in_(stale[i:i + 400])))
+        await db.execute(delete(VdbFindingProduct).where(VdbFindingProduct.source_id == source_id, VdbFindingProduct.vuln_key.in_(stale[i:i + 400])))
     await db.commit()
     return len(matched)

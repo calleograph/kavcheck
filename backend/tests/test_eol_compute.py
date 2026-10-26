@@ -253,3 +253,101 @@ async def test_quick_eol_refuses_oversized_device_table_with_guidance(app):
     assert e.value.code == "too_many_rows" and "таблицу устройств" in e.value.message
     doc = await quick.build("quick_eol", None, {"statuses": ["eol"], "devices": False}, ctx)         # type: ignore[arg-type]
     assert doc["tables"][1]["rows"] == [] and len(doc["tables"][0]["rows"]) == 2                      # без таблицы устройств отчёт строится
+
+
+async def test_same_version_under_two_schemes_does_not_duplicate_findings(app):
+    """Регрессия UniqueViolation в eol_findings: каталог хранит версию отдельно по схемам (Windows — numeric, Linux — dpkg), и одна и та же версия приходит дважды;
+    находка одна на (источник, продукт, версия), записи реестра и устройства объединяются; повторные расчёты дают тот же результат."""
+    sid = await seed(app)
+    sm = app.state.session_maker
+    async with sm() as db:
+        p = await db.get(CatalogProduct, (sid, "php"))
+        dup = dict(p.versions[0], scheme="dpkg", platform=2, product_ids=[14], installs=2, installs_active=1, hosts=2, hosts_active=1)
+        long_a, long_b = "7.4." + "1" * 130 + "a", "7.4." + "1" * 130 + "b"             # различаются только после 120 символов: обрезка не должна создавать дубль
+        p.versions = [*p.versions, dup, dict(p.versions[0], version=long_a, product_ids=[15]), dict(p.versions[0], version=long_b, product_ids=[16])]
+        await db.commit()
+        src = await db.get(KscSource, sid)
+    ksc = FakeKsc({11: [(1, 1)], 14: [(3, 1)], 15: [(4, 1)], 16: [(1, 0)]}, hosts())
+    for _ in range(2):
+        res = await C.compute_source(sm, ksc, src, activity_days=30, today=TODAY)
+        async with sm() as db:
+            rows = [x for x in (await db.execute(select(EolFinding).where(EolFinding.kind == "app", EolFinding.subject == "php"))).scalars()]
+        by = {x.version: x for x in rows}
+        assert len(rows) == len(by) == 2 and by["7.4.16"].hosts_all == 2             # записи 11 и 14 — одна находка (устройства 1 и 3); длинные версии с общим началом — тоже одна
+        assert set(by["7.4.16"].product_ids) >= {11, 12, 14}
+    assert res["items"] >= 2
+
+
+async def test_calculation_states_none_running_error_stale_ready(client, app):
+    """Состояния расчёта в сводке: «Не рассчитано» не выдаётся за ноль находок, «Выполняется» не зависает навсегда, ошибка после успеха — «Ошибка», изменение данных — «Данные устарели»."""
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await seed(app)
+    sm = app.state.session_maker
+    h = {"X-Source-Id": str(sid)}
+
+    async def state():
+        return (await client.get("/api/v1/eol/summary", headers=h)).json()["sources"][str(sid)]
+
+    assert (await state())["state"] == "none"
+    async with sm() as db:
+        src = await db.get(KscSource, sid)
+    await C.compute_source(sm, FakeKsc({11: [(1, 1)]}, hosts()), src, activity_days=30, today=TODAY)
+    assert (await state())["state"] == "ready"
+    async with sm() as db:
+        await db.execute(update(EolState).where(EolState.source_id == sid).values(started_at=utcnow(), progress="устройства: программы"))
+        await db.commit()
+    s = await state()
+    assert s["state"] == "running" and s["state_ru"] == "Выполняется" and s["progress"]
+    async with sm() as db:
+        await db.execute(update(EolState).where(EolState.source_id == sid).values(started_at=utcnow() - timedelta(hours=5)))
+        await db.commit()
+    assert (await state())["state"] != "running"                                              # зависший расчёт не показывается как идущий
+    svc = EolService(sm, app.state.settings_svc, None)
+    assert await svc.recover() == 1
+    async with sm() as db:
+        await db.execute(update(EolState).where(EolState.source_id == sid).values(error="KSC недоступен", error_at=utcnow()))
+        await db.commit()
+    assert (await state())["state"] == "error"
+    async with sm() as db:
+        await db.execute(update(EolState).where(EolState.source_id == sid).values(error=None, error_at=None, inputs="old"))
+        await db.commit()
+    assert (await state())["state"] == "stale"
+
+
+async def test_not_ready_lists_sources_without_a_successful_calculation(app):
+    """Нули EOL в зонах не показываются, пока нет расчёта: источник без успешного расчёта числится в not_ready, после расчёта — нет."""
+    from app.eol import read as R
+
+    sid = await seed(app)
+    sm = app.state.session_maker
+    async with sm() as db:
+        assert await R.not_ready(db, [sid]) == ["KSC-A"]
+        src = await db.get(KscSource, sid)
+    await C.compute_source(sm, FakeKsc({11: [(1, 1)]}, hosts()), src, activity_days=30, today=TODAY)
+    async with sm() as db:
+        assert await R.not_ready(db, [sid]) == []
+
+
+async def test_two_concurrent_calculations_of_one_source_do_not_conflict(app):
+    """На PostgreSQL два процесса (старый и новый worker при обновлении) могли одновременно заменять результаты одного источника и падали на eol_findings_pkey; замена идёт под блокировкой источника."""
+    import asyncio
+    import os
+
+    import pytest
+
+    if not os.environ.get("TEST_PG_URL"):
+        pytest.skip("нужен PostgreSQL (TEST_PG_URL): в SQLite параллельной записи нет")
+    sid = await seed(app)
+    sm = app.state.session_maker
+    async with sm() as db:
+        src = await db.get(KscSource, sid)
+    ksc = FakeKsc({11: [(1, 1), (2, 0)], 12: [(5, 1)]}, hosts())
+    results = await asyncio.gather(*(C.compute_source(sm, ksc, src, activity_days=30, today=TODAY) for _ in range(4)), return_exceptions=True)
+    assert not [r for r in results if isinstance(r, Exception)], results
+    async with sm() as db:
+        n = len((await db.execute(select(EolFinding).where(EolFinding.source_id == sid))).scalars().all())
+    assert n == results[0]["items"] == 2

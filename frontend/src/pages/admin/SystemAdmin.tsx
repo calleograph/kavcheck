@@ -70,6 +70,23 @@ export default function SystemAdmin({ onOpen }: { onOpen: (tab: string) => void 
                 <td className="actions"><button className="btn mini" onClick={() => void ping(x.id)} aria-busy={p === "run"}><Icon name="plug" size={15} /><span>Проверить</span></button></td></tr>); })}</tbody>
           </table></div>)}
       </div>
+      <div className="card flush">
+        <div className="card-head"><h2>Фоновые расчёты</h2><span className="muted small">Что считает worker, сколько это заняло и чем закончилось; тяжёлая работа идёт по одной задаче</span></div>
+        <dl className="kv compact pad-x">
+          <div><dt>Память worker</dt><dd>{s.jobs.worker.rss_mb != null ? <>{num(s.jobs.worker.rss_mb)} МБ <span className="muted small">· пик {num(s.jobs.worker.peak_mb ?? 0)} МБ, мягкий предел {num(s.jobs.worker.soft_mb ?? 0)}, жёсткий {num(s.jobs.worker.hard_mb ?? 0)} МБ{s.jobs.worker.deferred ? ` · отложено задач: ${s.jobs.worker.deferred}` : ""}</span></> : <span className="muted">нет сигнала</span>}</dd></div>
+          <div><dt>Сейчас выполняется</dt><dd>{s.jobs.worker.active.length ? s.jobs.worker.active.join("; ") : <span className="muted">ничего</span>}</dd></div>
+          <div><dt>Отчёты</dt><dd>{s.jobs.reports.median_s != null ? <>типичная длительность {s.jobs.reports.median_s} с, самый долгий из последних {s.jobs.reports.done_sample} — {s.jobs.reports.max_s} с</> : <span className="muted">готовых отчётов ещё нет</span>}{s.jobs.reports.failed_24h > 0 && <span className="bad-text"> · неудачных за сутки: {s.jobs.reports.failed_24h}</span>}</dd></div>
+          {s.jobs.postgres && <div><dt>Долгие транзакции PostgreSQL</dt><dd>{s.jobs.postgres.long_transactions.length ? s.jobs.postgres.long_transactions.map((t) => `${t.state}: ${t.count}, самая давняя ${t.oldest_s} с`).join("; ") : <span className="ok-text">нет (дольше минуты)</span>}</dd></div>}
+        </dl>
+        <div className="table-scroll flat"><table className="table compact">
+          <thead><tr><th>Источник</th><th>EOL</th><th>Данные зон</th><th>Пользователи устройств</th><th>Каталог программ</th></tr></thead>
+          <tbody>{s.jobs.sources.map((x) => <tr key={x.source}><td><b>{x.source}</b></td>
+            <td>{!x.eol ? <span className="muted">не рассчитывался</span> : x.eol.running ? <span className="badge accent">выполняется{x.eol.progress ? `: ${x.eol.progress}` : ""}</span> : x.eol.error ? <span className="badge err" title={x.eol.error}>ошибка{x.eol.computed_at ? `, прежний результат от ${fmt(x.eol.computed_at)}` : ""}</span> : <>{fmt(x.eol.computed_at)}<span className="sub small">{num(x.eol.items)} находок, {x.eol.duration_ms != null ? `${Math.round(x.eol.duration_ms / 1000)} с` : ""}</span></>}</td>
+            <td>{!x.zones ? <span className="muted">—</span> : x.zones.status === "building" ? <span className="badge accent">строится{x.zones.progress ? `: ${x.zones.progress}` : ""}</span> : x.zones.status === "failed" ? <span className="badge err" title={x.zones.error ?? ""}>ошибка</span> : x.zones.built_at ? <>{fmt(x.zones.built_at)}<span className="sub small">{num(x.zones.hosts)} устройств{x.zones.duration_ms != null ? `, ${Math.round(x.zones.duration_ms / 1000)} с` : ""}</span></> : <span className="muted">нет данных</span>}</td>
+            <td>{!x.devices?.polled_at ? <span className="muted">опроса не было</span> : <>{fmt(x.devices.polled_at)}{x.devices.error && <span className="sub small bad-text">{x.devices.error}</span>}</>}</td>
+            <td>{x.catalog ? <>{fmt(x.catalog.built_at)}<span className="sub small">{x.catalog.status}</span></> : <span className="muted">—</span>}</td></tr>)}</tbody>
+        </table></div>
+      </div>
       <div className="split even">
         <div className="card flush">
           <div className="card-head"><h2>Ошибки фоновых задач и приложения</h2><div className="spacer" /><button className="btn mini ghost" onClick={() => onOpen("journal")}>Журнал событий</button></div>

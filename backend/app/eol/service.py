@@ -25,6 +25,7 @@ class EolService:
         self._sm, self._svc, self._sources, self._journal = sm, svc, sources, journal
         self._stop = asyncio.Event()
         self.current: str | None = None
+        self._busy: set[uuid.UUID] = set()
 
     def stop(self) -> None:
         self._stop.set()
@@ -58,6 +59,15 @@ class EolService:
         return n
 
     async def run_source(self, source_id: uuid.UUID) -> dict | None:
+        if source_id in self._busy:                                             # тот же источник уже считается в этом процессе: второй расчёт не запускается
+            return None
+        self._busy.add(source_id)
+        try:
+            return await self._run_source(source_id)
+        finally:
+            self._busy.discard(source_id)
+
+    async def _run_source(self, source_id: uuid.UUID) -> dict | None:
         async with self._sm() as db:
             src = await db.get(KscSource, source_id)
             if src is None:
@@ -66,20 +76,35 @@ class EolService:
             st = await db.get(EolState, source_id)
             if st is None:
                 db.add(EolState(source_id=source_id))
+                await db.flush()
+            await db.execute(update(EolState).where(EolState.source_id == source_id).values(started_at=utcnow(), progress="запуск"))
             await db.commit()
         self.current = src.name
+        tasks: set[asyncio.Task] = set()
+
+        def progress(text: str) -> None:                                         # этап расчёта для страницы «Выполняется: …»; ошибка записи не влияет на расчёт
+            async def write() -> None:
+                try:
+                    async with self._sm() as db:
+                        await db.execute(update(EolState).where(EolState.source_id == source_id).values(progress=text[:200]))
+                        await db.commit()
+                except Exception:  # noqa: BLE001
+                    log.debug("EOL: не записан этап расчёта", exc_info=True)
+            t = asyncio.get_running_loop().create_task(write())
+            tasks.add(t)
+            t.add_done_callback(tasks.discard)
         try:
             async with RES.heavy(f"EOL: {src.name}", 1):
                 client = self._sources.client(src)
                 try:
-                    res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), soon_days=int(cfg.soon_days), res=RES)  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+                    res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), soon_days=int(cfg.soon_days), res=RES, progress=progress)  # type: ignore[attr-defined]
                 except MemoryPressure:
                     raise
                 except Exception as exc:  # noqa: BLE001 — KSC недоступен: прежние данные остаются, ошибка видна администратору
                     msg = f"{type(exc).__name__}: {str(exc)[:300]}"
                     log.warning("EOL: расчёт источника не удался", extra={"source": src.name, "error": msg})
                     async with self._sm() as db:
-                        await db.execute(update(EolState).where(EolState.source_id == source_id).values(error=msg, error_at=utcnow(), progress=None))
+                        await db.execute(update(EolState).where(EolState.source_id == source_id).values(error=msg, error_at=utcnow(), progress=None, started_at=None))
                         await db.commit()
                     if self._journal:
                         await self._journal.emit("system", "eol_compute_failed", level="warning", message=f"EOL «{src.name}»: {msg[:200]}", data={"source": src.name})
@@ -90,6 +115,21 @@ class EolService:
             return None
         finally:
             self.current = None
+            for t in list(tasks):
+                t.cancel()
+            try:                                                                  # отложенный (память) или прерванный расчёт не остаётся «выполняющимся»
+                async with self._sm() as db:
+                    await db.execute(update(EolState).where(EolState.source_id == source_id).values(started_at=None, progress=None))
+                    await db.commit()
+            except Exception:  # noqa: BLE001
+                log.warning("EOL: не снято состояние расчёта", exc_info=True)
+
+    async def recover(self) -> int:
+        """При запуске worker: расчёты, прерванные падением процесса, больше не «выполняются» — ближайший цикл запустит их заново; прежний результат не тронут."""
+        async with self._sm() as db:
+            n = (await db.execute(update(EolState).where(EolState.started_at.is_not(None)).values(started_at=None, progress=None))).rowcount or 0
+            await db.commit()
+        return n
 
     async def tick(self) -> None:
         for sid in await self.due():

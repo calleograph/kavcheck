@@ -12,11 +12,12 @@ from sqlalchemy import case, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, current_source, get_db, require_admin, require_analyst, require_user
-from ..models import CatalogProduct, KscSource, VdbAffected, VdbFinding, VdbMapping, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
+from ..models import CatalogProduct, EolFinding, KscSource, ProductClass, VdbAffected, VdbFinding, VdbFindingProduct as FP, VdbMapping, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
 from ..services.audit import write_audit
 from ..vdb import match as M
 from ..vdb import sources as S
 from ..vdb import store
+from ..vdb.classify import CATEGORIES, CATEGORY_RU
 from ..vdb.normalize import SEV_RANK, SEV_RU, norm, pick_primary, score_key
 from ..search import clean, is_mask, local_like
 from ..services.catalog import text_conds
@@ -374,20 +375,48 @@ async def vuln_card(key: str, su: SessionUser = Depends(require_user), db: Async
 
 
 # ------------------------------------------------------------------------------------------------ находки для специалиста ИБ
-@router.get("/findings")
-async def findings(new_only: bool = False, min_severity: str = Query("", pattern=r"^(|critical|high|medium|low)$"), exploited: bool = False,
-                   score_min: float | None = Query(None, ge=0, le=10), score_max: float | None = Query(None, ge=0, le=10), no_score: bool = False,
-                   sort: str = Query("priority", pattern=r"^(priority|score)$"), desc: bool = True,
-                   offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source),
-                   db: AsyncSession = Depends(get_db)):
-    """Уязвимости из внешних баз, потенциально затрагивающие установленное ПО выбранного источника KSC (оценка по каталогу): новые и ранее просмотренные."""
-    stmt = select(VdbFinding, VdbVuln).join(VdbVuln, VdbVuln.vuln_key == VdbFinding.vuln_key).where(VdbFinding.source_id == src.id)
+CAT_RE = "^(|os|system|application|unclassified)$"
+STATUS_RE = "^(|confirmed|potential|clarify|insufficient)$"
+PROBLEM_EOL = ("eol", "extended", "upcoming")
+
+
+def _fp_vulns(source_id, *, category: str = "", product_key: str = "", eol: bool = False):
+    """Ключи уязвимостей, у которых есть продукт нужной категории / нужный продукт / продукт с закончившейся поддержкой (по таблице «находка × продукт»)."""
+    sub = select(FP.vuln_key).where(FP.source_id == source_id)
+    if category:
+        sub = sub.where(FP.category == category)
+    if product_key:
+        sub = sub.where(FP.product_key == product_key)
+    if eol:
+        sub = sub.join(EolFinding, (EolFinding.source_id == FP.source_id) & (EolFinding.kind == "app") & (EolFinding.subject == FP.product_key) & (EolFinding.status.in_(PROBLEM_EOL)))
+    return sub
+
+
+def _finding_filters(stmt, source_id, *, new_only: bool, min_severity: str, exploited: bool, status: str, category: str, product_key: str, eol: bool):
     if new_only:
         stmt = stmt.where(VdbFinding.seen_at.is_(None))
     if min_severity:
         stmt = stmt.where(VdbVuln.sev_rank >= SEV_RANK[min_severity])
     if exploited:
         stmt = stmt.where(VdbVuln.exploited.is_(True))
+    if status:
+        stmt = stmt.where(VdbFinding.status == status)
+    if category or product_key or eol:
+        stmt = stmt.where(VdbFinding.vuln_key.in_(_fp_vulns(source_id, category=category, product_key=product_key, eol=eol)))
+    return stmt
+
+
+@router.get("/findings")
+async def findings(new_only: bool = False, min_severity: str = Query("", pattern=r"^(|critical|high|medium|low)$"), exploited: bool = False,
+                   status: str = Query("", pattern=STATUS_RE), category: str = Query("", pattern=CAT_RE), product_key: str = Query("", max_length=160), eol: bool = False,
+                   score_min: float | None = Query(None, ge=0, le=10), score_max: float | None = Query(None, ge=0, le=10), no_score: bool = False,
+                   sort: str = Query("priority", pattern=r"^(priority|score)$"), desc: bool = True,
+                   offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source),
+                   db: AsyncSession = Depends(get_db)):
+    """Уязвимости из внешних баз, потенциально затрагивающие установленное ПО выбранного источника KSC (оценка по каталогу): новые и ранее просмотренные.
+    Одна строка — одна уникальная уязвимость; фильтры по категории продукта, достоверности сопоставления, продукту и EOL отбирают уязвимости, у которых есть подходящий продукт."""
+    stmt = select(VdbFinding, VdbVuln).join(VdbVuln, VdbVuln.vuln_key == VdbFinding.vuln_key).where(VdbFinding.source_id == src.id)
+    stmt = _finding_filters(stmt, src.id, new_only=new_only, min_severity=min_severity, exploited=exploited, status=status, category=category, product_key=product_key, eol=eol)
     stmt = _score_filter(stmt, score_min, score_max, no_score)
     total = int((await db.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))).scalar_one())
     order = [(VdbVuln.score.desc() if desc else VdbVuln.score.asc()).nulls_last()] if sort == "score" else [VdbVuln.exploited.desc(), VdbVuln.sev_rank.desc()]
@@ -397,16 +426,131 @@ async def findings(new_only: bool = False, min_severity: str = Query("", pattern
 
 
 async def finding_counts(db: AsyncSession, source_id: uuid.UUID) -> dict:
+    """Показатели с разными единицами, которые не смешиваются: уникальные уязвимости (`total`, `new`…), продукты каталога (`products`), по достоверности сопоставления (`by_status`) и по категориям продуктов
+    (`by_category` — уникальные уязвимости; одна уязвимость может затрагивать продукты разных категорий, поэтому сумма по категориям может превышать `total`). Компьютеры считаются только при проверке («Проверить»)."""
     new = VdbFinding.seen_at.is_(None)
     c = lambda cond: func.coalesce(func.sum(case((cond, 1), else_=0)), 0)  # noqa: E731
     r = (await db.execute(select(func.count(), c(new), c(new & VdbFinding.exploited.is_(True)), c(new & (VdbFinding.sev_rank >= 4)),
                                  c(new & (VdbFinding.exploited.is_(True) | (VdbFinding.sev_rank >= 3)))).where(VdbFinding.source_id == source_id))).one()
-    return dict(zip(("total", "new", "new_exploited", "new_critical", "new_serious"), (int(x) for x in r)))
+    out = dict(zip(("total", "new", "new_exploited", "new_critical", "new_serious"), (int(x) for x in r)))
+    out["by_status"] = {k: int(n) for k, n in (await db.execute(select(VdbFinding.status, func.count()).where(VdbFinding.source_id == source_id).group_by(VdbFinding.status))).all()}
+    cats = {k: int(n) for k, n in (await db.execute(select(FP.category, func.count(func.distinct(FP.vuln_key))).where(FP.source_id == source_id).group_by(FP.category))).all()}
+    out["by_category"] = {k: cats.get(k, 0) for k in CATEGORIES}
+    out["products"] = int((await db.execute(select(func.count(func.distinct(FP.product_key))).where(FP.source_id == source_id))).scalar_one())
+    out["plan_ready"] = out["total"] == 0 or bool(cats)                       # таблица «находка × продукт» заполняется при анализе; после обновления приложения — при первом анализе
+    return out
 
 
 @router.get("/findings/summary")
 async def findings_summary(su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
     return await finding_counts(db, src.id)
+
+
+SEV_PLAN = {4: "Критическая", 3: "Высокая", 2: "Средняя", 1: "Низкая", 0: "Нет данных"}
+EOL_RANK = {"eol": 3, "extended": 2, "upcoming": 1}
+
+
+@router.get("/plan")
+async def plan(new_only: bool = False, min_severity: str = Query("", pattern=r"^(|critical|high|medium|low)$"), exploited: bool = False, status: str = Query("", pattern=STATUS_RE),
+               category: str = Query("", pattern=CAT_RE), eol: bool = False, q: str = Query("", max_length=200), sort: str = Query("risk", pattern=r"^(risk|vulns|kev|name)$"), desc: bool = True,
+               offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+    """План устранения: что обновить в первую очередь. Одна строка — один продукт каталога: сколько уникальных уязвимостей (из них в CISA KEV и критических), какие версии затронуты и на скольких компьютерах
+    они установлены (по каталогу, до проверки; компьютер с несколькими версиями считается по каждой), есть ли у продукта закончившаяся поддержка (EOL)."""
+    cond = [FP.source_id == src.id]
+    if category:
+        cond.append(FP.category == category)
+    if min_severity:
+        cond.append(FP.sev_rank >= SEV_RANK[min_severity])
+    if exploited:
+        cond.append(FP.exploited.is_(True))
+    if status:
+        cond.append(FP.status == status)
+    if new_only:
+        cond.append(FP.vuln_key.in_(select(VdbFinding.vuln_key).where(VdbFinding.source_id == src.id, VdbFinding.seen_at.is_(None))))
+    if eol:
+        cond.append(FP.product_key.in_(select(EolFinding.subject).where(EolFinding.source_id == src.id, EolFinding.kind == "app", EolFinding.status.in_(PROBLEM_EOL))))
+    needle = any_of_text(q, FP.name, FP.product_key)
+    if needle is not None:
+        cond.append(needle)
+    kev = func.coalesce(func.sum(case((FP.exploited.is_(True), 1), else_=0)), 0)
+    crit = func.coalesce(func.sum(case((FP.sev_rank >= 4, 1), else_=0)), 0)
+    top = func.max(FP.sev_rank)
+    agg = (select(FP.product_key, func.max(FP.name).label("name"), func.max(FP.category).label("category"), func.count().label("vulns"), kev.label("kev"), crit.label("critical"), top.label("max_sev"))
+           .where(*cond).group_by(FP.product_key))
+    total = int((await db.execute(select(func.count()).select_from(agg.subquery()))).scalar_one())
+    sub = agg.subquery()
+    d = (lambda c: c.desc()) if desc else (lambda c: c.asc())
+    order = {"risk": [d(sub.c.max_sev), d(sub.c.kev), d(sub.c.vulns)], "vulns": [d(sub.c.vulns)], "kev": [d(sub.c.kev), d(sub.c.vulns)], "name": [func.lower(sub.c.name).desc() if desc else func.lower(sub.c.name).asc()]}[sort]
+    rows = (await db.execute(select(sub).order_by(*order, sub.c.name).offset(offset).limit(limit))).all()
+    keys = [r.product_key for r in rows]
+    vers: dict[str, set[str]] = {k: set() for k in keys}
+    if keys:
+        for k, vs in (await db.execute(select(FP.product_key, FP.versions).where(*cond, FP.product_key.in_(keys)))).all():
+            vers[k].update(vs or [])
+    cat = {r.key: r for r in (await db.execute(select(CatalogProduct.key, CatalogProduct.versions, CatalogProduct.latest_version, CatalogProduct.publisher).where(CatalogProduct.source_id == src.id, CatalogProduct.key.in_(keys)))).all()} if keys else {}
+    eols: dict[str, dict] = {}
+    if keys:
+        for f in (await db.execute(select(EolFinding).where(EolFinding.source_id == src.id, EolFinding.kind == "app", EolFinding.subject.in_(keys), EolFinding.status.in_(PROBLEM_EOL)))).scalars():
+            cur = eols.get(f.subject)
+            if cur is None or EOL_RANK[f.status] > EOL_RANK[cur["status"]]:
+                eols[f.subject] = {"status": f.status, "status_ru": {"eol": "EOL", "extended": "Расширенная поддержка", "upcoming": "Скоро EOL"}[f.status], "eol_from": f.eol_from.isoformat() if f.eol_from else None,
+                                   "release": f.eol_release}
+    manual = {r for (r,) in (await db.execute(select(ProductClass.catalog_key).where(ProductClass.catalog_key.in_(keys)))).all()} if keys else set()
+    items = []
+    for r in rows:
+        c = cat.get(r.product_key)
+        by_ver = {str(v.get("version") or ""): int(v.get("hosts_active") or 0) for v in (c.versions if c else []) or []}
+        vlist = sorted(vers[r.product_key], key=lambda v: -by_ver.get(v, 0))
+        items.append({"product_key": r.product_key, "name": r.name, "publisher": c.publisher if c else "", "category": r.category, "category_ru": CATEGORY_RU.get(r.category, r.category), "manual": r.product_key in manual,
+                      "vulns": int(r.vulns), "kev": int(r.kev), "critical": int(r.critical), "severity_ru": SEV_PLAN.get(int(r.max_sev or 0), ""), "max_sev": int(r.max_sev or 0),
+                      "versions": [{"version": v, "hosts": by_ver.get(v, 0)} for v in vlist[:12]], "versions_total": len(vlist), "hosts": sum(by_ver.get(v, 0) for v in vlist),
+                      "latest": c.latest_version if c else "", "eol": eols.get(r.product_key)})
+    vulns_u = int((await db.execute(select(func.count(func.distinct(FP.vuln_key))).where(*cond))).scalar_one())
+    return {"items": items, "total": total, "offset": offset, "limit": limit, "summary": {"products": total, "vulns": vulns_u, "plan_ready": (await finding_counts(db, src.id))["plan_ready"]}}
+
+
+def any_of_text(text_: str, *cols):
+    from ..search import any_of  # noqa: PLC0415
+
+    return any_of(text_, *cols)
+
+
+class ClassIn(BaseModel):
+    catalog_key: str = Field(min_length=1, max_length=160)
+    category: str = Field(default="", pattern=CAT_RE)                  # пусто — вернуть автоматическое определение
+    note: str = Field(default="", max_length=300)
+
+
+@router.get("/classes")
+async def classes(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    """Решения администратора о категориях продуктов (остальные категории определяются автоматически: см. docs/VULNDB.md)."""
+    rows = (await db.execute(select(ProductClass).order_by(ProductClass.created_at.desc()).limit(500))).scalars().all()
+    return {"items": [{"catalog_key": r.catalog_key, "category": r.category, "category_ru": CATEGORY_RU.get(r.category, r.category), "note": r.note, "created_by": r.created_by, "created_at": r.created_at} for r in rows],
+            "categories": [{"id": k, "title": CATEGORY_RU[k]} for k in CATEGORIES]}
+
+
+@router.post("/classes")
+async def set_class(body: ClassIn, su: SessionUser = Depends(require_analyst), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+    """Назначить продукту категорию (или вернуть автоматическую). План устранения текущего источника обновляется сразу, остальных источников — при очередном анализе."""
+    from ..vdb.classmap import class_map  # noqa: PLC0415
+
+    row = await db.get(ProductClass, body.catalog_key)
+    if body.category:
+        if row is None:
+            db.add(ProductClass(catalog_key=body.catalog_key, category=body.category, note=body.note, created_by=su.display_name))
+        else:
+            row.category, row.note, row.created_by = body.category, body.note, su.display_name
+        cat = body.category
+    else:
+        if row is not None:
+            await db.delete(row)
+            await db.flush()
+        prods, _maps = await M.load_context(db, src.id)
+        cat = (await class_map(db, [p for p in prods if p.key == body.catalog_key])).get(body.catalog_key, ("unclassified", ""))[0]
+    await db.execute(update(FP).where(FP.source_id == src.id, FP.product_key == body.catalog_key).values(category=cat))
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="vdb.class.set", target_type="catalog_product", target_id=body.catalog_key, details={"category": body.category or "auto"})
+    await db.commit()
+    return {"catalog_key": body.catalog_key, "category": cat, "manual": bool(body.category)}
 
 
 class SeenIn(BaseModel):

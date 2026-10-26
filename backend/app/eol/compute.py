@@ -11,6 +11,7 @@ import logging
 import re
 import time
 import uuid
+from array import array
 from datetime import date
 
 from sqlalchemy import case, delete, func, insert, select
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..ksc import queries as q
 from ..ksc.driver import SourceClient
+from ..db import xact_lock
 from ..models import CatalogProduct, EolFinding, EolHost, EolHostStat, EolMapping, EolProduct, EolRelease, EolState, KscSource, utcnow
 from ..vdb import match as M
 from .classify import classify, pick_release
@@ -173,9 +175,9 @@ async def current_inputs(db: AsyncSession, source_id: uuid.UUID, today: date | N
     return inputs_hash(f"{n}|{last}", f"{cat[0]}|{cat[1]}", "|".join(map(str, ms)), await day_signature(db, today or date.today(), soon_days))
 
 
-async def _app_links(client, findings: list[EolFinding], where: str, days: int, act: set[int], res=None) -> tuple[dict[tuple, set[int]], dict[tuple, int]]:
+async def _app_links(client, findings: list[EolFinding], where: str, days: int, act: set[int], res=None) -> tuple[dict[tuple, array], dict[tuple, int]]:
     """finding.key → устройства (все / активные). Находки группируются так, чтобы все записи реестра одной находки читались одним запросом (дубликатов нет)."""
-    links: dict[tuple, set[int]] = {}
+    links: dict[tuple, array] = {}
     active: dict[tuple, int] = {}
     batch: list[EolFinding] = []
     pending = est = 0
@@ -194,12 +196,16 @@ async def _app_links(client, findings: list[EolFinding], where: str, days: int, 
             part = ids[i:i + ID_CHUNK]
             for r in await client.run(q.EOL_APP_HOSTS.format(where=where, ids=q.ids_list(part)), {"days": days}, max_rows=3_000_000):
                 for key in pids.get(int(r["product_id"]), ()):
-                    links.setdefault(key, set()).add(int(r["host_id"]))
+                    links.setdefault(key, array("q")).append(int(r["host_id"]))
                     if r["active"]:
                         seen_active.setdefault(key, set()).add(int(r["host_id"]))
                         act.add(int(r["host_id"]))
         for k, v in seen_active.items():
             active[k] = len(v)
+        for f in batch:                                          # устройство с несколькими записями реестра одной находки — одна связь; массив вместо множества: в 8 раз меньше памяти
+            k = (f.kind, f.subject, f.version)
+            if k in links:
+                links[k] = array("q", sorted(set(links[k])))
         batch, pending, est = [], 0, 0
         if res is not None:
             await res.breathe("EOL: устройства программ")
@@ -215,9 +221,9 @@ async def _app_links(client, findings: list[EolFinding], where: str, days: int, 
     return links, active
 
 
-async def _os_links(client, rules: dict, where: str, days: int, act: set[int], res=None) -> tuple[dict[tuple, set[int]], dict[tuple, int], dict[tuple, int]]:
+async def _os_links(client, rules: dict, where: str, days: int, act: set[int], res=None) -> tuple[dict[tuple, array], dict[tuple, int], dict[tuple, int]]:
     """Страницами по компьютерам: по каждой отличающейся комбинации (название, версия, сборка) ОС определяется ветка один раз. Возвращает (ключ находки → устройства, активные, счётчик по комбинации)."""
-    links: dict[tuple, set[int]] = {}
+    links: dict[tuple, array] = {}
     active: dict[tuple, int] = {}
     after = 0
     while True:
@@ -231,7 +237,7 @@ async def _os_links(client, rules: dict, where: str, days: int, act: set[int], r
             if key is None:
                 continue
             hid = int(r["host_id"])
-            links.setdefault(key, set()).add(hid)
+            links.setdefault(key, array("q")).append(hid)
             if r["active"]:
                 active[key] = active.get(key, 0) + 1
         after = int(rows[-1]["host_id"])
@@ -240,6 +246,33 @@ async def _os_links(client, rules: dict, where: str, days: int, act: set[int], r
         if res is not None:
             await res.breathe("EOL: операционные системы")
     return links, active, {}
+
+
+def merge_versions(versions: list[dict]) -> list[dict]:
+    """Версии продукта каталога по ключу находки (версия, обрезанная до длины столбца). Каталог хранит версию отдельно для каждой схемы и платформы
+    (`версия|схема`), поэтому одна и та же версия может прийти дважды — для EOL это одна находка: записи реестра объединяются, число устройств и установок складывается."""
+    out: dict[str, dict] = {}
+    for v in versions:
+        k = str(v.get("version") or "")[:120]
+        m = out.get(k)
+        if m is None:
+            out[k] = {**v, "version": k, "product_ids": list(v.get("product_ids") or [])}
+            continue
+        m["product_ids"] = sorted(set(m["product_ids"]) | set(v.get("product_ids") or []))
+        for f in ("hosts", "hosts_active", "installs", "installs_active"):
+            m[f] = int(m.get(f) or 0) + int(v.get(f) or 0)
+        m["branch"] = m.get("branch") or v.get("branch")
+    return list(out.values())
+
+
+def check_unique(rows: list[EolFinding]) -> None:
+    """Инвариант записи: ключ находки уникален. Нарушение — ошибка расчёта с понятным текстом, а не отказ базы посреди вставки."""
+    seen: set[tuple] = set()
+    for f in rows:
+        k = (f.kind, f.subject, f.version)
+        if k in seen:
+            raise ValueError(f"дубль находки EOL: {k[0]} «{k[1]}» {k[2]!r}")
+        seen.add(k)
 
 
 async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceClient | None, src: KscSource, *, activity_days: int, exclude_slaves: bool = True, today: date | None = None,
@@ -271,7 +304,7 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
                 if row is None:
                     continue
                 cs = cand[key]
-                for v in row.versions or []:
+                for v in merge_versions(row.versions or []):
                     ver = str(v.get("version") or "")
                     if not (v.get("hosts_active") or v.get("hosts")):
                         continue
@@ -295,7 +328,7 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
                 await res.breathe("EOL: программы")
         win = [{"name": r.name, "latest_name": r.latest_name} for r in idx.releases.get("windows", {}).values()]
 
-    links: dict[tuple, set[int]] = {}
+    links: dict[tuple, array] = {}
     act: set[int] = set()                                    # устройства со связью за период активности (по ответам KSC)
     if client is not None:
         step("устройства: программы")
@@ -329,9 +362,11 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
             out.append(f)
         links.update(os_l)
     out = [f for f in out if f.kind == "app" or f.hosts_all]
+    check_unique(out)
     sig = signature(out)
-    step("сохранение")
+    # этап «сохранение» не пишется отдельно: запись состояния конкурировала бы с самой транзакцией замены результатов
     async with sm() as db:
+        await xact_lock(db, f"eol:{src.id}")                    # замена результатов источника — только по одному процессу
         await db.execute(delete(EolHostStat).where(EolHostStat.source_id == src.id))
         await db.execute(delete(EolHost).where(EolHost.source_id == src.id))
         await db.execute(delete(EolFinding).where(EolFinding.source_id == src.id))
@@ -358,7 +393,7 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
         if st is None:
             st = EolState(source_id=src.id)
             db.add(st)
-        st.computed_at, st.duration_ms, st.items, st.error, st.error_at, st.progress = utcnow(), int((time.monotonic() - t0) * 1000), len(out), None, None, None
+        st.computed_at, st.duration_ms, st.items, st.error, st.error_at, st.progress, st.started_at = utcnow(), int((time.monotonic() - t0) * 1000), len(out), None, None, None, None
         changed = st.rev != sig
         st.rev, st.inputs = sig, inputs
         await db.commit()

@@ -29,8 +29,11 @@ export default function EolPage({ ctx }: { ctx: Ctx }) {
   const canReport = ctx.me.user.role !== "viewer";
   const f = sum?.findings;
   const states = sum ? Object.entries(sum.sources) : [];
-  const pending = states.filter(([, s]) => !s.ready && !s.error);
-  const failed = states.filter(([, s]) => s.error);
+  const noResult = states.length > 0 && states.every(([, s]) => !s.computed_at);      // ни по одному источнику нет результата: ноль находок не показываем как факт
+  const running = states.filter(([, s]) => s.state === "running");
+  const failed = states.filter(([, s]) => s.state === "error");
+  const stale = states.filter(([, s]) => s.state === "stale");
+  const none = states.filter(([, s]) => s.state === "none");
   return (
     <section>
       <PageHead title="EOL: жизненный цикл ПО и ОС"
@@ -40,12 +43,14 @@ export default function EolPage({ ctx }: { ctx: Ctx }) {
       {sum && !sum.base.products && <div className="alert warn"><Icon name="alert" /><div className="alert-body">База endoflife.date ещё не загружена.{" "}
         {ctx.me.user.is_admin ? <>Включите источник «endoflife.date» в разделе <Link to="/admin?tab=vdb">Администрирование → База уязвимостей</Link> и запустите загрузку.</> : "Попросите администратора включить источник «endoflife.date»."}</div></div>}
       {sum?.base.error && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Последнее обновление базы EOL не удалось: {sum.base.error}. Используется прежняя копия{sum.base.last_ok_at ? ` от ${fmt(sum.base.last_ok_at)}` : ""}.</div></div>}
-      {pending.length > 0 && <div className="alert info"><Icon name="info" /><div className="alert-body">Сопоставление ещё не рассчитано для: {pending.map(([, s]) => s.source).join(", ")}. Расчёт выполняет фоновая служба после построения каталога программ.</div></div>}
-      {failed.length > 0 && <div className="alert warn"><Icon name="alert" /><div className="alert-body">{failed.map(([k, s]) => <p key={k}>Источник «{s.source}»: расчёт не удался ({s.error}). Показаны данные последнего успешного расчёта{s.computed_at ? ` от ${fmt(s.computed_at)}` : ""}.</p>)}</div></div>}
+      {none.length > 0 && <div className="alert info"><Icon name="info" /><div className="alert-body"><b>Не рассчитано:</b> {none.map(([, s]) => s.source).join(", ")}. Расчёт запускает фоновая служба после построения каталога программ; нулевые значения ниже — не результат проверки.</div></div>}
+      {running.length > 0 && <div className="alert info"><Icon name="info" /><div className="alert-body"><b>Выполняется:</b> {running.map(([k, s]) => <span key={k}>{s.source}{s.progress ? ` — ${s.progress}` : ""}{s.started_at ? ` (с ${fmt(s.started_at)})` : ""}. </span>)}{noResult ? "Результата пока нет." : "Показаны данные предыдущего расчёта."}</div></div>}
+      {failed.length > 0 && <div className={`alert ${noResult ? "error" : "warn"}`}><Icon name="alert" /><div className="alert-body">{failed.map(([k, s]) => <p key={k}><b>Ошибка расчёта</b> — источник «{s.source}»: {s.error}. {s.computed_at ? `Показаны данные последнего успешного расчёта от ${fmt(s.computed_at)}.` : "Результата нет: нули ниже не означают, что EOL нет."}</p>)}{ctx.me.user.is_admin && <p className="small">Повторная попытка выполняется автоматически через 15 минут; сразу — «Пересчитать» на вкладке «EOL в инфраструктуре».</p>}</div></div>}
+      {stale.length > 0 && <div className="alert info"><Icon name="info" /><div className="alert-body"><b>Данные устарели:</b> {stale.map(([, s]) => `${s.source} (расчёт от ${fmt(s.computed_at)})`).join(", ")}. Исходные данные (база EOL, каталог, решения) изменились — пересчёт запустится автоматически.</div></div>}
       <div className="meters">
-        <div className="meter"><span className="l">EOL: поддержка закончилась</span><span className={`v ${f?.eol ? "bad-text" : ""}`}>{f ? num(f.eol) : "…"}</span><span className="t">{sum ? `${num(sum.devices.eol)} ${plural(sum.devices.eol, "устройство", "устройства", "устройств")}` : ""}</span></div>
-        <div className="meter"><span className="l">Только расширенная поддержка</span><span className={`v ${f?.extended ? "warn-text" : ""}`}>{f ? num(f.extended) : "…"}</span><span className="t">платная или по договору — не подтверждена</span></div>
-        <div className="meter"><span className="l">Скоро закончится</span><span className="v">{f ? num(f.upcoming) : "…"}</span><span className="t">в ближайшие {sum?.base.soon_days ?? 180} сут</span></div>
+        <div className="meter"><span className="l">EOL: поддержка закончилась</span><span className={`v ${f?.eol ? "bad-text" : ""}`}>{noResult ? "—" : f ? num(f.eol) : "…"}</span><span className="t">{noResult ? "расчёта ещё нет" : sum ? `${num(sum.devices.eol)} ${plural(sum.devices.eol, "устройство", "устройства", "устройств")}` : ""}</span></div>
+        <div className="meter"><span className="l">Только расширенная поддержка</span><span className={`v ${f?.extended ? "warn-text" : ""}`}>{noResult ? "—" : f ? num(f.extended) : "…"}</span><span className="t">платная или по договору — не подтверждена</span></div>
+        <div className="meter"><span className="l">Скоро закончится</span><span className="v">{noResult ? "—" : f ? num(f.upcoming) : "…"}</span><span className="t">в ближайшие {sum?.base.soon_days ?? 180} сут</span></div>
         <div className="meter"><span className="l">База endoflife.date</span><span className="v">{sum ? num(sum.base.products) : "…"}</span><span className="t">продуктов{sum?.base.last_ok_at ? `, обновлена ${fmt(sum.base.last_ok_at)}` : ""}</span></div>
       </div>
       <Tabs label="Вид" value={tab} onChange={(t) => setSp((p) => { p.set("tab", t); p.delete("p"); return p; })}

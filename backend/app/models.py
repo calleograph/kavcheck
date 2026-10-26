@@ -553,6 +553,34 @@ class VdbFinding(Base):
     seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
+class VdbFindingProduct(Base):
+    """Находка × продукт каталога (одна строка на пару «уязвимость, продукт»): основа плана устранения — что обновить, какие версии затронуты, сколько уязвимостей у продукта. Строится вместе с `vdb_findings`;
+    единицы подсчёта разделены: уникальные уязвимости — COUNT(vuln_key), продукты — число различных product_key, компьютеры — по версиям каталога (верхняя оценка до проверки)."""
+    __tablename__ = "vdb_finding_products"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    vuln_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    product_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(12), nullable=False, default="unclassified")      # os | system | application | unclassified
+    status: Mapped[str] = mapped_column(String(14), nullable=False, default="")                   # лучший статус сопоставления для продукта
+    sev_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    exploited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    installs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hosts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                        # сумма по затронутым версиям (верхняя оценка)
+    versions: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)                # затронутые версии каталога (не более 40)
+    __table_args__ = (Index("ix_vdb_fp_product", "source_id", "product_key"), Index("ix_vdb_fp_category", "source_id", "category"))
+
+
+class ProductClass(Base):
+    """Решение администратора: категория продукта каталога для аналитики уязвимостей (PostgreSQL — серверное или системное ПО, решает роль на вашей установке)."""
+    __tablename__ = "product_classes"
+    catalog_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    category: Mapped[str] = mapped_column(String(12), nullable=False)
+    note: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    created_by: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
 # ------------------------------------------------------------------------------------------------ зоны ответственности, рассылки, обработка уязвимостей
 class Zone(Base):
     """Зона ответственности: произвольная группа компьютеров (сети, группы KSC, имена), закреплённая за ответственными. Департамент, филиал, площадка — решает администратор."""
@@ -957,6 +985,7 @@ class EolState(Base):
     error: Mapped[str | None] = mapped_column(Text)
     error_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     progress: Mapped[str | None] = mapped_column(String(200))
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                       # расчёт идёт сейчас (очищается по завершении; после падения worker сбрасывается при запуске)
 
 
 class EolHost(Base):

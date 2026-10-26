@@ -172,7 +172,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       </>}
       {tab === "vulns" && (vErr ? <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{vErr}</div></div>
         : !vulns ? <div className="card"><SkelRows rows={4} cols={5} /></div>
-          : <><HostVulnsTable data={vulns} /><p className="muted small mt-sm"><Link to={`/vulnerabilities/hosts/${h.host_id}`}>Сводка уязвимостей KSC</Link> — счётчики по уровням опасности.</p></>)}
+          : <><HostVulnsTable data={vulns} hostId={h.host_id} onMore={async (off) => (await api.hosts.vulns(h.host_id, vulns.external_checked, off)).groups} /><p className="muted small mt-sm"><Link to={`/vulnerabilities/hosts/${h.host_id}`}>Сводка уязвимостей KSC</Link> — счётчики по уровням опасности.</p></>)}
       {tab === "hardware" && <HardwareTab d={hwq.d} err={hwq.err} />}
       {tab === "events" && <><p className="muted small">События обнаружения за 30 суток: новые сверху.</p><EventList ctx={ctx} days={30} hostId={h.host_id} group={evGroup} threat={evThreat} onGroup={setEvGroup} onThreat={setEvThreat} /></>}
     </section>

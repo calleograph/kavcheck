@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CompactList } from "../components/CompactList";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type VdbAffectedRow, type VdbCard, type VdbScore, type VdbCounts, type VdbSourceInfo, type VdbVulnRow } from "../api";
+import { api, type ApiError, type VdbAffectedRow, type VdbCard, type VdbCategory, type VdbPlanRow, type VdbScore, type VdbCounts, type VdbSourceInfo, type VdbVulnRow } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
 import { EolList } from "../components/EolList";
@@ -17,6 +17,11 @@ import { fmt, fmtDate, num, plural } from "../util";
 type Tab = "search" | "mine" | "sources";
 type Sev = "" | "critical" | "high" | "medium";
 const SEV_OPTS: [Sev, string][] = [["", "Все"], ["critical", "Критические"], ["high", "Высокие и выше"], ["medium", "Средние и выше"]];
+type Cat = "" | VdbCategory;
+type Stat = "" | "confirmed" | "potential" | "clarify" | "insufficient";
+const CAT_TITLE: Record<VdbCategory, string> = { os: "Операционные системы", system: "Системные компоненты", application: "Прикладное ПО", unclassified: "Не классифицировано" };
+const CAT_HINT: Record<VdbCategory, string> = { os: "Windows, ядро и дистрибутивы Linux", system: "Bash, OpenSSL, OpenSSH, библиотеки, пакеты ОС, среды выполнения, драйверы", application: "Браузеры, офис, серверное ПО, базы данных, средства разработки", unclassified: "Категорию нельзя определить уверенно: назначьте вручную" };
+const STAT_OPTS: [Stat, string][] = [["", "Любая"], ["confirmed", "Подтверждено"], ["potential", "Потенциально"], ["clarify", "Требует уточнения"], ["insufficient", "Данных недостаточно"]];
 const SRC_TITLE: Record<string, string> = { nvd: "NVD", kev: "CISA KEV", osv: "OSV", bdu: "БДУ ФСТЭК" };
 
 /** Параметры сервера для выбранного диапазона CVSS: готовый уровень или свои границы (свои важнее). */
@@ -215,6 +220,8 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
   const sid = ctx.current?.id ?? "";
   const [newOnly, setNewOnly] = useKept("vdbm.new", true); const [sev, setSev] = useKept<Sev>("vdbm.sev", ""); const [kev, setKev] = useKept("vdbm.kev", false);
   const [range, setRange] = useKept("vdbm.range", ""); const [sort, setSort] = useKept("vdbm.sort", "priority"); const [desc, setDesc] = useKept("vdbm.desc", true);
+  const [view, setView] = useKept<"plan" | "list">("vdbm.view", "plan"); const [cat, setCat] = useKept<Cat>("vdbm.cat", ""); const [stat, setStat] = useKept<Stat>("vdbm.stat", ""); const [eolF, setEolF] = useKept("vdbm.eolf", false);
+  const [pkey, setPkey] = useState(""); const [pname, setPname] = useState("");
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(true); } };
   const sel = useRowSel<string>(); const [report, setReport] = useState<Report | null>(null); const [toast, show] = useToast();
   const canReport = ctx.me.user.role !== "viewer";
@@ -224,7 +231,7 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
   const eolOn = !!eol?.base.include_in_analytics;             // EOL включён в аналитику: в общем списке есть тип «EOL»
   const kind: "all" | "cve" | "eol" = eolOn ? type : "cve";
   const eolN = eol ? eol.findings.eol + eol.findings.extended + eol.findings.upcoming : 0;
-  const list = useInfinite<VdbVulnRow>(`vdb-mine:${sid}`, [newOnly, sev, kev, range, sort, desc], (offset, limit) => api.vdb.findings({ new_only: newOnly || undefined, min_severity: sev, ...scoreParams(range, "", ""), sort, desc, exploited: kev || undefined, offset, limit }) as unknown as Promise<Chunk<VdbVulnRow>>);
+  const list = useInfinite<VdbVulnRow>(`vdb-mine:${sid}`, [newOnly, sev, kev, range, sort, desc, cat, stat, eolF, pkey], (offset, limit) => api.vdb.findings({ new_only: newOnly || undefined, min_severity: sev, ...scoreParams(range, "", ""), sort, desc, exploited: kev || undefined, category: cat, status: stat, eol: eolF || undefined, product_key: pkey, offset, limit }) as unknown as Promise<Chunk<VdbVulnRow>>);
   const extra = list.extra as { summary?: VdbCounts } | null;
   useEffect(() => { if (extra?.summary) onCounts(extra.summary); }, [extra?.summary]); // eslint-disable-line react-hooks/exhaustive-deps
   const s = extra?.summary ?? counts;
@@ -237,19 +244,31 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
       {kind !== "cve" && <div className="vdb-eol"><h3 className="h3">EOL: программы и ОС без поддержки производителя{eol ? ` (${eolN})` : ""}</h3><EolList limit={kind === "eol" ? 100 : 5} sourceId={ctx.current?.id} /></div>}
       {kind !== "eol" && <>
       <div className="meters">
-        <div className="meter"><span className="l">Новых</span><span className={`v ${s?.new ? "warn-text" : ""}`}>{s ? num(s.new) : "…"}</span><span className="t">не просмотрены специалистом</span></div>
-        <div className="meter"><span className="l">Из них в каталоге CISA KEV</span><span className={`v ${s?.new_exploited ? "bad-text" : ""}`}>{s ? num(s.new_exploited) : "…"}</span><span className="t">подтверждено CISA KEV</span></div>
-        <div className="meter"><span className="l">Из них критических</span><span className={`v ${s?.new_critical ? "bad-text" : ""}`}>{s ? num(s.new_critical) : "…"}</span>{s && <span className="t">критических, высоких и эксплуатируемых — {num(s.new_serious)}, как в меню</span>}</div>
-        <div className="meter"><span className="l">Всего затрагивают</span><span className="v">{s ? num(s.total) : "…"}</span><span className="t">по каталогу «{ctx.current?.name}»</span></div>
+        <div className="meter" title="Единица — уникальная уязвимость (один идентификатор считается один раз, независимо от числа продуктов и компьютеров)"><span className="l">Уникальных уязвимостей</span><span className="v">{s ? num(s.total) : "…"}</span><span className="t">{s?.products != null ? `в ${num(s.products)} ${plural(s.products, "продукте", "продуктах", "продуктах")} каталога «${ctx.current?.name}»` : `по каталогу «${ctx.current?.name}»`}</span></div>
+        <div className="meter"><span className="l">Из них новых</span><span className={`v ${s?.new ? "warn-text" : ""}`}>{s ? num(s.new) : "…"}</span><span className="t">не просмотрены специалистом</span></div>
+        <div className="meter"><span className="l">Новых в каталоге CISA KEV</span><span className={`v ${s?.new_exploited ? "bad-text" : ""}`}>{s ? num(s.new_exploited) : "…"}</span><span className="t">эксплуатируются в атаках</span></div>
+        <div className="meter"><span className="l">Новых критических</span><span className={`v ${s?.new_critical ? "bad-text" : ""}`}>{s ? num(s.new_critical) : "…"}</span>{s && <span className="t">критических, высоких и эксплуатируемых — {num(s.new_serious)}, как в меню</span>}</div>
       </div>
+      {s?.by_status && <p className="muted small vdb-conf">Достоверность сопоставления с установленным ПО: {(["confirmed", "potential", "clarify", "insufficient"] as const).filter((k) => s.by_status![k]).map((k) => `${STAT_OPTS.find(([id]) => id === k)![1].toLowerCase()} — ${num(s.by_status![k])}`).join(", ") || "нет данных"}. Для Linux-пакетов совпадение по версии часто требует уточнения: исправление могло быть перенесено в версию дистрибутива.</p>}
+      {s && s.plan_ready === false && <div className="alert info calc-progress"><span className="spin sm" /><div className="alert-body">Идёт подготовка плана устранения после обновления: фоновая служба раскладывает находки по продуктам и категориям. Список уязвимостей доступен сразу.</div></div>}
+      <div className="toolbar">
+        <Segmented<"plan" | "list"> label="Вид" value={view} onChange={(v) => { setView(v); if (v === "plan") { setPkey(""); setPname(""); } }} options={[["plan", "План устранения: по продуктам"], ["list", "Уязвимости"]]} />
+        <label className="field">Категория<select value={cat} onChange={(e) => setCat(e.target.value as Cat)} aria-label="Категория продукта"><option value="">Все категории{s?.by_category ? ` · ${num(s.total)}` : ""}</option>
+          {(Object.keys(CAT_TITLE) as VdbCategory[]).map((k) => <option key={k} value={k} title={CAT_HINT[k]}>{CAT_TITLE[k]}{s?.by_category ? ` · ${num(s.by_category[k] ?? 0)}` : ""}</option>)}</select></label>
+        <label className="field">Достоверность<select value={stat} onChange={(e) => setStat(e.target.value as Stat)}>{STAT_OPTS.map(([k, t]) => <option key={k} value={k}>{t}</option>)}</select></label>
+        <label className="check inline-check"><input type="checkbox" className="switch" checked={eolF} onChange={(e) => setEolF(e.target.checked)} />Только продукты с EOL</label>
+      </div>
+      {pkey && <div className="alert info"><Icon name="info" /><div className="alert-body">Уязвимости продукта «{pname || pkey}». <button type="button" className="link-btn" onClick={() => { setPkey(""); setPname(""); }}>Показать все</button></div></div>}
       <div className="toolbar">
         <label className="check inline-check"><input type="checkbox" className="switch" checked={newOnly} onChange={(e) => setNewOnly(e.target.checked)} />Только новые</label>
         <Segmented<Sev> label="Уровень опасности" value={sev} onChange={setSev} options={SEV_OPTS} />
-        <label className="field">CVSS<select value={range} onChange={(e) => setRange(e.target.value)}>{CVSS_RANGES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
+        {view === "list" && <label className="field">CVSS<select value={range} onChange={(e) => setRange(e.target.value)}>{CVSS_RANGES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>}
         <label className="check inline-check"><input type="checkbox" className="switch" checked={kev} onChange={(e) => setKev(e.target.checked)} />Только из каталога CISA KEV</label>
         <div className="toolbar-foot"><span className="muted small">Оценка по каталогу установленного ПО, без запросов к KSC; список компьютеров — по кнопке «Проверить».</span>
           {canReport && (s?.new ?? 0) > 0 && <button type="button" className="link-btn" onClick={() => mark(true)}>Отметить все просмотренными</button>}</div>
       </div>
+      {view === "plan" && <PlanView ctx={ctx} filters={{ newOnly, sev, kev, cat, stat, eolF }} canEdit={ctx.me.user.role !== "viewer"} onOpen={(k, n) => { setPkey(k); setPname(n); setView("list"); }} />}
+      {view === "list" && <>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
@@ -273,11 +292,55 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
       </div>
       <ListFoot list={list} />
       </>}
+      </>}
       <ReportDock label="Выбранные уязвимости" count={sel.count} noun={["уязвимость выбрана", "уязвимости выбраны", "уязвимостей выбрано"]} canReport={canReport} onClear={sel.clear}
         onReport={() => setReport({ title: `Проверка инфраструктуры: ${sel.count} ${plural(sel.count, "уязвимость", "уязвимости", "уязвимостей")}`, keys: sel.ids })} />
       {sel.count > 0 && canReport && <button className="btn mini seen-btn" onClick={() => mark(false)}><Icon name="check" size={15} />Отметить просмотренными</button>}
       {sp.get("v") && <VdbCardPanel ctx={ctx} id={sp.get("v")!} onClose={() => setSp((p) => { p.delete("v"); return p; })} onReport={(r) => setReport(r)} />}
       <ReportHost ctx={ctx} report={report} onClose={() => setReport(null)} />
+      {toast}
+    </>
+  );
+}
+
+function PlanView({ ctx, filters, canEdit, onOpen }: { ctx: Ctx; filters: { newOnly: boolean; sev: Sev; kev: boolean; cat: Cat; stat: Stat; eolF: boolean }; canEdit: boolean; onOpen: (key: string, name: string) => void }) {
+  const [q, setQ] = useState(""); const [applied, setApplied] = useState(""); const [sort, setSort] = useKept("vdbp.sort", "risk"); const [desc, setDesc] = useKept("vdbp.desc", true); const [toast, show] = useToast();
+  useEffect(() => { const t = window.setTimeout(() => setApplied(q), 350); return () => window.clearTimeout(t); }, [q]);
+  const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(true); } };
+  const f = filters;
+  const list = useInfinite<VdbPlanRow>(`vdb-plan:${ctx.current?.id}`, [f.newOnly, f.sev, f.kev, f.cat, f.stat, f.eolF, applied, sort, desc], (offset, limit) =>
+    api.vdb.plan({ new_only: f.newOnly || undefined, min_severity: f.sev, exploited: f.kev || undefined, category: f.cat, status: f.stat, eol: f.eolF || undefined, q: applied, sort, desc, offset, limit }) as unknown as Promise<Chunk<VdbPlanRow>>, 50);
+  const extra = list.extra as { summary?: { products: number; vulns: number } } | null;
+  const setClass = async (r: VdbPlanRow, c: VdbCategory | "") => { try { await api.vdb.setClass(r.product_key, c); show(c ? "Категория назначена" : "Возвращено автоматическое определение"); list.reload(); } catch (e) { show((e as ApiError).message, "error"); } };
+  return (
+    <>
+      <div className="toolbar"><div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Продукт в плане (можно с *)" aria-label="Поиск продукта" /><MaskHint /></div>
+        <span className="muted small">{extra?.summary ? `${num(extra.summary.products)} ${plural(extra.summary.products, "продукт", "продукта", "продуктов")} · ${num(extra.summary.vulns)} уникальных уязвимостей` : ""}</span></div>
+      <p className="muted small">Что обновить в первую очередь: одна строка — один продукт каталога. «Компьютеров» — по каталогу, до проверки: компьютер с несколькими затронутыми версиями считается по каждой. Точный список компьютеров — «Проверить» у уязвимости.</p>
+      {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
+      <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
+        {list.initial ? <SkelRows cols={6} /> : (
+          <table className="table virt vdb-plan">
+            <thead><tr><SortTh k="name" label="Продукт" sort={sort} desc={desc} onSort={onSort} /><th>Категория</th><SortTh k="risk" label="Критичность" sort={sort} desc={desc} onSort={onSort} /><SortTh k="vulns" label="Уязвимостей" sort={sort} desc={desc} onSort={onSort} className="num" /><SortTh k="kev" label="KEV" sort={sort} desc={desc} onSort={onSort} className="num" />
+              <th>Затронутые версии</th><th className="num" title="По каталогу, до проверки">Компьютеров</th><th>EOL</th></tr></thead>
+            <tbody>
+              <VirtualRows list={list} colSpan={8} estimate={64} row={(r) => (
+                <tr>
+                  <td><button type="button" className="link-btn strong-link" onClick={() => onOpen(r.product_key, r.name)} title="Показать уязвимости продукта">{r.name}</button>{r.latest && <span className="sub small">последняя в каталоге: <span className="mono">{r.latest}</span></span>}</td>
+                  <td className="small">{canEdit ? <select className="mini-select" aria-label={`Категория: ${r.name}`} value={r.category} onChange={(e) => setClass(r, e.target.value as VdbCategory)}>{(Object.keys(CAT_TITLE) as VdbCategory[]).map((k) => <option key={k} value={k}>{CAT_TITLE[k]}</option>)}</select> : r.category_ru}
+                    {r.manual && <span className="sub small">назначено вручную {canEdit && <button type="button" className="link-btn" onClick={() => setClass(r, "")}>сбросить</button>}</span>}</td>
+                  <td className="nowrap"><span className={`sev ${r.max_sev >= 4 ? "crit" : r.max_sev === 3 ? "high" : "warn"}`}>{r.severity_ru}</span>{r.critical > 0 && <span className="sub small">критических: {num(r.critical)}</span>}</td>
+                  <td className="num"><b>{num(r.vulns)}</b></td>
+                  <td className="num">{r.kev ? <><Kev /><span className="sub small">{num(r.kev)}</span></> : <span className="muted">0</span>}</td>
+                  <td className="small"><CompactList items={r.versions} label="версии" render={(v) => <span key={v.version} className="mono nowrap">{v.version || "без версии"} <span className="muted">({num(v.hosts)})</span></span>} />{r.versions_total > r.versions.length && <span className="sub small">показаны {r.versions.length} из {r.versions_total}</span>}</td>
+                  <td className="num">≈ {num(r.hosts)}</td>
+                  <td>{r.eol ? <span className={`badge ${r.eol.status === "eol" ? "err" : "warn"}`} title={`ветка ${r.eol.release}${r.eol.eol_from ? `, поддержка до ${fmtDate(r.eol.eol_from)}` : ""}`}>{r.eol.status_ru}</span> : <span className="muted">—</span>}</td>
+                </tr>)} />
+              {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="checkCircle" title="В плане ничего нет">По этим условиям уязвимостей, затрагивающих установленное ПО, нет. Измените категорию, достоверность или другие фильтры.</Empty></td></tr>}
+            </tbody>
+          </table>)}
+      </div>
+      <ListFoot list={list} />
       {toast}
     </>
   );

@@ -64,10 +64,23 @@ class Runner:
         async with self._sm() as db:
             return bool((await db.execute(select(ReportJob.cancel_requested).where(ReportJob.id == job_id))).scalar_one_or_none())
 
+    TRANSIENT = ("Не удалось подключиться", "тайм-аут", "Время ожидания", "недоступен", "Connection", "timed out")      # временные сбои источника: повтор имеет смысл
+    RETRY_DELAYS = (30, 120)
+
     async def run_job(self, job: ReportJob) -> None:
         async with self._sem:
             async with RES.heavy(f"отчёт {job.kind}", 1, interactive=True):          # отчёты идут под общим ограничителем: при занятых слотах или нехватке памяти ждут, а не копят память
-                await self._execute(job)
+                for attempt in range(len(self.RETRY_DELAYS) + 1):
+                    await self._execute(job)
+                    if attempt == len(self.RETRY_DELAYS):
+                        break
+                    async with self._sm() as db:
+                        cur = await db.get(ReportJob, job.id)
+                    if cur is None or cur.status != "failed" or not any(t in (cur.error or "") for t in self.TRANSIENT):
+                        break
+                    delay = self.RETRY_DELAYS[attempt]
+                    await self._set(job.id, status="running", error=None, finished_at=None, progress=f"Источник недоступен: {cur.error[:120]}. Повтор через {delay} с (попытка {attempt + 2} из {len(self.RETRY_DELAYS) + 1})")
+                    await asyncio.sleep(delay)
 
     async def _execute(self, job: ReportJob) -> None:
         if job.kind == "version_audit":
@@ -408,7 +421,7 @@ class Runner:
         last_cleanup = utcnow() - timedelta(hours=2)
         while True:
             try:
-                job = await self._claim()
+                job = await self._claim() if len(self._tasks) < self._cfg.report_concurrency else None        # лишние задания ждут в очереди (видны как «в очереди»), а не занимают «в работе»
                 if job is not None:
                     t = asyncio.create_task(self.run_job(job))
                     self._tasks.add(t)

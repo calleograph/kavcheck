@@ -361,7 +361,7 @@ async def test_findings_new_serious_and_seen_flow(app, client):
         await db.commit()
     assert n == 1
     f = (await client.get("/api/v1/vdb/findings")).json()
-    assert f["total"] == 1 and f["summary"] == {"total": 1, "new": 1, "new_exploited": 1, "new_critical": 1, "new_serious": 1}
+    assert f["total"] == 1 and {k: f["summary"][k] for k in ("total", "new", "new_exploited", "new_critical", "new_serious")} == {"total": 1, "new": 1, "new_exploited": 1, "new_critical": 1, "new_serious": 1}
     it = f["items"][0]
     assert it["key"] == "CVE-2099-1" and it["exploited"] and it["finding"]["status"] == "confirmed" and it["finding"]["new"] and it["finding"]["installs"] == 5          # KEV версий не называет и не расширяет границы NVD
     search = (await client.get("/api/v1/vdb/vulns", params={"q": "chrome"})).json()
@@ -450,3 +450,42 @@ async def test_old_findings_are_backlog_not_news(app, client):
     f = (await client.get("/api/v1/vdb/findings")).json()
     assert f["total"] == 1 and f["summary"]["new"] == 0 and not f["items"][0]["finding"]["new"]               # давняя уязвимость — исходное состояние, а не новость
     assert (await client.get("/api/v1/vdb/findings", params={"new_only": True})).json()["total"] == 0
+
+
+async def test_plan_by_product_categories_filters_and_admin_class(app, client):
+    """План устранения: единицы подсчёта раздельны (уникальные уязвимости, продукты), категории продуктов, фильтры по достоверности и KEV, решение администратора меняет категорию."""
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await _ksc_source(client, app)
+    async with app.state.session_maker() as db:
+        await store.ensure_sources(db)
+        recs = [Rec(source="nvd", ext_id=f"CVE-2099-{i}", vuln_key=f"CVE-2099-{i}", severity="critical" if i == 1 else "high", score=9.8 if i == 1 else 7.5, title=f"Chrome {i}", published=utcnow(), modified=utcnow(),
+                    affected=[Aff(vendor="google", product="chrome", v_end="116.0.5845.187")]) for i in (1, 2, 3)]
+        kev = Rec(source="kev", ext_id="CVE-2099-1", vuln_key="CVE-2099-1", exploited=True, published=utcnow(), modified=utcnow(), affected=[Aff(vendor="Google", product="Chrome", versions_all=True)])
+        await store.save_batch(db, 1, recs)
+        await store.save_batch(db, 1, [kev])
+        await store.refresh_vulns(db, {"CVE-2099-1", "CVE-2099-2", "CVE-2099-3"})
+        await analyze(db, uuid.UUID(sid), keys=None)
+        await db.commit()
+    s = (await client.get("/api/v1/vdb/findings/summary")).json()
+    assert s["total"] == 3 and s["products"] == 1 and s["plan_ready"] and sum(s["by_status"].values()) == 3                      # три уникальные уязвимости, один продукт
+    assert s["by_category"]["application"] == 3 and s["by_category"]["system"] == 0
+    p = (await client.get("/api/v1/vdb/plan")).json()
+    chrome = p["items"][0]
+    assert p["total"] == 1 and chrome["product_key"] == "google-chrome" and chrome["vulns"] == 3 and chrome["kev"] == 1 and chrome["critical"] == 1 and chrome["category"] == "application"
+    assert chrome["versions"][0]["version"] == "115.0.5790.0" and chrome["hosts"] >= 1 and chrome["severity_ru"] == "Критическая"
+    assert (await client.get("/api/v1/vdb/plan", params={"exploited": True})).json()["items"][0]["vulns"] == 1                     # фильтр KEV считает только эксплуатируемые
+    assert (await client.get("/api/v1/vdb/plan", params={"category": "system"})).json()["total"] == 0
+    assert (await client.get("/api/v1/vdb/plan", params={"status": "potential"})).json()["total"] == 0
+    assert (await client.get("/api/v1/vdb/findings", params={"category": "application"})).json()["total"] == 3
+    assert (await client.get("/api/v1/vdb/findings", params={"category": "os"})).json()["total"] == 0
+    assert (await client.get("/api/v1/vdb/findings", params={"product_key": "google-chrome", "exploited": True})).json()["total"] == 1
+    r = await client.post("/api/v1/vdb/classes", json={"catalog_key": "google-chrome", "category": "system", "note": "тест"})
+    assert r.status_code == 200 and r.json()["category"] == "system"
+    assert (await client.get("/api/v1/vdb/plan", params={"category": "system"})).json()["items"][0]["manual"] is True
+    assert (await client.get("/api/v1/vdb/findings/summary")).json()["by_category"]["system"] == 3
+    r = await client.post("/api/v1/vdb/classes", json={"catalog_key": "google-chrome", "category": ""})                           # вернуть автоматическое определение
+    assert r.json()["category"] == "application" and r.json()["manual"] is False
+    assert (await client.post("/api/v1/vdb/classes", json={"catalog_key": "x", "category": "bogus"})).status_code == 422
+    await client.post("/api/v1/auth/logout")
+    await login(client, "viewer", "Viewer-Passw0rd-123")
+    assert (await client.post("/api/v1/vdb/classes", json={"catalog_key": "google-chrome", "category": "os"})).status_code == 403
