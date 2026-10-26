@@ -8,7 +8,7 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 TO=""; ARGS=(); EARLY=0
 while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; ARGS+=("$1" "$2"); shift 2 ;; --to) TO="$2"; shift 2 ;; -h|--help) sed -n '2,7p' "$0"; exit 0 ;; *) ARGS+=("$1"); shift ;; esac; done
-load_env; validate_project_name; require_vars DATA_ROOT
+load_env; validate_project_name; require_vars DATA_ROOT POSTGRES_USER POSTGRES_DB
 command -v git >/dev/null || die "git не найден"; git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "$REPO_ROOT не git-репозиторий"
 log; log "[0/11] Получение списка релизов"
 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30 timeout "${UPD_TIMEOUT_NET:-60}" git -C "$REPO_ROOT" fetch --tags --prune -q origin 2>/dev/null || warn "git fetch не удался (нет доступа к GitHub?) — используются уже полученные теги"

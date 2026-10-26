@@ -6,7 +6,7 @@
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; shift 2 ;; *) die "Неизвестный аргумент: $1" ;; esac; done
-load_env; validate_project_name; require_vars DATA_ROOT
+load_env; validate_project_name; require_vars DATA_ROOT POSTGRES_USER POSTGRES_DB
 [ -f "$(marker_file)" ] || { info "Незавершённых обновлений нет"; exit 0; }
 pid="$(marker_get pid)"
 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'update\.sh'; then info "Обновление ещё выполняется (pid $pid)"; exit 0; fi

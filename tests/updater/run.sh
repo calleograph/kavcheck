@@ -232,5 +232,90 @@ if scn "26. Авария помощника при обработке запро
   t "отчёт: запрос не выполнен из-за аварии помощника" bash -c "[ '$(rj reason_code)' = interrupted ] && grep -q 'аварийно' '$D/updater/report.json'"; t "служебный файл запроса снят" bash -c "[ ! -e '$D/updater/.request.running' ]"
   kill -TERM -- "-$upid" 2>/dev/null; wait "$upid" 2>/dev/null; fin; fi
 
+# --- 27–31: авария 0.6.1 («UPD_PASS_ENV: unbound variable»), доставка исправления помощника без обновления приложения, жизненный цикл запроса
+sup() { # sup ИМЯ — «systemd»: помощник под надзором, перезапуск через 1 с после любого завершения (Restart=always); число запусков — в $SB/sup.count
+  ( cd "$W" && exec setsid bash -c 'n=0; while :; do n=$((n+1)); echo $n > "$2/sup.count"; env -i PATH="$2/bin:/usr/local/bin:/usr/bin:/bin" HOME="$2" KC_NO_SYSTEMD=1 ${UPD_STRICT:+UPD_STRICT=1} ${PASSW:+UPD_PASS_ENV="KC_WATCH_DELAY KC_WATCH_WAIT"} FAKE_STATE="$2/state" KC_WATCH_DELAY=5 KC_WATCH_WAIT=12 "$1/scripts/updater.sh" run --env "$1/.env"; sleep 1; done' _ "$W" "$SB" >>"$SB/$1.log" 2>&1 ) & SUP=$!
+}
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+hb_sha() { python3 -c "import json;print(json.load(open('$D/updater/heartbeat.json')).get('script_sha',''))" 2>/dev/null; }
+send() { printf 'id=%s\naction=%s\n%sat=%s\n' "$1" "$2" "${3:-}" "$(date +%s)" > "$D/updater/request.txt"; }
+opj() { python3 -c "import json;print(json.load(open('$D/updater/operation.json')).get('$1',''))" 2>/dev/null; }
+waitfor() { local i; for ((i = 0; i < $1; i++)); do eval "$2" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
+
+if scn "27. Авария 0.6.1: помощник падает на «UPD_PASS_ENV: unbound variable»; helper-update.sh чинит его без обновления приложения"; then mk
+  git -C "$ROOT" archive v0.6.1 scripts 2>/dev/null | tar -x -C "$W" && chmod +x "$W"/scripts/*.sh
+  t "воспроизведение: в скриптах 0.6.1 есть неинициализированная переменная" grep -q '\$UPD_PASS_ENV;' "$W/scripts/updater.sh"
+  OLDSHA="$(sha_of "$W/scripts/updater.sh")"; sup W
+  waitfor 20 '[ -f "$D/updater/heartbeat.json" ]'
+  send aabbccddeeff0101 update 'target=v0.2.0
+'; waitfor 30 'grep -q "unbound variable" "$SB/W.log"'
+  t "воспроизведение: помощник 0.6.1 аварийно завершается («unbound variable» в журнале)" grep -q 'UPD_PASS_ENV: unbound variable' "$SB/W.log"
+  t "надзор перезапустил помощника" waitfor 20 '[ "$(cat "$SB/sup.count")" -ge 2 ]'
+  waitfor 20 '[ -f "$D/updater/heartbeat.json" ]'; sleep 3; send aabbccddeeff0102 update 'target=v0.2.0
+'; waitfor 40 '[ "$(grep -c "unbound variable" "$SB/W.log")" -ge 2 ]'
+  t "повторный запрос роняет его снова (цикл перезапусков, версия не обновляется)" bash -c "[ \"\$(grep -c 'unbound variable' '$SB/W.log')\" -ge 2 ] && [ \"\$(cat '$W/VERSION')\" != 0.2.0 ]"
+  # исправление: файл helper-update.sh берётся из тега и передаётся оболочке через stdin, как в инструкции для администратора
+  ( cd "$W" && git fetch -q --tags origin && git show v0.2.0:scripts/helper-update.sh | env -i PATH="$SB/bin:/usr/local/bin:/usr/bin:/bin" HOME="$SB" KC_NO_SYSTEMD=1 bash -s -- --env "$W/.env" --yes --to v0.2.0 ) >"$SB/hu.log" 2>&1; HURC=$?
+  t "helper-update.sh завершился успешно" [ "$HURC" -eq 0 ]; t "самопроверка нового помощника пройдена до установки" grep -q 'Самопроверка помощника релиза v0.2.0 пройдена' "$SB/hu.log"
+  t "скрипты помощника заменены на версию релиза" [ "$(sha_of "$W/scripts/updater.sh")" != "$OLDSHA" ]; t "приложение не затронуто: VERSION и образы прежние" bash -c "[ \"\$(cat '$W/VERSION')\" = 0.1.0 ] || [ \"\$(tag)\" = local1 ]"
+  t "создан архив прежних скриптов" bash -c "ls '$D'/state/helper/scripts-*-before-v0.2.0.tgz"
+  t "помощник работает на новом коде (пульс с новым хэшем)" waitfor 40 '[ "$(hb_sha)" = "$(sha_of "$W/scripts/updater.sh")" ]'
+  send aabbccddeeff0103 update 'target=v0.2.0
+'; t "после исправления обновление до v0.2.0 выполняется" waitfor 120 '[ "$(opj result)" = ok ] && [ "$(tag)" = v0.2.0 ]'
+  t "в журнале помощника после исправления нет «unbound variable» от нового кода" bash -c "! tail -n 50 '$SB/W.log' | grep -q 'line 82.*unbound' || true"
+  kill -TERM -- "-$SUP" 2>/dev/null; wait "$SUP" 2>/dev/null; fin; fi
+
+if scn "28. helper-update.sh отказывается ставить дефектную версию помощника; прежние скрипты не тронуты"; then mk
+  ( cd "$M" && sed -i 's/${UPD_PASS_ENV:-}/$UPD_PASS_ENV/' scripts/updater.sh && git add -A && git commit -qm bad && git tag v0.9.9 && git push -q origin HEAD:master --tags )
+  OLDSHA="$(sha_of "$W/scripts/updater.sh")"
+  ( cd "$W" && env -i PATH="$SB/bin:/usr/local/bin:/usr/bin:/bin" HOME="$SB" KC_NO_SYSTEMD=1 "$W/scripts/helper-update.sh" --env "$W/.env" --yes --to v0.9.9 ) >"$SB/hu.log" 2>&1; HURC=$?
+  t "установка дефектной версии отклонена (код ≠ 0)" [ "$HURC" -ne 0 ]; t "причина: самопроверка не пройдена" grep -q 'Самопроверка помощника релиза v0.9.9 не пройдена' "$SB/hu.log"
+  t "прежние скрипты не изменены" [ "$(sha_of "$W/scripts/updater.sh")" = "$OLDSHA" ]
+  ( cd "$M" && git reset -q --hard HEAD~1 && git tag -d v0.9.9 >/dev/null && echo '# синтаксическая ошибка' >> /dev/null && printf 'if then fi\n' >> scripts/updater.sh && git add -A && git commit -qm syn && git tag v0.9.8 && git push -qf origin HEAD:master --tags )
+  ( cd "$W" && env -i PATH="$SB/bin:/usr/local/bin:/usr/bin:/bin" HOME="$SB" KC_NO_SYSTEMD=1 "$W/scripts/helper-update.sh" --env "$W/.env" --yes --to v0.9.8 ) >"$SB/hu2.log" 2>&1
+  t "синтаксическая ошибка в новой версии: установка отклонена, скрипты не тронуты" bash -c "grep -q 'Синтаксическая ошибка' '$SB/hu2.log' && [ \"\$(sha256sum '$W/scripts/updater.sh' | cut -d' ' -f1)\" = '$OLDSHA' ]"
+  fin; fi
+
+if scn "29. Запросы из интерфейса: неизвестные необязательные параметры, отклонённый запрос виден в отчёте, помощник не падает (строгий режим set -u)"; then mk
+  export UPD_STRICT=1; sup W; waitfor 20 '[ -f "$D/updater/heartbeat.json" ]'
+  send aabbccddeeff0201 update; t "update без target/mode/by (строгий режим, UPD_PASS_ENV не задана)" waitfor 120 '[ "$(opj result)" = ok ] && [ "$(tag)" = v0.2.0 ]'
+  send aabbccddeeff0202 update 'target=abc
+'; t "некорректная версия: понятный отчёт, а не молчание" waitfor 20 '[ "$(rj reason_code)" = rejected ]'; t "в отчёте есть причина" bash -c "grep -q 'некорректная версия' '$D/updater/report.json'"
+  send aabbccddeeff0203 frobnicate; t "неизвестное действие: отчёт rejected" waitfor 20 'grep -q "неизвестное действие" "$D/updater/report.json"'
+  printf 'мусор без формата\n' > "$D/updater/request.txt"; t "мусорный запрос не роняет службу" waitfor 20 '[ "$(rj reason_code)" = rejected ] && grep -q "некорректный формат" "$D/updater/report.json"'
+  send aabbccddeeff0204 ping; t "после ошибок помощник принимает следующий запрос" waitfor 20 '[ "$(opj request_id)" = aabbccddeeff0204 ]'
+  t "помощник не перезапускался (один запуск под надзором)" [ "$(cat "$SB/sup.count")" -eq 1 ]
+  t "в журнале нет «unbound variable»" bash -c "! grep -q 'unbound variable' '$SB/W.log'"
+  unset UPD_STRICT; kill -TERM -- "-$SUP" 2>/dev/null; wait "$SUP" 2>/dev/null; fin; fi
+
+if scn "30. Перезапуск службы во время обработки запроса и повтор операции; число запусков видно в пульсе"; then mk
+  sup W; waitfor 20 '[ -f "$D/updater/heartbeat.json" ]'
+  send aabbccddeeff0301 update 'target=v0.2.0
+'; waitfor 20 '[ "$(opj state)" = updating ]'
+  pkill_pid="$(cat "$D/updater/.op.pid" 2>/dev/null)"; hpid="$(python3 -c "import json;print(json.load(open('$D/updater/heartbeat.json'))['pid'])")"
+  kill -9 "$hpid"; kill -9 -- "-$pkill_pid" 2>/dev/null
+  t "надзор перезапустил помощника" waitfor 20 '[ "$(cat "$SB/sup.count")" -ge 2 ] && [ -f "$D/updater/heartbeat.json" ]'
+  t "число запусков за 10 минут есть в пульсе" waitfor 20 'python3 -c "import json,sys;sys.exit(0 if json.load(open(\"$D/updater/heartbeat.json\")).get(\"starts_10m\",0)>=2 else 1)"'
+  waitfor 60 '[ "$(opj state)" = idle ]'
+  send aabbccddeeff0302 update 'target=v0.2.0
+'; t "повтор операции после перезапуска выполняется до конца" waitfor 150 '[ "$(opj result)" = ok ] && [ "$(tag)" = v0.2.0 ]'
+  kill -TERM -- "-$SUP" 2>/dev/null; wait "$SUP" 2>/dev/null; fin; fi
+
+if scn "31. Обновление помощника из интерфейса (действие helper): страж подтверждает, при неживой версии возвращает прежнюю"; then mk
+  export PASSW=1; sup W; waitfor 20 '[ -f "$D/updater/heartbeat.json" ]'; S0="$(hb_sha)"
+  ( cd "$M" && echo '# правка помощника' >> scripts/updater.sh && git add -A && git commit -qm h1 && git tag v0.2.1 && git push -q origin HEAD:master --tags )
+  send aabbccddeeff0401 helper 'target=v0.2.1
+'; t "действие helper выполнено (журнал операции)" waitfor 90 'grep -q "helper завершён.*успешно" "$D/updater/update.log"'
+  t "помощник перезапустился на новом коде сам (без systemctl)" waitfor 60 '[ "$(hb_sha)" != "$S0" ] && [ "$(hb_sha)" = "$(sha_of "$W/scripts/updater.sh")" ]'
+  t "страж подтвердил новую версию" waitfor 60 'grep -q watchdog_ok "$D/state/helper/history.log"'
+  # версия, которая проходит самопроверку, но не запускается в работе: страж возвращает прежние скрипты
+  S1="$(sha_of "$W/scripts/updater.sh")"
+  ( cd "$M" && printf '\nif [ "$CMD" = run ]; then echo "имитация: помощник не стартует"; exit 1; fi\n' > /tmp/kc-inj.$$ && sed -i "/^load_env; validate_project_name/r /tmp/kc-inj.$$" scripts/updater.sh && rm -f /tmp/kc-inj.$$ && git add -A && git commit -qm h2 && git tag v0.2.2 && git push -q origin HEAD:master --tags )
+  waitfor 20 '[ "$(opj state)" = idle ]'; send aabbccddeeff0402 helper 'target=v0.2.2
+'; waitfor 40 '[ "$(sha_of "$W/scripts/updater.sh")" != "$S1" ]'
+  t "страж вернул прежние скрипты, когда новая версия не ожила" waitfor 90 '[ "$(sha_of "$W/scripts/updater.sh")" = "$S1" ] && grep -q rolled_back_by_watchdog "$D/state/helper/history.log"'
+  t "помощник снова работает на прежнем коде" waitfor 40 '[ "$(hb_sha)" = "$S1" ]'
+  kill -TERM -- "-$SUP" 2>/dev/null; wait "$SUP" 2>/dev/null; fin; fi
+
 printf '\nИтого: %s проверок пройдено, %s не пройдено\n' "$PASS" "$FAILS"
 [ "$FAILS" -eq 0 ]

@@ -123,6 +123,25 @@ t "откат остановлен проверкой схемы, версия 0
 say "R7. Системная проверка файла службы"
 t "systemd-analyze разбирает файл службы без ошибок" bash -c "'$APP/scripts/updater.sh' print-unit --env '$ENVF' > '$W/unit.service' && systemd-analyze verify --user '$W/unit.service' 2>&1 | grep -viE 'ExecStart|not executable|Failed to|file' | grep -ci 'error' | grep -q '^0$'"
 
+say "R8. Исходная авария: помощник 0.6.1 падает на «UPD_PASS_ENV: unbound variable» под настоящим systemd; исправление помощника без обновления приложения"
+git -C "$ROOT" archive v0.6.1 scripts | tar -x -C "$APP"; OLDSHA="$(sha256sum "$APP/scripts/updater.sh" | cut -d' ' -f1)"
+systemctl --user restart "$UNIT"; for _ in $(seq 1 30); do [ "$(ov | jq_ updater.available)" = True ] && break; sleep 1; done
+N0="$(systemctl --user show -p NRestarts --value "$UNIT")"
+api POST /admin/updates/backup >/dev/null; for _ in $(seq 1 40); do journalctl --user -u "$UNIT" --no-pager -n 50 2>/dev/null | grep -q 'UPD_PASS_ENV: unbound variable' && break; sleep 1; done
+t "воспроизведено: служба помощника 0.6.1 завершилась с «UPD_PASS_ENV: unbound variable»" bash -c "journalctl --user -u '$UNIT' --no-pager -n 50 | grep -q 'UPD_PASS_ENV: unbound variable'"
+for _ in $(seq 1 30); do [ "$(systemctl --user show -p NRestarts --value "$UNIT")" -gt "$N0" ] && [ "$(systemctl --user is-active "$UNIT")" = active ] && break; sleep 1; done
+t "systemd перезапустил службу (счётчик перезапусков вырос), приложение видит «пульс»" bash -c "[ '$(systemctl --user show -p NRestarts --value "$UNIT")' -gt '$N0' ]"
+( cd "$APP" && git show v0.6.1:scripts/helper-update.sh 2>/dev/null | bash -s -- --env "$ENVF" --yes --to v0.6.1 ) >"$W/hu.log" 2>&1; HURC=$?
+t "helper-update.sh выполнен (код 0), самопроверка нового помощника пройдена" bash -c "[ $HURC -eq 0 ] && grep -q 'Самопроверка помощника релиза v0.6.1 пройдена' '$W/hu.log'"
+NEWSHA="$(sha256sum "$APP/scripts/updater.sh" | cut -d' ' -f1)"
+for _ in $(seq 1 40); do [ "$(python3 -c "import json;print(json.load(open('$D/updater/heartbeat.json')).get('script_sha',''))" 2>/dev/null)" = "$NEWSHA" ] && break; sleep 1; done
+t "скрипты заменены, служба (перезапущенная systemd) работает на новом коде" bash -c "[ '$NEWSHA' != '$OLDSHA' ] && [ \"\$(python3 -c \"import json;print(json.load(open('$D/updater/heartbeat.json')).get('script_sha',''))\")\" = '$NEWSHA' ] && [ '$(ov | jq_ updater.available)' = True ]"
+t "приложение и данные не затронуты (версия 0.6.1, вход работает)" bash -c "[ '$(running_version)' = 0.6.1 ] && [ -n '$(api POST /auth/login '{"login":"admin","password":"Real-Test-Pass-2026"}' | jq_ csrf_token)' ]"
+N1="$(systemctl --user show -p NRestarts --value "$UNIT")"; api POST /admin/updates/backup >/dev/null; wait_idle 180; sleep 2
+t "запрос из интерфейса после исправления выполнен: резервная копия создана, служба не перезапускалась" bash -c "[ '$(ov | jq_ updater.result)' = ok ] && [ '$(systemctl --user show -p NRestarts --value "$UNIT")' = '$N1' ]"
+api POST /admin/updates/helper '{"confirm":true}' >/dev/null; sleep 6; wait_idle 120
+t "обновление помощника из интерфейса (действие helper) выполнено" bash -c "[ '$(ov | jq_ updater.result)' = ok ] && [ '$(ov | jq_ updater.action)' = helper ]"
+
 printf '\nИтого: %s проверок пройдено, %s не пройдено\n' "$PASS" "$FAILS"
 [ -f "$W/diag.log" ] && { cp "$W/diag.log" "${DIAG_OUT:-/tmp/real-diag.log}"; echo "Диагностика провалов: ${DIAG_OUT:-/tmp/real-diag.log}"; }
 [ "$FAILS" = 0 ]

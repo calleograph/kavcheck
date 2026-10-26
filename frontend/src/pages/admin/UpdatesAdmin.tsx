@@ -7,10 +7,10 @@ import { Empty, SkelRows } from "../../components/ui";
 import { ago, bytes, fmtTs, versionLabel } from "../../util";
 
 const MAX_LOG = 400_000;
-const ACTION: Record<string, string> = { update: "Обновление", rollback: "Откат", backup: "Резервная копия", check: "Проверка релизов", restore: "Восстановление из копии", preflight: "Проверки перед обновлением" };
+const ACTION: Record<string, string> = { update: "Обновление", rollback: "Откат", backup: "Резервная копия", check: "Проверка релизов", restore: "Восстановление из копии", preflight: "Проверки перед обновлением", helper: "Обновление помощника" };
 const REASON: Record<string, string> = { docker_hub: "Недоступен Docker Hub", registry: "Недоступен реестр готовых образов", image_missing: "Образы релиза не найдены в реестре", npm: "Не удалось скачать пакеты npm", pip: "Не удалось скачать пакеты Python",
   network: "Обрыв или недоступность сети", disk: "Не хватает места на диске", build: "Ошибка сборки образов", migration: "Ошибка миграции базы", health: "Новая версия не прошла проверку работоспособности", timeout_total: "Превышено время операции",
-  timeout_stall: "Зависание операции", interrupted: "Обновление было прервано", generic: "Ошибка обновления" };
+  timeout_stall: "Зависание операции", interrupted: "Обновление было прервано", rejected: "Помощник не принял запрос", internal: "Внутренняя ошибка помощника", generic: "Ошибка обновления" };
 const CAN_BUILD = ["registry", "image_missing", "docker_hub"];
 const PHASE: Record<string, string> = { pulling: "Загрузка готовых образов", building: "Локальная сборка образов", backup: "Резервное копирование", migrating: "Миграции базы", restarting: "Перезапуск и проверка работоспособности", preflight: "Проверки перед обновлением", code: "Переход кода на релиз", cleanup: "Очистка старых образов", helper: "Обновление помощника", report: "Формирование отчёта" };
 const dur = (s: number) => (s < 60 ? `${s} с` : `${Math.floor(s / 60)} мин ${s % 60} с`);
@@ -61,6 +61,7 @@ export default function UpdatesAdmin() {
           <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Помощник обновлений недоступен.</b> {u?.down_reason}
             <pre className="cmd">{`sudo ./scripts/updater.sh doctor --yes`}</pre>Команда проверит службу (автозапуск, перезапуск при сбоях, Docker, права каталога) и сама восстановит её; при необходимости переустановка: <code>{ov.commands.install}</code>. Без помощника обновляйте на сервере командой <code>{ov.commands.manual}</code>.</div></div>
         )}
+        {u?.available && (u.starts_10m ?? 0) >= 3 && <div className="alert error mt" role="alert"><Icon name="alert" /><div className="alert-body"><b>Помощник перезапускался {u.starts_10m} раз за 10 минут.</b> Это признак аварийного завершения при обработке запросов. Исправление помощника не требует обновления приложения: кнопка ниже или на сервере <code>sudo ./scripts/helper-update.sh --yes</code>.</div></div>}
         {ov.doctor && !ov.doctor.ok && u?.available && <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Самодиагностика службы нашла проблемы:</b><ul>{ov.doctor.items.filter((i) => !i.ok).map((i) => <li key={i.key}>{i.message}</li>)}</ul></div></div>}
         {u?.available && u.api_outdated && <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Помощник устарел</b> (версия обмена {u.updater_api}, нужна {u.api_expected}): в нём нет восстановления после сбоев и контроля зависаний. Он обновится сам после следующего обновления; сейчас выполните на сервере <code>{ov.commands.install}</code>.</div></div>}
         {u?.available && ov.system.helper_unit === "incomplete" && <div className="alert warn mt"><Icon name="alert" /><div className="alert-body">Служба помощника установлена не полностью (нет автозапуска или перезапуска при сбоях). Выполните на сервере <code>{ov.commands.install}</code>.</div></div>}
@@ -84,6 +85,7 @@ export default function UpdatesAdmin() {
           <button className="btn" disabled={!ov.can_act || !!busy} aria-busy={busy === "check"} onClick={() => act("check", api.admin.updatesCheck, "Проверка релизов запущена")}><Icon name="refresh" /><span>Проверить релизы</span></button>
           <button className="btn" disabled={!ov.can_act || !!busy} aria-busy={busy === "backup"} onClick={() => act("backup", api.admin.updatesBackup, "Резервная копия создаётся")}><Icon name="save" /><span>Создать резервную копию</span></button>
           {logLink}
+          <button className="btn" disabled={!ov.can_act || !!busy} aria-busy={busy === "helper"} title="Обновляются только скрипты помощника на сервере: приложение, образы и данные не затрагиваются. Новый код проверяется до установки, при сбое возвращается прежний." onClick={() => act("helper", api.admin.updatesHelper, "Помощник обновляется")}><Icon name="refresh" /><span>Обновить помощника</span></button>
           <div className="spacer" />
           <button className="btn ghost danger" disabled={!ov.can_act || !!busy} onClick={() => setConfirm("rollback")}><Icon name="history" />Откатить версию</button>
         </div>

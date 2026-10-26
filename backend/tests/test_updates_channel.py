@@ -125,3 +125,19 @@ async def test_overview_gives_one_reason_not_contradictions(app, client):
     await login(client, "admin", "Admin-Passw0rd-123")
     ov = (await client.get("/api/v1/admin/updates")).json()
     assert ov["updater"]["available"] and ov["updater"]["state"] == "updating" and ov["can_act"] is False and len(ov["reasons"]) == 1 and "выполняется" in ov["reasons"][0]
+
+
+async def test_helper_update_is_separate_action_with_confirmation_and_version_check(app, client):
+    """Обновление только помощника: отдельное действие, требует подтверждения; версия проверяется; в пульсе видно число запусков (цикл аварийных перезапусков)."""
+    d = Path(app.state.settings.data_dir) / "updater"
+    put(d, "heartbeat.json", hb(starts_10m=4, script_sha="abcdef0123456789"))
+    put(d, "status.json", status())
+    await login(client, "admin", "Admin-Passw0rd-123")
+    ov = (await client.get("/api/v1/admin/updates")).json()
+    assert ov["updater"]["starts_10m"] == 4 and ov["updater"]["script_sha"] == "abcdef012345"
+    assert (await client.post("/api/v1/admin/updates/helper", json={})).status_code == 422
+    assert (await client.post("/api/v1/admin/updates/helper", json={"confirm": True, "target": "latest; rm -rf /"})).status_code == 422
+    r = await client.post("/api/v1/admin/updates/helper", json={"confirm": True, "target": "v0.7.1"})
+    assert r.status_code == 200
+    req = (d / "request.txt").read_text()
+    assert "action=helper" in req and "target=v0.7.1" in req

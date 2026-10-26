@@ -23,6 +23,8 @@ load_env() { # load_env ФАЙЛ — переменные .env в окружен
   [ -f "$f" ] || die "Файл настроек $f не найден. Создайте его: cp .env.example .env (или scripts/install.sh)"
   set -a; # shellcheck disable=SC1090
   source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$f" | sed 's/\r$//'); set +a
+  # необязательные настройки: не заданные в .env не должны давать «unbound variable» (set -u) ни в одном скрипте
+  GITHUB_REPO="${GITHUB_REPO:-}"; APP_PUBLIC_URL="${APP_PUBLIC_URL:-}"; IMAGE_REPO="${IMAGE_REPO:-kavcheck}"; IMAGE_TAG="${IMAGE_TAG:-}"; WEB_BIND_ADDR="${WEB_BIND_ADDR:-127.0.0.1}"; WEB_PORT="${WEB_PORT:-}"
 }
 validate_project_name() { [[ "${COMPOSE_PROJECT_NAME:-}" =~ ^[a-z][a-z0-9_-]{0,40}$ ]] || die "COMPOSE_PROJECT_NAME: только a-z, 0-9, '-', '_' (сейчас: '${COMPOSE_PROJECT_NAME:-}')"; }
 require_vars() { local v; for v in "$@"; do [ -n "${!v:-}" ] || die "В .env не задано: $v"; done; }
@@ -170,7 +172,7 @@ action_reset() { mkdir -p "$DATA_ROOT/state"; : > "$(ACTIONS_FILE)"; }
 action_log() { mkdir -p "$DATA_ROOT/state" 2>/dev/null; printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >> "$(ACTIONS_FILE)" 2>/dev/null; info "$*"; }
 report_write() { # report_write РЕЗУЛЬТАТ ЭТАП ОТ ДО СОВЕТ [КОД_ПРИЧИНЫ] — result: ok | failed | recovered
   local items="" line started
-  while IFS= read -r line; do items="${items:+$items,}\"$(jstr "$line")\""; done < "$(ACTIONS_FILE)" 2>/dev/null
+  while IFS= read -r line; do items="${items:+$items,}\"$(jstr "$line")\""; done < <(cat "$(ACTIONS_FILE)" 2>/dev/null)
   started="$(marker_get started)"; started="${started:-$(date +%s)}"
   mkdir -p "$DATA_ROOT/updater"
   printf '{"started_at":%s,"finished_at":%s,"result":"%s","stage":"%s","from_version":"%s","to_version":"%s","advice":"%s","reason_code":"%s","mode":"%s","actions":[%s]}\n' "$started" "$(date +%s)" "$1" "$(jstr "$2")" "$3" "$4" "$(jstr "$5")" "${6:-}" "${UPD_MODE_USED:-}" "$items" \

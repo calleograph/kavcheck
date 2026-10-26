@@ -33,7 +33,7 @@ async def overview(request: Request, su: SessionUser = Depends(require_admin)):
         reasons.append("Запрос уже передан помощнику и ожидает выполнения.")
     return {"installed": {"version": s.app_version, "commit": s.app_git_commit, "built_at": s.app_built_at},
             "updater": {k: st.get(k) for k in ("available", "heartbeat_age_s", "state", "action", "request_id", "step_no", "step_total", "step_name", "started_at", "finished_at", "exit_code", "result", "request_pending", "by", "target",
-                                               "last_output_at", "stalled_s", "interrupted", "api_outdated", "updater_api", "mode", "op_id", "phase", "down_reason", "boot_changed", "helper_pid", "operation_alive")} | {"api_expected": upd.UPDATER_API, "now": int(time.time())},
+                                               "last_output_at", "stalled_s", "interrupted", "api_outdated", "updater_api", "mode", "op_id", "phase", "down_reason", "boot_changed", "helper_pid", "operation_alive", "starts_10m", "script_sha")} | {"api_expected": upd.UPDATER_API, "now": int(time.time())},
             "system": {k: (ch._json("system.json") or {}).get(k) for k in ("update_mode", "registry", "allow_build", "npm_mirror", "pip_mirror", "helper_unit")},  # noqa: SLF001
             "remote": remote, "history": ch.history(), "backups": ch.backups(), "can_act": not reasons, "reasons": reasons,
             "preflight": ch.preflight(), "report": ch.report(), "doctor": ch.doctor(),
@@ -80,6 +80,18 @@ async def rollback(request: Request, body: dict = Body(default_factory=dict), su
     if body.get("confirm") is not True:
         raise HTTPException(status_code=422, detail="Нужно подтверждение (confirm=true)")
     return await _request(request, su, db, "rollback")
+
+
+@router.post("/helper")
+async def helper(request: Request, body: dict = Body(default_factory=dict), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Обновить только помощника (скрипты на сервере) до выбранного или последнего релиза: приложение, образы и данные не затрагиваются. Перед установкой — самопроверка нового кода,
+    при сбое прежние скрипты возвращаются (scripts/helper-update.sh)."""
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=422, detail="Нужно подтверждение (confirm=true)")
+    target = str(body.get("target") or "")
+    if target and not upd.VERSION_RE.match(target):
+        raise HTTPException(status_code=422, detail="Версия указывается как vX.Y.Z")
+    return await _request(request, su, db, "helper", target, {"target": target or "latest"})
 
 
 @router.post("/preflight")

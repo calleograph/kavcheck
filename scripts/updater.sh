@@ -17,13 +17,15 @@ UPDATER_API=3
 YES=0; INTERVAL=3; CHECK_EVERY="${UPDATER_CHECK_EVERY:-3600}"
 while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; shift 2 ;; --yes|-y) YES=1; shift ;; --interval) INTERVAL="$2"; shift 2 ;; *) die "Неизвестный аргумент: $1" ;; esac; done
 load_env; validate_project_name; require_vars DATA_ROOT
-CH="$DATA_ROOT/updater"; LOG="$CH/update.log"; UNIT="kavcheck-updater-${COMPOSE_PROJECT_NAME}"; UNIT_FILE="/etc/systemd/system/$UNIT.service"
+[ "$CMD" = selftest ] && { ST_TMP="$(mktemp -d)"; DATA_ROOT="$ST_TMP"; }     # самопроверка работает во временном каталоге: живые файлы обмена и отчёты не затрагиваются
+CH="$DATA_ROOT/updater"; ACT_DIR="$REPO_ROOT/scripts"; LOG="$CH/update.log"; UNIT="kavcheck-updater-${COMPOSE_PROJECT_NAME}"; UNIT_FILE="/etc/systemd/system/$UNIT.service"
 [ "$(id -u)" -eq 0 ] && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$REPO_ROOT"
 mkdir -p "$CH" && chmod 1777 "$CH" 2>/dev/null
 jesc() { printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037' | tr '\t\r' '  ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 atomic() { local tmp; tmp="$(mktemp "$CH/.w.XXXXXX")" && cat > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$1"; }
+SELFTEST=0; [ "$CMD" = selftest ] && SELFTEST=1
 STATE=idle; ACTION=""; REQ=""; STEP_NO=0; STEP_TOTAL=11; STEP_NAME=""; STARTED=0; FINISHED=0; EXIT=null; RESULT=""; BY=""; TARGET=""; LAST_OUT=0; MODE=""; OP_ID=""; OP_PID=0
-BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; SELF_SHA="$(sha256sum "$SCRIPTS_DIR/updater.sh" 2>/dev/null | cut -d' ' -f1)"; UP_SINCE="$(date +%s)"; HB_PID=0
+STARTS_10M=1; BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; SELF_SHA="$(sha256sum "$SCRIPTS_DIR/updater.sh" 2>/dev/null | cut -d' ' -f1)"; UP_SINCE="$(date +%s)"; HB_PID=0
 # Три независимые сведения (интерфейс не должен смешивать их):
 #  1) heartbeat.json — «помощник жив»: пишет отдельный фоновый цикл раз в 4 с, не зависит от того, чем занят основной цикл (долгая сборка, сетевой вызов, ожидание);
 #  2) operation.json — что делает помощник: идентификатор операции, этап, фаза, время последнего вывода, результат (status.json — та же запись для совместимости);
@@ -36,7 +38,7 @@ write_status() { printf '{"ts":%s,"pid":%s,"updater_api":%s,"op_id":"%s","state"
   atomic "$CH/operation.json" < "$CH/.op.tmp"; atomic "$CH/status.json" < "$CH/.op.tmp"; }
 write_heartbeat() { # write_heartbeat [остановлена] — пульс помощника
   local alive=false; [ "$(cat "$CH/.op.pid" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null && kill -0 "$(cat "$CH/.op.pid")" 2>/dev/null && alive=true
-  printf '{"ts":%s,"pid":%s,"updater_api":%s,"boot_id":"%s","started_at":%s,"script_sha":"%s","op_alive":%s,"stopped":%s,"unit":"%s"}\n' "$(date +%s)" "$$" "$UPDATER_API" "$BOOT_ID" "$UP_SINCE" "$SELF_SHA" "$alive" "${1:-false}" "$UNIT" | atomic "$CH/heartbeat.json"; }
+  printf '{"ts":%s,"pid":%s,"updater_api":%s,"boot_id":"%s","started_at":%s,"script_sha":"%s","op_alive":%s,"stopped":%s,"unit":"%s","starts_10m":%s}\n' "$(date +%s)" "$$" "$UPDATER_API" "$BOOT_ID" "$UP_SINCE" "$SELF_SHA" "$alive" "${1:-false}" "$UNIT" "$STARTS_10M" | atomic "$CH/heartbeat.json"; }
 hb_loop() { # отдельный процесс-«пульс»: завершается вместе с основным процессом и не держит его блокировку
   local parent="$1"
   while kill -0 "$parent" 2>/dev/null; do write_heartbeat; sleep 4; done
@@ -81,7 +83,7 @@ run_action() {
   LOG="$logf"; STATE="$st"; STARTED="$(date +%s)"; OP_ID="$STARTED-$REQ"; OP_PID=0; FINISHED=0; EXIT=null; RESULT=""; STEP_NO=0; STEP_NAME="запуск"; LAST_OUT="$STARTED"; write_status
   [ "$logf" = "$CH/update.log" ] && [ -s "$logf" ] && mv -f "$logf" "$CH/update.prev.log"
   : > "$logf"; chmod 644 "$logf"; printf '=== %s запущен %s (запросил: %s) ===\n' "$ACTION" "$(date '+%F %T')" "${BY:-?}" >> "$logf"
-  (cd "$REPO_ROOT" && exec setsid env -i PATH="$PATH" HOME="${HOME:-/root}" LANG="${LANG:-C.UTF-8}" ENV_FILE="$ENV_FILE" UPDATE_BY="$BY" GIT_CONFIG_COUNT="${GIT_CONFIG_COUNT:-0}" GIT_CONFIG_KEY_0="${GIT_CONFIG_KEY_0:-}" GIT_CONFIG_VALUE_0="${GIT_CONFIG_VALUE_0:-}" "${pass[@]}" "$REPO_ROOT/scripts/$script" "$@" >>"$logf" 2>&1 9>&- </dev/null) &
+  (cd "$REPO_ROOT" && exec setsid env -i PATH="$PATH" HOME="${HOME:-/root}" LANG="${LANG:-C.UTF-8}" ENV_FILE="$ENV_FILE" UPDATE_BY="$BY" GIT_CONFIG_COUNT="${GIT_CONFIG_COUNT:-0}" GIT_CONFIG_KEY_0="${GIT_CONFIG_KEY_0:-}" GIT_CONFIG_VALUE_0="${GIT_CONFIG_VALUE_0:-}" "${pass[@]}" "$ACT_DIR/$script" "$@" >>"$logf" 2>&1 9>&- </dev/null) &
   pid=$!; t0="$(date +%s)"; OP_PID="$pid"; echo "$pid" > "$CH/.op.pid"; write_status; write_heartbeat
   while kill -0 "$pid" 2>/dev/null; do
     sleep 2; now="$(date +%s)"; size="$(stat -c %s "$logf" 2>/dev/null || echo 0)"
@@ -107,36 +109,68 @@ run_action() {
   write_status; backups_json 2>/dev/null || true
   return "$rc"
 }
+reject() { # запрос не принят: причина попадает в отчёт (виден в интерфейсе), а не только в журнал службы
+  warn "Запрос отклонён: $1"; rm -f "$CH/.request.running"
+  report_write failed "приём запроса" "$(version_file_read)" "?" "Помощник не принял запрос: $1. Это не влияет на работу службы — повторите действие из интерфейса." rejected
+  history_append "${action:-?}" failed "$(version_file_read)" "?" rejected
+  REQ="${rid:-}"; ACTION="${action:-}"; STATE=idle; RESULT=failed; EXIT=2; FINISHED="$(date +%s)"; write_status; return 0
+}
 handle_request() {
   local f="$CH/request.txt" owner rid action target by at mode
   [ -f "$f" ] || return 0
   owner="$(stat -c %u "$f" 2>/dev/null || echo -1)"
-  if [ -L "$f" ] || ! [[ "$owner" =~ ^(0|$(id -u)|10001)$ ]]; then warn "Запрос отклонён: символьная ссылка или посторонний владелец (uid $owner)"; rm -f "$f"; return 0; fi
+  if [ -L "$f" ] || ! [[ "$owner" =~ ^(0|$(id -u)|10001)$ ]]; then rm -f "$f"; reject "символьная ссылка или посторонний владелец файла запроса (uid $owner)"; return 0; fi
   mode="$(sed -n 's/^mode=//p' "$f" | head -1)"; rid="$(sed -n 's/^id=//p' "$f" | head -1)"; action="$(sed -n 's/^action=//p' "$f" | head -1)"; target="$(sed -n 's/^target=//p' "$f" | head -1)"; by="$(sed -n 's/^by=//p' "$f" | head -1)"; at="$(sed -n 's/^at=//p' "$f" | head -1)"
   mv -f "$f" "$CH/.request.running" 2>/dev/null || rm -f "$f"
-  [[ "$rid" =~ ^[a-f0-9]{8,32}$ ]] && [[ "$at" =~ ^[0-9]+$ ]] || { warn "Запрос отклонён: некорректный формат"; return 0; }
-  [ $(( $(date +%s) - at )) -le 600 ] || { warn "Запрос $rid устарел"; return 0; }
+  [[ "$rid" =~ ^[a-f0-9]{8,32}$ ]] && [[ "$at" =~ ^[0-9]+$ ]] || { reject "некорректный формат запроса"; return 0; }
+  [ $(( $(date +%s) - at )) -le 600 ] || { reject "запрос устарел (старше 10 минут)"; return 0; }
   [[ "$by" =~ ^[A-Za-z0-9._-]{0,60}$ ]] || by="?"
-  [[ "$mode" =~ ^(pull|build)?$ ]] || { warn "Запрос отклонён: некорректный способ получения образов"; return 0; }
-  if [ "$action" = restore ]; then [[ "$target" =~ ^[A-Za-z0-9._-]{1,120}\.dump$ ]] || { warn "Запрос отклонён: некорректное имя резервной копии"; return 0; }
-  else [[ "$target" =~ ^(v?[0-9]+\.[0-9]+\.[0-9]+)?$ ]] || { warn "Запрос отклонён: некорректная версия"; return 0; }; fi
+  [[ "$mode" =~ ^(pull|build)?$ ]] || { reject "некорректный способ получения образов"; return 0; }
+  if [ "$action" = restore ]; then [[ "$target" =~ ^[A-Za-z0-9._-]{1,120}\.dump$ ]] || { reject "некорректное имя резервной копии"; return 0; }
+  else [[ "$target" =~ ^(v?[0-9]+\.[0-9]+\.[0-9]+)?$ ]] || { reject "некорректная версия"; return 0; }; fi
   REQ="$rid"; BY="$by"; ACTION="$action"; TARGET="$target"; MODE="$mode"
   case "$action" in
     ping) write_status ;;
     check) do_check || true ;;
-    update) run_action updating "$CH/update.log" update.sh --yes --env "$ENV_FILE" ${target:+--to "$target"} $([ "$mode" = build ] && echo --build) || true; do_check || true ;;
+    update) run_action updating "$CH/update.log" update.sh --yes --env "$ENV_FILE" ${target:+--to "$target"} $([ "$mode" = build ] && echo --build) || true; [ "$SELFTEST" = 1 ] || do_check || true ;;
     rollback) run_action rolling_back "$CH/update.log" rollback.sh --yes --env "$ENV_FILE" || true ;;
     backup) run_action backing_up "$CH/backup.log" backup.sh --env "$ENV_FILE" || true ;;
     preflight) STATE=checking; write_status; ( PF_MODE="$([ "$mode" = build ] && echo build || update_mode)"; preflight "" ) >/dev/null 2>&1; STATE=idle; write_status ;;
-    restore) [ -f "${BACKUP_DIR:-$DATA_ROOT/backups}/$target" ] || { warn "Резервная копия $target не найдена"; return 0; }
+    restore) [ -f "${BACKUP_DIR:-$DATA_ROOT/backups}/$target" ] || { reject "резервная копия $target не найдена"; return 0; }
              run_action restoring "$CH/update.log" restore.sh "${BACKUP_DIR:-$DATA_ROOT/backups}/$target" --yes --env "$ENV_FILE" || true ;;
-    *) warn "Неизвестное действие: $action" ;;
+    helper) run_action updating "$CH/update.log" helper-update.sh --yes --no-restart --env "$ENV_FILE" ${target:+--to "$target"} || true ;;
+    *) reject "неизвестное действие «$action»" ;;
   esac
   rm -f "$CH/.request.running"
 }
+# dispatch — обработка запроса в подоболочке: сбой, exit или ошибка bash внутри запроса не завершают помощника; итоговые значения возвращаются через файл
+dispatch() {
+  local ctx="$CH/.ctx" err="$CH/.handler.err" rc p msg opid
+  rm -f "$ctx" "$err"
+  ( handle_request; rc=$?; declare -p STATE ACTION REQ BY TARGET MODE OP_ID OP_PID STARTED FINISHED EXIT RESULT STEP_NO STEP_TOTAL STEP_NAME LAST_OUT LOG > "$ctx"; exit "$rc" ) 2>"$err" &
+  p=$!; wait "$p"; rc=$?
+  [ -s "$err" ] && cat "$err" >&2
+  if [ -s "$ctx" ]; then source <(sed 's/^declare -[-a-zA-Z]* /declare -g -- /' "$ctx"); rm -f "$ctx"; return 0; fi
+  # подоболочка завершилась, не дойдя до конца: внутренняя ошибка помощника (а не ошибка обновления)
+  msg="$(tail -n 3 "$err" 2>/dev/null | tr '\n' ' ' | cut -c1-300)"; warn "Внутренняя ошибка при обработке запроса $REQ (код $rc): $msg"
+  opid="$(cat "$CH/.op.pid" 2>/dev/null || echo 0)"
+  if [ "$opid" -gt 0 ] 2>/dev/null && kill -0 "$opid" 2>/dev/null; then       # операция осталась без наблюдателя: останавливаем и приводим установку в порядок
+    kill -TERM -- "-$opid" 2>/dev/null; sleep 8; kill -KILL -- "-$opid" 2>/dev/null
+    (cd "$REPO_ROOT" && KC_RECOVER_CODE=internal timeout 1200 "$REPO_ROOT/scripts/recover.sh" --env "$ENV_FILE" >>"$CH/update.log" 2>&1 9>&-)
+  fi
+  rm -f "$CH/.op.pid" "$CH/.request.running"; OP_PID=0
+  report_write failed "обработка запроса" "$(version_file_read)" "?" "Внутренняя ошибка помощника при выполнении запроса (${msg:-код $rc}). Служба продолжает работать: повторите действие. Подробности: journalctl -u $UNIT -n 100" internal
+  history_append "${ACTION:-?}" failed "$(version_file_read)" "?" internal
+  STATE=idle; RESULT=failed; EXIT="$rc"; FINISHED="$(date +%s)"; write_status
+}
+starts_note() { # число запусков помощника за последние 10 минут (признак цикла аварийных перезапусков)
+  local now f="$CH/starts.log"; now="$(date +%s)"; echo "$now" >> "$f"
+  awk -v n="$now" '$1 > n - 600' "$f" > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f"; wc -l < "$f" | tr -d ' '
+}
 cmd_run() {
-  set +u          # демон: пропущенная настройка не должна завершать службу (проверено на настоящем systemd: «unbound variable» ронял помощника на первом запросе)
+  [ -n "${UPD_STRICT:-}" ] || set +u          # (UPD_STRICT=1 — режим проверок: «unbound variable» не маскируется) демон: пропущенная настройка не должна завершать службу (проверено на настоящем systemd: «unbound variable» ронял помощника на первом запросе)
   mkdir -p "$DATA_ROOT/state"; exec 9>"$DATA_ROOT/state/updater.lock"; flock -n 9 || die "Помощник уже запущен для проекта $COMPOSE_PROJECT_NAME"
+  STARTS_10M="$(starts_note)"
   info "Помощник обновлений запущен: проект $COMPOSE_PROJECT_NAME, каталог $CH, uid $(id -u), API $UPDATER_API"
   hb_loop "$$" 9>&- & HB_PID=$!
   trap 'STATE=stopped; write_status; kill "$HB_PID" 2>/dev/null; write_heartbeat true; exit 0' INT TERM
@@ -156,7 +190,7 @@ cmd_run() {
   local last_check=0 last_system=0 now self; self="$(sha256sum "$REPO_ROOT/scripts/updater.sh" 2>/dev/null | cut -d' ' -f1)"
   while :; do
     now="$(date +%s)"
-    if [ -f "$CH/request.txt" ]; then handle_request; elif [ $((now - last_check)) -ge "$CHECK_EVERY" ]; then do_check || true; last_check="$now"
+    if [ -f "$CH/request.txt" ]; then dispatch; elif [ $((now - last_check)) -ge "$CHECK_EVERY" ]; then do_check || true; last_check="$now"
     elif [ $((now - last_system)) -ge 300 ]; then do_system || true; do_doctor >/dev/null 2>&1 || true; last_system="$now"; write_status; else write_status; fi
     # после обновления на диске новая версия помощника: перезапускаемся на ней в паузе между действиями
     if [ "$STATE" = idle ] && [ ! -f "$CH/request.txt" ] && [ "$(sha256sum "$REPO_ROOT/scripts/updater.sh" 2>/dev/null | cut -d' ' -f1)" != "$self" ]; then
@@ -164,6 +198,28 @@ cmd_run() {
     fi
     sleep "$INTERVAL" 9>&-         # дочерний sleep не должен держать блокировку после аварийного завершения помощника
   done
+}
+# selftest — проверка кода помощника без побочных действий (строгий режим set -u, чистое окружение, временный каталог данных, подставные скрипты действий): тот же путь запроса,
+# что в работе, — приём, запуск действия, ошибка действия, отклонённый запрос, аварийный выход обработчика. Вызывается scripts/helper-update.sh до установки новой версии помощника.
+cmd_selftest() {
+  local bad=0 d="$ST_TMP/act" n=0
+  mkdir -p "$d"; ACT_DIR="$d"
+  printf '#!/bin/sh\necho "[1/2] проверка"\necho "[2/2] готово"\n' > "$d/update.sh"; cp "$d/update.sh" "$d/helper-update.sh"; cp "$d/update.sh" "$d/backup.sh"
+  printf '#!/bin/sh\necho "[1/1] сбой"\nexit 3\n' > "$d/rollback.sh"; chmod +x "$d"/*.sh
+  unset UPD_PASS_ENV HTTP_PROXY HTTPS_PROXY NO_PROXY SSL_CERT_FILE
+  chk() { if "${@:2}" >/dev/null 2>&1; then ok "$1"; else fail "$1"; bad=$((bad + 1)); fi; }
+  rq() { n=$((n + 1)); printf 'id=%08x%08x\naction=%s\n%sat=%s\n' "$n" "$$" "$1" "${2:-}" "$(date +%s)" > "$CH/request.txt"; dispatch; }   # необязательные параметры (target, mode, by) не заданы
+  rq ping;                           chk "запрос ping без необязательных параметров принят" [ "$STATE" = idle ]
+  rq update;                         chk "update без target/mode/by выполнен (UPD_PASS_ENV не задана)" [ "$RESULT" = ok ] && chk "код завершения 0" [ "$EXIT" = 0 ]
+  rq rollback;                       chk "ошибка действия: результат failed, код 3, помощник продолжает работу" [ "$RESULT" = failed ] && chk "код завершения действия сохранён" [ "$EXIT" = 3 ]
+  rq update 'target=не-версия
+';                                   chk "некорректная версия отклонена с отчётом" grep -q '"reason_code":"rejected"' "$CH/report.json"
+  rq nosuchaction;                   chk "неизвестное действие отклонено" grep -q 'неизвестное действие' "$CH/report.json"
+  handle_request() { echo "имитация сбоя обработчика" >&2; exit 7; }
+  rq update;                         chk "аварийный выход обработчика не завершает помощника, отчёт: internal" grep -q '"reason_code":"internal"' "$CH/report.json"
+  chk "после аварии принимается следующий запрос" [ "$STATE" = idle ]
+  rm -rf "$ST_TMP"
+  [ "$bad" -eq 0 ] && ok "Самопроверка помощника пройдена" || { fail "Самопроверка помощника: проблем — $bad"; return 1; }
 }
 # do_doctor — самодиагностика службы: каждая проверка даёт конкретную причину; результат — $CH/doctor.json (читает интерфейс), код 0 — всё исправно.
 DOC_ITEMS=""; DOC_BAD=0
@@ -187,6 +243,7 @@ do_doctor() {
   else doc_add systemd true "systemd не используется: помощник запускается средствами вашей init-системы"; fi
   [ -w "$CH" ] && doc_add data_dir true "Каталог обмена $CH доступен для записи" || doc_add data_dir false "Каталог обмена $CH недоступен для записи"
   [ "$(stat -c %a "$CH" 2>/dev/null)" = 1777 ] && doc_add data_perm true "Права каталога обмена позволяют приложению передавать запросы" || doc_add data_perm false "У каталога $CH не права 1777: приложение не сможет передавать запросы (chmod 1777 $CH)"
+  [ "${STARTS_10M:-1}" -lt 3 ] && doc_add stability true "Помощник не перезапускался аварийно" || doc_add stability false "Помощник запускался ${STARTS_10M} раз за 10 минут: вероятна аварийная ошибка. Причина — journalctl -u $UNIT -n 50; исправление помощника без обновления приложения: scripts/helper-update.sh"
   docker info >/dev/null 2>&1 && doc_add docker true "Docker доступен" || doc_add docker false "Docker недоступен для службы: sudo systemctl status docker"
   hb="$CH/heartbeat.json"; age=$(( $(date +%s) - $(stat -c %Y "$hb" 2>/dev/null || echo 0) ))
   [ "$age" -le 30 ] && doc_add heartbeat true "Пульс свежий (${age} с)" || doc_add heartbeat false "Пульс не обновлялся ${age} с: процесс помощника не работает или завис"
@@ -244,6 +301,7 @@ unit_install() { # установить или обновить службу (ro
 }
 case "$CMD" in
   run) cmd_run ;;
+  selftest) cmd_selftest ;;
   check) do_check && ok "Проверка выполнена: $CH/remote.json" || { warn "Проверка не удалась (нет доступа к GitHub?)"; exit 1; } ;;
   system) do_system && cat "$CH/system.json" ;;
   preflight) preflight "" ;;
@@ -267,5 +325,5 @@ case "$CMD" in
   refresh) do_refresh ;;
   verify) unit_verify && ok "Помощник обновлений работает и защищён от сбоев" || { fail "Помощник установлен не полностью: sudo ./scripts/updater.sh install --yes"; exit 1; } ;;
   uninstall) systemctl disable --now "$UNIT.service" 2>/dev/null; rm -f "$UNIT_FILE"; systemctl daemon-reload; ok "Служба удалена" ;;
-  *) die "Команды: run | check | status | print-unit | install | ensure | verify | doctor [--yes] | refresh | sync-unit | uninstall" ;;
+  *) die "Команды: run | selftest | check | status | print-unit | install | ensure | verify | doctor [--yes] | refresh | sync-unit | uninstall" ;;
 esac

@@ -13,7 +13,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 TARGET_TAG=""; BUILD=0; YES=0; WAIT="${UPD_WAIT_HEALTH:-180}"; SKIP_PF=0
 while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; shift 2 ;; --target-tag) TARGET_TAG="$2"; shift 2 ;; --build) BUILD=1; shift ;; --yes|-y) YES=1; shift ;; --dry-run) DRY_RUN=1; shift ;;
   --wait) WAIT="$2"; shift 2 ;; --skip-preflight) SKIP_PF=1; shift ;; -h|--help) sed -n '2,10p' "$0"; exit 0 ;; *) die "Неизвестный аргумент: $1" ;; esac; done
-load_env; validate_project_name; require_vars DATA_ROOT
+load_env; validate_project_name; require_vars DATA_ROOT POSTGRES_USER POSTGRES_DB
 T_NET="${UPD_TIMEOUT_NET:-60}"; T_PULL="${UPD_TIMEOUT_PULL:-1800}"; S_PULL="${UPD_STALL_PULL:-300}"; T_BUILD="${UPD_TIMEOUT_BUILD:-2400}"; S_BUILD="${UPD_STALL_BUILD:-900}"
 T_MIG="${UPD_TIMEOUT_MIGRATE:-600}"; T_BACKUP="${UPD_TIMEOUT_BACKUP:-900}"; T_UP="${UPD_TIMEOUT_UP:-300}"
 STEP=0; STEPS=11; CUR="init"; STAGE_CODE=generic

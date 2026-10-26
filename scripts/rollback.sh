@@ -6,10 +6,10 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 YES=0; SKIP_SCHEMA=0
 while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; shift 2 ;; --yes|-y) YES=1; shift ;; --skip-schema-check) SKIP_SCHEMA=1; shift ;; *) die "Неизвестный аргумент: $1" ;; esac; done
-load_env; validate_project_name; require_vars DATA_ROOT
+load_env; validate_project_name; require_vars DATA_ROOT POSTGRES_USER POSTGRES_DB
 take_lock
 PREV_HEAD="$(state_get previous_head)"; PREV_TAG="$(state_get previous_tag)"; PREV_VER="$(state_get previous_version)"; CUR_VER="$(version_file_read)"
-PREV_REPO="$(state_get previous_repo)"; PREV_REPO="${PREV_REPO:-$IMAGE_REPO}"; CODE_HEAD="$(state_get previous_start)"; CODE_HEAD="${CODE_HEAD:-$PREV_HEAD}"
+PREV_REPO="$(state_get previous_repo)"; PREV_REPO="${PREV_REPO:-${IMAGE_REPO:-kavcheck}}"; CODE_HEAD="$(state_get previous_start)"; CODE_HEAD="${CODE_HEAD:-$PREV_HEAD}"
 [ -n "$PREV_HEAD" ] && [ -n "$PREV_TAG" ] || die "Нет сведений о предыдущей версии (обновление ещё не выполнялось)"
 log "Откат: $CUR_VER → ${PREV_VER:-?} (образы ${PREV_REPO}:${PREV_TAG})"
 for svc in backend web; do docker image inspect "${PREV_REPO}-${svc}:${PREV_TAG}" >/dev/null 2>&1 || die "Образ ${PREV_REPO}-${svc}:${PREV_TAG} не найден — откат без пересборки невозможен; обновитесь до исправленной версии"; done

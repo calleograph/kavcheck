@@ -22,7 +22,7 @@ STALL_WARN_S = 300              # столько секунд без вывод�
 URL_CRED = re.compile(r"(https?://)[^/@\s:]+(?::[^/@\s]*)?@")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 LOG_CHUNK = 64 * 1024
-ACTIONS = ("check", "update", "rollback", "backup", "ping", "preflight", "restore")
+ACTIONS = ("check", "update", "rollback", "backup", "ping", "preflight", "restore", "helper")
 BUSY_STATES = ("updating", "rolling_back", "backing_up", "restoring", "recovering")
 BACKUP_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}\.dump$")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -69,7 +69,7 @@ class Channel:
         return {**st, "available": available, "heartbeat_age_s": None if age is None else int(age), "request_pending": (self.dir / "request.txt").exists(), "interrupted": interrupted,
                 "stalled_s": int(now - out_at) if stalled else None, "api_outdated": available and int((hb or op).get("updater_api") or 1) < UPDATER_API, "updater_api": (hb or op).get("updater_api"),
                 "helper_pid": (hb or {}).get("pid"), "boot_changed": boot_changed, "down_reason": "" if available else self._down_reason(hb, op, age, boot_changed),
-                "operation_alive": None if not hb else hb.get("op_alive")}
+                "operation_alive": None if not hb else hb.get("op_alive"), "starts_10m": (hb or {}).get("starts_10m"), "script_sha": ((hb or {}).get("script_sha") or "")[:12]}
 
     @staticmethod
     def _down_reason(hb: dict | None, op: dict, age: float | None, boot_changed: bool) -> str:
