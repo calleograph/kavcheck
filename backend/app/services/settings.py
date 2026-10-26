@@ -205,7 +205,7 @@ class DevicesSettings(_Group):
 class HardwareSettings(_Group):
     """Контроль аппаратных ресурсов Linux-серверов для Kaspersky Endpoint Security for Linux (по инвентаризации оборудования KSC). Нет данных об оборудовании — оценка не выполняется."""
     enabled: bool = True
-    cpu_ok_cores: int = Field(default=3, ge=1, le=64)            # столько ядер и больше — норма; меньше — «Мало ядер CPU» (предупреждение)
+    cpu_ok_cores: int = Field(default=2, ge=1, le=64)            # столько ядер и больше — норма; меньше — «Мало ядер CPU» (предупреждение); при значении 2 и критичном пороге 1 предупреждения нет
     cpu_critical_cores: int = Field(default=1, ge=1, le=64)      # столько ядер и меньше — «Недостаточно ядер CPU» (критическая)
     ram_min_mb: int = Field(default=2048, ge=256, le=1_048_576)  # меньше — «Недостаточно ОЗУ» (предупреждение); требования зависят от версии KESL и нагрузки: уточните для своих серверов
     exclude_masks: list[str] = Field(default_factory=list, max_length=100)   # имена устройств (маски `*`), которые не проверяются: рабочие станции под Linux, тестовые стенды
