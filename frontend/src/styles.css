@@ -1312,3 +1312,19 @@ tr.xrow:hover > td { background: var(--surface-2); }
 .pt-change { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
 .pt-hostline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 @media (max-width: 960px) { .pt-wiz { grid-template-columns: minmax(0, 1fr); } .pt-aside { position: static; } }
+
+/* главная: плотная раскладка — ключевые карточки и графики видны на одном экране 1366×768; таблица источников прокручивается внутри */
+.ov { gap: 10px; }
+.ov .page-head { margin-bottom: -2px; }
+.ov-kpis, .ov-charts { gap: 10px; }
+.ov-card { padding: 8px 12px 7px; }
+.ov-kpis .ov-card { gap: 2px; }
+.kpi { padding: 3px 6px; }
+.kpi-v { font-size: 16px; }
+.kpi-big .kpi-v { font-size: 24px; }
+.kpi-h { font-size: 11px; }
+.ov-charts .hbars .hbar { padding-top: 2px; padding-bottom: 2px; }
+.trend-svg { height: 78px; }
+.ov-sources .table-scroll { max-height: 188px; overflow: auto; }
+.ov-sources .ov-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+@media (max-width: 720px) { .ov-sources .table-scroll { max-height: none; } }

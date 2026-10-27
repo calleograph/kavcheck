@@ -63,7 +63,7 @@ export interface OvPeriod { days: number; connected: number; visible: number; av
 export interface OvLicenseGroup { key: string; product: string; kind: string; limit: number | null; used: number | null; free: number | null; over: boolean; expires_at: string | null; state: "active" | "expiring" | "expired" | "unknown"; shared: boolean; basis: string; pool: string; notes: string[]; origin: string[];
   sources: { id: string; name: string; lic_key: string; limit: number | null; used: number | null; origin: string; updated_at: string | null }[] }
 export interface OvLicenses { totals: { groups: number; limit: number | null; used: number | null; free: number | null; share: number | null; next_expiry: string | null; expired: number; expiring: number; complete: boolean; shared: number };
-  groups: OvLicenseGroup[]; by_source: Record<string, { limit: number | null; used: number | null; groups: number; polled_at: string | null; error: string | null; note: string | null }> }
+  groups: OvLicenseGroup[]; by_source: Record<string, { limit: number | null; used: number | null; free: number | null; groups: number; polled_at: string | null; error: string | null; note: string | null }> }
 export type OvSource = { id: string; name: string; error: string | null; synced_at: string | null; ksc_version?: string | null; last_check_ok?: boolean | null; duplicate_of?: string; snapshot?: boolean; license?: OvLicenses["by_source"][string] | null } & Partial<Record<OvMetric, number>>;
 export interface Overview {
   days: number; periods_available: number[]; scope: { all: boolean; sources: number; ok: number; duplicates: Record<string, string> };

@@ -38,7 +38,7 @@ async def licenses_block(db: AsyncSession, srcs: list[KscSource]) -> dict:
         mine = [g for g in LP.merge([r for r in recs if r["source_id"] == s.id], ov)]
         t = LP.totals(mine)
         st = states.get(s.id)
-        by_src[str(s.id)] = {"limit": t["limit"], "used": t["used"], "groups": t["groups"], "polled_at": st.polled_at if st else None, "error": st.error if st else None,
+        by_src[str(s.id)] = {"limit": t["limit"], "used": t["used"], "free": t["free"], "groups": t["groups"], "polled_at": st.polled_at if st else None, "error": st.error if st else None,
                              "note": ((st.diag or {}).get("note") if st and st.diag else None) or None}
     return {"totals": tot, "groups": groups, "by_source": by_src}
 

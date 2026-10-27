@@ -64,7 +64,7 @@ async def build_overview(client: SourceClient | None, p: dict, ctx: Ctx) -> dict
                     periods[pr["days"]][k] += pr[k]
         lb = lic["by_source"].get(str(s.id)) or {}
         rows.append({"name": s.name, **{k: sm[k] for k in ("total", "active", "servers", "workstations", "other_os", "protected", "no_av")},
-                     "license": (f"{lb['used'] if lb.get('used') is not None else '—'} / {lb['limit']}" if lb.get("limit") is not None else "нет данных"), "synced": at})
+                     "license": (f"{lb['used'] if lb.get('used') is not None else '—'} / {lb['limit']}" + (f" (свободно {lb['free']})" if lb.get("free") is not None else "") if lb.get("limit") is not None else "нет данных"), "synced": at})
         if p.get("detail") != "summary":
             for r in ([] if only in DB_METRICS else C.pick(recs, only or "active", days, ctx.now)):
                 av = r.get("av") or {}

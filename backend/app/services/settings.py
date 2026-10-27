@@ -225,6 +225,9 @@ class PentestSettings(_Group):
     max_concurrent_hosts: int = Field(default=4, ge=1, le=32)                             # одновременно определяются сервисы на стольких адресах
     batch_size: int = Field(default=32, ge=1, le=256)                                       # адресов в одном запуске Nmap на этапе портов
     max_rate: int = Field(default=300, ge=10, le=10_000)                                   # предел скорости проб (пакетов в секунду) на запуск Nmap
+    max_parallelism: int = Field(default=100, ge=1, le=1000)                               # одновременных проб (соединений) на запуск Nmap: --max-parallelism
+    nmap_memory_mb: int = Field(default=1500, ge=256, le=16384)                            # предел памяти одного процесса Nmap (RLIMIT_AS)
+    nmap_nice: int = Field(default=10, ge=0, le=19)                                        # приоритет процесса Nmap ниже обычного: сканирование не отнимает CPU у сервера
     host_timeout_s: int = Field(default=300, ge=30, le=3600)                                # на адрес на этапе портов
     service_timeout_s: int = Field(default=180, ge=30, le=1800)                             # на адрес на этапе определения сервисов
     job_timeout_h: int = Field(default=12, ge=1, le=168)

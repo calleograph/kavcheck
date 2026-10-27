@@ -1,10 +1,13 @@
 """Главная: методика активности (7/30/60/90 сут), серверы и станции, защита, лицензии без двойного счёта, чтение лицензий KSC по найденным столбцам, API и боковая панель."""
 import uuid
+
+import pytest
+from sqlalchemy import select
 from datetime import datetime, timedelta, timezone
 
 from app.ksc import licenses as KL
 from app.licensing import pools as LP
-from app.models import LicenseRecord, OverviewDaily
+from app.models import LicenseRecord, LicenseState, OverviewDaily
 from app.overview import calc as C
 from tests.conftest import login
 
@@ -265,3 +268,31 @@ async def test_pentest_results_count_is_hidden_from_viewers(client, app, monkeyp
     await client.post("/api/v1/auth/source", json={"source_id": src["items"][0]["id"]}) if src["items"] else None
     r = await client.get("/api/v1/overview")
     assert r.status_code != 200 or r.json()["pentest"] is None
+
+
+async def test_unreachable_source_does_not_wipe_licenses(app):
+    from app.licensing.service import LicenseService  # noqa: PLC0415
+    from app.models import KscSource  # noqa: PLC0415
+
+    sid = uuid.uuid4()
+    async with app.state.session_maker() as db:
+        db.add(KscSource(id=sid, name="A", host="a.example.local", port=1433, database="KAV", username="u", password_enc="x", auth_type="sql", tls_mode="request", is_active=True, position=0))
+        db.add(LicenseRecord(source_id=sid, lic_key="k1", origin="ksc", product="KES", limit_n=10, updated_at=datetime.now(timezone.utc)))
+        await db.commit()
+
+    class Down:
+        async def run(self, *a, **k):
+            raise KL.KscError("connect", "нет соединения")
+
+    class Reg:
+        def client(self, src):
+            return Down()
+
+    svc = LicenseService(app.state.session_maker, Reg(), "s")
+    assert await svc.run_source(sid) is False
+    async with app.state.session_maker() as db:
+        assert len((await db.execute(select(LicenseRecord).where(LicenseRecord.source_id == sid))).scalars().all()) == 1      # прежняя запись цела
+        st = await db.get(LicenseState, sid)
+        assert st.error and "нет соединения" in st.error
+    with pytest.raises(KL.KscError):
+        await KL.read(Down(), "s")

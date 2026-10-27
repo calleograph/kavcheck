@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FilterBar } from "../components/FilterBar";
+import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type EvGroup, type EvSummary, type SecEvent } from "../api";
@@ -118,7 +119,7 @@ export function EventList({ ctx, days, hostId, group, threat, onGroup, onThreat 
   const list = useInfinite<SecEvent>(`events:${hostId ?? "all"}`, [days, hostId, group, threat, applied],
     (offset, limit) => api.events.list({ days, host_id: hostId, type: GROUP_TYPES[group], q: applied, threat, offset, limit }) as unknown as Promise<Chunk<SecEvent>>);
   const unsupported = (list.extra as { unsupported?: string[] } | null)?.unsupported;
-  const sel = useRowSel<number>(); const [report, setReport] = useState<"all" | "sel" | null>(null);
+  const sel = useRowSel<number>(); const [report, setReport] = useState<"all" | "sel" | null>(null); const ex = useExpanded<number>();
   const canReport = ctx.me.user.role !== "viewer";
   const evIds = list.items.map((e) => e.event_id);
   if (unsupported) return <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет журнала событий KSC ({unsupported.join(", ")}).</div></div>;
@@ -135,20 +136,30 @@ export function EventList({ ctx, days, hostId, group, threat, onGroup, onThreat 
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={5} /> : (
           <table className="table virt">
-            <thead><tr><CheckAll all={sel.allOf(evIds)} some={sel.someOf(evIds)} onToggle={() => sel.toggleMany(evIds)} /><th>Время</th>{!hostId && <th>Компьютер</th>}<th>Событие</th><th>Угроза или атака</th><th>Объект</th><th className="hide-sm">Пользователь</th></tr></thead>
-            <tbody>
-              <VirtualRows list={list} colSpan={hostId ? 6 : 7} estimate={48} row={(e) => (
+            <thead><tr><CheckAll all={sel.allOf(evIds)} some={sel.someOf(evIds)} onToggle={() => sel.toggleMany(evIds)} /><ExpandTh /><th>Время</th>{!hostId && <th>Компьютер</th>}<th>Событие</th><th>Угроза или атака</th><th>Объект</th><th className="hide-sm">Пользователь</th></tr></thead>
+            <VirtualRows group list={list} colSpan={hostId ? 7 : 8} estimate={48} row={(e) => (
+              <>
                 <tr className={sel.has(e.event_id) ? "sel" : ""}>
                   <td className="check"><input type="checkbox" aria-label="Выбрать событие" checked={sel.has(e.event_id)} onChange={() => sel.toggle(e.event_id)} /></td>
+                  <ExpandCell id={`ev${e.event_id}`} open={ex.has(e.event_id)} onToggle={() => ex.toggle(e.event_id)} label={`${e.type_title} ${fmt(e.at)}`} />
                   <td className="nowrap small">{fmt(e.at)}</td>
                   {!hostId && <td>{e.host_known ? <Link to={`/hosts/${e.host_id}?tab=events`}>{e.host}</Link> : <span className="muted" title="Устройства уже нет в KSC: имя и IP-адрес на момент события недоступны">{e.host}</span>}{e.ip ? <span className="sub mono">{e.ip}</span> : <span className="sub muted">IP: нет данных</span>}</td>}
                   <td><span className={`badge ${TYPE_TONE[e.type] ?? ""}`}>{e.type_title}</span></td>
                   <td>{e.threat ? <button type="button" className="link-btn mono threat-name" onClick={() => onThreat(e.threat)} title="Показать события этой угрозы">{e.threat}</button> : <span className="muted">—</span>}{e.threat_kind && <span className="sub">{e.threat_kind}</span>}</td>
                   <td className="small obj">{e.type === "attack" ? <span className="mono">{e.attacker || "?"}{e.port ? ` → порт ${e.port}` : ""}{e.protocol ? ` (${e.protocol})` : ""}</span> : e.object ? <span className="mono" title={e.object}>{e.object}</span> : <span className="muted">—</span>}</td>
                   <td className="small hide-sm">{e.user || <span className="muted">—</span>}</td>
-                </tr>)} />
-              {!list.items.length && !list.loading && <tr><td colSpan={hostId ? 6 : 7}><Empty icon="checkCircle" title={applied || group || threat ? "Ничего не найдено" : "Событий нет"}>{applied || group || threat ? "Измените поиск или фильтр." : `Kaspersky не сообщал об обнаружениях ${days === 1 ? "за сутки" : `за ${days} суток`}.`}</Empty></td></tr>}
-            </tbody>
+                </tr>
+                <ExpandedRow id={`ev${e.event_id}`} open={ex.has(e.event_id)} colSpan={hostId ? 7 : 8}>
+                  <XGrid>
+                    <XItem label="Время события (UTC)">{fmt(e.at)}</XItem><XItem label="Тип">{e.type_title}</XItem><XItem label="Идентификатор события"><span className="mono">{e.event_id}</span></XItem>
+                    <XItem label="Компьютер">{e.host}{e.ip ? ` · ${e.ip}` : ""}</XItem><XItem label="Продукт">{e.product}</XItem><XItem label="Пользователь">{e.user}</XItem>
+                    <XItem label="Угроза или атака">{e.threat}{e.threat_kind ? ` · ${e.threat_kind}` : ""}</XItem>
+                    <XItem label="Источник атаки и порт">{e.type === "attack" ? `${e.attacker || "?"}${e.port ? ` → порт ${e.port}` : ""}${e.protocol ? ` (${e.protocol})` : ""}` : ""}</XItem>
+                    <XItem label="Объект" wide>{e.object ? <span className="mono">{e.object}</span> : ""}</XItem>
+                  </XGrid>
+                </ExpandedRow>
+              </>)} />
+            {!list.items.length && !list.loading && <tbody><tr><td colSpan={hostId ? 7 : 8}><Empty icon="checkCircle" title={applied || group || threat ? "Ничего не найдено" : "Событий нет"}>{applied || group || threat ? "Измените поиск или фильтр." : `Kaspersky не сообщал об обнаружениях ${days === 1 ? "за сутки" : `за ${days} суток`}.`}</Empty></td></tr></tbody>}
           </table>)}
       </div>
       <ListFoot list={list} />

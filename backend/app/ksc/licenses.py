@@ -92,9 +92,8 @@ async def read(client: SourceClient, secret: str = "") -> dict:
     diag: dict = {"tables": [], "mapped": {}, "note": ""}
     try:
         names = [str(r["name"]) for r in await client.run(OBJECTS, max_rows=20000)]
-    except KscError as exc:
-        diag["note"] = f"каталог базы недоступен: {exc.message}"
-        return {"records": [], "diag": diag}
+    except KscError:
+        raise                                                  # источник недоступен — это не «лицензий нет»: прежние записи не заменяются пустыми (служба фиксирует ошибку)
     cands = sorted(n for n in names if IDENT.match(n) and (n.lower() in ("keys", "keys_installed") or re.search(r"lic|serial", n, re.I) and not re.search(r"hst_|events?|policy|task", n, re.I)))[:12]
     diag["tables"] = cands
     if not cands:
@@ -104,9 +103,8 @@ async def read(client: SourceClient, secret: str = "") -> dict:
     try:
         for r in await client.run(COLUMNS.format(names=", ".join(f"N'{n}'" for n in cands)), max_rows=5000):
             cols.setdefault(str(r["tbl"]), []).append((str(r["col"]), str(r["typ"])))
-    except KscError as exc:
-        diag["note"] = f"столбцы таблиц недоступны: {exc.message}"
-        return {"records": [], "diag": diag}
+    except KscError:
+        raise
     records: list[dict] = []
     for table in cands:
         mp = map_columns(cols.get(table, []))
@@ -120,6 +118,8 @@ async def read(client: SourceClient, secret: str = "") -> dict:
             diag.setdefault("errors", {})[table] = exc.message
             continue
         records += to_records(rows, mp, table, secret, now)
+    if not records and diag.get("errors"):                      # таблицы найдены, но ни одну прочитать не удалось: сбой чтения, а не отсутствие лицензий
+        raise KscError("query", "Таблицы лицензий не прочитаны: " + "; ".join(f"{t}: {m}" for t, m in diag["errors"].items())[:300])
     if not records:
         diag["note"] = "таблицы лицензий найдены, но нужных значений (срок, лимит) в них нет или столбцы не распознаны"
     # одна и та же запись в двух таблицах (ключ и установленный ключ) не должна считаться дважды

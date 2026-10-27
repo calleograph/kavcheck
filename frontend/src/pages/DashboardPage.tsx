@@ -208,7 +208,7 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
                 {s.error || s.duplicate_of ? <td colSpan={6} className={s.error ? "bad-text small" : "small"}>{s.error ? `Нет данных: ${s.error}` : ""}</td> : (<>
                   <td className="num">{num(s.total ?? null)}</td><td className="num"><b>{num(s.active ?? null)}</b></td><td className="num">{num(s.servers ?? null)}</td><td className="num">{num(s.workstations ?? null)}</td>
                   <td className="num">{num(s.protected ?? null)}</td><td className={`num ${s.no_av ? "bad-text" : ""}`}>{num(s.no_av ?? null)}</td></>)}
-                <td className="small">{l && l.limit !== null ? <>{l.used === null ? "—" : num(l.used)} / {num(l.limit)}</> : <span className="muted">нет данных</span>}</td>
+                <td className="small">{l && l.limit !== null ? <>{l.used === null ? "—" : num(l.used)} / {num(l.limit)}{l.free !== null && <span className="sub">свободно {num(l.free)}</span>}</> : <span className="muted">нет данных</span>}</td>
                 <td className="small nowrap">{s.synced_at ? fmt(s.synced_at) : <span className="muted">—</span>}{s.snapshot && <span className="sub">срез, источник вне выбора</span>}</td>
               </tr>); })}</tbody>
         </table></div>

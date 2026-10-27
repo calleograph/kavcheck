@@ -7,6 +7,7 @@ import { Fetched } from "../components/Common";
 import { EolList } from "../components/EolList";
 import { Modal } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
+import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
@@ -75,7 +76,7 @@ function SearchView({ ctx }: { ctx: Ctx }) {
   const [version, setVersion] = useKept("vdb.version", ""); const [appliedV, setAppliedV] = useState(version);
   const [range, setRange] = useKept("vdb.range", ""); const [lo, setLo] = useKept("vdb.lo", ""); const [hi, setHi] = useKept("vdb.hi", "");
   const [sort, setSort] = useKept("vdb.sort", "priority"); const [desc, setDesc] = useKept("vdb.desc", true);
-  const sel = useRowSel<string>(); const [report, setReport] = useState<Report | null>(null);
+  const sel = useRowSel<string>(); const [report, setReport] = useState<Report | null>(null); const ex = useExpanded<string>();
   const canReport = ctx.me.user.role !== "viewer";
   useEffect(() => { const t = window.setTimeout(() => { setApplied(q); setAppliedV(version); }, 350); return () => window.clearTimeout(t); }, [q, version]);
   const list = useInfinite<VdbVulnRow>(`vdb:${sid}`, [applied, appliedV, sev, kev, fix, mine, source, pf, pt, mf, sort, desc, range, lo, hi],
@@ -125,13 +126,14 @@ function SearchView({ ctx }: { ctx: Ctx }) {
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={7} /> : (
           <table className="table virt">
-            <thead><tr><CheckAll all={sel.allOf(keys)} some={sel.someOf(keys)} onToggle={() => sel.toggleMany(keys)} /><SortTh k="key" label="Уязвимость" sort={sort} desc={desc} onSort={onSort} />
+            <thead><tr><CheckAll all={sel.allOf(keys)} some={sel.someOf(keys)} onToggle={() => sel.toggleMany(keys)} /><ExpandTh /><SortTh k="key" label="Уязвимость" sort={sort} desc={desc} onSort={onSort} />
               <SortTh k="score" label="CVSS" sort={sort} desc={desc} onSort={onSort} /><SortTh k="priority" label="Критичность" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><th className="hide-sm hide-lg">Продукты</th><th className="hide-md">Источники</th>
               <SortTh k="published" label="Опубликована" sort={sort} desc={desc} onSort={onSort} className="hide-md" /><th className="hide-sm">Наша инфраструктура</th><th className="hide-sm"><span className="sr-only">Действия</span></th></tr></thead>
-            <tbody>
-              <VirtualRows list={list} colSpan={9} estimate={64} row={(v) => (
+            <VirtualRows group list={list} colSpan={10} estimate={64} row={(v) => (
+              <>
                 <tr className={`clickable ${sel.has(v.key) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("input, button, a")) setSp((p) => { p.set("v", v.key); return p; }); }}>
                   <td className="check"><input type="checkbox" aria-label={`Выбрать ${v.key}`} checked={sel.has(v.key)} onChange={() => sel.toggle(v.key)} /></td>
+                  <ExpandCell id={`vd${v.key}`} open={ex.has(v.key)} onToggle={() => ex.toggle(v.key)} label={v.key} />
                   <td><button type="button" className="link-btn strong-link mono" onClick={() => setSp((p) => { p.set("v", v.key); return p; })}>{v.key}</button>{v.version_match && <span className={`badge ${v.version_match === "yes" ? "err" : "warn"} new-dot`}>{v.version_match === "yes" ? "затрагивает версию" : "версия требует уточнения"}</span>}
                     <span className="sub vdb-title">{v.title || v.description}</span>{v.ids.length > 1 && <span className="sub mono small"><CompactList items={v.ids.filter((i) => i !== v.key)} label="идентификаторы" /></span>}</td>
                   <td className="nowrap"><CvssCell v={v} /><span className="sm-stack"><LevelBadge v={v} />{v.exploited && <Kev />}</span></td>
@@ -141,9 +143,19 @@ function SearchView({ ctx }: { ctx: Ctx }) {
                   <td className="nowrap small hide-md">{fmtDate(v.published)}</td>
                   <td className="hide-sm">{v.finding ? <><StatusBadge s={v.finding.status} label={v.finding.status_ru} /><span className="sub">{num(v.finding.installs)} уст.{v.finding.new ? " · новая" : ""}</span></> : <span className="muted small">не найдено</span>}</td>
                   <td className="actions hide-sm">{canReport && <button type="button" className="btn mini ghost row-act" onClick={() => setReport({ title: `Проверка инфраструктуры: ${v.key}`, keys: [v.key] })}><Icon name="target" size={15} />Проверить</button>}</td>
-                </tr>)} />
-              {!list.items.length && !list.loading && <tr><td colSpan={9}><Empty icon="search" title="Уязвимости не найдены">{applied || sev || kev || mine || range || lo || hi ? "Измените запрос или фильтры." : "Локальная база пуста: включите и загрузите источники в разделе «Источники и обновление»."}</Empty></td></tr>}
-            </tbody>
+                </tr>
+                <ExpandedRow id={`vd${v.key}`} open={ex.has(v.key)} colSpan={10}>
+                  <XGrid>
+                    <XItem label="Идентификаторы" wide>{v.ids.join(", ")}</XItem><XItem label="Критичность">{v.severity_ru}</XItem>
+                    <XItem label="CVSS">{v.score !== null ? `${v.score}${v.score_version ? ` · v${v.score_version}` : ""}${v.score_source ? ` · ${SRC_TITLE[v.score_source] ?? v.score_source}` : ""}` : "оценки нет"}</XItem>
+                    <XItem label="Эксплуатация">{v.exploited ? <b className="bad-text">известна (CISA KEV)</b> : "не отмечена"}</XItem><XItem label="Исправление">{v.has_fix === null ? "" : v.has_fix ? "есть" : "нет"}</XItem>
+                    <XItem label="Опубликована">{fmtDate(v.published)}</XItem><XItem label="Изменена">{fmtDate(v.modified)}</XItem><XItem label="Источники">{v.sources.map((x) => SRC_TITLE[x] ?? x).join(", ")}</XItem>
+                    <XItem label="Описание" wide>{v.description}</XItem><XItem label="Продукты" wide>{v.products.slice(0, 20).join("; ")}{v.products.length > 20 ? `; ещё ${v.products.length - 20}` : ""}</XItem>
+                  </XGrid>
+                  <div><button type="button" className="btn mini" onClick={() => setSp((p) => { p.set("v", v.key); return p; })}>Полная карточка</button></div>
+                </ExpandedRow>
+              </>)} />
+            {!list.items.length && !list.loading && <tbody><tr><td colSpan={10}><Empty icon="search" title="Уязвимости не найдены">{applied || sev || kev || mine || range || lo || hi ? "Измените запрос или фильтры." : "Локальная база пуста: включите и загрузите источники в разделе «Источники и обновление»."}</Empty></td></tr></tbody>}
           </table>)}
       </div>
       <ListFoot list={list} />
