@@ -116,7 +116,7 @@ async def list_jobs(source_only: bool = True, offset: int = Query(0, ge=0), limi
 @router.post("", status_code=201)
 async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     params = validate_params(body.kind, body.params)
-    if body.kind in ("quick_zone", "quick_eol"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю
+    if body.kind in ("quick_zone", "quick_eol", "quick_devices"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю
         from ..services.sources import visible_sources  # noqa: PLC0415
 
         ids = body.source_ids or [s.id for s in await visible_sources(db, su)]
@@ -245,9 +245,25 @@ async def list_templates(su: SessionUser = Depends(require_user), db: AsyncSessi
     return {"items": [tpl_out(t) for t in rows if t.shared or t.owner_id == su.user_id]}
 
 
+# Выбор строк и фильтры страницы шаблон не хранит: они берутся с той страницы, откуда открыт конструктор. В шаблоне — настройки отчёта (подробность, столбцы, состояния, критичность…).
+CONTEXT_KEYS = {"host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "zone", "group_contains", "threat", "product", "build", "problem"}
+
+
+def template_settings(params: dict) -> dict:
+    """Настройки быстрого отчёта для шаблона: без контекста страницы, только простые значения (строки, числа, флаги и списки строк/чисел) — проверка полей выполняется при запуске отчёта."""
+    out: dict = {}
+    for k, v in params.items():
+        if k in CONTEXT_KEYS or not isinstance(k, str) or len(k) > 40 or len(out) >= 40:
+            continue
+        if isinstance(v, (bool, int, float)) or v is None or (isinstance(v, str) and len(v) <= 200) or (isinstance(v, list) and len(v) <= 60 and all(isinstance(x, (str, int)) and len(str(x)) <= 120 for x in v)):
+            out[k] = v
+    return out
+
+
 @templates.post("", status_code=201)
 async def create_template(body: TemplateIn, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
-    t = ReportTemplate(name=body.name, kind=body.kind, params=validate_params(body.kind, body.params), shared=body.shared, owner_id=su.user_id)
+    params = template_settings(body.params) if body.kind in QUICK_PARAMS else validate_params(body.kind, body.params)
+    t = ReportTemplate(name=body.name, kind=body.kind, params=params, shared=body.shared, owner_id=su.user_id)
     db.add(t)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="template.create", target_type="template", target_id=str(t.id), details={"name": body.name})
     await db.commit()

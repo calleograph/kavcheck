@@ -13,7 +13,12 @@ MaskText = Annotated[str | None, Field(max_length=200), AfterValidator(lambda v:
 
 class Params(BaseModel):
     """Основа параметров отчётов: необязательное поле, переданное как null, получает значение по умолчанию (зона не выбрана — «все компьютеры»), а не ошибку «Input should be a valid string».
-    Поля, для которых null — допустимое значение (`int | None = None`), остаются как есть."""
+    Поля, для которых null — допустимое значение (`int | None = None`), остаются как есть.
+
+    Общие для всех отчётов настройки конструктора: `detail` — «summary» (краткий: показатели и сводные таблицы) или «full» (подробный: все записи, полные перечни CVE, устройств, пользователей);
+    `columns` — какие столбцы основной таблицы включить и в каком порядке (пусто — все)."""
+    detail: Literal["summary", "full"] = "full"
+    columns: list[str] = Field(default_factory=list, max_length=60)
 
     @model_validator(mode="before")
     @classmethod
@@ -212,21 +217,24 @@ class QuickVulns(QuickScope):
     cves: list[str] = Field(default_factory=list, max_length=200)
     vp_ids: list[int] = Field(default_factory=list, max_length=5000)
     product_names: list[str] = Field(default_factory=list, max_length=50)
+    product_like: MaskText = None                          # поиск по названию программы (условие страницы «Компьютеры» раздела «Уязвимости»)
     host_ids: list[int] = Field(default_factory=list, max_length=500)
     severity: Literal["", "critical", "high", "warning"] = ""
     patchable: bool = False
 
     @model_validator(mode="after")
-    def _need_selection(self):
-        if not (self.descr_ids or self.cves or self.vp_ids or self.product_names or self.host_ids):
-            raise ValueError("Выберите уязвимости, программы или компьютеры")
+    def _normalise(self):
+        # без выбора — отчёт по условиям страницы (все действующие обнаружения с учётом опасности, поиска, группы, зоны); объём ограничен пределом отчёта
         self.cves = [c.strip().upper() for c in self.cves if c.strip()]
         return self
 
 
 class QuickHosts(QuickScope):
-    host_ids: list[int] = Field(min_length=1, max_length=500)
-    sections: list[Literal["software", "vulns", "protection"]] = Field(default_factory=lambda: ["software", "vulns", "protection"])
+    """Отчёт по компьютерам: по выбранным (до 500) либо — без выбора — по условиям страницы «Компьютеры» (поиск, группа, ОС, давность связи, зона)."""
+    host_ids: list[int] = Field(default_factory=list, max_length=500)
+    os_contains: MaskText = None
+    inactive_only: bool = False
+    sections: list[Literal["software", "vulns", "protection"]] = Field(default_factory=list)     # пусто: по выбранным — все разделы, по условиям страницы — только защита
     bases_days: int = Field(default=3, ge=1, le=90)
     scan_days: int = Field(default=30, ge=1, le=365)
 
@@ -270,7 +278,8 @@ class QuickExtVulns(QuickScope):
 
 class QuickEol(Params):
     """EOL в инфраструктуре: какие состояния поддержки, типы и производитель; список устройств включается отдельной таблицей (полный, без сокращений)."""
-    statuses: list[Literal["eol", "extended", "upcoming"]] = Field(default_factory=lambda: ["eol", "extended", "upcoming"], min_length=1)
+    statuses: list[Literal["eol", "extended", "upcoming", "undetermined"]] = Field(default_factory=lambda: ["eol", "extended", "upcoming"], min_length=1)
+    finding: dict | None = None                           # одна находка: {source_id, kind, subject, version} — отчёт по устройствам из боковой панели
     kinds: list[Literal["app", "os"]] = Field(default_factory=lambda: ["app", "os"], min_length=1)
     severity: Literal["", "critical", "high", "warning"] = ""
     publisher: MaskText = None
@@ -307,11 +316,23 @@ class QuickZone(Params):
         return self
 
 
-QUICK_PARAMS = {"quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol}
+class QuickDevices(Params):
+    """Устройства и пользователи: условия страницы «Устройства и пользователи» (поиск по имени, IP, сети CIDR и логину, зона, ОС, пользователь, состояние EOL, источник)."""
+    q: str = Field(default="", max_length=400)
+    zone: str = Field(default="", max_length=40)
+    os: str = Field(default="", max_length=120)
+    user: str = Field(default="", max_length=120)
+    eol: Literal["", "any", "eol", "none"] = ""
+    include_inactive: bool = False
+    show_service: bool = False
+    source_id: str = Field(default="", max_length=40)
+
+
+QUICK_PARAMS = {"quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
 
 
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
@@ -343,7 +364,7 @@ class OverrideIn(BaseModel):
 
 class TemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices)$")
     params: dict
     shared: bool = True
 

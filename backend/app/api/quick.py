@@ -27,7 +27,7 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
@@ -65,11 +65,11 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
                 raise HTTPException(status_code=409, detail=exc.message) from None
             raise _ksc(exc) from None
         return _answer(doc, doc.get("data_at") or doc.get("generated_at"))
-    if body.kind == "quick_eol":                       # данные из PostgreSQL: KSC не нужен; источников может быть несколько («Все источники»)
+    if body.kind in ("quick_eol", "quick_devices"):      # данные из PostgreSQL: KSC не нужен; источников может быть несколько («Все источники»)
         import uuid  # noqa: PLC0415
 
         try:
-            params = QUICK_PARAMS["quick_eol"].model_validate(body.params).model_dump()
+            params = QUICK_PARAMS[body.kind].model_validate(body.params).model_dump()
             ids = [uuid.UUID(x) for x in body.source_ids] or [src.id]
         except (ValidationError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)[:300]) from None
@@ -78,7 +78,7 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
                 raise HTTPException(status_code=403, detail="Нет доступа к этому источнику KSC")
         general = await request.app.state.settings_svc.get(db, "general")
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), sm=request.app.state.session_maker, source_id=src.id, source_ids=ids)
-        doc = await quick.build("quick_eol", None, params, ctx)  # type: ignore[arg-type]
+        doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
         return _answer(doc, ctx.now)
     miss = unsupported(src, FEATURE[body.kind])
     if miss:

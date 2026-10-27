@@ -5,8 +5,10 @@ import { NoSource, type Ctx } from "../App";
 import { CompactList } from "../components/CompactList";
 import { Modal } from "../components/Dialogs";
 import { EolBadge, EolDates, EolSev } from "../components/EolBits";
+import { FilterBar } from "../components/FilterBar";
 import { Icon } from "../components/Icons";
 import { ListFoot, useInfinite, useKept } from "../components/Infinite";
+import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { ZoneField } from "../components/ZoneBits";
 import { Empty, PageHead, Segmented, SkelRows, SortTh } from "../components/ui";
@@ -28,7 +30,7 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
   const [zone, setZone] = useKept("dev.zone", ""); const [eol, setEol] = useKept("dev.eol", ""); const [osq, setOsq] = useKept("dev.os", ""); const [uq, setUq] = useKept("dev.user", "");
   const [srcId, setSrcId] = useKept("dev.src", ""); const [all, setAll] = useKept("dev.all", false); const [service, setService] = useKept("dev.service", false);
   const [sort, setSort] = useKept("dev.sort", "name"); const [desc, setDesc] = useKept("dev.desc", false);
-  const [status, setStatus] = useState<DevicesStatus | null>(null); const [toast, show] = useToast();
+  const [status, setStatus] = useState<DevicesStatus | null>(null); const [toast, show] = useToast(); const [report, setReport] = useState(false);
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 400); return () => window.clearTimeout(t); }, [q]);
   useEffect(() => { if (ctx.current) api.devices.status().then(setStatus).catch(() => setStatus(null)); }, [ctx.current, ctx.all]);
   const list = useInfinite<DeviceRow>(`dev:${ctx.current?.id}:${ctx.all}`, [applied, zone, eol, osq, uq, srcId, all, service, sort, desc],
@@ -43,25 +45,29 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
   const canPoll = ctx.me.user.role !== "viewer";
   return (
     <section>
-      <PageHead title="Устройства и пользователи" lede="Все устройства с пользователями, зонами ответственности и признаком EOL в одной таблице. Пользователи накапливаются по наблюдениям: KSC не хранит даты входа.">
-        {canPoll && <button className="btn" onClick={poll}><Icon name="refresh" />Опросить пользователей</button>}
-      </PageHead>
+      <PageHead title="Устройства и пользователи" lede="Все устройства с пользователями, зонами ответственности и признаком EOL в одной таблице. Пользователи накапливаются по наблюдениям: KSC не хранит даты входа." />
       {(extra?.not_ready?.length ?? 0) > 0 && <div className="alert info"><Icon name="info" /><div className="alert-body">Данные зон ещё не рассчитаны для: {extra!.not_ready!.join(", ")}. Устройства появятся после первого расчёта (Администрирование → Расчёт данных зон).</div></div>}
       {bad.map((s) => <div key={s.source_id} className="alert warn"><Icon name="alert" /><div className="alert-body">Источник «{s.source}»: {!s.supported ? "в базе KSC нет таблиц пользователей — столбцы пользователей пусты." : `опрос пользователей не удался (${s.error}). Показаны данные последнего успешного опроса${s.polled_at ? ` от ${fmt(s.polled_at)}` : ""}.`}</div></div>)}
-      <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Поиск устройств" placeholder="Имя, логин или IP: srv-*, ivanov, 192.0.2.0/24, 10.1.2.5-40, 10.1.*  (несколько значений через пробел)" /></div>
-        <Segmented<string> label="EOL" value={eol} onChange={setEol} options={[["", "Все"], ["any", "С проблемами поддержки"], ["eol", "С EOL"], ["none", "Без проблем"]]} />
-        <details className="disclosure toolbar-more"><summary>Дополнительно</summary>
-          <div className="toolbar-fields">
-            <label className="field">ОС<input value={osq} onChange={(e) => setOsq(e.target.value)} placeholder="Windows 10*" className="w-md" /></label>
-            <label className="field">Пользователь<input value={uq} onChange={(e) => setUq(e.target.value)} placeholder="логин" className="w-md" /></label>
-            {ctx.all && <label className="field">Источник KSC<select value={srcId} onChange={(e) => setSrcId(e.target.value)}><option value="">Все</option>{ctx.sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
-            <ZoneField value={zone} onChange={setZone} />
-            <label className="check inline-check"><input type="checkbox" className="switch" checked={service} onChange={(e) => setService(e.target.checked)} />Показывать служебные и системные учётные записи</label>
-          </div>
-        </details>
-        <div className="toolbar-foot"><span className="muted small">Адрес ищется по диапазону чисел, а не по тексту: сети CIDR, диапазоны и маски по октетам работают на любом числе устройств. Поиск по логину учитывает накопленные наблюдения.</span></div>
-      </div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Имя, логин или IP: srv-*, ivanov, 192.0.2.0/24, 10.1.2.5-40, 10.1.*", label: "Поиск устройств" }}
+        primary={<Segmented<string> label="EOL" value={eol} onChange={setEol} options={[["", "Все"], ["any", "С проблемами поддержки"], ["eol", "С EOL"], ["none", "Без проблем"]]} />}
+        more={<>
+          <label className="field">ОС<input value={osq} onChange={(e) => setOsq(e.target.value)} placeholder="Windows 10*" /></label>
+          <label className="field">Пользователь<input value={uq} onChange={(e) => setUq(e.target.value)} placeholder="логин" /></label>
+          {ctx.all && <label className="field">Источник KSC<select value={srcId} onChange={(e) => setSrcId(e.target.value)}><option value="">Все</option>{ctx.sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
+          <ZoneField value={zone} onChange={setZone} />
+          <label className="check"><input type="checkbox" className="switch" checked={service} onChange={(e) => setService(e.target.checked)} />Показывать служебные и системные учётные записи</label>
+          <label className="check"><input type="checkbox" className="switch" checked={all} onChange={(e) => setAll(e.target.checked)} />Включая давно не подключавшиеся устройства</label>
+        </>}
+        moreActive={[osq, uq, srcId && ctx.all ? srcId : "", zone, service ? "1" : "", all ? "1" : ""].filter(Boolean).length}
+        chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(eol ? [{ id: "eol", label: `EOL: ${{ any: "с проблемами", eol: "с EOL", none: "без проблем" }[eol]}`, onRemove: () => setEol("") }] : []),
+          ...(osq ? [{ id: "os", label: `ОС: ${osq}`, onRemove: () => setOsq("") }] : []), ...(uq ? [{ id: "user", label: `Пользователь: ${uq}`, onRemove: () => setUq("") }] : []),
+          ...(srcId && ctx.all ? [{ id: "src", label: `Источник: ${ctx.sources.find((s) => s.id === srcId)?.name ?? ""}`, onRemove: () => setSrcId("") }] : []), ...(zone ? [{ id: "zone", label: "Зона ответственности", onRemove: () => setZone("") }] : []),
+          ...(service ? [{ id: "svc", label: "Со служебными учётными записями", onRemove: () => setService(false) }] : []), ...(all ? [{ id: "all", label: "Включая неактивные", onRemove: () => setAll(false) }] : [])]}
+        onReset={() => { setQ(""); setEol(""); setOsq(""); setUq(""); setSrcId(""); setZone(""); setService(false); setAll(false); }}
+        count={{ n: list.initial ? null : list.total, noun: ["устройство", "устройства", "устройств"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
+        extra={canPoll ? <button type="button" className="btn ghost mini" onClick={poll} title="Опросить KSC о вошедших пользователях сейчас"><Icon name="refresh" size={15} />Опросить пользователей</button> : undefined}
+        report={canPoll ? { onClick: () => setReport(true), title: "Отчёт по всем устройствам, подходящим под фильтры страницы (пользователи — полными списками)" } : null} />
+      <p className="muted small fbar-note">Адрес ищется по диапазону чисел: сети CIDR, диапазоны и маски по октетам работают на любом числе устройств. Поиск по логину учитывает накопленные наблюдения. {all ? "Показаны все устройства." : "Показаны устройства со связью с KSC за период активности."}</p>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={7} /> : (
@@ -91,10 +97,11 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
           </table>)}
       </div>
       <ListFoot list={list} />
-      <p className="hidden-note"><Icon name={all ? "eye" : "eyeOff"} size={15} /><span>{all ? "Показаны все устройства, включая не подключавшиеся к KSC дольше срока активности." : "Показаны устройства со связью с KSC за период активности."}</span>
-        <button type="button" className="link-btn" onClick={() => setAll(!all)}>{all ? "Скрыть неактивные" : "Показать все"}</button></p>
       {extra?.limits && <details className="disclosure"><summary>Что известно о пользователях и чего нет в KSC</summary><p className="small">{extra.limits}</p>
         {status && <ul className="small">{status.items.map((s) => <li key={s.source_id}>{s.source}: {s.polled_at ? `последний опрос ${fmt(s.polled_at)}` : "опроса ещё не было"}{s.first_poll_at ? `, наблюдения ведутся с ${fmtDate(s.first_poll_at)}` : ""}.</li>)}</ul>}</details>}
+      {report && <QuickReportPanel kind="quick_devices" title="Отчёт: устройства и пользователи" lede="Все устройства, подходящие под фильтры страницы, с пользователями, зонами и признаком EOL" options={{ scope: false }}
+        params={{ q: applied || undefined, zone: zone || undefined, os: osq || undefined, user: uq || undefined, eol: eol || undefined, include_inactive: all || undefined, show_service: service || undefined, source_id: ctx.all && srcId ? srcId : undefined }}
+        sourceIds={ctx.all ? ctx.sources.map((s) => s.id) : []} activityDays={ctx.me.activity_days} canReport={canPoll} onClose={() => setReport(false)} />}
       {card && <CardModal id={card} service={service} onClose={() => setSp((p) => { p.delete("card"); return p; })} ctx={ctx} />}
       {toast}
     </section>

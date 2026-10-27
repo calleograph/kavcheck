@@ -139,14 +139,13 @@ async def detail_rows(client: SourceClient, *, descr_ids: list[int], vp_ids: lis
         extra.append("(" + " OR ".join(sel) + ")")
     if host_ids:
         extra.append(f"o.nHostId IN ({q.ids_list(host_ids[:5000])})")
-    if not extra:
-        raise ValueError("Не выбраны уязвимости, программы или компьютеры")
+    # без выбора — все действующие обнаружения (отчёт по условиям страницы); объём ограничен пределом отчёта max_rows
     if severity in (1, 2, 4):
         extra.append("d.nKlSeverity = %(sev)s")
         params["sev"] = severity
     if patchable:
         extra.append("o.bPatchesAvailable = 1")
-    sql = q.VULN_DETAIL.format(top=50000, extra=" AND " + " AND ".join(extra))
+    sql = q.VULN_DETAIL.format(top=50000, extra=(" AND " + " AND ".join(extra)) if extra else "")
     out: list[dict] = []
     after = 0
     while True:

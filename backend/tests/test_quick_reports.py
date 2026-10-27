@@ -68,8 +68,8 @@ async def test_vulns_by_program_and_by_host(client, app):
     assert {r["severity"] for r in only_high["items"]} == {"high"}
     empty = await preview(client, "quick_vulns", {"cves": ["CVE-0000-0000"]})
     assert empty["total"] == 0 and any("нет уязвимости" in n for n in empty["doc"]["notes"])
-    bad = await client.post("/api/v1/quick/preview", json={"kind": "quick_vulns", "params": {}})
-    assert bad.status_code == 422 and "Выберите" in bad.text
+    bad = await client.post("/api/v1/quick/preview", json={"kind": "quick_vulns", "params": {"severity": "bogus"}})
+    assert bad.status_code == 422                                              # без выбора отчёт строится по условиям страницы (см. тест ниже); неверные значения отклоняются
 
 
 async def test_exports_match_preview_and_are_standalone(client, app):
@@ -163,3 +163,29 @@ async def test_html_truncation_is_announced_and_summary_is_full(client, app, mon
     assert any(x["value"] == 4 for x in (await client.get(f"/api/v1/reports/{job['id']}")).json()["summary"]["metrics"])      # показатели — по полному результату
     wb = load_workbook(d / "report.xlsx", read_only=True)
     assert len(list(wb["Обнаружения"].iter_rows(values_only=True))) - 1 == 5               # в Excel — все строки
+
+
+async def test_hosts_report_by_page_filter_without_selection_and_constructor_options(client, app):
+    """Отчёт по компьютерам можно открыть с условиями страницы (без отметки строк): берутся все подходящие; краткий вариант — только показатели; столбцы выбираются."""
+    await _setup(client, app)
+    full = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True})
+    assert full["total"] >= 2 and all(r["name"].startswith("ws-") for r in full["items"]) and m(full, "hosts") == full["total"]
+    assert [t["id"] for t in full["doc"]["tables"]] == ["hosts"]                       # по условиям — только состояние защиты; ПО и уязвимости включаются явно (до 500 компьютеров)
+    wide = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True, "sections": ["software", "protection"]})
+    assert "software" in [t["id"] for t in wide["doc"]["tables"]]
+    short = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True, "detail": "summary"})
+    assert [t["id"] for t in short["doc"]["tables"]] == ["summary"] and m(short, "hosts") == full["total"]
+    cols = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True, "columns": ["name", "ip", "nonexistent"]})
+    assert [c["key"] for c in cols["columns"]] == ["name", "ip"]
+    none = await client.post("/api/v1/quick/preview", json={"kind": "quick_hosts", "params": {"q": "zzzz-not-found"}})
+    assert none.status_code in (404, 409, 422), none.text
+
+
+async def test_vulns_report_by_page_filter_without_selection(client, app):
+    """Отчёт по уязвимостям открывается и без отметки строк: берутся все действующие обнаружения с учётом условий страницы (опасность, поиск по компьютеру)."""
+    await _setup(client, app)
+    allv = await preview(client, "quick_vulns", {"include_inactive": True})
+    crit = await preview(client, "quick_vulns", {"include_inactive": True, "severity": "critical"})
+    assert allv["total"] >= crit["total"] > 0 and {r["severity"] for r in crit["items"]} == {"critical"}
+    by_host = await preview(client, "quick_vulns", {"include_inactive": True, "q": "ws-001"})
+    assert 0 < by_host["total"] <= allv["total"] and {r["name"] for r in by_host["items"]} == {"ws-001"}

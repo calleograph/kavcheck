@@ -166,6 +166,31 @@ main { width: 100%; max-width: 1560px; margin: 0 auto; padding: 18px 24px 72px; 
 .toolbar .note { flex-basis: 100%; color: var(--muted); font-size: var(--fs-sm); }
 .toolbar details { flex-basis: 100%; }
 
+/* единая панель фильтрации: одна строка (поиск, основные фильтры, действия), «Все фильтры» и чипы — под ней */
+.fbar { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--sh-1); margin-bottom: 10px; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.fbar-main { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.fbar-search { flex: 1 1 240px; min-width: 200px; max-width: 520px; }
+.fbar-main > select, .fbar-main > input:not([type="checkbox"]), .fbar-main > .seg, .fbar-main > label.inline { flex: 0 0 auto; max-width: 100%; }
+.fbar-main > select { width: auto; max-width: 220px; }
+.fbar-more.on { background: var(--sunken); }
+.fbar-badge { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 600; margin-left: 2px; }
+.fbar-actions { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; justify-content: flex-end; }
+.fbar-count { font-size: var(--fs-sm); white-space: nowrap; padding-right: 4px; }
+.fbar-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px 12px; align-items: end; padding: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+.fbar-panel > .wide { grid-column: 1 / -1; }
+.fbar-chips { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.fchip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 2px 4px 2px 9px; border: 1px solid var(--accent-line); border-radius: 999px; background: var(--accent-soft); color: var(--ink); font-size: var(--fs-sm); line-height: 1.5; overflow-wrap: anywhere; }
+.fchip button { display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+.fchip button:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--ink); }
+.fchip button:focus-visible { outline: none; box-shadow: var(--ring); }
+.report-btn-n { margin-left: 2px; padding: 0 6px; border-radius: 9px; background: rgba(255, 255, 255, .22); font-size: 11px; }
+@media (max-width: 760px) {
+  .fbar-search { flex-basis: 100%; max-width: none; }
+  .fbar-actions { margin-left: 0; width: 100%; justify-content: space-between; }
+  .fbar-main > select { max-width: 100%; flex: 1 1 140px; }
+  .fbar-panel { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* описание «ключ — значение» */
 .kv { display: grid; grid-template-columns: minmax(150px, 38%) minmax(0, 1fr); margin: 0; }
 .kv > div { display: contents; }
@@ -1135,3 +1160,20 @@ h3.h3 { margin: 22px 0 8px; }
 .vdb-plan td:first-child { min-width: 13rem; }
 .vdb-plan td:nth-child(2) { min-width: 11rem; }
 .table select.mini-select { width: 100%; min-width: 10rem; padding: 3px 24px 3px 8px; font-size: var(--fs-sm); height: 28px; }
+
+/* конструктор отчёта: подробность, столбцы, шаблоны */
+.qr-build { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; margin: 10px 0; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+.qr-build-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.qr-build-l { font-size: var(--fs-sm); font-weight: 500; color: var(--ink-2); }
+.qr-cols-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 12px; padding: 6px 0; }
+.qr-tpl select { min-width: 160px; max-width: 260px; }
+.qr-tpl-save { display: flex; flex: 1 1 280px; flex-wrap: wrap; gap: 6px; align-items: center; }
+.qr-tpl-save input { flex: 1 1 150px; width: auto; min-width: 0; }
+/* боковая панель устройств */
+.dp-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; }
+.dp-search { flex: 1 1 220px; min-width: 180px; }
+.dp-count { font-size: var(--fs-sm); white-space: nowrap; margin-left: auto; }
+.fbar-note { margin: -4px 2px 8px; }
+.vdb-eol-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 2px 10px; font-size: var(--fs-sm); color: var(--muted); }
+.fbar-main > .seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.fbar-main > .seg::-webkit-scrollbar { display: none; }

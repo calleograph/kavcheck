@@ -201,11 +201,11 @@ class Runner:
         watcher = asyncio.create_task(watch())
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
                         progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"], sm=self._sm, source_id=src.id, org=org, hw_cfg=hw)
-        if job.kind == "quick_eol":
+        if job.kind in ("quick_eol", "quick_devices"):
             ctx.source_ids = [uuid.UUID(str(x)) for x in (job.source_ids or [str(job.source_id)])]
         try:
             zone = (job.params or {}).get("zone") or ""
-            if zone and job.kind != "quick_eol":
+            if zone and job.kind not in ("quick_eol", "quick_devices"):
                 from ..services.sources import SourceRegistry  # noqa: PLC0415
                 from ..zones.reporter import ZoneData  # noqa: PLC0415
 

@@ -112,7 +112,8 @@ async def _list_zone(db, sids, src_names, zone, *, q, kind, product, publisher, 
     return {"total": len(sel), "by_status": by_status, "items": [finding_out(f, n, na, src_names, labels) for f, n, na in page]}
 
 
-async def finding_hosts(db: AsyncSession, sid: uuid.UUID, kind: str, subject: str, version: str, *, q: str = "", zone: str = "", active_only: bool = True, offset: int = 0, limit: int = 100) -> dict:
+async def finding_hosts(db: AsyncSession, sid: uuid.UUID, kind: str, subject: str, version: str, *, q: str = "", zone: str = "", active_only: bool = True, offset: int = 0, limit: int = 100,
+                        sort: str = "name", desc: bool = False) -> dict:
     """Устройства находки: имя, адрес, ОС, последнее подключение, зоны — из подготовленных данных зон (если расчёта зон ещё нет, возвращаются только идентификаторы).
     Отбор и страница — по связям EOL (индекс по находке); данные устройств читаются только для устройств страницы, имя в поиске — через подготовленные данные."""
     E = EolHost
@@ -130,8 +131,15 @@ async def finding_hosts(db: AsyncSession, sid: uuid.UUID, kind: str, subject: st
         if q:
             j = j.join(ZcHost.__table__, and_(ZcHost.source_id == E.source_id, ZcHost.host_id == E.host_id, ZcHost.gen == gen))
             cond.append(any_of(q, ZcHost.name, ZcHost.search))
+    order = {"name": func.lower(ZcHost.name), "os": func.lower(ZcHost.os), "last_connected": ZcHost.last_connected}.get(sort)
+    if order is not None and gen:
+        if not q:                                           # данные устройств нужны для порядка: присоединяются без потери устройств, которых в подготовленных данных ещё нет
+            j = j.outerjoin(ZcHost.__table__, and_(ZcHost.source_id == E.source_id, ZcHost.host_id == E.host_id, ZcHost.gen == gen))
+    else:
+        order = E.host_id
+    order_by = [order.desc() if desc else order.asc(), E.host_id]
     total = int((await db.execute(select(func.count()).select_from(j).where(*cond))).scalar_one())
-    ids = [int(h) for (h,) in (await db.execute(select(E.host_id).select_from(j).where(*cond).order_by(E.host_id).offset(offset).limit(limit))).all()]
+    ids = [int(h) for (h,) in (await db.execute(select(E.host_id).select_from(j).where(*cond).order_by(*order_by).offset(offset).limit(limit))).all()]
     det = {}
     if ids and gen:
         det = {int(r.host_id): r for r in (await db.execute(select(ZcHost.host_id, ZcHost.name, ZcHost.os, ZcHost.last_connected, ZcHost.active, ZcHost.online, ZcHost.data).where(
@@ -142,7 +150,6 @@ async def finding_hosts(db: AsyncSession, sid: uuid.UUID, kind: str, subject: st
         d = (r.data or {}) if r is not None else {}
         items.append({"host_id": hid, "name": r.name if r is not None else f"#{hid}", "ip": d.get("ip", ""), "os": (r.os if r is not None else "") or "", "last_connected": r.last_connected if r is not None else None,
                       "active": r.active if r is not None else None, "online": r.online if r is not None else None, "group": d.get("group", ""), "zones": d.get("zones") or []})
-    items.sort(key=lambda x: (x["name"].lower(), x["host_id"]))
     return {"total": total, "items": items}
 
 

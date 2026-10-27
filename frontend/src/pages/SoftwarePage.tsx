@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type Product, type ReportParams } from "../api";
 import { NoSource, type Ctx } from "../App";
+import { FilterBar } from "../components/FilterBar";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { Icon } from "../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
-import { Dock, Empty, PageHead, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
+import { Dock, Empty, PageHead, SkelRows, SortTh, Tabs } from "../components/ui";
 import { CatalogView, PublishersView } from "./CatalogPage";
 import { fmtDate, num, plural } from "../util";
 
@@ -55,14 +56,22 @@ function Registry({ ctx }: { ctx: Ctx }) {
   const setParam = (k: string, v: string | null, extra: Record<string, string> = {}) => setSp((x) => { if (v === null) { x.delete(k); Object.keys(extra).forEach((e) => x.delete(e)); } else { x.set(k, v); Object.entries(extra).forEach(([e, ev]) => x.set(e, ev)); } return x; });
   return (
     <>
-      <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Название или часть названия" aria-label="Поиск по названию" /><MaskHint /></div>
-        <input value={publisher} onChange={(e) => setPublisher(e.target.value)} placeholder="Производитель" aria-label="Производитель" className="w-md" />
-        <input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Версия начинается с" aria-label="Версия" className="w-md" />
-        <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Платформа" className="w-auto"><option value="">Все платформы</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
-        <label className="check inline-check"><input type="checkbox" className="switch" checked={installedOnly} onChange={(e) => setInstalledOnly(e.target.checked)} />Только установленные</label>
-        <p className="note">Одна строка — запись реестра KSC как есть (название, версия, производитель). «Установок» и «Компьютеров» — на компьютерах, {all ? "включая давно не подключавшиеся" : `активных за ${ctx.me.activity_days} сут`}. Отметьте версии, чтобы найти компьютеры.</p>
-      </div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Название или часть названия", label: "Поиск по названию" }}
+        primary={<select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Платформа"><option value="">Все платформы</option><option value="windows">Windows</option><option value="linux">Linux</option></select>}
+        more={<>
+          <label className="field">Производитель<input value={publisher} onChange={(e) => setPublisher(e.target.value)} placeholder="Например, *Adobe*" /></label>
+          <label className="field">Версия начинается с<input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Например, 7.4" className="mono" /></label>
+          <label className="check"><input type="checkbox" className="switch" checked={installedOnly} onChange={(e) => setInstalledOnly(e.target.checked)} />Только установленные</label>
+          <label className="check"><input type="checkbox" className="switch" checked={all} onChange={(e) => setAll(e.target.checked)} />Учитывать давно не подключавшиеся компьютеры</label>
+        </>}
+        moreActive={[publisher, version, !installedOnly ? "1" : "", all ? "1" : ""].filter(Boolean).length}
+        chips={[...(q ? [{ id: "q", label: `Название: ${q}`, onRemove: () => setQ("") }] : []), ...(platform ? [{ id: "pl", label: `Платформа: ${platform === "linux" ? "Linux" : "Windows"}`, onRemove: () => setPlatform("") }] : []),
+          ...(publisher ? [{ id: "pub", label: `Производитель: ${publisher}`, onRemove: () => setPublisher("") }] : []), ...(version ? [{ id: "ver", label: `Версия: ${version}…`, onRemove: () => setVersion("") }] : []),
+          ...(!installedOnly ? [{ id: "inst", label: "Включая удалённые программы", onRemove: () => setInstalledOnly(true) }] : []), ...(all ? [{ id: "all", label: "Включая неактивные компьютеры", onRemove: () => setAll(false) }] : [])]}
+        onReset={() => { setQ(""); setPlatform(""); setPublisher(""); setVersion(""); setInstalledOnly(true); setAll(false); }}
+        count={{ n: list.initial ? null : list.total, noun: ["запись реестра", "записи реестра", "записей реестра"] }}
+        report={ctx.me.user.role !== "viewer" ? { onClick: () => navigate(reportHref(ids.length ? params : { ...params, name_like: applied.q ? `%${applied.q}%` : null, platform: platform || null, min_version: null, q: null }, ids.length ? `Компьютеры с выбранными версиями (${ids.length})` : "Реестр KSC: установки по текущим фильтрам")), title: ids.length ? "Отчёт по отмеченным версиям" : "Отчёт по программам с текущими фильтрами" } : null} />
+      <p className="muted small fbar-note">Одна строка — запись реестра KSC как есть. «Установок» и «Компьютеров» — на компьютерах, {all ? "включая давно не подключавшиеся" : `активных за ${ctx.me.activity_days} сут`}. Отметьте версии, чтобы найти компьютеры.</p>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
@@ -90,8 +99,6 @@ function Registry({ ctx }: { ctx: Ctx }) {
           </table>)}
       </div>
       <ListFoot list={list} />
-      <p className="hidden-note"><Icon name={all ? "eye" : "eyeOff"} size={15} /><span>{all ? "Счётчики учитывают все компьютеры." : `Счётчики учитывают компьютеры, подключавшиеся к KSC за ${ctx.me.activity_days} сут.`}</span>
-        <button type="button" className="link-btn" onClick={() => setAll(!all)}>{all ? "Только активные" : "Учитывать все"}</button></p>
       {ids.length > 0 && (
         <Dock label="Выбранные версии">
           <span><b>{ids.length}</b> <span className="muted">{plural(ids.length, "версия выбрана", "версии выбраны", "версий выбрано")}</span></span>
@@ -102,11 +109,13 @@ function Registry({ ctx }: { ctx: Ctx }) {
       )}
       {rec && <HostsDrawer title={sp.get("rn") ?? "Запись реестра"} lede="Компьютеры с этой записью реестра KSC (до 5 000)" listKey={`registry-rec:${sid}:${rec}`} deps={[rec]} activityDays={ctx.me.activity_days}
         fetchPage={async (offset) => { if (offset) return { items: [], total: 0 }; const r = await api.software.productHosts(Number(rec)); return { items: r.items as DrawerHost[], total: r.items.length }; }}
+        report={ctx.me.user.role !== "viewer" ? { onClick: () => navigate(reportHref({ product_ids: [Number(rec)], include_inactive: all }, `Компьютеры: ${sp.get("rn") ?? "запись реестра"}`)) } : null}
         onClose={() => setParam("rec", null, { rn: "" })} />}
       {found && ids.length > 0 && <HostsDrawer title={`Компьютеры с выбранными версиями (${ids.length})`}
         lede={<>Установки отмеченных записей реестра; {all ? "все устройства" : `подключавшиеся к KSC за ${ctx.me.activity_days} сут`}. {ctx.me.user.role !== "viewer" && <Link to={reportHref(params, `Компьютеры с выбранными версиями (${ids.length})`)}>Сформировать отчёт</Link>}</>}
         listKey={`registry-found:${sid}:${ids.join(",")}:${all}`} deps={[ids, all]} activityDays={ctx.me.activity_days}
         fetchPage={(offset, limit) => api.software.hosts(params, offset, limit) as unknown as Promise<Chunk<DrawerHost>>}
+        report={ctx.me.user.role !== "viewer" ? { onClick: () => navigate(reportHref(params, `Компьютеры с выбранными версиями (${ids.length})`)) } : null}
         onClose={() => setParam("found", null)} />}
     </>
   );

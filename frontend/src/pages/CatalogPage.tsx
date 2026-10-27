@@ -3,13 +3,14 @@ import { CompactList } from "../components/CompactList";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type CatalogItem, type CatalogState } from "../api";
 import type { Ctx } from "../App";
+import { FilterBar } from "../components/FilterBar";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { Icon } from "../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { useToast } from "../components/Toast";
 import { QuickReportPanel } from "../components/QuickReport";
 import { VdbCountBadge, useVdbCounts } from "../components/VdbBits";
-import { Dock, Empty, HiddenNote, SkelRows, SortTh, MaskHint } from "../components/ui";
+import { Dock, Empty, SkelRows, SortTh } from "../components/ui";
 import { selLabel, useSelection } from "../selection";
 import { fmt, num, plural } from "../util";
 
@@ -88,24 +89,37 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
   const toggleFamily = async (p: CatalogItem) => {
     try { const m = await loadMembers(p.key); sel.toggleFamily(pick(p), [pick(p), ...m.map(pick)]); } catch (e) { show((e as ApiError).message, "error"); }
   };
-  const [auditReport, setAuditReport] = useState<Record<string, unknown> | null>(null);
+  const [auditReport, setAuditReport] = useState<Record<string, unknown> | null>(null); const [auditTitle, setAuditTitle] = useState("");
+  const likeOf = (t: string) => { const v = t.trim(); return v.includes("*") ? v.replace(/\*/g, "%") : `%${v}%`; };
+  /** Отчёт по текущему представлению: выбранные программы или — если выбора нет — все, подходящие под поиск, производителя и платформу. */
   const report = () => {
+    setAuditTitle("");
+    if (!sel.items.length) {
+      setAuditReport({ items: [{ kind: "pattern" as const, name_like: applied.trim() ? likeOf(applied) : "%", publisher_like: publisher ? `%${list.items[0]?.publisher || publisher}%` : null, platform: platform || null, op: "any" as const, exclude: [], branches: [] }],
+        include_inactive: all, active_days: null, group_contains: null });
+      return;
+    }
     const items = sel.items.map((e) => ({ kind: "product" as const, product_key: e.key, product_keys: e.family?.map((m) => m.key) ?? [],
       product_name: e.family && e.family.length > 1 ? `${e.name} и компоненты` : e.name, op: "any" as const, exclude: [], branches: [] }));
     setAuditReport({ items, include_inactive: all, active_days: null, group_contains: null });
   };
   return (
     <>
-      <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Программа, пакет, производитель или вариант названия" aria-label="Поиск программы" /><MaskHint /></div>
-        <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Платформа" className="w-auto"><option value="">Все платформы</option><option value="windows">Windows</option><option value="linux">Linux</option></select>
-        <label className="check inline-check"><input type="checkbox" className="switch" checked={components} onChange={(e) => setComponents(e.target.checked)} />Служебные компоненты</label>
-        <div className="toolbar-foot">
-          {publisher && <span className="chip">Производитель: <b>{list.items[0]?.publisher || publisher}</b><button type="button" className="link-btn" onClick={() => setSp((p) => { p.delete("publisher"); return p; })}>сбросить</button></span>}
-          {publisher && canEdit && list.items.length > 0 && <button type="button" className="link-btn" onClick={() => list.items.forEach((p) => { if (!sel.has(p.key)) sel.toggle(pick(p)); })}>выбрать все продукты производителя</button>}
-          <CatalogStateLine state={state} canRebuild={canEdit} onRebuilt={() => setTick((x) => x + 1)} />
-        </div>
-      </div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Программа, пакет, производитель или вариант названия", label: "Поиск программы" }}
+        primary={<select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Платформа"><option value="">Все платформы</option><option value="windows">Windows</option><option value="linux">Linux</option></select>}
+        more={<>
+          <label className="check"><input type="checkbox" className="switch" checked={components} onChange={(e) => setComponents(e.target.checked)} />Служебные компоненты</label>
+          <label className="check"><input type="checkbox" className="switch" checked={all} onChange={(e) => setAll(e.target.checked)} />Учитывать давно не подключавшиеся компьютеры</label>
+          {publisher && canEdit && list.items.length > 0 && <div className="wide"><button type="button" className="link-btn" onClick={() => list.items.forEach((p) => { if (!sel.has(p.key)) sel.toggle(pick(p)); })}>Выбрать все продукты производителя</button></div>}
+        </>}
+        moreActive={[components ? "1" : "", all ? "1" : ""].filter(Boolean).length}
+        chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(platform ? [{ id: "pl", label: `Платформа: ${platform === "linux" ? "Linux" : "Windows"}`, onRemove: () => setPlatform("") }] : []),
+          ...(publisher ? [{ id: "pub", label: `Производитель: ${list.items[0]?.publisher || publisher}`, onRemove: () => setSp((p) => { p.delete("publisher"); return p; }) }] : []),
+          ...(components ? [{ id: "cmp", label: "Со служебными компонентами", onRemove: () => setComponents(false) }] : []), ...(all ? [{ id: "all", label: "Включая неактивные компьютеры", onRemove: () => setAll(false) }] : [])]}
+        onReset={() => { setQ(""); setPlatform(""); setComponents(false); setAll(false); setSp((p) => { p.delete("publisher"); return p; }); }}
+        count={{ n: list.initial ? null : list.total, noun: ["продукт", "продукта", "продуктов"] }} onRefresh={() => setTick((x) => x + 1)} refreshing={list.refreshing}
+        report={canEdit ? { onClick: report, title: sel.count ? "Отчёт по выбранным программам" : "Отчёт по всем программам текущего представления (поиск, производитель, платформа)" } : null} />
+      <p className="muted small fbar-note"><CatalogStateLine state={state} canRebuild={canEdit} onRebuilt={() => setTick((x) => x + 1)} /></p>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       {state && state.status !== "ready" && !list.items.length && !list.loading && (
         <div className="card"><Empty icon="layers" title={state.status === "failed" ? "Каталог не построен" : "Каталог программ строится"}
@@ -157,13 +171,13 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
             </table>)}
         </div>)}
       <ListFoot list={list} />
-      {!list.initial && <HiddenNote hidden={null} days={ctx.me.activity_days} all={all} onToggle={() => setAll(!all)} />}
       {hostsKey && <HostsDrawer title={`Компьютеры: ${sp.get("hn") ?? hostsKey}`} lede={all ? "Все устройства, включая давно не подключавшиеся" : `Компьютеры, подключавшиеся к KSC за ${ctx.me.activity_days} сут`}
         listKey={`catalog-hosts:${sid}:${hostsKey}`} deps={[hostsKey, all]} activityDays={ctx.me.activity_days}
         fetchPage={(offset, limit) => api.catalog.productHosts(hostsKey, { all_hosts: all, offset, limit }) as unknown as Promise<Chunk<DrawerHost>>}
+        report={canEdit ? { onClick: () => { setAuditTitle(`Установки: ${sp.get("hn") ?? hostsKey}`); setAuditReport({ items: [{ kind: "product" as const, product_key: hostsKey, product_keys: [], product_name: sp.get("hn") ?? hostsKey, op: "any" as const, exclude: [], branches: [] }], include_inactive: all, active_days: null, group_contains: null }); } } : null}
         onClose={() => setSp((x) => { x.delete("hosts"); x.delete("hn"); return x; })} />}
       {sel.count > 0 && <SelectionDock sel={sel} canEdit={canEdit} onCheck={() => navigate("/reports?sel=1")} onReport={report} />}
-      {auditReport && <QuickReportPanel kind="version_audit" title={`Установки: ${sel.items.map(selLabel).join(", ")}`.slice(0, 120)} lede="Компьютеры, где установлены выбранные программы (любая версия)"
+      {auditReport && <QuickReportPanel kind="version_audit" title={(auditTitle || (sel.items.length ? `Установки: ${sel.items.map(selLabel).join(", ")}` : "Установки по текущим фильтрам")).slice(0, 120)} lede="Компьютеры, где установлены программы (любая версия)"
         params={auditReport} sourceIds={[sid]} options={{ scope: true }} activityDays={ctx.me.activity_days} canReport={canEdit} onClose={() => setAuditReport(null)} />}
       {toast}
     </>
@@ -194,8 +208,9 @@ export function PublishersView({ ctx }: { ctx: Ctx }) {
   const open = (key: string) => setSp((p) => { p.set("tab", "catalog"); p.set("publisher", key); return p; });
   return (
     <>
-      <div className="toolbar"><div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Производитель или его программа" aria-label="Поиск производителя" /><MaskHint /></div>
-        <p className="note">Производители объединяются без учёта формы собственности: «Google LLC» и «Google Inc.» — один производитель. Показаны компьютеры, активные за {ctx.me.activity_days} сут.</p></div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Производитель или его программа", label: "Поиск производителя" }} chips={q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []} onReset={() => setQ("")}
+        count={{ n: list.initial ? null : list.total, noun: ["производитель", "производителя", "производителей"] }} />
+      <p className="muted small fbar-note">Производители объединяются без учёта формы собственности: «Google LLC» и «Google Inc.» — один производитель. Показаны компьютеры, активные за {ctx.me.activity_days} сут.</p>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={4} /> : (

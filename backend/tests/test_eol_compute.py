@@ -140,10 +140,10 @@ async def test_api_summary_infra_hosts_mappings(client, app):
     s = (await client.get("/api/v1/eol/summary", headers=h)).json()
     assert s["findings"]["eol"] == 2 and s["devices"]["eol"] == 2 and s["kinds"] == {"app": 1, "os": 1}      # PHP: устройства 1, 2, 5; Windows Server 2012 R2: 1, 2; активны (связь за период) 1 и 5 — два, без двойного подсчёта
     items = (await client.get("/api/v1/eol/infra", headers=h)).json()
-    assert items["total"] == 2 and {i["kind"] for i in items["items"]} == {"app", "os"} and items["by_status"]["eol"] == 2
+    assert items["total"] == 3 and {i["kind"] for i in items["items"]} == {"app", "os"} and items["by_status"]["eol"] == 2 and items["by_status"]["undetermined"] == 1      # «Linux» без сведений о дистрибутиве — в списке ОС с причиной
     php = next(i for i in items["items"] if i["kind"] == "app")
     assert php["severity_ru"] == "Критическая" and php["source"] == "KSC-A" and php["hosts_active"] == 2 and php["eol_label"]
-    assert (await client.get("/api/v1/eol/infra", headers={"X-Source-Id": "all"})).json()["total"] == 2           # «Все источники»: те же данные, у записи указан источник
+    assert (await client.get("/api/v1/eol/infra", headers={"X-Source-Id": "all"})).json()["total"] == 3           # «Все источники»: те же данные, у записи указан источник
     assert (await client.get("/api/v1/eol/infra", params={"q": "ph*", "status": "eol"}, headers=h)).json()["total"] == 1
     assert (await client.get("/api/v1/eol/infra", params={"kind": "os", "severity": "high"}, headers=h)).json()["total"] == 0
     hs = (await client.get("/api/v1/eol/infra/hosts", params={"source_id": str(sid), "kind": "app", "subject": "php", "version": "7.4.16", "all_hosts": True}, headers=h)).json()
@@ -366,4 +366,4 @@ async def test_two_concurrent_calculations_of_one_source_do_not_conflict(app):
     assert not [r for r in results if isinstance(r, Exception)], results
     async with sm() as db:
         n = len((await db.execute(select(EolFinding).where(EolFinding.source_id == sid))).scalars().all())
-    assert n == results[0]["items"] == 2
+    assert n == results[0]["items"] == 3

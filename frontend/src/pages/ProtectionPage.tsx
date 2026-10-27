@@ -3,10 +3,11 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type ProblemKey, type ProtHost, type ProtSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched, OnlineBadge } from "../components/Common";
+import { FilterBar } from "../components/FilterBar";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
-import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum, MaskHint } from "../components/ui";
+import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
 import { ZoneSelect } from "../components/ZoneBits";
 
@@ -129,20 +130,21 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
         </div>
       </div>
 
-      <div className="section-head" id="prot-hosts"><h2>Компьютеры</h2>{!list.initial && <span className="count">{num(list.total)}</span>}<div className="spacer" />
-        {canReport && <button className="btn" onClick={() => setReport("all")} disabled={list.initial || !list.total}><Icon name="file" />{problem && problem !== "ok" ? `Отчёт: ${pTitle}` : "Отчёт по этому списку"}</button>}</div>
-      <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер или IP-адрес" aria-label="Компьютер" /><MaskHint /></div>
-        <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа" aria-label="Группа администрирования" />
-        <ZoneSelect value={zone} onChange={setZone} />
-        <Segmented label="Показать" value={problem === "ok" ? "ok" : problem ? "problem" : ""} onChange={(v) => setParams({ problem: v === "ok" ? "ok" : "" })}
-          options={[["", "Все"], ["ok", "Без проблем"], ...(problem && problem !== "ok" ? [["problem", pTitle] as [string, string]] : [])]} />
-        {(product || (problem && problem !== "ok")) && (
-          <div className="toolbar-foot">
-            {problem && problem !== "ok" && <span className="chip">Проблема: <b>{pTitle}</b><button type="button" className="link-btn" onClick={() => setParams({ problem: "" })}>сбросить</button></span>}
-            {product && <span className="chip">Версия: <b>{vTitle}</b><button type="button" className="link-btn" onClick={() => setParams({ product: "", build: "" })}>сбросить</button></span>}
-          </div>)}
-      </div>
+      <div className="section-head" id="prot-hosts"><h2>Компьютеры</h2></div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Компьютер или IP-адрес", label: "Компьютер" }}
+        primary={<>
+          <Segmented label="Показать" value={problem === "ok" ? "ok" : problem ? "problem" : ""} onChange={(v) => setParams({ problem: v === "ok" ? "ok" : "" })}
+            options={[["", "Все"], ["ok", "Без проблем"], ...(problem && problem !== "ok" ? [["problem", pTitle] as [string, string]] : [])]} />
+          <ZoneSelect value={zone} onChange={setZone} />
+        </>}
+        more={<label className="field">Группа администрирования<input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Например, *Серверы*" /></label>}
+        moreActive={group ? 1 : 0}
+        chips={[...(q ? [{ id: "q", label: `Компьютер: ${q}`, onRemove: () => setQ("") }] : []), ...(problem && problem !== "ok" ? [{ id: "prob", label: `Проблема: ${pTitle}`, onRemove: () => setParams({ problem: "" }) }] : []),
+          ...(problem === "ok" ? [{ id: "ok", label: "Без проблем", onRemove: () => setParams({ problem: "" }) }] : []), ...(product ? [{ id: "ver", label: `Версия: ${vTitle}`, onRemove: () => setParams({ product: "", build: "" }) }] : []),
+          ...(zone ? [{ id: "zone", label: "Зона ответственности", onRemove: () => setZone("") }] : []), ...(group ? [{ id: "grp", label: `Группа: ${group}`, onRemove: () => setGroup("") }] : [])]}
+        onReset={() => { setQ(""); setGroup(""); setZone(""); setParams({ problem: "", product: "", build: "" }); }}
+        count={{ n: list.initial ? null : list.total, noun: ["компьютер", "компьютера", "компьютеров"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
+        report={canReport ? { onClick: () => setReport("all"), disabled: list.initial || !list.total, title: sel.count ? "Отчёт по отмеченным компьютерам — кнопка в панели выбора внизу" : "Отчёт по всем компьютерам списка с текущими фильтрами" } : null} />
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
           <table className="table virt">

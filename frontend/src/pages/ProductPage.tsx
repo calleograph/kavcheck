@@ -8,6 +8,7 @@ import { type Chunk } from "../components/Infinite";
 import { ConfirmDialog, Modal } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
 import { ProductPicker, type PickedProduct } from "../components/ProductPicker";
+import { ReportButton } from "../components/FilterBar";
 import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { ProductVulns } from "../components/VdbBits";
@@ -32,7 +33,7 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
   const setSel = (s: { version?: string; branch?: string } | null) => setSp((x) => { x.delete("v"); x.delete("b"); x.delete("all"); if (s?.version !== undefined) x.set("v", s.version); else if (s?.branch !== undefined) x.set("b", s.branch); return x; });
   const [hover, setHover] = useState<string | null>(null);
   const [dialog, setDialog] = useState<"split" | "merge" | "rename" | null>(null);
-  const [vdbReport, setVdbReport] = useState(false);
+  const [vdbReport, setVdbReport] = useState(false); const [inst, setInst] = useState<{ title: string; params: Record<string, unknown> } | null>(null);
   const [names, setNames] = useState<Set<string>>(new Set());
   const [del, setDel] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -45,6 +46,9 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
   const canEdit = ctx.me.user.role !== "viewer";
   const checkHref = (extra = "") => `/reports?product=${encodeURIComponent(p.key)}&name=${encodeURIComponent(p.name)}${p.latest_version ? `&latest=${encodeURIComponent(p.latest_version)}` : ""}${extra}`;
   const hiddenTotal = p.hosts_all - p.hosts_active;
+  /** Отчёт об установках продукта: всех версий, одной версии или одной ветки; выбор версии и ветки — из боковой панели. */
+  const installs = (title: string, over: Record<string, unknown> = {}) => setInst({ title, params: { items: [{ kind: "product", product_key: p.key, product_keys: [], product_name: p.name, op: "any", exclude: [], branches: [], ...over }],
+    include_inactive: all, active_days: null, group_contains: null } });
   const segs = p.branches.map((b) => ({ key: b.branch || "∅", label: b.branch || "не определена", value: b.hosts_shown, undef: !b.branch, note: `${num(b.versions.length)} верс.` })).filter((s) => s.value > 0);
   return (
     <section>
@@ -52,7 +56,8 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
         lede={<>{p.publisher ? <>{p.publisher} · </> : null}{p.platforms.join(", ")} · {ORIGIN[p.origin]}{p.note ? <span className="lede-note">{p.note}</span> : null}</>}>
         <CatalogStateLine state={p.state} canRebuild={canEdit} onRebuilt={() => setTick((x) => x + 1)} />
         <button className="btn" onClick={() => setSp((x) => { x.delete("v"); x.delete("b"); x.set("all", "1"); return x; })}><Icon name="monitor" />Где установлено</button>
-        {canEdit && <Link className="btn primary" to={checkHref()}><Icon name="target" />Проверить версии</Link>}
+        {canEdit && <Link className="btn" to={checkHref()}><Icon name="target" />Проверить версии</Link>}
+        <ReportButton onClick={() => installs(`Установки: ${p.name}`)} title="Отчёт об установках этой программы (все версии) с вашими фильтрами в конструкторе" />
       </PageHead>
       <div className="meters">
         <div className="meter"><span className="l">Компьютеров</span><span className="v">{num(p.hosts)}</span><span className="t">{all ? "все устройства" : `активные за ${ctx.me.activity_days} сут`}</span></div>
@@ -96,13 +101,17 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
       <HiddenNote hidden={hiddenTotal} days={ctx.me.activity_days} all={all} onToggle={() => setAll(!all)} />
       {whole && !sel && <HostsDrawer title={`Где установлено: ${p.name}`} lede={<>Компьютеры со всеми версиями продукта; {all ? "все устройства" : `подключавшиеся к KSC за ${ctx.me.activity_days} сут`}.</>}
         listKey={`product-hosts:${ctx.current.id}:${p.key}:all`} deps={[p.key, all]} activityDays={ctx.me.activity_days}
-        fetchPage={(offset, limit) => api.catalog.productHosts(p.key, { all_hosts: all, offset, limit }) as unknown as Promise<Chunk<DrawerHost>>} onClose={() => setSel(null)} />}
+        fetchPage={(offset, limit) => api.catalog.productHosts(p.key, { all_hosts: all, offset, limit }) as unknown as Promise<Chunk<DrawerHost>>}
+        report={canEdit ? { onClick: () => installs(`Установки: ${p.name}`) } : null} onClose={() => setSel(null)} />}
       {sel && <HostsDrawer title={sel.version !== undefined ? `${p.name} ${sel.version}` : `${p.name}: ветка ${sel.branch || "не определена"}`}
         lede={<>Компьютеры с {sel.version !== undefined ? "этой версией" : "этой веткой"}; {all ? "все устройства" : `подключавшиеся к KSC за ${ctx.me.activity_days} сут`}.
           {canEdit && sel.version && <> <Link to={checkHref(`&value=${encodeURIComponent(sel.version)}&op=le`)}>Проверить эту версию и ниже</Link></>}</>}
         listKey={`product-hosts:${ctx.current.id}:${p.key}:${sel.version ?? ""}:${sel.branch ?? ""}`} deps={[p.key, sel.version, sel.branch, all]} activityDays={ctx.me.activity_days}
         fetchPage={(offset, limit) => api.catalog.productHosts(p.key, { version: sel.version, branch: sel.branch, all_hosts: all, offset, limit }) as unknown as Promise<Chunk<DrawerHost>>}
+        report={canEdit ? { onClick: () => (sel.version !== undefined ? installs(`${p.name} ${sel.version}`, { op: "eq", value: sel.version }) : installs(`${p.name}: ветка ${sel.branch || "не определена"}`, { branches: [sel.branch ?? ""] })) } : null}
         onClose={() => setSel(null)} />}
+      {inst && <QuickReportPanel kind="version_audit" title={inst.title} lede="Компьютеры, где установлена программа (с учётом версии или ветки, если выбраны)" params={inst.params} sourceIds={[ctx.current.id]} options={{ scope: true }}
+        activityDays={ctx.me.activity_days} canReport={canEdit} onClose={() => setInst(null)} />}
 
       <div className="section-gap"><ProductVulns productKey={p.key} canReport={canEdit} onCheck={() => setVdbReport(true)} onHosts={() => setSp((x) => { x.delete("v"); x.delete("b"); x.set("all", "1"); return x; })} /></div>
       {vdbReport && <QuickReportPanel kind="quick_extvulns" title={`Проверка инфраструктуры: ${p.name}`} lede="Известные уязвимости продукта по внешним базам" options={{ scope: true, ext: true, zoneFilter: true }}

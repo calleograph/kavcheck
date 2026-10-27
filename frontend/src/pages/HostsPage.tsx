@@ -7,6 +7,7 @@ import { NoSource, type Ctx } from "../App";
 import { ActivityBadge, Fetched, OnlineBadge } from "../components/Common";
 import { ListFoot, VirtualRows, staticList, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
+import { FilterBar, ReportButton } from "../components/FilterBar";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { maskMatcher } from "../mask";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
@@ -48,19 +49,27 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
       <PageHead title="Компьютеры" lede={<>Управляемые устройства источника <b>{ctx.current.name}</b>. «Связь» — давность подключения Агента к KSC, «Онлайн» — видит ли KSC устройство в сети сейчас.</>}>
         {extra?.fetched_at && <Fetched at={extra.fetched_at} />}
       </PageHead>
-      <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя компьютера или DNS-имя" aria-label="Поиск" /><MaskHint /></div>
-        <input className="w-md" value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Группа администрирования" aria-label="Группа" />
-        <input className="w-md" value={os} onChange={(e) => setOs(e.target.value)} placeholder="ОС, например *Windows 11*" aria-label="ОС" />
-        <ZoneSelect value={zone} onChange={setZone} />
-        <Segmented<Activity> label="Связь с KSC" value={activity} onChange={setActivity} options={[["active", "Активные"], ["inactive", "Без связи"], ["all", "Все"]]} />
-        <label className="inline">Порог
-          <select value={days} onChange={(e) => setDays(e.target.value)}>
-            <option value="">{extra?.activity_days ?? "…"} сут (по настройке)</option>{DAYS.map((d) => <option key={d} value={d}>{d} сут</option>)}<option value="custom">другой…</option>
-          </select>
-        </label>
-        {days === "custom" && <input type="number" min={1} max={3650} value={customDays} onChange={(e) => setCustomDays(e.target.value)} placeholder="суток" className="w-num" aria-label="Произвольный порог в сутках" autoFocus />}
-      </div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Имя компьютера или DNS-имя", label: "Поиск компьютера" }}
+        primary={<>
+          <Segmented<Activity> label="Связь с KSC" value={activity} onChange={setActivity} options={[["active", "Активные"], ["inactive", "Без связи"], ["all", "Все"]]} />
+          <ZoneSelect value={zone} onChange={setZone} />
+        </>}
+        more={<>
+          <label className="field">Группа администрирования<input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Например, *Серверы*" /></label>
+          <label className="field">Операционная система<input value={os} onChange={(e) => setOs(e.target.value)} placeholder="Например, *Windows 11*" /></label>
+          <label className="field">Порог активности
+            <select value={days} onChange={(e) => setDays(e.target.value)}>
+              <option value="">{extra?.activity_days ?? "…"} сут (по настройке)</option>{DAYS.map((d) => <option key={d} value={d}>{d} сут</option>)}<option value="custom">другой…</option>
+            </select></label>
+          {days === "custom" && <label className="field">Своё значение, суток<input type="number" min={1} max={3650} value={customDays} onChange={(e) => setCustomDays(e.target.value)} placeholder="суток" autoFocus /></label>}
+        </>}
+        moreActive={[group, os, days].filter(Boolean).length}
+        chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(activity !== "active" ? [{ id: "act", label: `Связь: ${activity === "all" ? "все" : "без связи"}`, onRemove: () => setActivity("active") }] : []),
+          ...(zone ? [{ id: "zone", label: "Зона ответственности", onRemove: () => setZone("") }] : []), ...(group ? [{ id: "grp", label: `Группа: ${group}`, onRemove: () => setGroup("") }] : []),
+          ...(os ? [{ id: "os", label: `ОС: ${os}`, onRemove: () => setOs("") }] : []), ...(days ? [{ id: "days", label: `Порог: ${days === "custom" ? customDays || "?" : days} сут`, onRemove: () => setDays("") }] : [])]}
+        onReset={() => { setQ(""); setActivity("active"); setZone(""); setGroup(""); setOs(""); setDays(""); }}
+        count={{ n: list.initial ? null : list.total, noun: ["компьютер", "компьютера", "компьютеров"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
+        report={canReport ? { onClick: () => setReport(true), title: sel.count ? `Отчёт по отмеченным компьютерам (${sel.count})` : "Отчёт по всем компьютерам, подходящим под текущие фильтры" } : null} />
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
@@ -79,8 +88,9 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
       <ListFoot list={list} />
       {extra && (activity === "active" || activity === "all") && <HiddenNote hidden={extra.hidden ?? 0} days={eff} all={activity === "all"} onToggle={() => setActivity(activity === "all" ? "active" : "all")} />}
       <ReportDock label="Выбранные компьютеры" count={sel.count} noun={["компьютер выбран", "компьютера выбрано", "компьютеров выбрано"]} canReport={canReport} onClear={sel.clear} onReport={() => setReport(true)} />
-      {report && <QuickReportPanel kind="quick_hosts" title={`Отчёт по компьютерам (${sel.count})`} lede="Состояние, защита, установленное ПО и уязвимости выбранных компьютеров" options={{ sections: true, scope: false }}
-        params={{ host_ids: sel.ids }} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(false)} />}
+      {report && <QuickReportPanel kind="quick_hosts" title={sel.count ? `Отчёт по компьютерам (${sel.count})` : "Отчёт по компьютерам"} lede={sel.count ? "Состояние, защита, установленное ПО и уязвимости выбранных компьютеров" : "Все компьютеры, подходящие под фильтры страницы"} options={{ sections: true, scope: false }}
+        params={sel.count ? { host_ids: sel.ids } : { q: applied.q || undefined, group_contains: applied.group || undefined, os_contains: applied.os || undefined, zone: zone || undefined, include_inactive: activity === "all" || undefined,
+          inactive_only: activity === "inactive" || undefined, active_days: threshold }} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(false)} />}
       <p className="muted small mt-sm">Записи кластеров и подчинённых серверов не считаются компьютерами.</p>
     </section>
   );
@@ -131,7 +141,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
     <section>
       <PageHead title={h.name} back={back} lede={<span className="row tight wrap"><OnlineBadge online={h.online} seen={h.last_visible} /><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}<HostZones sourceId={ctx.current?.id} hostId={h.host_id} /></span>}>
         <Fetched at={d.fetched_at} />
-        {ctx.me.user.role !== "viewer" && <button className="btn primary" onClick={() => setReport(true)}><Icon name="file" />Подробный отчёт</button>}
+        {ctx.me.user.role !== "viewer" && <ReportButton onClick={() => setReport(true)} title="Отчёт по этому компьютеру: состояние, защита, установленное ПО, уязвимости" />}
       </PageHead>
       {report && <QuickReportPanel kind="quick_hosts" title={`Отчёт: ${h.name}`} lede="Состояние, защита, установленное ПО и все уязвимости компьютера" options={{ sections: true, scope: false }}
         params={{ host_ids: [h.host_id] }} activityDays={ctx.me.activity_days} canReport onClose={() => setReport(false)} />}

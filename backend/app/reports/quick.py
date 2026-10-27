@@ -24,8 +24,8 @@ from ..ksc import vulns as V
 from ..ksc.driver import KscError, SourceClient
 from ..search import any_field, matcher
 
-QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol")
-KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре"}
+QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices")
+KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
 ONLINE_RU = {True: "в сети", False: "не в сети", None: "нет данных"}
@@ -162,6 +162,9 @@ async def build_vulns(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         used = [r for r in used if needle(*(hosts[int(r["host_id"])][k] for k in ("name", "fqdn", "ip")))]
     if gneedle:
         used = [r for r in used if gneedle(hosts[int(r["host_id"])]["group"])]
+    pneedle = matcher(p.get("product_like"))
+    if pneedle:
+        used = [r for r in used if pneedle(r.get("product") or r.get("app_name") or "")]
     names = await V.names_for(client, sorted({int(r["descr_id"]) for r in used}))
     rows: list[dict] = []
     for r in used:
@@ -280,13 +283,35 @@ async def _host_protection(client: SourceClient, ids: list[int], groups: dict, c
     return out
 
 
+async def _hosts_by_filter(client: SourceClient, p: dict, ctx: Ctx) -> list[int]:
+    """Компьютеры по условиям страницы (без ручного выбора): все подходящие, постранично, не больше предела отчёта; зона — по подготовленному составу."""
+    where, params = H.hosts_where(qtext=p.get("q") or "", group_contains=p.get("group_contains") or "", os_contains=p.get("os_contains") or "",
+                                  active_days=None if p.get("include_inactive") else _days(p, ctx), inactive_only=bool(p.get("inactive_only")), exclude_slaves=ctx.exclude_slaves)
+    if ctx.zone_hosts is not None:
+        where += f" AND h.nId IN ({q.ids_list(sorted(ctx.zone_hosts))})" if ctx.zone_hosts else " AND 1 = 0"
+    out: list[int] = []
+    step = 2000
+    while len(out) < ctx.max_rows:
+        rows = await client.run(q.HOSTS_PAGE.format(where=where, order="h.nId"), {**params, "offset": len(out), "limit": step}, max_rows=step)
+        out += [int(r["host_id"]) for r in rows]
+        ctx.progress(f"компьютеры: {len(out)}")
+        if len(rows) < step:
+            return out
+    raise KscError("too_many_rows", f"Под условия подходит больше {ctx.max_rows} компьютеров: сузьте условия или повысьте предел в «Администрирование → Общие настройки»")
+
+
 async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     ids = [int(i) for i in p.get("host_ids") or []][:500]
-    if not ids:
-        raise KscError("params", "Не выбраны компьютеры")
+    by_filter = not ids
+    if by_filter:
+        ids = await _hosts_by_filter(client, p, ctx)
+        if not ids:
+            raise KscError("no_data", "По условиям не найдено ни одного компьютера")
     groups = await H.groups_map(client)
     recs = await _host_protection(client, ids, groups, ctx)
-    secs = set(p.get("sections") or ["software", "vulns", "protection"])
+    secs = set(p.get("sections") or (["protection"] if by_filter else ["software", "vulns", "protection"]))      # без явного выбора: по условиям — только защита, по выбранным — всё
+    if by_filter and len(ids) > 500 and secs & {"software", "vulns"}:
+        raise KscError("too_many_rows", f"Под условия подходит {len(ids)} компьютеров: разделы «Установленное ПО» и «Уязвимости» формируются не более чем для 500 — отключите их или сузьте условия")
     bases_days, scan_days = int(p.get("bases_days") or 3), int(p.get("scan_days") or 30)
     soft_rows: list[dict] = []
     if "software" in secs:
@@ -505,11 +530,45 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
         from .quick_eol import build_eol  # noqa: PLC0415
 
         BUILDERS[kind] = build_eol
+    if kind == "quick_devices" and kind not in BUILDERS:
+        from .quick_devices import build_devices  # noqa: PLC0415
+
+        BUILDERS[kind] = build_devices
     if kind not in BUILDERS:
         raise KscError("kind", f"Неизвестный вид быстрого отчёта: {kind}")
+    if params.get("detail") == "summary" and kind == "quick_eol":
+        params = {**params, "devices": False}                 # краткий отчёт не строит таблицу устройств (самая тяжёлая часть)
     doc = await BUILDERS[kind](client, params, ctx)
     doc.update(kind=kind, generated_at=ctx.now.isoformat(timespec="seconds"), source=ctx.source_name, org=ctx.org)
-    return doc
+    return shape(kind, doc, params)
+
+
+# Таблицы, которые входят только в подробный отчёт: построчные перечни (обнаружения, компьютеры, устройства, события). В кратком остаются сводные таблицы и показатели.
+DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "software", "vulns"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
+                 "quick_eol": {"devices"}, "quick_devices": {"devices"}}
+
+
+def shape(kind: str, doc: dict, p: dict) -> dict:
+    """Настройки конструктора, общие для всех быстрых отчётов: подробность («summary» — показатели и сводные таблицы, «full» — все записи, полные перечни CVE, устройств и пользователей)
+    и состав столбцов основной таблицы (`columns`: ключи в нужном порядке; неизвестные пропускаются, пусто — все). Числа и условия отчёта не меняются."""
+    tables = list(doc["tables"])
+    doc = {**doc, "columns_all": [{"key": c["key"], "title": c["title"]} for c in tables[0]["columns"]] if tables else []}      # для выбора столбцов в конструкторе
+    if p.get("detail") == "summary":
+        keep = [t for t in tables if t["id"] not in DETAIL_TABLES.get(kind, set())]
+        rows = [{"metric": m["label"], "value": m["value"], "hint": m.get("hint") or ""} for m in doc.get("metrics", [])]
+        sev = doc.get("severity")
+        if sev:
+            rows += [{"metric": f"{sev['title']}: {lv['label']}", "value": lv["value"], "hint": lv.get("hint") or ""} for lv in sev["levels"]]
+        summary = {"id": "summary", "title": "Сводка", "columns": [col("metric", "Показатель"), col("value", "Значение", "num"), col("hint", "Пояснение")], "rows": rows, "note": "Краткий отчёт: показатели без построчных перечней."}
+        tables = [*keep, summary]
+        doc["notes"] = [*doc.get("notes", []), "Краткий отчёт: построчные перечни (компьютеры, устройства, обнаружения) не включены — выберите «Подробный», чтобы получить все записи."]
+    elif p.get("columns"):
+        main = tables[0]
+        by = {c["key"]: c for c in main["columns"]}
+        picked = [by[k] for k in p["columns"] if k in by]
+        if picked:
+            tables[0] = {**main, "columns": picked}
+    return {**doc, "tables": tables}
 
 
 def brief(doc: dict) -> dict:

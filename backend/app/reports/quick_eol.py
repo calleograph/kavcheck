@@ -2,6 +2,8 @@
 Данные берутся из готовых результатов KAV Checker (PostgreSQL), к KSC отчёт не обращается. Несколько источников — в одном отчёте, у каждой строки указан источник; в таблице устройств список полный (без сокращений «+N»)."""
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import and_, func, or_, select
 
 from ..eol import read as R
@@ -24,7 +26,7 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     if ctx.sm is None or not (ctx.source_ids or ctx.source_id):
         raise KscError("params", "Отчёт EOL недоступен: нет доступа к локальной базе")
     sids = list(ctx.source_ids or [ctx.source_id])
-    statuses = [s for s in (p.get("statuses") or ["eol", "extended", "upcoming"]) if s in R.PROBLEM_STATUSES]
+    statuses = [s for s in (p.get("statuses") or ["eol", "extended", "upcoming"]) if s in (*R.PROBLEM_STATUSES, R.UNDETERMINED)]
     kinds = p.get("kinds") or ["app", "os"]
     async with ctx.sm() as db:
         names = {s.id: s.name for s in (await db.execute(select(KscSource).where(KscSource.id.in_(sids)))).scalars()}
@@ -35,6 +37,12 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
             cond.append(any_of(p["q"], EolFinding.title, EolFinding.publisher, EolFinding.eol_product, EolFinding.subject))
         if p.get("severity"):
             cond.append(EolFinding.severity == p["severity"])
+        fnd = p.get("finding")
+        if fnd:                                         # отчёт по устройствам одной находки (из боковой панели)
+            try:
+                cond.append(and_(EolFinding.source_id == uuid.UUID(str(fnd["source_id"])), EolFinding.kind == str(fnd["kind"]), EolFinding.subject == str(fnd["subject"]), EolFinding.version == str(fnd.get("version") or "")))
+            except (KeyError, ValueError):
+                raise KscError("params", "Неверно указана находка EOL") from None
         zone = p.get("zone") or ""
         counts: dict[tuple, tuple[int, int]] = {}
         if zone:                                        # отчёт по зоне: считаются только устройства зоны (по подготовленным данным зон)
@@ -85,6 +93,8 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                metric("items", "Программ и ОС (версий)", len(rows)), metric("eol", "Стандартная поддержка закончилась", sum(1 for r in rows if r["status"] == "eol"), "", "danger" if any(r["status"] == "eol" for r in rows) else "ok"),
                metric("extended", "Только расширенная (платная) поддержка", sum(1 for r in rows if r["status"] == "extended"), "не подтверждено: зависит от подписки или договора"),
                metric("upcoming", "Скоро заканчивается", sum(1 for r in rows if r["status"] == "upcoming"))]
+    if any(r["status"] == R.UNDETERMINED for r in rows):
+        metrics.append(metric("undetermined", "ОС: не удалось определить EOL", sum(1 for r in rows if r["status"] == R.UNDETERMINED), "причина указана в столбце «Пояснение»; такие ОС не считаются ни проблемой, ни поддерживаемыми"))
     notes = ["Сроки поддержки взяты из базы endoflife.date (https://endoflife.date). «EOL» присваивается, только когда закончилась стандартная поддержка безопасности; расширенная поддержка "
              "(платная или по договору) показывается отдельно и не считается подтверждённой. Продукты без дат в базе в отчёт не попадают."]
     if p.get("devices", True) and not devices and rows:

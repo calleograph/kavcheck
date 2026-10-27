@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, type ApiError, type Dashboard, type EolSummary, type EvSummary, type ProtSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Icon, type IconName } from "../components/Icons";
+import { ReportMenu } from "../components/ReportMenu";
 import { Empty, PageHead, Spectrum } from "../components/ui";
 import { fmt, fmtTime, num } from "../util";
 
@@ -69,6 +70,7 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
             : <><b>{ctx.current.name}</b><span className="skel skel-line" /></>}
         </span>}>
         <button className="btn" onClick={() => void load(true)} aria-busy={busy && !!d}><Icon name="refresh" /><span>Обновить данные</span></button>
+        <ReportMenu activityDays={ctx.me.activity_days} canReport={ctx.me.user.role !== "viewer"} />
       </PageHead>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       {d?.error && <div className="alert warn" role="status"><Icon name="alert" /><div className="alert-body">Источник сейчас недоступен: {d.error}. {s ? "Показаны последние полученные данные." : ""}</div></div>}

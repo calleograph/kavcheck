@@ -11,6 +11,7 @@ import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../comp
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { CVSS_RANGES, CvssCell, Kev, LevelBadge, StatusBadge } from "../components/VdbBits";
+import { FilterBar } from "../components/FilterBar";
 import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
 
@@ -82,29 +83,44 @@ function SearchView({ ctx }: { ctx: Ctx }) {
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(true); } };
   const open = sp.get("v");
   const keys = list.items.map((v) => v.key);
+  const [note, setNote] = useState("");
+  /** Отметка есть — отчёт по ней; иначе по найденным по условиям страницы (в одном отчёте не больше 300 уязвимостей — уточните фильтр, если их больше). */
+  const reportView = () => {
+    setNote("");
+    if (sel.count) { setReport({ keys: sel.ids, title: sel.count === 1 ? `Отчёт по ${sel.ids[0]}` : `Отчёт по выбранным уязвимостям (${sel.count})` }); return; }
+    if (list.total > 300) setNote(`Найдено ${list.total.toLocaleString("ru-RU")} уязвимостей: в отчёт войдут первые 300 по текущей сортировке — уточните фильтр или отметьте нужные строки.`);
+    setReport({ keys: keys.slice(0, 300), title: `Отчёт по найденным уязвимостям (${Math.min(keys.length, 300)})` });
+  };
   return (
     <>
-      <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="CVE-2024-…, CVE-2026-*, BDU:…, программа, производитель или текст описания" aria-label="Поиск уязвимости" /><MaskHint /></div>
-        <input className="w-md" value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Версия программы" aria-label="Версия программы" title="Введите название программы в поле поиска и версию здесь: найдутся уязвимости, затрагивающие эту версию" />
-        <Segmented<Sev> label="Уровень опасности" value={sev} onChange={setSev} options={SEV_OPTS} />
-        <label className="field">CVSS<select value={range} onChange={(e) => { setRange(e.target.value); setLo(""); setHi(""); }}>{CVSS_RANGES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
-        <div className="toolbar-row">
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "CVE-2024-…, CVE-2026-*, BDU:…, программа, производитель или текст описания", label: "Поиск уязвимости" }}
+        primary={<>
+          <Segmented<Sev> label="Уровень опасности" value={sev} onChange={setSev} options={SEV_OPTS} />
           <label className="check inline-check"><input type="checkbox" className="switch" checked={kev} onChange={(e) => setKev(e.target.checked)} />Эксплуатируется (KEV)</label>
           <label className="check inline-check"><input type="checkbox" className="switch" checked={mine} onChange={(e) => setMine(e.target.checked)} />Затрагивает нашу инфраструктуру</label>
-        </div>
-        <details className="disclosure toolbar-more"><summary>Дополнительно</summary>
-          <div className="toolbar-fields">
-            <label className="field">CVSS от<input type="number" inputMode="decimal" min={0} max={10} step={0.1} value={lo} onChange={(e) => setLo(e.target.value)} placeholder="0.0" className="w-num" /></label>
-            <label className="field">до<input type="number" inputMode="decimal" min={0} max={10} step={0.1} value={hi} onChange={(e) => setHi(e.target.value)} placeholder="10.0" className="w-num" /></label>
-            <label className="check inline-check"><input type="checkbox" className="switch" checked={fix} onChange={(e) => setFix(e.target.checked)} />Есть исправление</label>
-            <label className="field">Источник<select value={source} onChange={(e) => setSource(e.target.value)}><option value="">Любой</option>{Object.entries(SRC_TITLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
-            <label className="field">Опубликована с<input type="date" value={pf} onChange={(e) => setPf(e.target.value)} /></label>
-            <label className="field">по<input type="date" value={pt} onChange={(e) => setPt(e.target.value)} /></label>
-            <label className="field">Изменена с<input type="date" value={mf} onChange={(e) => setMf(e.target.value)} /></label>
-          </div>
-        </details>
-      </div>
+        </>}
+        more={<>
+          <label className="field">Версия программы<input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Название — в поиске, версия — здесь" title="Введите название программы в поле поиска и версию здесь: найдутся уязвимости, затрагивающие эту версию" /></label>
+          <label className="field">CVSS<select value={range} onChange={(e) => { setRange(e.target.value); setLo(""); setHi(""); }}>{CVSS_RANGES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
+          <label className="field">CVSS от<input type="number" inputMode="decimal" min={0} max={10} step={0.1} value={lo} onChange={(e) => setLo(e.target.value)} placeholder="0.0" /></label>
+          <label className="field">до<input type="number" inputMode="decimal" min={0} max={10} step={0.1} value={hi} onChange={(e) => setHi(e.target.value)} placeholder="10.0" /></label>
+          <label className="field">Источник<select value={source} onChange={(e) => setSource(e.target.value)}><option value="">Любой</option>{Object.entries(SRC_TITLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+          <label className="field">Опубликована с<input type="date" value={pf} onChange={(e) => setPf(e.target.value)} /></label>
+          <label className="field">по<input type="date" value={pt} onChange={(e) => setPt(e.target.value)} /></label>
+          <label className="field">Изменена с<input type="date" value={mf} onChange={(e) => setMf(e.target.value)} /></label>
+          <label className="check"><input type="checkbox" className="switch" checked={fix} onChange={(e) => setFix(e.target.checked)} />Есть исправление</label>
+        </>}
+        moreActive={[version, range, lo, hi, source, pf, pt, mf, fix ? "1" : ""].filter(Boolean).length}
+        chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(sev ? [{ id: "sev", label: `Опасность: ${SEV_OPTS.find((o) => o[0] === sev)?.[1]}`, onRemove: () => setSev("") }] : []),
+          ...(kev ? [{ id: "kev", label: "Эксплуатируется (KEV)", onRemove: () => setKev(false) }] : []), ...(mine ? [{ id: "mine", label: "Затрагивает нашу инфраструктуру", onRemove: () => setMine(false) }] : []),
+          ...(version ? [{ id: "ver", label: `Версия: ${version}`, onRemove: () => setVersion("") }] : []), ...(range ? [{ id: "rng", label: `CVSS: ${CVSS_RANGES.find((r) => r.id === range)?.label ?? range}`, onRemove: () => { setRange(""); setLo(""); setHi(""); } }] : []),
+          ...(lo || hi ? [{ id: "lohi", label: `CVSS ${lo || "0"}–${hi || "10"}`, onRemove: () => { setLo(""); setHi(""); } }] : []), ...(fix ? [{ id: "fix", label: "Есть исправление", onRemove: () => setFix(false) }] : []),
+          ...(source ? [{ id: "src", label: `Источник: ${SRC_TITLE[source] ?? source}`, onRemove: () => setSource("") }] : []), ...(pf || pt ? [{ id: "pub", label: `Опубликована ${pf || "…"} — ${pt || "…"}`, onRemove: () => { setPf(""); setPt(""); } }] : []),
+          ...(mf ? [{ id: "mod", label: `Изменена с ${mf}`, onRemove: () => setMf("") }] : [])]}
+        onReset={() => { setQ(""); setSev(""); setKev(false); setMine(false); setVersion(""); setRange(""); setLo(""); setHi(""); setFix(false); setSource(""); setPf(""); setPt(""); setMf(""); }}
+        count={{ n: list.initial ? null : list.total, noun: ["уязвимость", "уязвимости", "уязвимостей"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
+        report={canReport ? { onClick: reportView, disabled: list.initial || !list.total, title: sel.count ? "Отчёт по отмеченным уязвимостям" : "Отчёт по найденным уязвимостям: потенциально затронутые компьютеры" } : null} />
+      {note && <p className="muted small fbar-note"><b className="warn-text">{note}</b></p>}
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={7} /> : (
@@ -241,7 +257,8 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
     <>
       {eolOn && <div className="toolbar"><Segmented<"all" | "cve" | "eol"> label="Тип записей" value={type} onChange={setType} options={[["all", "Все"], ["cve", "CVE"], ["eol", `EOL${eolN ? ` · ${eolN}` : ""}`]]} />
         <span className="muted small">CVE и EOL — разные типы проблем: они считаются отдельно и не складываются. EOL выключается в Администрирование → База уязвимостей.</span></div>}
-      {kind !== "cve" && <div className="vdb-eol"><h3 className="h3">EOL: программы и ОС без поддержки производителя{eol ? ` (${eolN})` : ""}</h3><EolList limit={kind === "eol" ? 100 : 5} sourceId={ctx.current?.id} /></div>}
+      {kind === "all" && <p className="vdb-eol-line"><Icon name="clock" size={15} /><span>EOL: программ и ОС без поддержки производителя — <b>{eolN}</b>.</span> <button type="button" className="link-btn" onClick={() => setType("eol")}>Показать список EOL</button></p>}
+      {kind === "eol" && <div className="vdb-eol"><h3 className="h3">EOL: программы и ОС без поддержки производителя{eol ? ` (${eolN})` : ""}</h3><EolList limit={100} sourceId={ctx.current?.id} /></div>}
       {kind !== "eol" && <>
       <div className="meters">
         <div className="meter" title="Единица — уникальная уязвимость (один идентификатор считается один раз, независимо от числа продуктов и компьютеров)"><span className="l">Уникальных уязвимостей</span><span className="v">{s ? num(s.total) : "…"}</span><span className="t">{s?.products != null ? `в ${num(s.products)} ${plural(s.products, "продукте", "продуктах", "продуктах")} каталога «${ctx.current?.name}»` : `по каталогу «${ctx.current?.name}»`}</span></div>
@@ -259,14 +276,21 @@ function MineView({ ctx, counts, onCounts }: { ctx: Ctx; counts: VdbCounts | nul
         <label className="check inline-check"><input type="checkbox" className="switch" checked={eolF} onChange={(e) => setEolF(e.target.checked)} />Только продукты с EOL</label>
       </div>
       {pkey && <div className="alert info"><Icon name="info" /><div className="alert-body">Уязвимости продукта «{pname || pkey}». <button type="button" className="link-btn" onClick={() => { setPkey(""); setPname(""); }}>Показать все</button></div></div>}
-      <div className="toolbar">
-        <label className="check inline-check"><input type="checkbox" className="switch" checked={newOnly} onChange={(e) => setNewOnly(e.target.checked)} />Только новые</label>
-        <Segmented<Sev> label="Уровень опасности" value={sev} onChange={setSev} options={SEV_OPTS} />
-        {view === "list" && <label className="field">CVSS<select value={range} onChange={(e) => setRange(e.target.value)}>{CVSS_RANGES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>}
-        <label className="check inline-check"><input type="checkbox" className="switch" checked={kev} onChange={(e) => setKev(e.target.checked)} />Только из каталога CISA KEV</label>
-        <div className="toolbar-foot"><span className="muted small">Оценка по каталогу установленного ПО, без запросов к KSC; список компьютеров — по кнопке «Проверить».</span>
-          {canReport && (s?.new ?? 0) > 0 && <button type="button" className="link-btn" onClick={() => mark(true)}>Отметить все просмотренными</button>}</div>
-      </div>
+      <FilterBar primary={<>
+          <Segmented<Sev> label="Уровень опасности" value={sev} onChange={setSev} options={SEV_OPTS} />
+          <label className="check inline-check"><input type="checkbox" className="switch" checked={newOnly} onChange={(e) => setNewOnly(e.target.checked)} />Только новые</label>
+          <label className="check inline-check"><input type="checkbox" className="switch" checked={kev} onChange={(e) => setKev(e.target.checked)} />Только из каталога CISA KEV</label>
+        </>}
+        more={view === "list" ? <label className="field">CVSS<select value={range} onChange={(e) => setRange(e.target.value)}>{CVSS_RANGES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label> : undefined}
+        moreActive={view === "list" && range ? 1 : 0}
+        chips={[...(newOnly ? [{ id: "new", label: "Только новые", onRemove: () => setNewOnly(false) }] : []), ...(sev ? [{ id: "sev", label: `Опасность: ${SEV_OPTS.find((o) => o[0] === sev)?.[1]}`, onRemove: () => setSev("") }] : []),
+          ...(kev ? [{ id: "kev", label: "Только KEV", onRemove: () => setKev(false) }] : []), ...(range && view === "list" ? [{ id: "rng", label: `CVSS: ${CVSS_RANGES.find((r) => r.id === range)?.label ?? range}`, onRemove: () => setRange("") }] : []),
+          ...(pkey ? [{ id: "pk", label: `Программа: ${pname || pkey}`, onRemove: () => { setPkey(""); setPname(""); } }] : [])]}
+        onReset={() => { setNewOnly(false); setSev(""); setKev(false); setRange(""); setPkey(""); setPname(""); }}
+        count={view === "list" ? { n: list.initial ? null : list.total, noun: ["уязвимость", "уязвимости", "уязвимостей"] } : undefined}
+        report={canReport && view === "list" ? { onClick: () => setReport(sel.count ? { keys: sel.ids, title: `Отчёт по выбранным уязвимостям (${sel.count})` } : { keys: keys.slice(0, 300), title: `Отчёт по найденным уязвимостям (${Math.min(keys.length, 300)})` }),
+          disabled: list.initial || !list.total, title: list.total > 300 && !sel.count ? "В отчёт войдут первые 300 уязвимостей по текущей сортировке — уточните фильтр или отметьте строки" : "Потенциально затронутые компьютеры по найденным уязвимостям" } : null}
+        extra={canReport && (s?.new ?? 0) > 0 ? <button type="button" className="btn ghost mini" onClick={() => mark(true)} title="Оценка по каталогу установленного ПО, без запросов к KSC">Отметить все просмотренными</button> : undefined} />
       {view === "plan" && <PlanView ctx={ctx} filters={{ newOnly, sev, kev, cat, stat, eolF }} canEdit={ctx.me.user.role !== "viewer"} onOpen={(k, n) => { setPkey(k); setPname(n); setView("list"); }} />}
       {view === "list" && <>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}

@@ -56,12 +56,12 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol";
+export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices";
 export interface QuickCol { key: string; title: string; type: string }
 export interface QuickMetric { key: string; label: string; value: number | string; hint: string; tone: string }
 /** Документ быстрого отчёта без строк: один источник правды для просмотра, XLSX, HTML и CSV. */
 export interface QuickDoc { kind?: string; title: string; subtitle: string; conditions: { label: string; text: string }[]; metrics: QuickMetric[]; notes: string[]; generated_at?: string; source?: string;
-  severity: { title: string; levels: { key: string; label: string; value: number; hint: string }[] } | null; tables: { id: string; title: string; columns: QuickCol[]; n: number; note: string }[] }
+  severity: { title: string; levels: { key: string; label: string; value: number; hint: string }[] } | null; columns_all?: { key: string; title: string }[]; tables: { id: string; title: string; columns: QuickCol[]; n: number; note: string }[] }
 export interface QuickPreview { doc: QuickDoc | null; items: Record<string, string | number | null>[]; total: number; columns: QuickCol[]; fetched_at?: string; preview_rows?: number; html_row_limit?: number; unsupported?: string[] }
 export interface VulnDescr { descr_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label?: string; cve: string[]; kb: string[]; products: string[]; hosts: number; total: number; patchable: number; last_detected: string | null; url?: string }
 export interface VulnListSummary { vulns: number; critical: number; high: number; warning: number; patchable: number; activity_days: number; fetched_at: string }
@@ -351,7 +351,7 @@ export const api = {
     rerun: (id: string) => req<Job>("POST", `/reports/${id}/rerun`),
     remove: (id: string) => req<void>("DELETE", `/reports/${id}`),
     templates: () => req<{ items: Template[] }>("GET", "/report-templates"),
-    saveTemplate: (name: string, kind: Job["kind"], params: ReportParams | AuditParams, shared = true) => req<Template>("POST", "/report-templates", { name, kind, params, shared }),
+    saveTemplate: (name: string, kind: Job["kind"], params: ReportParams | AuditParams | Record<string, unknown>, shared = true) => req<Template>("POST", "/report-templates", { name, kind, params, shared }),
     deleteTemplate: (id: string) => req<void>("DELETE", `/report-templates/${id}`),
   },
   zones: {

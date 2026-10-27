@@ -135,3 +135,32 @@ async def test_devices_api_search_users_zone_and_all_sources(client, app):
     await client.post("/api/v1/auth/logout")
     await login(client, "viewer", "Viewer-Passw0rd-123")
     assert (await client.post("/api/v1/devices/poll", headers=h)).status_code == 403
+
+
+async def test_devices_report_follows_page_filters_with_full_user_lists(client, app):
+    """«Сформировать отчёт» на странице устройств: условия страницы (поиск, зона, пользователь, EOL) и полные списки пользователей без сокращений; краткий вариант — показатели и сводная таблица."""
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sm = app.state.session_maker
+    a = await _src(app, "KSC-A")
+    await _zone_data(app, a, [(6, "ws-001", 101, "Windows 11", True, "z1"), (7, "ws-002", 102, "Windows 10", True, "z2"), (8, "old-pc", 103, "Windows 7", False, "z1")])
+    users = [vrow(1, 6, "petrova", True, "", "0xA2", 2)] + [vrow(10 + i, 6, f"user{i:02d}", False, "", f"0xC{i:02d}", 10 + i) for i in range(12)]
+    await U.poll_source(sm, FakeUsers(users), a, MASKS)
+    h = {"X-Source-Id": str(a.id)}
+
+    async def preview(params):
+        r = await client.post("/api/v1/quick/preview", json={"kind": "quick_devices", "params": params, "source_ids": [str(a.id)]}, headers=h)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    full = await preview({})
+    assert full["total"] == 2 and [r["name"] for r in full["items"]] == ["ws-001", "ws-002"] and {c["key"] for c in full["doc"]["columns_all"]} >= {"users_now", "users_before", "eol"}
+    ws1 = full["items"][0]
+    assert ws1["users_now"] == "petrova" and ws1["users_before"].count(";") == 11                      # входившие ранее — все 12, а не «три и +9»
+    assert (await preview({"include_inactive": True}))["total"] == 3 and (await preview({"zone": "z2"}))["total"] == 1
+    assert [r["name"] for r in (await preview({"user": "user03"}))["items"]] == ["ws-001"] and (await preview({"q": "192.0.2.102/32"}))["total"] == 1
+    short = await preview({"detail": "summary"})
+    assert [t["id"] for t in short["doc"]["tables"]] == ["by_os", "summary"] and short["doc"]["tables"][0]["n"] == 2
+    cols = await preview({"columns": ["name", "users_now"]})
+    assert [c["key"] for c in cols["columns"]] == ["name", "users_now"]
+    job = await client.post("/api/v1/reports", json={"kind": "quick_devices", "title": "Устройства", "params": {"zone": "z1"}, "source_ids": [str(a.id)]})
+    assert job.status_code == 201, job.text

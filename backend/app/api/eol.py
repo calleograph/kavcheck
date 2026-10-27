@@ -206,10 +206,11 @@ async def infra(q: str = Query("", max_length=200), kind: str = Query("", patter
 @router.get("/infra/hosts")
 async def infra_hosts(source_id: str = Query(..., max_length=40), kind: str = Query(..., pattern=r"^(app|os)$"), subject: str = Query(..., max_length=200), version: str = Query("", max_length=120),
                       q: str = Query("", max_length=200), zone: str = Query("", max_length=40), all_hosts: bool = False, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
+                      sort: str = Query("name", pattern=r"^(name|os|last_connected)$"), desc: bool = False,
                       su: SessionUser = Depends(require_user), srcs: list[KscSource] = Depends(source_scope), db: AsyncSession = Depends(get_db)):
     """Устройства, на которых найдена программа или ОС с EOL (из подготовленных данных; переход в карточку — по source_id и host_id)."""
     sid = _opt_source(srcs, source_id)[0]
-    return await R.finding_hosts(db, sid, kind, subject, version, q=q, zone=zone, active_only=not all_hosts, offset=offset, limit=limit)
+    return await R.finding_hosts(db, sid, kind, subject, version, q=q, zone=zone, active_only=not all_hosts, offset=offset, limit=limit, sort=sort, desc=desc)
 
 
 @router.get("/hosts/{source_id}/{host_id}")

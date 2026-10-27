@@ -232,3 +232,82 @@ async def test_api_lists_unsupported_operating_systems_and_undetermined_with_rea
     assert s["os_undetermined"] == {"items": 4, "devices": 4} and s["kinds"]["os"] >= 6 and s["findings"]["eol"] >= 5
     hosts = (await client.get("/api/v1/eol/infra/hosts", params={"source_id": str(sid), "kind": "os", "subject": "Linux", "version": "—"}, headers=h)).json()
     assert hosts["total"] == 1                                                                          # только устройство 16 (у остальных «Linux» дистрибутив определён)
+
+
+async def test_report_constructor_detail_columns_finding_context_and_templates(client, app):
+    """Единый конструктор: подробность (краткий/подробный), состав столбцов, отчёт по одной находке из боковой панели, шаблон с быстрым видом отчёта."""
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await seed_os(app)
+    await compute_os(app, sid)
+    h = {"X-Source-Id": str(sid)}
+
+    async def preview(params):
+        r = await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"kinds": ["os"], **params}, "source_ids": [str(sid)]}, headers=h)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    full = await preview({"statuses": ["eol", "extended", "upcoming", "undetermined"]})
+    assert [t["id"] for t in full["doc"]["tables"]] == ["rows", "devices"] and full["total"] == 13 and {c["key"] for c in full["doc"]["columns_all"]} >= {"title", "hosts", "condition"}
+    short = await preview({"statuses": ["eol", "extended", "upcoming", "undetermined"], "detail": "summary"})
+    assert [t["id"] for t in short["doc"]["tables"]] == ["rows", "summary"] and short["total"] == full["total"]       # краткий: сводные таблицы без построчного списка устройств
+    assert any("Краткий отчёт" in n for n in short["doc"]["notes"])
+    cols = await preview({"statuses": ["eol"], "columns": ["title", "hosts", "nonexistent"]})
+    assert [c["key"] for c in cols["columns"]] == ["title", "hosts"] and set(cols["items"][0]) >= {"title", "hosts", "condition"}      # в таблицу попадают выбранные, строки остаются полными
+    one = await preview({"statuses": ["eol"], "finding": {"source_id": str(sid), "kind": "os", "subject": "Microsoft Windows Server 2008 R2 Standard", "version": "6.1.7601"}})
+    assert one["total"] == 1 and one["items"][0]["title"] == "Microsoft Windows Server 2008 R2 Standard"
+    und = await preview({"statuses": ["undetermined"]})
+    assert und["total"] == 4 and any(m["key"] == "undetermined" and m["value"] == 4 for m in und["doc"]["metrics"])
+    bad = await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"detail": "huge"}, "source_ids": [str(sid)]}, headers=h)
+    assert bad.status_code == 422
+    t = await client.post("/api/v1/report-templates", json={"name": "ОС без поддержки: кратко", "kind": "quick_eol", "params": {"kinds": ["os"], "statuses": ["eol"], "detail": "summary"}})
+    assert t.status_code == 201 and t.json()["params"]["detail"] == "summary" and t.json()["params"]["kinds"] == ["os"]
+
+
+async def test_finding_devices_panel_is_searchable_sortable_and_paged_on_the_server(client, app):
+    """Боковая панель устройств находки: поиск, сортировка и страницы выполняет сервер (а не страница в браузере), устройства без подготовленных данных зон не пропадают."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import ZcHost, ZcSource
+
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await seed_os(app)
+    await compute_os(app, sid)
+    async with app.state.session_maker() as db:
+        db.add(ZcSource(source_id=sid, gen=1, status="ready"))
+        now = datetime.now(timezone.utc)
+        for hid, name, os_, ago in ((13, "zeta-host", "Linux", 5), (14, "alpha-host", "Linux", 1)):
+            db.add(ZcHost(source_id=sid, host_id=hid, gen=1, name=name, search=name, ip_num=1, os=os_, active=True, last_connected=now - timedelta(hours=ago), data={"ip": "192.0.2.9", "group": "Серверы", "zones": []}))
+        await db.commit()
+    h = {"X-Source-Id": str(sid)}
+    base = {"source_id": str(sid), "kind": "os", "subject": "CentOS 7", "version": "7"}
+
+    async def names(**p):
+        r = (await client.get("/api/v1/eol/infra/hosts", params={**base, **p}, headers=h)).json()
+        return [i["name"] for i in r["items"]], r["total"]
+
+    assert await names() == (["alpha-host", "zeta-host"], 2)                                  # по имени по умолчанию
+    assert (await names(desc=True))[0] == ["zeta-host", "alpha-host"] and (await names(sort="last_connected"))[0] == ["zeta-host", "alpha-host"]
+    assert await names(q="alp*") == (["alpha-host"], 1)                                      # поиск — на сервере
+    assert await names(limit=1, offset=1) == (["zeta-host"], 2)                              # страница, а не весь список
+    assert (await client.get("/api/v1/eol/infra/hosts", params={**base, "sort": "bogus"}, headers=h)).status_code == 422
+    # у находки без подготовленных данных зон устройства всё равно перечислены (по идентификаторам)
+    lin = (await client.get("/api/v1/eol/infra/hosts", params={**{**base, "subject": "Ubuntu 16.04", "version": "16.04"}}, headers=h)).json()
+    assert lin["total"] == 1 and lin["items"][0]["host_id"] == 10
+
+
+def test_template_keeps_report_settings_but_not_page_context():
+    from app.api.reports import template_settings
+
+    got = template_settings({"detail": "summary", "columns": ["name"], "statuses": ["eol"], "host_ids": [1, 2], "q": "srv", "zone": "z1", "finding": {"a": 1}, "nested": {"x": 1}, "long": "x" * 500})
+    assert got == {"detail": "summary", "columns": ["name"], "statuses": ["eol"]}
+
+
+async def test_system_status_lists_jobs_per_source_including_catalog(client, app):
+    """Регрессия 0.9.6: «Состояние системы» падало с ошибкой 500, как только в системе есть хотя бы один источник (не был импортирован CatalogState)."""
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await seed_os(app)
+    await compute_os(app, sid)
+    r = await client.get("/api/v1/admin/system")
+    assert r.status_code == 200, r.text
+    src = r.json()["jobs"]["sources"]
+    assert len(src) == 1 and src[0]["source"] == "KSC-OS" and src[0]["catalog"]["status"] == "ready"

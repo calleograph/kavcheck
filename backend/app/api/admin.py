@@ -378,7 +378,7 @@ async def _catalog_effective(cs) -> str:
 
 async def _jobs_status(db: AsyncSession, hb, srcs: list) -> dict:
     """Наблюдаемость фоновых расчётов: память worker, текущие задачи, по каждому источнику — последние успешные расчёты (длительность, ошибки), очередь и длительность отчётов, долгие запросы PostgreSQL."""
-    from ..models import DevicesState, EolState, ZcSource  # noqa: PLC0415
+    from ..models import CatalogState, DevicesState, EolState, ZcSource  # noqa: PLC0415
 
     pulse = (hb.data or {}) if hb is not None else {}
     res = pulse.get("resources") or {}

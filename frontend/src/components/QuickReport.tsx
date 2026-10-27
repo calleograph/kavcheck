@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type ApiError, type QuickCol, type QuickKind, type QuickPreview } from "../api";
+import { api, type ApiError, type QuickCol, type QuickKind, type QuickPreview, type Template } from "../api";
 import { fmt, num, plural } from "../util";
 import { CompactList } from "./CompactList";
 import { Modal } from "./Dialogs";
@@ -54,7 +54,7 @@ function cell(c: QuickCol, v: string | number | null | undefined) {
 
 export type QuickScopeOpts = { period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean };
 const EXT_STATUSES: [string, string][] = [["confirmed", "Подтверждено источником"], ["potential", "Потенциально затронуто"], ["clarify", "Требуется уточнение"], ["insufficient", "Данных недостаточно"], ["fixed", "Исправлено (показать отдельно)"]];
-const EOL_STATUSES: [string, string][] = [["eol", "Стандартная поддержка закончилась (EOL)"], ["extended", "Только расширенная (платная) поддержка"], ["upcoming", "Окончание поддержки приближается"]];
+const EOL_STATUSES: [string, string][] = [["eol", "Стандартная поддержка закончилась (EOL)"], ["extended", "Только расширенная (платная) поддержка"], ["upcoming", "Окончание поддержки приближается"], ["undetermined", "ОС: не удалось определить EOL (причина указана)"]];
 const SECTIONS: [string, string][] = [["software", "Установленное ПО"], ["vulns", "Уязвимости"], ["protection", "Состояние защиты"]];
 const FORMATS: [string, string][] = [["xlsx", "Excel (XLSX)"], ["html", "HTML для руководства"], ["csv", "CSV"]];
 const PREVIEW_SHOWN = 60;
@@ -72,6 +72,48 @@ function AffectedHosts({ rows, total, expected, link, onClose }: { rows: Record<
       {hosts.length > shown.length && <> <button type="button" className="link-btn" onClick={() => setAll(true)}>Показать все</button></>}
       {all && hosts.length > 12 && <> <button type="button" className="link-btn" onClick={() => setAll(false)}>Свернуть</button></>}
       {rows.length < total && hosts.length !== expected && <span className="muted small"> · по первым {num(rows.length)} строкам предпросмотра; полный список — в файле</span>}
+    </div>
+  );
+}
+
+const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices"];
+// выбор строк и фильтры страницы в шаблон не попадают: они берутся с той страницы, откуда открыт конструктор
+const CONTEXT_KEYS = ["host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "zone", "group_contains", "threat", "product", "build", "problem"];
+
+/** Конструктор отчёта: подробность (краткий — показатели и сводные таблицы, подробный — все записи, полные перечни CVE, устройств и пользователей), столбцы основной таблицы и шаблоны. */
+function Builder({ kind, params, columnsAll, onChange, canSave }: { kind: string; params: Record<string, unknown>; columnsAll: { key: string; title: string }[]; onChange: (patch: Record<string, unknown>) => void; canSave: boolean }) {
+  const detail = (params.detail as string) ?? "full";
+  const picked = (params.columns as string[] | undefined) ?? [];
+  const [tpls, setTpls] = useState<Template[]>([]); const [name, setName] = useState(""); const [saving, setSaving] = useState(false); const [note, setNote] = useState("");
+  const load = useCallback(() => { api.reports.templates().then((r) => setTpls(r.items.filter((t) => t.kind === kind))).catch(() => setTpls([])); }, [kind]);
+  useEffect(load, [load]);
+  const apply = (id: string) => { const t = tpls.find((x) => x.id === id); if (t) { const keep = Object.fromEntries(Object.entries(t.params as Record<string, unknown>).filter(([k]) => !CONTEXT_KEYS.includes(k))); onChange({ detail: "full", columns: [], ...keep }); setNote(`Применён шаблон «${t.name}»`); } };
+  const save = async () => {
+    setSaving(true); setNote("");
+    try { const settings = Object.fromEntries(Object.entries(params).filter(([k]) => !CONTEXT_KEYS.includes(k))); await api.reports.saveTemplate(name.trim(), kind as QuickKind, settings); setName(""); setNote("Шаблон сохранён: он хранит настройки отчёта, а фильтры берутся со страницы."); load(); }
+    catch (e) { setNote((e as ApiError).message); } finally { setSaving(false); }
+  };
+  const toggle = (k: string) => { const cur = picked.length ? picked : columnsAll.map((c) => c.key); onChange({ columns: cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k] }); };
+  return (
+    <div className="qr-build">
+      <div className="qr-build-row">
+        <span className="qr-build-l" id="qr-detail">Подробность</span>
+        <Segmented label="Подробность отчёта" value={detail} onChange={(v) => onChange({ detail: v })} options={[["full", "Подробный"], ["summary", "Краткий"]]} />
+        <span className="muted small">{detail === "summary" ? "Показатели и сводные таблицы." : "Все соответствующие записи: полные списки CVE, устройств и пользователей, без сокращений «+N»."}</span>
+      </div>
+      {detail === "full" && columnsAll.length > 0 && (
+        <details className="disclosure qr-cols">
+          <summary>Столбцы основной таблицы{picked.length ? ` · выбрано ${picked.length} из ${columnsAll.length}` : ` · все ${columnsAll.length}`}</summary>
+          <div className="qr-cols-grid">{columnsAll.map((c) => <label key={c.key} className="check"><input type="checkbox" checked={picked.length === 0 || picked.includes(c.key)} onChange={() => toggle(c.key)} />{c.title}</label>)}</div>
+          {picked.length > 0 && <button type="button" className="link-btn" onClick={() => onChange({ columns: [] })}>Включить все столбцы</button>}
+        </details>)}
+      <div className="qr-build-row qr-tpl">
+        <label className="inline">Шаблон
+          <select value="" onChange={(e) => apply(e.target.value)} aria-label="Применить шаблон отчёта"><option value="">{tpls.length ? "Выбрать…" : "Нет сохранённых"}</option>{tpls.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
+        {canSave && <span className="qr-tpl-save"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Название шаблона" aria-label="Название нового шаблона" maxLength={200} />
+          <button type="button" className="btn mini" disabled={!name.trim() || saving} onClick={save}>{saving ? <span className="spin" /> : null}Сохранить шаблон</button></span>}
+        {note && <span className="muted small" role="status">{note}</span>}
+      </div>
     </div>
   );
 }
@@ -140,9 +182,10 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
         {doc && (<>
           <div className="qr-hero">
             <span className="qr-big">{hosts ? num(Number(hosts.value)) : num(data!.total)}</span>
-            <span className="qr-cap">{hosts ? (kind === "quick_eol" ? plural(Number(hosts.value), "устройство с проблемой поддержки", "устройства с проблемой поддержки", "устройств с проблемой поддержки") : kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
+            <span className="qr-cap">{hosts ? (kind === "quick_eol" ? plural(Number(hosts.value), "устройство с проблемой поддержки", "устройства с проблемой поддержки", "устройств с проблемой поддержки") : kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : kind === "quick_devices" ? plural(Number(hosts.value), "устройство", "устройства", "устройств") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
               {hosts?.hint && <span className="muted small"> · {hosts.hint}</span>}</span>
           </div>
+          {BUILDABLE.includes(kind) && <Builder kind={kind} params={params} columnsAll={doc.columns_all ?? []} onChange={(patch) => setExtra({ ...extra, ...patch })} canSave={canReport} />}
           {data && (kind === "quick_extvulns" || kind === "quick_vulns" || kind === "version_audit" || kind === "quick_eol") && <AffectedHosts rows={data.items} total={data.total} expected={hosts ? Number(hosts.value) : null} link={sourceIds.length <= 1 && kind !== "quick_eol"} onClose={onClose} />}
           <dl className="qr-cond">{doc.conditions.map((c) => <div key={c.label}><dt>{c.label}</dt><dd>{c.text}</dd></div>)}</dl>
           <div className="qr-metrics">{doc.metrics.filter((m) => m.key !== "hosts").map((m) => (

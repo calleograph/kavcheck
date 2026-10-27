@@ -1,3 +1,4 @@
+import { FilterBar } from "../components/FilterBar";
 import { useEffect, useMemo, useState } from "react";
 import { CompactList } from "../components/CompactList";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -11,7 +12,7 @@ import { Icon } from "../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { TriageBadge, TriageDialog, TriageHistory, type TriageTarget } from "../components/Triage";
-import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
+import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
 import { DEFAULT_ZONE_CATS } from "./zoneCats";
 import { PROBLEM_SHORT, PROBLEM_TONE } from "./ProtectionPage";
@@ -61,13 +62,11 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
   }, [q, state, sort, desc, force]);
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } };
   return (<>
-    <div className="toolbar">
-      <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Зона или ответственный" aria-label="Поиск зоны" /><MaskHint /></div>
-      <Segmented label="Состояние" value={state} onChange={setState} options={[["", "Все"], ["critical", "Критические"], ["vulns", "Уязвимости"], ["protection", "Защита"], ["ok", "Без проблем"]]} />
-      <div className="spacer" />
-      <DataStamp fr={data?.freshness} />
-      {ctx.me.user.is_admin && <Link className="btn" to="/admin?tab=zcache" title="Расписание и состояние расчёта данных зон"><Icon name="clock" /><span>Расчёт данных</span></Link>}
-    </div>
+    <FilterBar search={{ value: q, onChange: setQ, placeholder: "Зона или ответственный", label: "Поиск зоны" }}
+      primary={<Segmented label="Состояние" value={state} onChange={setState} options={[["", "Все"], ["critical", "Критические"], ["vulns", "Уязвимости"], ["protection", "Защита"], ["ok", "Без проблем"]]} />}
+      chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(state ? [{ id: "st", label: `Состояние: ${{ critical: "критические", vulns: "уязвимости", protection: "защита", ok: "без проблем" }[state] ?? state}`, onRemove: () => setState("") }] : [])]}
+      onReset={() => { setQ(""); setState(""); }} count={data ? { n: data.items.length, noun: ["зона", "зоны", "зон"], hint: <> · <DataStamp fr={data.freshness} /></> } : undefined}
+      extra={ctx.me.user.is_admin ? <Link className="btn ghost mini" to="/admin?tab=zcache" title="Расписание и состояние расчёта данных зон"><Icon name="clock" size={15} /><span>Расчёт данных</span></Link> : undefined} />
     <FreshnessNotes fr={data?.freshness} canRefresh={false} />
     {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
     {data && data.totals.conflicts > 0 && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Компьютеров, подходящих нескольким зонам: <b>{num(data.totals.conflicts)}</b>. Они показаны в каждой зоне.{" "}
@@ -87,15 +86,21 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
             <tr key={z.id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/zones/${z.id}`); }}>
               <td><Link to={`/zones/${z.id}`} className="strong-link">{z.name}</Link>{!z.enabled && <span className="badge outline"> выключена</span>}{z.conflicts > 0 && <span className="zone-chip warn" title="Есть спорные компьютеры"> {z.conflicts} спорных</span>}<span className="sub">{z.description || z.purpose}</span></td>
               <td className="small hide-sm resp">{z.responsible.length ? <CompactList items={z.responsible} label="ответственные" render={(r) => r.replace(/\s*\(.*\)$/, "")} /> : z.id === "none" ? "—" : <span className="warn-text">не назначены</span>}</td>
-              <td className="num">{num(z.stats.total)}</td><td className="num">{num(z.stats.active)}</td><td className="num hide-sm">{num(z.stats.online)}</td>
-              <td className="num">{z.stats.critical ? <b className="bad-text">{num(z.stats.critical)}</b> : <span className="muted">0</span>}</td>
-              <td className="num hide-sm">{num(z.stats.other_vulns)}</td><td className="num">{z.stats.protection ? <b className="warn-text">{num(z.stats.protection)}</b> : <span className="muted">0</span>}</td>
+              <td className="num"><ZoneCount z={z.id} n={z.stats.total} label="Показать компьютеры зоны" q="activity=all" /></td><td className="num"><ZoneCount z={z.id} n={z.stats.active} label="Показать активные компьютеры зоны" /></td><td className="num hide-sm">{num(z.stats.online)}</td>
+              <td className="num"><ZoneCount z={z.id} n={z.stats.critical} label="Показать компьютеры с критическими уязвимостями" q="severity=critical" tone="bad-text" /></td>
+              <td className="num hide-sm">{num(z.stats.other_vulns)}</td><td className="num"><ZoneCount z={z.id} n={z.stats.protection} label="Показать компьютеры с проблемами защиты" q="state=protection" tone="warn-text" /></td>
               <td className="num">{num(z.problem_hosts)}</td>{data.items.some((x) => x.eol) && <td className="num hide-sm">{z.eol?.hosts ? <Link to="/eol" className={z.eol.eol ? "bad-text" : "warn-text"} title={`устройств с EOL: ${z.eol.eol}; только расширенная поддержка: ${z.eol.extended}; скоро: ${z.eol.upcoming}`}><b>{num(z.eol.hosts)}</b></Link> : <span className="muted">0</span>}</td>}<td className="hide-sm"><StateBar state={z.stats.state} total={z.stats.active} /></td></tr>))}
           </tbody>
         </table>)}
     </div>
     {data && <p className="muted small mt-sm">Источники: {data.sources.join(", ") || "—"}. «Активен» — связывался с KSC за {data.activity_days} сут; «в сети» — флаг KSC «видимо в сети», это разные состояния. Категории не суммируются: компьютер может быть и с уязвимостью, и с проблемой защиты.</p>}
   </>);
+}
+
+/** Число в обзоре зон: переход к списку компьютеров зоны с нужным фильтром (список, отчёт и боковая панель — на странице зоны). */
+function ZoneCount({ z, n, label, q = "", tone = "" }: { z: string; n: number; label: string; q?: string; tone?: string }) {
+  if (!n) return <span className="muted">0</span>;
+  return <Link to={`/zones/${z}${q ? `?${q}` : ""}#zone-hosts`} className={`count-btn ${tone}`} title={label} aria-label={`${num(n)}: ${label}`} onClick={(e) => e.stopPropagation()}>{num(n)}</Link>;
 }
 
 // ------------------------------------------------------------------------------------------------ дашборд зоны
@@ -176,21 +181,29 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
       {st && ext && d?.ext_cap ? <p className="muted small mt-sm">Показатели потенциальных совпадений с внешними базами учитывают все совпадения; в списке компьютера сохранены до {d.ext_cap} самых опасных (сначала из каталога CISA KEV).</p> : null}
       {st && (st.excluded > 0 || st.accepted > 0 || st.review > 0) && <p className="muted small mt-sm">Решения специалистов: ложных и неактуальных обнаружений исключено <b>{num(st.excluded)}</b>, принятых рисков <b>{num(st.accepted)}</b> (учитываются отдельно), ждут проверки <b>{num(st.review)}</b>. Исходные сведения не удаляются.</p>}
 
-      <div className="section-head" id="zone-hosts"><h2>Компьютеры</h2>{!list.initial && <span className="count">{num(list.total)}</span>}<div className="spacer" />
-        {canReport && <button className="btn" onClick={() => setReport("all")} disabled={list.initial || !list.total}><Icon name="file" />Отчёт по этому списку</button>}</div>
-      <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер или IP-адрес" aria-label="Компьютер" /><MaskHint /></div>
-        <input className="w-md" value={cve} onChange={(e) => setCve(e.target.value)} placeholder="CVE или KLA" aria-label="Уязвимость" />
-        <input className="w-md" value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Программа" aria-label="Программа" />
-        <select className="w-md" value={f.severity} onChange={(e) => setF({ severity: e.target.value })} aria-label="Критичность"><option value="">Любая критичность</option><option value="critical">Критическая</option><option value="high">Высокая</option><option value="warning">Предупреждение</option><option value="none">Без уязвимостей</option></select>
-        <select className="w-md" value={f.problem} onChange={(e) => setF({ problem: e.target.value })} aria-label="Проблема защиты"><option value="">Любые проблемы защиты</option>{(st?.problems ?? []).map((p) => <option key={p.key} value={p.key}>{p.title}</option>)}</select>
-        <select className="w-md" value={f.triage} onChange={(e) => setF({ triage: e.target.value === "attention" ? "" : e.target.value })} aria-label="Состояние обработки"><option value="attention">Требуют внимания</option><option value="all">Все, включая исключённые</option><option value="review">Требуют проверки</option><option value="confirmed">Подтверждённые</option><option value="false_positive">Ложные срабатывания</option><option value="obsolete">Неактуальные</option><option value="risk_accepted">Риск принят</option></select>
-        <Segmented label="Связь с KSC" value={f.activity} onChange={(v) => setF({ activity: v === "active" ? "" : v })} options={[["active", "Активные"], ["all", "Все"], ["inactive", "Без связи"]]} />
-        <Segmented label="В сети" value={f.online || "any"} onChange={(v) => setF({ online: v === "any" ? "" : v })} options={[["any", "Любые"], ["yes", "В сети"], ["no", "Не в сети"]]} />
-        <label className="check inline-check" title="Потенциальные совпадения с NVD, БДУ ФСТЭК, OSV и CISA KEV по каталогу программ"><input type="checkbox" className="switch" checked={ext} onChange={(e) => setExt(e.target.checked)} />Внешние базы</label>
-        {d && d.sources.length > 1 && <select className="w-md" value={f.source_id} onChange={(e) => setF({ source_id: e.target.value })} aria-label="Источник KSC"><option value="">Все источники</option>{d.sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>}
-        {filtered && <div className="toolbar-foot"><button type="button" className="link-btn" onClick={reset}>Сбросить все фильтры</button></div>}
-      </div>
+      <div className="section-head" id="zone-hosts"><h2>Компьютеры</h2></div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Компьютер или IP-адрес", label: "Компьютер" }}
+        primary={<>
+          <select value={f.severity} onChange={(e) => setF({ severity: e.target.value })} aria-label="Критичность"><option value="">Любая критичность</option><option value="critical">Критическая</option><option value="high">Высокая</option><option value="warning">Предупреждение</option></select>
+          <Segmented label="Связь с KSC" value={f.activity || "active"} onChange={(v) => setF({ activity: v === "active" ? "" : v })} options={[["active", "Активные"], ["all", "Все"], ["inactive", "Без связи"]]} />
+        </>}
+        more={<>
+          <label className="field">Уязвимость<input value={cve} onChange={(e) => setCve(e.target.value)} placeholder="CVE или KLA" className="mono" /></label>
+          <label className="field">Программа<input value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Например, *Chrome*" /></label>
+          <label className="field">Проблема защиты<select value={f.problem} onChange={(e) => setF({ problem: e.target.value })}><option value="">Любые</option>{(st?.problems ?? []).map((p) => <option key={p.key} value={p.key}>{p.title}</option>)}</select></label>
+          <label className="field">Состояние обработки<select value={f.triage || "attention"} onChange={(e) => setF({ triage: e.target.value === "attention" ? "" : e.target.value })}><option value="attention">Требуют внимания</option><option value="all">Все, включая исключённые</option><option value="review">Ждут проверки</option></select></label>
+          <div className="field">В сети<Segmented label="В сети" value={f.online || "any"} onChange={(v) => setF({ online: v === "any" ? "" : v })} options={[["any", "Любые"], ["yes", "В сети"], ["no", "Не в сети"]]} /></div>
+          {d && d.sources.length > 1 && <label className="field">Источник KSC<select value={f.source_id} onChange={(e) => setF({ source_id: e.target.value })}><option value="">Все источники</option>{d.sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
+          <label className="check" title="Потенциальные совпадения с NVD, БДУ ФСТЭК, OSV и CISA KEV по каталогу программ"><input type="checkbox" className="switch" checked={ext} onChange={(e) => setExt(e.target.checked)} />Внешние базы</label>
+        </>}
+        moreActive={[cve, product, f.problem, f.triage, f.online, f.source_id, ext ? "1" : ""].filter(Boolean).length}
+        chips={[...(q ? [{ id: "q", label: `Компьютер: ${q}`, onRemove: () => setQ("") }] : []), ...(cve ? [{ id: "cve", label: `Уязвимость: ${cve}`, onRemove: () => setCve("") }] : []), ...(product ? [{ id: "prod", label: `Программа: ${product}`, onRemove: () => setProduct("") }] : []),
+          ...(f.severity ? [{ id: "sev", label: `Критичность: ${{ critical: "критическая", high: "высокая", warning: "предупреждение" }[f.severity] ?? f.severity}`, onRemove: () => setF({ severity: "" }) }] : []),
+          ...(f.problem ? [{ id: "prob", label: `Проблема: ${st?.problems.find((p) => p.key === f.problem)?.title ?? f.problem}`, onRemove: () => setF({ problem: "" }) }] : []), ...(f.triage ? [{ id: "tri", label: `Обработка: ${f.triage === "all" ? "все" : "ждут проверки"}`, onRemove: () => setF({ triage: "" }) }] : []),
+          ...(f.activity ? [{ id: "act", label: `Связь: ${f.activity === "all" ? "все" : "без связи"}`, onRemove: () => setF({ activity: "" }) }] : []), ...(f.online ? [{ id: "onl", label: `В сети: ${f.online === "yes" ? "да" : "нет"}`, onRemove: () => setF({ online: "" }) }] : []),
+          ...(f.source_id && d ? [{ id: "src", label: `Источник: ${d.sources.find((s) => s.id === f.source_id)?.name ?? ""}`, onRemove: () => setF({ source_id: "" }) }] : []), ...(ext ? [{ id: "ext", label: "Внешние базы", onRemove: () => setExt(false) }] : [])]}
+        onReset={reset} count={{ n: list.initial ? null : list.total, noun: ["компьютер", "компьютера", "компьютеров"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
+        report={canReport ? { onClick: () => setReport("all"), disabled: list.initial || !list.total, title: sel.count ? "Отчёт по отмеченным компьютерам — кнопка в панели выбора внизу" : "Отчёт по всем компьютерам списка с текущими фильтрами" } : null} />
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={8} /> : (
           <table className="table virt">
@@ -307,10 +320,10 @@ function Decisions({ ctx }: { ctx: Ctx }) {
   const c = data?.counts ?? {};
   const revert = async (r: TriageRow) => { try { await api.triage.set({ source_id: r.source_id, vuln_key: r.vuln_key, origin: r.origin, scope: r.scope, host_id: r.host_id ?? undefined, host_name: r.host_name, zone_id: r.zone_id ?? undefined, product: r.product, version: r.version, status: "review", comment: "Возвращено на проверку" }); setTick(tick + 1); } catch (e) { setErr((e as ApiError).message); } };
   return (<>
-    <div className="toolbar">
-      <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Уязвимость, компьютер, программа, комментарий" aria-label="Поиск решений" /><MaskHint /></div>
-      <Segmented label="Статус" value={status} onChange={setStatus} options={[["", "Все"], ["false_positive", `Ложные ${c.false_positive ?? 0}`], ["obsolete", `Неактуальные ${c.obsolete ?? 0}`], ["risk_accepted", `Риск принят ${c.risk_accepted ?? 0}`], ["confirmed", `Подтверждённые ${c.confirmed ?? 0}`], ["recheck", "На повторной проверке"], ["expiring", "Скоро истекают"]]} />
-    </div>
+    <FilterBar search={{ value: q, onChange: setQ, placeholder: "Уязвимость, компьютер, программа, комментарий", label: "Поиск решений" }}
+      primary={<Segmented label="Статус" value={status} onChange={setStatus} options={[["", "Все"], ["false_positive", `Ложные ${c.false_positive ?? 0}`], ["obsolete", `Неактуальные ${c.obsolete ?? 0}`], ["risk_accepted", `Риск принят ${c.risk_accepted ?? 0}`], ["confirmed", `Подтверждённые ${c.confirmed ?? 0}`], ["recheck", "На повторной проверке"], ["expiring", "Скоро истекают"]]} />}
+      chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(status ? [{ id: "st", label: `Статус: ${status}`, onRemove: () => setStatus("") }] : [])]} onReset={() => { setQ(""); setStatus(""); }}
+      count={data ? { n: data.total, noun: ["решение", "решения", "решений"] } : undefined} onRefresh={() => setTick((x) => x + 1)} />
     {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
     <div className="table-scroll">{!data ? <SkelRows cols={6} /> : !data.items.length ? <Empty icon="checkCircle" title="Решений нет">Откройте компьютер в зоне и отметьте обнаружение: ложное срабатывание, неактуальную уязвимость или принятый риск. Все решения хранятся с автором, датой и основанием.</Empty> : (
       <table className="table compact"><thead><tr><th>Уязвимость</th><th>Область</th><th>Статус</th><th>Основание</th><th>Кто и когда</th><th>Пересмотр</th><th /></tr></thead>

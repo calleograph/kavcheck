@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { FilterBar } from "../components/FilterBar";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type EvGroup, type EvSummary, type SecEvent } from "../api";
@@ -6,7 +7,7 @@ import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
 import { Icon } from "../components/Icons";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
-import { Empty, PageHead, Segmented, SkelRows, MaskHint } from "../components/ui";
+import { Empty, PageHead, Segmented, SkelRows } from "../components/ui";
 import { fmt, num } from "../util";
 
 const PERIODS: [string, string][] = [["1", "Сутки"], ["7", "7 суток"], ["30", "30 суток"]];
@@ -123,12 +124,13 @@ export function EventList({ ctx, days, hostId, group, threat, onGroup, onThreat 
   if (unsupported) return <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет журнала событий KSC ({unsupported.join(", ")}).</div></div>;
   return (
     <>
-      <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={hostId ? "Угроза, объект или пользователь" : "Компьютер, угроза, объект или пользователь"} aria-label="Поиск событий" /><MaskHint /></div>
-        <Segmented<EvFilter> label="Результат" value={group} onChange={onGroup} options={GROUP_OPTS} />
-        {canReport && <button className="btn" onClick={() => setReport("all")} disabled={list.initial || !list.total}><Icon name="file" />Отчёт по списку</button>}
-        {threat && <div className="toolbar-foot"><span className="chip">Угроза: <b className="mono">{threat}</b><button type="button" className="link-btn" onClick={() => onThreat("")}>сбросить</button></span></div>}
-      </div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: hostId ? "Угроза, объект или пользователь" : "Компьютер, угроза, объект или пользователь", label: "Поиск событий" }}
+        primary={<Segmented<EvFilter> label="Результат" value={group} onChange={onGroup} options={GROUP_OPTS} />}
+        chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(group ? [{ id: "grp", label: `Результат: ${GROUP_OPTS.find((o) => o[0] === group)?.[1]}`, onRemove: () => onGroup("") }] : []),
+          ...(threat ? [{ id: "thr", label: <>Угроза: <span className="mono">{threat}</span></>, onRemove: () => onThreat("") }] : [])]}
+        onReset={() => { setQ(""); onGroup(""); onThreat(""); }}
+        count={{ n: list.initial ? null : list.total, noun: ["событие", "события", "событий"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
+        report={canReport ? { onClick: () => setReport("all"), disabled: list.initial || !list.total, title: sel.count ? "Отчёт по отмеченным событиям — кнопка в панели выбора внизу" : "Отчёт по всем событиям списка с текущими фильтрами" } : null} />
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={5} /> : (

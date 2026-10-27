@@ -36,7 +36,8 @@ def search_condition(text: str, sids: list[uuid.UUID]):
 
 
 async def list_devices(db: AsyncSession, sids: list[uuid.UUID], src_names: dict, *, q: str = "", zone: str = "", os_q: str = "", user_q: str = "", group_q: str = "", eol: str = "",
-                       all_hosts: bool = False, show_service: bool = False, sort: str = "name", desc: bool = False, offset: int = 0, limit: int = 50, now: datetime | None = None) -> dict:
+                       all_hosts: bool = False, show_service: bool = False, sort: str = "name", desc: bool = False, offset: int = 0, limit: int = 50, now: datetime | None = None,
+                       history_limit: int | None = 50) -> dict:
     """Страница устройств. Отбор и сортировка — по подготовленным данным зон (индексы PostgreSQL); итоги EOL и пользователи читаются только для устройств страницы, а не агрегируются по всему источнику."""
     now = now or datetime.now(timezone.utc)
     cut = now - WEEK
@@ -103,7 +104,7 @@ async def list_devices(db: AsyncSession, sids: list[uuid.UUID], src_names: dict,
         items.append({"source_id": str(r.source_id), "source": src_names.get(r.source_id, ""), "host_id": int(r.host_id), "name": r.name, "ip": d.get("ip", ""), "os": r.os or "", "group": d.get("group", ""),
                       "zones": d.get("zones") or [], "last_connected": r.last_connected, "active": r.active, "online": r.online, "eol": n, "eol_crit": nc, "eol_level": {3: "eol", 2: "extended", 1: "upcoming"}.get(w, ""),
                       "current": [user_out(u) for u in cur], "last_user": user_out(last) if last else None, "week": [user_out(u) for u in week], "week_n": len(week),
-                      "history": [user_out(u) for u in us if u not in cur][:50]})
+                      "history": [user_out(u) for u in us if u not in cur][:history_limit]})
     return {"total": total, "items": items}
 
 
