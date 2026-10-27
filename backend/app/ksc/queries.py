@@ -24,8 +24,14 @@ COUNT_HOSTS = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h WHERE h.bIsSlaveServ
 COUNT_HOSTS_ACTIVE = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0 AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())"
 # EOL: компьютеры (ОС) порциями по nId и устройства с заданными записями реестра ПО; признак активности считается в SQL (даты KSC — UTC)
 _ACTIVE = "CASE WHEN h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE()) THEN 1 ELSE 0 END"
-EOL_OS_HOSTS = ("SELECT TOP (%(n)s) h.nId AS host_id, h.wstrOSName AS os_name, h.nVersionMajor AS os_major, h.nVersionMinor AS os_minor, h.nOsBuildNumber AS os_build, " + _ACTIVE + " AS active "
+EOL_OS_HOSTS = ("SELECT TOP (%(n)s) h.nId AS host_id, h.wstrOSName AS os_name, h.nVersionMajor AS os_major, h.nVersionMinor AS os_minor, h.nOsBuildNumber AS os_build, h.nPlatformType AS platform, " + _ACTIVE + " AS active "
                 "FROM dbo.v_akpub_host h WHERE h.nId > %(after)s AND {where} ORDER BY h.nId")
+# пакеты, по которым определяется дистрибутив Linux, когда KSC отдаёт просто «Linux» (список должен совпадать с eol.osmatch.RELEASE_PACKAGE_NAMES — это проверяет тест)
+OS_RELEASE_PACKAGES = ("SELECT i.nHostId AS host_id, p.wstrDisplayName AS name, p.wstrDisplayVersion AS version FROM dbo.hst_inventory_products p "
+                       "JOIN dbo.hst_inventory_hstprds i ON i.nProduct = p.nId AND i.bDeleted = 0 "
+                       "WHERE p.wstrDisplayName IN (N'base-files', N'astra-version', N'centos-stream-release', N'centos-release', N'almalinux-release', N'rocky-release', N'oraclelinux-release', "
+                       "N'redhat-release', N'redhat-release-server', N'redhat-release-workstation', N'redhat-release-client', N'redhat-release-computenode', N'fedora-release', N'sles-release', N'sled-release') "
+                       "AND i.nHostId IN ({ids})")
 EOL_APP_HOSTS = ("SELECT i.nHostId AS host_id, i.nProduct AS product_id, " + _ACTIVE + " AS active FROM dbo.hst_inventory_hstprds i JOIN dbo.v_akpub_host h ON h.nId = i.nHostId "
                  "WHERE i.bDeleted = 0 AND {where} AND i.nProduct IN ({ids})")
 # пользователи устройств: hst_user_visited — вошедшие сейчас (bActual = 1) и входившие ранее (0); дат во внутренних списках KSC нет. Порциями по nId.

@@ -19,11 +19,14 @@ TODAY = date(2026, 10, 26)
 
 class FakeKsc:
     """Отвечает на два запроса EOL: записи реестра → устройства и страницы компьютеров."""
-    def __init__(self, apps: dict[int, list[tuple[int, int]]], hosts: list[dict]):
-        self.apps, self.hosts, self.queries = apps, hosts, []
+    def __init__(self, apps: dict[int, list[tuple[int, int]]], hosts: list[dict], pkgs: dict[int, list[tuple[str, str]]] | None = None):
+        self.apps, self.hosts, self.pkgs, self.queries = apps, hosts, pkgs or {}, []
 
     async def run(self, sql, params=None, *, max_rows=0):
         self.queries.append(sql)
+        if "base-files" in sql:                                          # пакеты дистрибутива Linux
+            ids = {int(x) for x in sql.split("i.nHostId IN (")[1].split(")")[0].split(",")}
+            return [{"host_id": h, "name": n, "version": v} for h, lst in self.pkgs.items() if h in ids for n, v in lst]
         if "hst_inventory_hstprds" in sql:
             ids = {int(x) for x in sql.split("IN (")[1].split(")")[0].split(",")}
             return [{"host_id": h, "product_id": p, "active": a} for p, lst in self.apps.items() if p in ids for h, a in lst]
@@ -77,8 +80,10 @@ async def test_findings_hosts_and_unknowns(app):
     assert ("app", "php", "8.3.2") not in f and ("app", "mystery", "9.9") not in f      # поддерживаемое и неизвестное EOL не присваивается
     ws = f[("os", "Microsoft Windows Server 2012 R2 Standard", "6.3.9600")]
     assert ws.status == "eol" and ws.eol_product == "windows-server" and (ws.hosts_all, ws.hosts_active) == (2, 1)
-    assert not any(k[1] == "Linux" for k in f) and not any("Ubuntu" in k[1] and f[k].status == "eol" for k in f)     # Ubuntu 22.04 поддерживается, «Linux» не определяется
-    assert st.items == len(f) and st.inputs and res["links"] == 5 and links
+    lx = f[("os", "Linux", "—")]                                                                        # «Linux» без сведений о дистрибутиве: не скрыто, но и не «поддерживается», и не EOL
+    assert lx.status == "undetermined" and lx.severity == "" and not lx.confirmed and "Не удалось определить EOL" in lx.condition and lx.os_key["code"] == "linux_no_info" and lx.hosts_all == 1
+    assert not any("Ubuntu" in k[1] for k in f)                                                         # Ubuntu 22.04 поддерживается: в список проблем не попадает
+    assert st.items == len(f) and st.inputs and res["links"] == 6 and links and res["diag"]["os_undetermined"] == {"hosts": 1, "reasons": {"linux_no_info": 1}}
     for sql in ksc.queries:                                                             # запросы к KSC проходят защиту «только чтение»
         guard.check(sql)
 
@@ -232,7 +237,7 @@ async def test_failed_recalculation_keeps_previous_results_and_reports_the_error
     async with sm() as db:
         st = await db.get(EolState, sid)
         n = len((await db.execute(select(EolFinding).where(EolFinding.source_id == sid))).scalars().all())
-    assert st.error and "Предыдущие результаты сохранены" in st.error and "KSC недоступен" not in st.error and "KSC недоступен" in (st.error_detail or "") and st.error_at and st.attempt_at and n == 2                  # прежние результаты на месте, причина записана
+    assert st.error and "Предыдущие результаты сохранены" in st.error and "KSC недоступен" not in st.error and "KSC недоступен" in (st.error_detail or "") and st.error_at and st.attempt_at and n == 3                  # прежние результаты на месте, причина записана
     assert await svc.due(TODAY) == []                                                              # повтор не сразу: пауза после ошибки не даёт долбить недоступный KSC
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import EolFinding, EolHost, EolHostStat, EolProduct, ZcHost, ZcHostZone, ZcSource
@@ -16,6 +16,7 @@ KIND_RU = {"app": "Программа", "os": "Операционная сист
 CONF_RU = {"mapped": "по решению администратора", "high": "по идентификаторам и названию", "name": "только по названию"}
 SEV_ORDER = case((EolFinding.severity == "critical", 3), (EolFinding.severity == "high", 2), (EolFinding.severity == "warning", 1), else_=0)
 EMPTY = {"hosts": 0, "eol": 0, "extended": 0, "upcoming": 0, "items": 0, "os": 0}
+UNDETERMINED = "undetermined"                                           # ОС, для которой выпуск или срок поддержки определить не удалось: не проблема и не «поддерживается», но в списке ОС видна с причиной
 PROBLEM_STATUSES = ("eol", "extended", "upcoming")                       # что считается проблемой инфраструктуры; «unknown» — вопрос к администратору (неоднозначное соответствие)
 
 
@@ -60,8 +61,13 @@ def _filters(sids, *, q, kind, product, publisher, severity, status):
     if status:
         c.append(EolFinding.status == status)
     else:
-        c.append(EolFinding.status.in_(PROBLEM_STATUSES))
+        c.append(or_(EolFinding.status.in_(PROBLEM_STATUSES), and_(EolFinding.kind == "os", EolFinding.status == UNDETERMINED)))
     return c
+
+
+def listed(f: EolFinding) -> bool:
+    """Показывается ли находка в списке по умолчанию (то же правило, что в `_filters`, для расчётов в памяти)."""
+    return f.status in PROBLEM_STATUSES or (f.kind == "os" and f.status == UNDETERMINED)
 
 
 SORTS = {"severity": lambda f, n: (f.severity == "critical", f.severity == "high", f.severity == "warning"), "eol_from": lambda f, n: f.eol_from or date(9999, 1, 1), "title": lambda f, n: f.title.lower(),
@@ -94,7 +100,7 @@ async def zone_findings(db: AsyncSession, sids: list[uuid.UUID], zone: str, **fi
 
 async def _list_zone(db, sids, src_names, zone, *, q, kind, product, publisher, severity, status, all_hosts, sort, desc, offset, limit) -> dict:
     base = dict(q=q, kind=kind, product=product, publisher=publisher, severity=severity)
-    got = [(f, n, na) for f, n, na in await zone_findings(db, sids, zone, status="", **base) if (n if all_hosts else na) > 0 and f.status in PROBLEM_STATUSES]
+    got = [(f, n, na) for f, n, na in await zone_findings(db, sids, zone, status="", **base) if (n if all_hosts else na) > 0 and listed(f)]
     by_status: dict[str, int] = {}
     for f, _n, _na in got:
         by_status[f.status] = by_status.get(f.status, 0) + 1

@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.eol.classify import classify, pick_release, version_forms
-from app.eol.osmatch import os_release
+from app.eol.osmatch import OsMiss, os_release
 
 TODAY = date(2026, 10, 26)
 DOC = json.loads((Path(__file__).parent / "fixtures" / "eol_sample.json").read_text(encoding="utf-8"))
@@ -69,7 +69,7 @@ def test_windows_server_ubuntu_debian_rhel_by_name():
     assert os_release("Red Hat Enterprise Linux 8.9 (Ootpa)").release == "8" and os_release("CentOS Linux 7 (Core)").product == "centos"
     assert os_release("CentOS Stream 9").product == "centos-stream" and os_release("AlmaLinux 9.3").release == "9" and os_release("Rocky Linux 8.8").product == "rocky-linux"
     for unknown in ("Linux", "", "Astra Linux (Smolensk) 1.7", "Microsoft Windows Server", "Windows"):
-        assert os_release(unknown, 6, 8, 0, windows_releases=win) is None, unknown
+        assert isinstance(os_release(unknown, 6, 8, 0, windows_releases=win), OsMiss), unknown
 
 
 def test_windows_client_release_by_build_and_edition():
@@ -81,6 +81,6 @@ def test_windows_client_release_by_build_and_edition():
     assert os_release("Microsoft Windows 10 Pro", 10, 0, 19045, windows_releases=win).release == "10-22h2"
     unk = os_release("Microsoft Windows 11", 10, 0, 22631, windows_releases=win)
     assert unk.release == "11-23h2-w" and unk.confidence == "name"           # редакция не названа — выбор помечен как неуверенный
-    assert os_release("Microsoft Windows 11 Pro", 10, 0, 0, windows_releases=win) is None and os_release("Microsoft Windows 11 Pro", 10, 0, 99999, windows_releases=win) is None
+    assert os_release("Microsoft Windows 11 Pro", 10, 0, 0, windows_releases=win).code == "no_build" and os_release("Microsoft Windows 11 Pro", 10, 0, 99999, windows_releases=win).code == "build_unknown"
     # 23H2 для Pro закончилась 11.11.2025; для Enterprise — 10.11.2026 (ещё действует)
     assert status("windows", "11-23h2-w") == "eol" and status("windows", "11-23h2-e") == "upcoming"

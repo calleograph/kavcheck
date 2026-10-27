@@ -348,3 +348,19 @@ def test_vuln_descr_list_single_pass_matches_totals():
     items = asyncio.run(V.descr_list(client, active_days=None, exclude_slaves=True))
     assert items and all(i["hosts"] >= 1 and i["total"] >= i["hosts"] and i["products"] is not None for i in items)
     assert len({i["descr_id"] for i in items}) == len(items) and sum(i["total"] for i in items) >= len(items)
+
+
+def test_eol_os_query_and_linux_distribution_from_packages():
+    """ОС как самостоятельный объект: поля ОС и платформа читаются из v_akpub_host, а дистрибутив Linux («Linux» в названии) — по пакетам base-files/*-release реестра ПО."""
+    from app.eol import compute as C
+    from app.eol.osmatch import OsHit, os_release
+
+    client = SourceClient(params(), name="test")
+    rows = asyncio.run(client.run(q.EOL_OS_HOSTS.format(where="1 = 1"), {"n": 100, "after": 0, "days": 30}, max_rows=110))
+    assert rows and all("platform" in r and "os_name" in r for r in rows)
+    lin = [int(r["host_id"]) for r in rows if C._needs_packages(r)]
+    assert lin, "в синтетической базе есть Linux-устройства"
+    pk = asyncio.run(C._release_packages(client, lin))
+    assert pk and all(n in {"base-files", "astra-version"} or n.endswith("-release") for lst in pk.values() for n, _v in lst)
+    hits = [os_release(r["os_name"], r["os_major"], r["os_minor"], r["os_build"], platform=r["platform"], packages=pk.get(int(r["host_id"]))) for r in rows if C._needs_packages(r)]
+    assert any(isinstance(h, OsHit) and h.product in ("debian", "ubuntu") for h in hits)

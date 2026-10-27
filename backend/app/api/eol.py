@@ -64,6 +64,13 @@ async def summary(request: Request, zone: str = Query("", max_length=40), source
     else:                                         # устройство может входить в несколько зон: общий итог считается отдельно, без повторов
         z = await _distinct_hosts(db, sids)
     unknown = int((await db.execute(select(func.count()).select_from(EolFinding).where(EolFinding.source_id.in_(sids), EolFinding.status == "unknown"))).scalar_one())
+    und_q = select(func.count(), func.coalesce(func.sum(EolFinding.hosts_active), 0)).where(EolFinding.source_id.in_(sids), EolFinding.kind == "os", EolFinding.status == R.UNDETERMINED, EolFinding.hosts_active > 0)
+    if zone:                                                  # в зоне — по устройствам зоны
+        zu = [(f, na) for f, _n, na in await R.zone_findings(db, sids, zone, q="", kind="os", product="", publisher="", severity="", status=R.UNDETERMINED) if na > 0]
+        os_undetermined = {"items": len(zu), "devices": sum(na for _f, na in zu)}
+    else:
+        n_und, dev_und = (await db.execute(und_q)).one()
+        os_undetermined = {"items": int(n_und), "devices": int(dev_und)}
     states = {st.source_id: st for st in (await db.execute(select(EolState).where(EolState.source_id.in_(sids)))).scalars()}
     soon = int(cfg.soon_days)
     current = {}
@@ -84,7 +91,7 @@ async def summary(request: Request, zone: str = Query("", max_length=40), source
             item["history"] = [{"status": r.status, "at": r.finished_at, "stage": r.stage, "error": r.error, "version": r.app_version} for r in await JOBS.runs("eol", str(src.id), 5)]
         current[str(src.id)] = item
     incomplete = [v["source"] for v in current.values() if not v["ready"] or v["state"] in ("error", "deferred", "retrying", "interrupted")]       # нет результата либо последняя попытка неудачна
-    return {"base": base, "all_sources": is_all(request), "findings": items, "kinds": kinds, "devices": z, "ambiguous": unknown, "sources": current, "complete": not incomplete, "incomplete": incomplete}
+    return {"base": base, "all_sources": is_all(request), "findings": items, "kinds": kinds, "devices": z, "ambiguous": unknown, "os_undetermined": os_undetermined, "sources": current, "complete": not incomplete, "incomplete": incomplete}
 
 
 STATE_RU = {"none": "Не рассчитано", "waiting": "Ожидает запуска", "running": "Выполняется", "retrying": "Повторяется после ошибки", "deferred": "Отложено из-за нагрузки", "interrupted": "Прервано, будет повторено",
@@ -182,7 +189,7 @@ async def product(name: str, su: SessionUser = Depends(require_user), srcs: list
 # ------------------------------------------------------------------------------------------------ EOL в инфраструктуре
 @router.get("/infra")
 async def infra(q: str = Query("", max_length=200), kind: str = Query("", pattern=r"^(app|os)?$"), product: str = Query("", max_length=120), publisher: str = Query("", max_length=200),
-                severity: str = Query("", pattern=r"^(critical|high|warning)?$"), status: str = Query("", pattern=r"^(eol|extended|upcoming|unknown)?$"), zone: str = Query("", max_length=40),
+                severity: str = Query("", pattern=r"^(critical|high|warning)?$"), status: str = Query("", pattern=r"^(eol|extended|upcoming|unknown|undetermined)?$"), zone: str = Query("", max_length=40),
                 source_id: str = Query("", max_length=40), all_hosts: bool = False, sort: str = Query("hosts", pattern=r"^(hosts|severity|eol_from|title|release)$"), desc: bool = True,
                 offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_user), srcs: list[KscSource] = Depends(source_scope), db: AsyncSession = Depends(get_db)):
     """Программы и ОС инфраструктуры с закончившейся или приближающейся датой окончания поддержки (по каждому источнику отдельно; в режиме «Все источники» у каждой записи указан источник)."""

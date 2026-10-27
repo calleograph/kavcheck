@@ -23,7 +23,7 @@ from ..db import xact_lock
 from ..models import CatalogProduct, EolFinding, EolHost, EolHostStat, EolMapping, EolProduct, EolRelease, EolState, KscSource, utcnow
 from ..vdb import match as M
 from .classify import classify, pick_release
-from .osmatch import os_release
+from .osmatch import OsHit, OsMiss, display_name, os_release
 
 log = logging.getLogger("app.eol")
 CONF_RANK = {"mapped": 0, "high": 1, "name": 2}
@@ -88,6 +88,34 @@ def _finding(source_id, kind: str, subject: str, version: str, title: str, publi
     return EolFinding(source_id=source_id, kind=kind, subject=subject[:200], version=version[:120], title=title[:300], publisher=publisher[:300], eol_product=ep.name, eol_release=rel.name,
                       status=lc.status, severity=sev, confidence=conf, confirmed=confirmed, eol_from=lc.eol_from, eoas_from=lc.eoas_from, eoes_from=lc.eoes_from, condition=cond[:600],
                       link=((ep.links or {}).get("releasePolicy") or (ep.links or {}).get("html") or "")[:400], computed_at=utcnow(), **extra)
+
+
+def os_finding(source_id, r: dict, hit, idx: Index, today: date, soon: int = 180) -> EolFinding | None:
+    """Находка по ОС устройства. None — ОС поддерживается (в список проблем не попадает). Если выпуск определить не удалось (нет сведений в KSC, ветки или дат нет в базе endoflife.date),
+    сохраняется находка «undetermined» с причиной: такие устройства видны, но не получают ни EOL, ни «Поддерживается»."""
+    name = str(r.get("os_name") or "")
+    build = f"{r.get('os_major') or 0}.{r.get('os_minor') or 0}.{r.get('os_build') or 0}"
+    key = {"name": name, "major": r.get("os_major"), "minor": r.get("os_minor"), "build": r.get("os_build"), "platform": r.get("platform")}
+
+    def undet(subject: str, version: str, code: str, reason: str, product: str = "", release: str = "") -> EolFinding:
+        return EolFinding(source_id=source_id, kind="os", subject=subject[:200], version=version[:120], title=subject[:300], publisher="", eol_product=product, eol_release=release, status="undetermined",
+                          severity="", confidence="name", confirmed=False, condition=("Не удалось определить EOL. " + reason)[:600], link="", os_key={**key, "code": code}, computed_at=utcnow())
+    if isinstance(hit, OsMiss):
+        return undet(hit.label or display_name(name) or "ОС не указана", build if r.get("os_build") else "—", hit.code, hit.reason)
+    windows = hit.product.startswith("windows")
+    subject, version = (display_name(name), build) if windows else (hit.label, hit.release)
+    ep = idx.products.get(hit.product)
+    if ep is None:
+        return undet(subject, version, "no_product", f"Продукт «{hit.product}» отсутствует в базе endoflife.date: обновите базу EOL", hit.product)
+    rel = idx.release(hit.product, hit.release)
+    if rel is None:
+        return undet(subject, version, "no_release", f"Ветка «{hit.release}» продукта «{ep.label}» отсутствует в базе endoflife.date: выпуск слишком старый или новый для базы либо базу нужно обновить", hit.product, hit.release)
+    if classify(rel, ep.labels, today, soon_days=soon).status == "unknown":
+        return undet(subject, version, "no_dates", f"Для ветки «{rel.label or rel.name}» продукта «{ep.label}» в базе endoflife.date нет даты окончания поддержки", hit.product, hit.release)
+    f = _finding(source_id, "os", subject, version, subject, "", ep, rel, hit.confidence, today, soon, os_key=key)
+    if f is not None and hit.note:
+        f.condition = (f.condition + " " + hit.note)[:600]
+    return f
 
 
 def signature(rows: list[EolFinding]) -> str:
@@ -221,6 +249,20 @@ async def _app_links(client, findings: list[EolFinding], where: str, days: int, 
     return links, active
 
 
+def _needs_packages(r: dict) -> bool:
+    """Дистрибутив Linux KSC отдаёт не в названии ОС: для таких устройств читаются пакеты base-files и *-release."""
+    n = str(r.get("os_name") or "").strip().lower()
+    return str(r.get("platform")) == "6" or n == "linux" or n.startswith("linux ")
+
+
+async def _release_packages(client, host_ids: list[int]) -> dict[int, list[tuple[str, str]]]:
+    out: dict[int, list[tuple[str, str]]] = {}
+    for i in range(0, len(host_ids), 500):
+        for p in await client.run(q.OS_RELEASE_PACKAGES.format(ids=q.ids_list(host_ids[i:i + 500])), max_rows=20000):
+            out.setdefault(int(p["host_id"]), []).append((str(p["name"]), str(p["version"] or "")))
+    return out
+
+
 async def _os_links(client, rules: dict, where: str, days: int, act: set[int], res=None) -> tuple[dict[tuple, array], dict[tuple, int], dict[tuple, int]]:
     """Страницами по компьютерам: по каждой отличающейся комбинации (название, версия, сборка) ОС определяется ветка один раз. Возвращает (ключ находки → устройства, активные, счётчик по комбинации)."""
     links: dict[tuple, array] = {}
@@ -230,9 +272,12 @@ async def _os_links(client, rules: dict, where: str, days: int, act: set[int], r
         rows = await client.run(q.EOL_OS_HOSTS.format(where=where), {"n": HOST_PAGE, "after": after, "days": days}, max_rows=HOST_PAGE + 10)
         if not rows:
             break
+        pk = await _release_packages(client, [int(r["host_id"]) for r in rows if _needs_packages(r)])
         for r in rows:
             if r["active"]:
                 act.add(int(r["host_id"]))
+            if pk:
+                r["pkgs"] = pk.get(int(r["host_id"]))
             key = rules["resolve"](r)
             if key is None:
                 continue
@@ -366,7 +411,7 @@ async def catalog_findings(sm: async_sessionmaker[AsyncSession], src: KscSource,
                         out.append(f)
             if res is not None:
                 await res.breathe("EOL: программы")
-        win = [{"name": r.name, "latest_name": r.latest_name} for r in idx.releases.get("windows", {}).values()]
+        win = {p: [{"name": r.name, "latest_name": r.latest_name} for r in idx.releases.get(p, {}).values()] for p in ("windows", "windows-server")}
     return inputs, idx, win, out
 
 
@@ -404,14 +449,10 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
         made: dict[tuple, EolFinding] = {}
 
         def resolve(r: dict):
-            ck = (r.get("os_name"), r.get("os_major"), r.get("os_minor"), r.get("os_build"))
+            pkgs = tuple(sorted((str(n).lower(), str(v)) for n, v in r.get("pkgs") or ()))
+            ck = (r.get("os_name"), r.get("os_major"), r.get("os_minor"), r.get("os_build"), r.get("platform"), pkgs)
             if ck not in cache:
-                hit = os_release(r.get("os_name") or "", r.get("os_major"), r.get("os_minor"), r.get("os_build"), windows_releases=win)
-                rel = idx.release(hit.product, hit.release) if hit and hit.product in idx.products else None
-                f = _finding(src.id, "os", str(r.get("os_name") or "")[:200], f"{r.get('os_major') or 0}.{r.get('os_minor') or 0}.{r.get('os_build') or 0}", str(r.get("os_name") or ""), "",
-                             idx.products[hit.product], rel, hit.confidence, today, soon_days, os_key={"name": r.get("os_name"), "major": r.get("os_major"), "minor": r.get("os_minor"), "build": r.get("os_build")}) if rel else None
-                if f is not None and hit.note:
-                    f.condition = (f.condition + " " + hit.note)[:600]
+                f = os_finding(src.id, r, os_release(r.get("os_name") or "", r.get("os_major"), r.get("os_minor"), r.get("os_build"), platform=r.get("platform"), packages=pkgs, releases=win), idx, today, soon_days)
                 cache[ck] = (f.kind, f.subject, f.version) if f else None
                 if f:
                     made[cache[ck]] = f
@@ -425,6 +466,13 @@ async def compute_source(sm: async_sessionmaker[AsyncSession], client: SourceCli
     out = [f for f in out if f.kind == "app" or f.hosts_all]
     out, diag = merge_findings(out)                                 # одинаковые находки объединяются, а не роняют расчёт; факт объединения виден администратору
     check_unique(out)
+    und = [f for f in out if f.status == "undetermined"]
+    if und:
+        by_code: dict[str, int] = {}
+        for f in und:
+            code = (f.os_key or {}).get("code", "?")
+            by_code[code] = by_code.get(code, 0) + int(f.hosts_all or 0)
+        diag["os_undetermined"] = {"hosts": sum(by_code.values()), "reasons": by_code}
     sig = signature(out)
     step("сохранение")
     try:

@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from datetime import date
 
 SOON_DAYS = 180                       # «приближающееся окончание поддержки»
-STATUS_RU = {"eol": "Поддержка закончилась (EOL)", "extended": "Только расширенная поддержка", "upcoming": "Окончание поддержки приближается", "supported": "Поддерживается", "unknown": "Нет данных о сроках"}
-SEVERITY = {"eol": "critical", "extended": "high", "upcoming": "warning", "supported": "", "unknown": ""}
+STATUS_RU = {"eol": "Поддержка закончилась (EOL)", "extended": "Только расширенная поддержка", "upcoming": "Окончание поддержки приближается", "supported": "Поддерживается", "undetermined": "Не удалось определить EOL", "unknown": "Нет данных о сроках"}
+SEVERITY = {"eol": "critical", "extended": "high", "upcoming": "warning", "supported": "", "unknown": "", "undetermined": ""}
 
 
 @dataclass(frozen=True)

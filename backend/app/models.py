@@ -963,7 +963,7 @@ class EolFinding(Base):
     publisher: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     eol_product: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     eol_release: Mapped[str] = mapped_column(String(80), nullable=False, default="")
-    status: Mapped[str] = mapped_column(String(12), nullable=False, default="unknown")      # eol | extended | upcoming | supported | unknown
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="unknown")      # eol | extended | upcoming | supported | unknown | undetermined (ОС: выпуск или срок не определены)
     severity: Mapped[str] = mapped_column(String(10), nullable=False, default="")           # critical | high | warning | ""
     confidence: Mapped[str] = mapped_column(String(8), nullable=False, default="")          # mapped | high | name — насколько надёжно сопоставлен продукт
     confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)          # False: поддержка зависит от подписки/договора или продукт сопоставлен только по названию

@@ -14,7 +14,7 @@ import { fmt, fmtDate, num, plural } from "../util";
 
 type Tab = "infra" | "products" | "mappings";
 type Kind = "" | "app" | "os";
-type St = "" | "eol" | "extended" | "upcoming";
+type St = "" | "eol" | "extended" | "upcoming" | "undetermined";
 
 /** Раздел «EOL»: жизненный цикл программ и ОС по данным endoflife.date и что из этого есть в инфраструктуре. */
 export default function EolPage({ ctx }: { ctx: Ctx }) {
@@ -52,6 +52,7 @@ export default function EolPage({ ctx }: { ctx: Ctx }) {
         <div className="meter"><span className="l">EOL: поддержка закончилась</span><span className={`v ${f?.eol ? "bad-text" : ""}`}>{noResult ? "—" : f ? num(f.eol) : "…"}</span><span className="t">{noResult ? "расчёта ещё нет" : sum ? `${num(sum.devices.eol)} ${plural(sum.devices.eol, "устройство", "устройства", "устройств")}` : ""}</span></div>
         <div className="meter"><span className="l">Только расширенная поддержка</span><span className={`v ${f?.extended ? "warn-text" : ""}`}>{noResult ? "—" : f ? num(f.extended) : "…"}</span><span className="t">платная или по договору — не подтверждена</span></div>
         <div className="meter"><span className="l">Скоро закончится</span><span className="v">{noResult ? "—" : f ? num(f.upcoming) : "…"}</span><span className="t">в ближайшие {sum?.base.soon_days ?? 180} сут</span></div>
+        {!!sum?.os_undetermined?.items && <div className="meter"><span className="l">ОС: EOL не определён</span><span className="v warn-text">{num(sum.os_undetermined.devices)}</span><span className="t">{plural(sum.os_undetermined.devices, "устройство", "устройства", "устройств")} без сведений о выпуске ОС — <button type="button" className="link-btn" onClick={() => setSp((p) => { p.set("tab", "infra"); p.set("kind", "os"); p.set("status", "undetermined"); return p; })}>показать</button></span></div>}
         <div className="meter"><span className="l">База endoflife.date</span><span className="v">{sum ? num(sum.base.products) : "…"}</span><span className="t">продуктов{sum?.base.last_ok_at ? `, обновлена ${fmt(sum.base.last_ok_at)}` : ""}</span></div>
       </div>
       <Tabs label="Вид" value={tab} onChange={(t) => setSp((p) => { p.set("tab", t); p.delete("p"); return p; })}
@@ -72,6 +73,14 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
   const [srcId, setSrcId] = useKept("eol.src", ""); const [all, setAll] = useKept("eol.all", false);
   const [sort, setSort] = useKept("eol.sort", "severity"); const [desc, setDesc] = useKept("eol.desc", true);
   const [open, setOpen] = useState<string | null>(null); const [toast, show] = useToast();
+  const [sp, setSp] = useSearchParams();
+  useEffect(() => {                                                    // переход из сводки («показать» у ОС с неопределённым EOL) задаёт тип и состояние
+    const k = sp.get("kind"), st = sp.get("status");
+    if (!k && !st) return;
+    if (k === "app" || k === "os") setKind(k);
+    if (st === "eol" || st === "extended" || st === "upcoming" || st === "undetermined") setStatus(st);
+    setSp((p) => { p.delete("kind"); p.delete("status"); return p; }, { replace: true });
+  }, [sp, setSp, setKind, setStatus]);
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 350); return () => window.clearTimeout(t); }, [q]);
   const multi = ctx.all;                 // колонка «Источник» нужна, только когда показаны данные нескольких источников
   const list = useInfinite<EolFinding>(`eol:${ctx.current?.id}:${ctx.all}`, [applied, kind, status, sev, pub, prod, srcId, all, sort, desc, zone],
@@ -86,7 +95,7 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Программа, производитель, продукт: Windows Server 2012*, *Java*" aria-label="Поиск по программам и ОС" /><MaskHint /></div>
         <Segmented<Kind> label="Тип" value={kind} onChange={setKind} options={[["", "Всё"], ["app", "Программы"], ["os", "Операционные системы"]]} />
-        <Segmented<St> label="Состояние поддержки" value={status} onChange={setStatus} options={[["", "Все"], ["eol", `EOL${extra?.by_status?.eol ? ` · ${extra.by_status.eol}` : ""}`], ["extended", "Расширенная"], ["upcoming", "Скоро"]]} />
+        <Segmented<St> label="Состояние поддержки" value={status} onChange={setStatus} options={[["", "Все"], ["eol", `EOL${extra?.by_status?.eol ? ` · ${extra.by_status.eol}` : ""}`], ["extended", "Расширенная"], ["upcoming", "Скоро"], ...(extra?.by_status?.undetermined || status === "undetermined" ? [["undetermined", `Не определён · ${extra?.by_status?.undetermined ?? 0}`] as [St, string]] : [])]} />
         <details className="disclosure toolbar-more"><summary>Дополнительно</summary>
           <div className="toolbar-fields">
             <label className="field">Критичность<select value={sev} onChange={(e) => setSev(e.target.value)}><option value="">Любая</option><option value="critical">Критическая</option><option value="high">Высокая</option><option value="warning">Предупреждение</option></select></label>
@@ -113,7 +122,7 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
                   <tr key={k} className={isOpen ? "sel" : ""}>
                     <td><EolSev f={f} />{!f.confirmed && <span className="sub small" title={f.condition}>не подтверждено</span>}</td>
                     <td><strong>{f.title}</strong>{f.kind === "app" && <span className="sub mono small">{f.version}</span>}{f.publisher && <span className="sub small">{f.publisher}</span>}<span className="sub small">{f.kind_ru}</span></td>
-                    <td className="hide-sm"><a href={`https://endoflife.date/${f.eol_product}`} target="_blank" rel="noopener noreferrer">{f.eol_label}</a><span className="sub mono small">ветка {f.eol_release}</span>
+                    <td className="hide-sm">{f.eol_product ? <><a href={`https://endoflife.date/${f.eol_product}`} target="_blank" rel="noopener noreferrer">{f.eol_label}</a>{f.eol_release && <span className="sub mono small">ветка {f.eol_release}</span>}</> : <span className="muted">нет в базе</span>}
                       {f.confidence !== "high" && <span className="sub small muted">{f.confidence_ru}</span>}</td>
                     <td><EolBadge s={f.status} /><EolDates f={f} />{f.condition && f.status !== "eol" && <span className="sub small">{f.condition}</span>}</td>
                     <td className="num"><button type="button" className="link-btn" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : k)}>{num(all ? f.hosts : f.hosts_active)}</button>

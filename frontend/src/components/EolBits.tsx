@@ -3,12 +3,12 @@ import { Link } from "react-router-dom";
 import { api, type EolFinding, type EolStatus } from "../api";
 import { fmtDate, num, plural } from "../util";
 
-export const EOL_STATUS_TEXT: Record<EolStatus, string> = { eol: "EOL: поддержка закончилась", extended: "Только расширенная поддержка", upcoming: "Поддержка скоро закончится", unknown: "Нет данных" };
-const TONE: Record<EolStatus, string> = { eol: "err", extended: "warn", upcoming: "accent", unknown: "" };
+export const EOL_STATUS_TEXT: Record<EolStatus, string> = { eol: "EOL: поддержка закончилась", extended: "Только расширенная поддержка", upcoming: "Поддержка скоро закончится", unknown: "Нет данных", undetermined: "Не удалось определить EOL" };
+const TONE: Record<EolStatus, string> = { eol: "err", extended: "warn", upcoming: "accent", unknown: "", undetermined: "" };
 const SEV_CLASS: Record<string, string> = { critical: "crit", high: "high", warning: "warn" };
 
 export function EolBadge({ s, short }: { s: EolStatus; short?: boolean }) {
-  return <span className={`badge ${TONE[s]}`}>{short ? ({ eol: "EOL", extended: "Расширенная", upcoming: "Скоро EOL", unknown: "Нет данных" } as Record<EolStatus, string>)[s] : EOL_STATUS_TEXT[s]}</span>;
+  return <span className={`badge ${TONE[s]}`}>{short ? ({ eol: "EOL", extended: "Расширенная", upcoming: "Скоро EOL", unknown: "Нет данных", undetermined: "Не определён" } as Record<EolStatus, string>)[s] : EOL_STATUS_TEXT[s]}</span>;
 }
 
 export function EolSev({ f }: { f: Pick<EolFinding, "severity" | "severity_ru"> }) {
