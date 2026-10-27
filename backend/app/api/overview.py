@@ -137,7 +137,7 @@ async def overview(request: Request, days: int = Query(30, ge=1, le=365), refres
             await db.rollback()
             log.warning("Срез главной не записан", exc_info=True)
     rows += await _snapshot_rows(db, su, scope, srcs, days)
-    pentest = await _pentest_block(db)
+    pentest = await _pentest_block(db) if su.role != "viewer" else None        # результаты сканирования — аналитику и администратору
     ok = bool(ok_ids)
     return {"days": days, "periods_available": list(C.PERIODS), "scope": {"all": len(srcs) > 1, "sources": len(scope), "ok": len(ok_ids), "duplicates": skipped},
             "totals": totals if ok else None, "periods": list(periods.values()) if ok else [], "extra": extra if ok else None, "sources": rows, "licenses": lic, "security": sec,

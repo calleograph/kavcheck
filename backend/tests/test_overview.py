@@ -249,3 +249,19 @@ async def test_sources_outside_scope_use_daily_snapshot_and_payload_matches_summ
     other = next(x for x in r["sources"] if x["name"] == "KSC-B")
     assert other["snapshot"] and other["active"] == 7 and other["total"] == 10               # источник вне выбора — по срезу за выбранный период, без чтения его KSC
     assert r["totals"]["total"] == 10                                                          # в итоги выбранной области он не входит
+
+
+async def test_pentest_results_count_is_hidden_from_viewers(client, app, monkeypatch):
+    from app.models import PtJob  # noqa: PLC0415
+
+    await _setup(client, app, monkeypatch)
+    async with app.state.session_maker() as db:
+        db.add(PtJob(title="t", status="done", findings_n=5, finished_at=datetime.now(timezone.utc), options={}, rejected=[], sev={}))
+        await db.commit()
+    assert (await client.get("/api/v1/overview")).json()["pentest"]["findings"] == 5
+    await client.post("/api/v1/auth/logout")
+    await login(client, "viewer", "Viewer-Passw0rd-123")
+    src = (await client.get("/api/v1/auth/sources")).json()
+    await client.post("/api/v1/auth/source", json={"source_id": src["items"][0]["id"]}) if src["items"] else None
+    r = await client.get("/api/v1/overview")
+    assert r.status_code != 200 or r.json()["pentest"] is None
