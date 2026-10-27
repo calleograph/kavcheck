@@ -211,7 +211,44 @@ class HardwareSettings(_Group):
     exclude_masks: list[str] = Field(default_factory=list, max_length=100)   # имена устройств (маски `*`), которые не проверяются: рабочие станции под Linux, тестовые стенды
 
 
-GROUPS: dict[str, type[_Group]] = {"general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
+class PentestSettings(_Group):
+    """Сетевое сканирование (модуль Pentest): область разрешённых адресов, пределы нагрузки, хранение. Сканер работает в отдельном контейнере; эти значения читает он."""
+    enabled: bool = True
+    # Область разрешений: оператор может сканировать только адреса внутри неё. По умолчанию — частные сети (RFC 1918, ULA) и документационный 192.0.2.0/24; публичные адреса — только если добавлены сюда.
+    allowed_networks: list[str] = Field(default_factory=lambda: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "192.0.2.0/24"], max_length=200)
+    denied_networks: list[str] = Field(default_factory=list, max_length=200)               # исключения из области разрешений (всегда не сканируются)
+    allow_loopback: bool = False                                                            # сканирование самого сервера (127.0.0.0/8, ::1) — только для проверки установки
+    max_targets: int = Field(default=4096, ge=1, le=262_144)                              # адресов в одном задании
+    large_threshold: int = Field(default=256, ge=1, le=262_144)                           # с этого числа адресов запуск требует отдельного подтверждения
+    full_ports_max_targets: int = Field(default=64, ge=1, le=4096)                        # полный профиль (65 535 портов) не запускается на большем числе адресов
+    max_concurrent_jobs: int = Field(default=1, ge=1, le=4)
+    max_concurrent_hosts: int = Field(default=4, ge=1, le=32)                             # одновременно определяются сервисы на стольких адресах
+    batch_size: int = Field(default=32, ge=1, le=256)                                       # адресов в одном запуске Nmap на этапе портов
+    max_rate: int = Field(default=300, ge=10, le=10_000)                                   # предел скорости проб (пакетов в секунду) на запуск Nmap
+    host_timeout_s: int = Field(default=300, ge=30, le=3600)                                # на адрес на этапе портов
+    service_timeout_s: int = Field(default=180, ge=30, le=1800)                             # на адрес на этапе определения сервисов
+    job_timeout_h: int = Field(default=12, ge=1, le=168)
+    scan_type: Literal["auto", "connect", "syn"] = "auto"                                   # auto — SYN, если у процесса есть CAP_NET_RAW, иначе обычное соединение
+    safe_scripts_enabled: bool = False                                                       # разрешить профиль «расширенная безопасная проверка» (заранее заданные скрипты Nmap категории safe)
+    retention_days: int = Field(default=180, ge=7, le=3650)                                 # сколько хранить завершённые задания
+    evidence_max_kb: int = Field(default=8, ge=1, le=256)                                   # предел размера технических доказательств одного порта
+    custom_profiles: list[dict] = Field(default_factory=list, max_length=20)                # профили портов, добавленные администратором: {key, name, ports, intensity}
+
+    @field_validator("allowed_networks", "denied_networks")
+    @classmethod
+    def _nets(cls, v: list[str]) -> list[str]:
+        import ipaddress  # noqa: PLC0415
+
+        out = []
+        for x in v:
+            try:
+                out.append(str(ipaddress.ip_network(x.strip(), strict=False)))
+            except ValueError:
+                raise ValueError(f"«{x}» — не сеть (пример: 10.0.0.0/8 или 192.0.2.0/24)") from None
+        return out
+
+
+GROUPS: dict[str, type[_Group]] = {"pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
                                    "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings}
 
 

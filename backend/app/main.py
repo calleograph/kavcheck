@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from starlette.datastructures import MutableHeaders
 
-from .api import admin, admin_ldap, admin_updates, auth, auth_totp, catalog, dashboard, devices as devices_api, eol as eol_api, events, health, hosts, overview, protection, quick, reports, software, vdb as vdb_api, vulns, zones as zones_api
+from .api import admin, admin_ldap, admin_updates, auth, auth_totp, catalog, dashboard, devices as devices_api, eol as eol_api, events, health, hosts, overview, pentest as pentest_api, protection, quick, reports, software, vdb as vdb_api, vulns, zones as zones_api
 from .auth.deps import client_ip
 from .search import MaskError
 from .auth.service import AuthService
@@ -185,7 +185,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
     prefix = "/api/v1"
-    for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, overview.router, overview.lic_router, admin.router,
+    for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, overview.router, overview.lic_router, pentest_api.router, admin.router,
               admin_updates.router, vdb_api.router, eol_api.router, devices_api.router, zones_api.router, zones_api.admin_router, zones_api.mail_router, zones_api.triage_router, health.router):
         app.include_router(r, prefix=prefix)
     return app

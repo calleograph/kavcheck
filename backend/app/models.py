@@ -1106,3 +1106,150 @@ class OverviewDaily(Base):
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     data: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     taken_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+# ------------------------------------------------------------------------------------------------ Pentest: сетевое сканирование
+class PtJob(Base):
+    """Задание сетевого сканирования. Не зависит от KSC: цели задаёт оператор. Выполняет отдельный сканер (`python -m app.pentest.worker`) под арендой; состояние переживает перезапуск."""
+    __tablename__ = "pt_jobs"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    created_by: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="queued")       # queued | running | done | partial | failed | cancelled
+    stage: Mapped[str] = mapped_column(String(24), nullable=False, default="")             # targets | discovery | ports | services | versions | normalize | match | assess | results | report
+    stage_ru: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    pct: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    profile: Mapped[str] = mapped_column(String(40), nullable=False, default="standard")
+    options: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)          # порты, обнаружение, интенсивность версий, безопасные скрипты, подтверждение крупного охвата
+    targets_input: Mapped[str] = mapped_column(Text, nullable=False, default="")           # что ввёл оператор (для «создать на основе»)
+    targets_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejected: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)         # отклонённые при проверке цели с причинами
+    hosts_up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hosts_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ports_open: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    services_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    findings_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    findings_confirmed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    errors_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    incomplete_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)          # порты без версии сервиса и другие неполные проверки
+    max_sev: Mapped[int] = mapped_column(Integer, nullable=False, default=0)               # наивысшая опасность находок: 4 критическая … 1 низкая
+    sev: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)              # распределение находок по опасности
+    nmap_version: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    vdb_rev: Mapped[str] = mapped_column(String(80), nullable=False, default="")           # состояние баз уязвимостей при анализе
+    base_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)                              # задание, на основе которого создано
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (Index("ix_pt_jobs_status", "status", "created_at"),)
+
+
+class PtHost(Base):
+    """Адрес задания и итог по нему: состояние, ошибка этапа, число портов. Основа восстановления: после перезапуска сканера незавершённые адреса выполняются заново, готовые не повторяются."""
+    __tablename__ = "pt_hosts"
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("pt_jobs.id", ondelete="CASCADE"), primary_key=True)
+    ip: Mapped[str] = mapped_column(String(45), primary_key=True)
+    names: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)             # имена, под которыми адрес указан, и обратная запись DNS
+    state: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")       # pending | up | down | done | error
+    error_stage: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    error: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    ports_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    findings_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_sev: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scan_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    __table_args__ = (Index("ix_pt_hosts_ip", "ip", "job_id"), Index("ix_pt_hosts_state", "job_id", "state"))
+
+
+class PtPort(Base):
+    """Открытый порт и определённый сервис (структурированный результат Nmap)."""
+    __tablename__ = "pt_ports"
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("pt_jobs.id", ondelete="CASCADE"), primary_key=True)
+    ip: Mapped[str] = mapped_column(String(45), primary_key=True)
+    proto: Mapped[str] = mapped_column(String(4), primary_key=True, default="tcp")
+    port: Mapped[int] = mapped_column(Integer, primary_key=True)
+    service: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    product: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    version: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    extrainfo: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    ostype: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    tunnel: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    cpe: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    method: Mapped[str] = mapped_column(String(10), nullable=False, default="")             # table (по номеру порта) | probed (по ответу сервиса)
+    conf: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                    # уверенность Nmap 0–10
+    banner: Mapped[str] = mapped_column(Text, nullable=False, default="")                    # исходный ответ сервиса (обрезан по настройке)
+    scripts: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)           # результаты безопасных скриптов: [{id, output}]
+    __table_args__ = (Index("ix_pt_ports_service", "job_id", "service"),)
+
+
+class PtFinding(Base):
+    """Потенциальная или подтверждённая уязвимость сервиса: основание, правило, уровень уверенности и доказательства."""
+    __tablename__ = "pt_findings"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("pt_jobs.id", ondelete="CASCADE"), nullable=False)
+    ip: Mapped[str] = mapped_column(String(45), nullable=False)
+    proto: Mapped[str] = mapped_column(String(4), nullable=False, default="tcp")
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    vuln_key: Mapped[str] = mapped_column(String(80), nullable=False)                        # CVE или идентификатор источника (как в базе уязвимостей)
+    title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    sev: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                      # 4 критическая … 1 низкая, 0 — нет оценки
+    score: Mapped[float | None] = mapped_column(Float)
+    score_version: Mapped[str] = mapped_column(String(4), nullable=False, default="")
+    exploited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)         # в каталоге CISA KEV
+    confidence: Mapped[str] = mapped_column(String(14), nullable=False)                      # confirmed | probable | needs_check | not_confirmed
+    basis: Mapped[str] = mapped_column(String(10), nullable=False, default="version")       # version | banner | nse | oval | name
+    rule: Mapped[str] = mapped_column(String(60), nullable=False, default="")                # идентификатор применённого правила сопоставления
+    product: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    version: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    evidence: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)          # объяснение: источники, диапазоны, отклонённые условия, проверки (OVAL, скрипты)
+    __table_args__ = (Index("ix_pt_findings_job", "job_id", "sev"), Index("ix_pt_findings_host", "job_id", "ip", "port"), Index("ix_pt_findings_key", "vuln_key"))
+
+
+class PtEvent(Base):
+    """Ошибки и предупреждения хода задания: этап, адрес, причина (не более нескольких сотен на задание)."""
+    __tablename__ = "pt_events"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("pt_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    level: Mapped[str] = mapped_column(String(5), nullable=False, default="warn")
+    stage: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    ip: Mapped[str] = mapped_column(String(45), nullable=False, default="")
+    message: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+
+
+class PtLink(Base):
+    """Явное решение оператора: адрес — это устройство источника KSC. Единственный надёжный способ связать результаты сканирования с устройством (совпадение имени или адреса само по себе не объединяет)."""
+    __tablename__ = "pt_links"
+    ip: Mapped[str] = mapped_column(String(45), primary_key=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    host_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    set_by: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    set_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class OvalDef(Base):
+    """Определение OVAL (уязвимость или исправление): идентификатор, версия, CVE и условия в сжатом виде. Хранится отдельно от записей баз уязвимостей; проверки выполняются только для поддерживаемых типов условий."""
+    __tablename__ = "oval_defs"
+    feed: Mapped[str] = mapped_column(String(60), primary_key=True)
+    def_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    klass: Mapped[str] = mapped_column(String(14), nullable=False, default="vulnerability")
+    title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    severity: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    cves: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    platforms: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    criteria: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)          # дерево условий: {op, negate, items: [... | {test: id}]}
+    tests: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)             # id теста → {kind, name, op, evr, arch}; неподдерживаемые — {kind, unsupported: причина}
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    __table_args__ = (Index("ix_oval_defs_feed", "feed"),)
+
+
+class OvalCve(Base):
+    """Индекс «CVE → определения OVAL» для быстрого сопоставления с находками."""
+    __tablename__ = "oval_cves"
+    cve: Mapped[str] = mapped_column(String(40), primary_key=True)
+    feed: Mapped[str] = mapped_column(String(60), primary_key=True)
+    def_id: Mapped[str] = mapped_column(String(120), primary_key=True)
