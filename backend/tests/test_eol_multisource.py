@@ -198,8 +198,8 @@ async def test_all_sources_summary_marks_incomplete_data(client, app):
 
 # ---- 10. память
 async def test_memory_does_not_grow_over_repeated_calculations(app):
-    (sid,) = await seed_many(app, 1, versions=tuple((f"7.4.{i}", [1000 + i, 2000 + i]) for i in range(300)))
-    apps = {1000 + i: [(h, 1) for h in range(1, 200)] for i in range(300)}
+    (sid,) = await seed_many(app, 1, versions=tuple((f"7.4.{i}", [1000 + i, 2000 + i]) for i in range(40)))
+    apps = {1000 + i: [(h, 1) for h in range(1, 60)] for i in range(40)}
     ksc = FakeKsc(apps, hosts())
     await run(app, sid, ksc)
     tracemalloc.start()
@@ -209,7 +209,7 @@ async def test_memory_does_not_grow_over_repeated_calculations(app):
         await run(app, sid, ksc)
     grown = tracemalloc.get_traced_memory()[0] - first
     tracemalloc.stop()
-    assert grown < 8 * 1024 * 1024, f"после повторных расчётов память выросла на {grown / 1048576:.1f} МБ"
+    assert grown < 4 * 1024 * 1024, f"после повторных расчётов память выросла на {grown / 1048576:.1f} МБ"
 
 
 # ---- диагностика

@@ -105,7 +105,9 @@ class EolService:
 
         def progress(text: str) -> None:                                         # этап расчёта для страницы «Выполняется: …»; ошибка записи не влияет на расчёт
             stage["v"] = text
-            asyncio.get_running_loop().create_task(lease.stage(text))
+            ts = asyncio.get_running_loop().create_task(lease.stage(text))
+            tasks.add(ts)
+            ts.add_done_callback(tasks.discard)
             if text == "сохранение":                                             # запись состояния не должна конкурировать с транзакцией замены результатов
                 return
 
@@ -155,6 +157,7 @@ class EolService:
             self.current = None
             for t in list(tasks):
                 t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)                 # фоновые записи этапа завершаются до выхода: иначе отменённая посреди записи задача оставляет соединение незакрытым
             try:                                                                  # отложенный (память) или прерванный расчёт не остаётся «выполняющимся»
                 async with self._sm() as db:
                     await db.execute(update(EolState).where(EolState.source_id == source_id).values(started_at=None, progress=None))
@@ -162,13 +165,18 @@ class EolService:
             except Exception:  # noqa: BLE001
                 log.warning("EOL: не снято состояние расчёта", exc_info=True)
 
+    def _spawn(self, coro) -> None:
+        t = asyncio.get_running_loop().create_task(coro)
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+
     def _note(self, source: str, diag: dict) -> None:
         """Объединённые дубли и конфликты записи — не ошибка расчёта, но признак проблемы в данных или параллельной записи: журнал администратора."""
         if not (diag.get("merged_keys") or diag.get("write_conflicts")):
             return
         log.warning("EOL: при расчёте разрешены повторы или конфликты ключей", extra={"source": source, **{k: diag[k] for k in ("merged_keys", "merged_rows", "write_conflicts", "examples") if k in diag}})
         if self._journal:
-            asyncio.get_running_loop().create_task(self._journal.emit("system", "eol_keys_resolved", level="warning", message=f"EOL «{source}»: объединено повторных находок {diag.get('merged_keys', 0)}, конфликтов записи {diag.get('write_conflicts', 0)}",
+            self._spawn(self._journal.emit("system", "eol_keys_resolved", level="warning", message=f"EOL «{source}»: объединено повторных находок {diag.get('merged_keys', 0)}, конфликтов записи {diag.get('write_conflicts', 0)}",
                                                                        data={"source": source, **{k: diag.get(k) for k in ("merged_keys", "merged_rows", "write_conflicts", "examples")}}))
 
     async def recover(self) -> int:

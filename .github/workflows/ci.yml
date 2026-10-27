@@ -8,6 +8,7 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,6 +18,7 @@ jobs:
         working-directory: backend
   frontend:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,6 +29,7 @@ jobs:
         working-directory: frontend
   scripts:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,11 +45,13 @@ jobs:
           docker compose -p ci --project-directory deployment --env-file .env -f deployment/compose.yml config -q
   private-data:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/check_private_data.py
   version:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/release.sh check
