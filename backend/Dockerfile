@@ -2,6 +2,8 @@ FROM python:3.12-slim
 LABEL kavcheck.component="backend"
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_RETRIES=2 PIP_DEFAULT_TIMEOUT=30
+# Nmap нужен только сканеру Pentest (контейнер pentest); веб-процесс его не запускает. Образ общий, чтобы не вести вторую сборку.
+RUN apt-get update && apt-get install -y --no-install-recommends nmap && rm -rf /var/lib/apt/lists/*
 WORKDIR /srv/app
 COPY requirements.txt ./
 # Зеркало индекса pip (PIP_INDEX_URL в .env), если pypi.org недоступен; пусто — pypi.org

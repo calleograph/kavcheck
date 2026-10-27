@@ -3,6 +3,7 @@
 Загрузка данных выполняется воркером по расписанию; API только ставит запрос на запуск и показывает состояние. Проверка инфраструктуры — быстрый отчёт `quick_extvulns`."""
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -118,6 +119,14 @@ def _clean_settings(key: str, cur: dict, new: dict) -> dict:
         if not u.lower().startswith("https://") or len(u) > 300:
             raise HTTPException(status_code=422, detail="Адрес API endoflife.date должен начинаться с https://")
         out["url"] = u.rstrip("/")
+    if key == "oval" and "feeds" in new:
+        feeds = []
+        for f in (new["feeds"] or [])[:20]:
+            name, url = str(f.get("name") or "").strip()[:60], str(f.get("url") or "").strip()
+            if not name or not re.fullmatch(r"[\w .:\-]{1,60}", name) or not url.lower().startswith("https://") or len(url) > 400:
+                raise HTTPException(status_code=422, detail="Фид OVAL: укажите название (буквы, цифры, пробел, точка, дефис) и адрес https://…")
+            feeds.append({"name": name, "url": url})
+        out["feeds"] = feeds
     if key == "kev" and "url" in new and str(new["url"]).strip():
         u = str(new["url"]).strip()
         if not u.lower().startswith("https://"):

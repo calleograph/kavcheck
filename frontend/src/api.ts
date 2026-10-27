@@ -56,7 +56,7 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview";
+export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest";
 
 export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
@@ -72,6 +72,36 @@ export interface Overview {
   trend: { points: { day: string; active: number; total: number }[]; since: string | null }; trend_key: string; pentest: { jobs: number; findings: number; confirmed: number; last_at: string | null } | null;
   stale_days: number; bases_days: number; generated_at: string; labels: Record<string, string> }
 export interface OvHostsPage { items: { host_id: number; name: string; ip: string; os: string; group: string; last_connected: string | null; days_since_connection: number | null; online: boolean | null; source_id: string; source: string }[]; total: number; title: string }
+
+// ------------------------------------------------------------------------------------------------ Pentest
+export type PtStatus = "queued" | "running" | "done" | "partial" | "failed" | "cancelled";
+export type PtConfidence = "confirmed" | "probable" | "needs_check" | "not_confirmed";
+export interface PtJob { id: string; title: string; status: PtStatus; status_ru: string; stage: string; stage_ru: string; pct: number; profile: string; created_by: string; created_at: string; started_at: string | null; finished_at: string | null;
+  duration_s: number | null; targets_n: number; hosts_up: number; hosts_done: number; ports_open: number; services_n: number; findings_n: number; findings_confirmed: number; errors_n: number; incomplete_n: number; max_sev: number; max_sev_ru: string;
+  sev: Record<string, number>; nmap_version: string; vdb_rev: string; error: string | null; cancel_requested: boolean; attempts: number; base_job_id: string | null;
+  options?: { ports?: string; discovery?: string; intensity?: number; safe_audit?: boolean }; targets_input?: string; rejected?: { input: string; reason: string }[] }
+export interface PtChanges { against: { job_id: string; title: string; at: string }; hosts_compared: number; new_hosts: number; totals: { ports_opened: number; ports_closed: number; services_changed: number; findings_new: number; findings_not_seen: number }; hosts: ({ ip: string } & Record<string, number | string>)[]; note: string }
+export interface PtJobFull extends PtJob { events: { at: string; level: string; stage: string; ip: string; message: string }[]; changes: PtChanges | null }
+export interface PtOverview { enabled: boolean; scanner: { alive: boolean; age_s: number | null; data: { nmap?: string; scan?: string; net_raw?: boolean; jobs_running?: number } }; active: number; results: { jobs: number; findings: number; confirmed: number; last_at: string | null } | null;
+  recent: PtJob[]; latest_sev: Record<string, number>; policy: { allowed: string[] | null; max_targets: number; large_threshold: number; full_ports_max_targets: number; safe_scripts_enabled: boolean; scan_type: string; max_rate: number } }
+export interface PtProfiles { items: { key: string; title: string; ports: string; builtin: boolean; count: number | null; intensity?: number }[]; safe_audit: { enabled: boolean; scripts: string[]; risk: string }; evidence_scripts: string[] }
+export interface PtPreview { unique: number; tokens: number; duplicates: number; kinds: Record<string, number>; rejected: { input: string; reason: string }[]; rejected_n: number; sample: string[]; names: Record<string, string[]>;
+  estimate: { ports_per_host?: number; seconds?: number; text?: string; probes?: number; error?: string }; warnings: string[]; default_profile: string; needs_large_confirm: boolean; max_targets: number }
+export interface PtFindingRow { id: number; ip: string; host: string; proto: string; port: number; service: string; product: string; version: string; vuln_key: string; title: string; sev: number; sev_ru: string; score: number | null; score_version: string;
+  exploited: boolean; confidence: PtConfidence; confidence_ru: string; basis: string; basis_ru: string; rule: string }
+export interface PtScore { score: number; version: string; severity_ru?: string; vector?: string; origin_label?: string; url?: string; source_title?: string }
+export interface PtFindingDetail extends Omit<PtFindingRow, "service" | "host"> { host: string; evidence: Record<string, unknown> & { match?: { vendor?: string; product?: string; version?: string; via?: string; sources: { source: string; ext_id: string; affected: string; verdict: string }[]; notes: string[] };
+    checks?: { script: string; state: string; output: string }[]; limits?: string; oval?: { status: string; reason: string; at: string; by: string; facts?: string; definitions: { def_id: string; feed: string; title: string; version: number; result: string; reason?: string; tests?: { id: string; kind: string; name?: string; status: string; detail: string }[] }[] } };
+  service: { name: string; product: string; version: string; extrainfo: string; tunnel: string; cpe: string[]; method: string; conf: number; banner: string; scripts: { id: string; output: string; state?: string; ids?: string[] }[] } | null;
+  scan: { at: string | null; job: string; nmap: string; vdb_rev: string };
+  vuln: { known: boolean; title?: string; description?: string; severity?: number; exploited?: boolean; cvss?: PtScore | null; all_scores?: PtScore[]; published?: string | null; modified?: string | null; sources?: string[]; ids?: string[]; refs?: string[]; fix?: string; fix_available?: boolean | null; affected?: { vendor: string; product: string; source: string; text: string }[] } }
+export interface PtHostRow { ip: string; host: string; names: string[]; state: string; state_ru: string; ports_n: number; findings_n: number; max_sev: number; max_sev_ru: string; error: string; error_stage: string; scan_ms: number }
+export interface PtPort { proto: string; port: number; service: string; product: string; version: string; extrainfo: string; tunnel: string; cpe: string[]; method: string; conf: number; banner: string; scripts: { id: string; state?: string }[] }
+export interface PtHostCard { ip: string; names: string[]; job: { id: string; title: string; at: string; status: string; status_ru: string; nmap: string; vdb_rev: string }; state: string; state_ru: string; error: string; error_stage: string; ports: PtPort[];
+  findings: { id: number; port: number; proto: string; vuln_key: string; title: string; sev: number; sev_ru: string; score: number | null; exploited: boolean; confidence: PtConfidence; confidence_ru: string; basis_ru: string; product: string; version: string }[];
+  max_sev: number; max_sev_ru: string; history: { job_id: string; title: string; at: string; state: string; state_ru: string; ports_n: number; findings_n: number; max_sev: number; max_sev_ru: string; current: boolean }[];
+  changes: ({ against: { job_id: string; title: string; at: string }; ports_opened: PtPort[]; ports_closed: PtPort[]; services_changed: { proto: string; port: number; before: string; after: string }[]; findings_new: PtHostCard["findings"]; findings_not_seen: PtHostCard["findings"]; note: string }) | null;
+  ksc: { linked: { source_id: string; source: string; host_id: number; set_by: string; set_at: string }[]; candidates: { source_id: string; source: string; host_id: number; name: string; os: string }[] } }
 export interface QuickCol { key: string; title: string; type: string }
 export interface QuickMetric { key: string; label: string; value: number | string; hint: string; tone: string }
 /** Документ быстрого отчёта без строк: один источник правды для просмотра, XLSX, HTML и CSV. */
@@ -261,6 +291,24 @@ export const api = {
   selectSource: (source_id: string) => req<{ current: string }>("POST", "/auth/source", { source_id }),
   version: () => req<{ version: string; commit: string; built_at: string }>("GET", "/version"),
   dashboard: (refresh = false) => req<Dashboard>("GET", `/dashboard${qs({ refresh })}`),
+  pentest: {
+    overview: () => req<PtOverview>("GET", "/pentest/overview"),
+    profiles: () => req<PtProfiles>("GET", "/pentest/profiles"),
+    preview: (b: { targets: string; devices?: { source_id: string; host_id: number }[]; profile: string; ports?: string }) => req<PtPreview>("POST", "/pentest/targets/preview", b),
+    create: (b: Record<string, unknown>) => req<PtJob>("POST", "/pentest/jobs", b),
+    jobs: (p: Record<string, string | number | boolean | undefined>) => req<{ items: PtJob[]; total: number }>("GET", `/pentest/jobs${qs(p)}`),
+    job: (id: string) => req<PtJobFull>("GET", `/pentest/jobs/${id}`),
+    cancel: (id: string) => req<PtJob>("POST", `/pentest/jobs/${id}/cancel`),
+    remove: (id: string) => req<void>("DELETE", `/pentest/jobs/${id}`),
+    clone: (id: string) => req<{ title: string; targets: string; profile: string; ports: string; discovery: string; intensity: number; safe_audit: boolean; base_job_id: string }>("GET", `/pentest/jobs/${id}/clone`),
+    findings: (id: string, p: Record<string, string | number | boolean | undefined>) => req<{ items: PtFindingRow[]; total: number }>("GET", `/pentest/jobs/${id}/findings${qs(p)}`),
+    finding: (id: string, fid: number) => req<PtFindingDetail>("GET", `/pentest/jobs/${id}/findings/${fid}`),
+    oval: (id: string, fid: number) => req<PtFindingDetail>("POST", `/pentest/jobs/${id}/findings/${fid}/oval`),
+    hosts: (id: string, p: Record<string, string | number | boolean | undefined>) => req<{ items: PtHostRow[]; total: number }>("GET", `/pentest/jobs/${id}/hosts${qs(p)}`),
+    host: (ip: string, jobId?: string) => req<PtHostCard>("GET", `/pentest/hosts/${encodeURIComponent(ip)}${qs({ job_id: jobId })}`),
+    link: (ip: string, source_id: string, host_id: number) => req<void>("PUT", "/pentest/links", { ip, source_id, host_id }),
+    unlink: (ip: string, source_id: string) => req<void>("DELETE", `/pentest/links/${encodeURIComponent(ip)}/${source_id}`),
+  },
   overview: (days: number, refresh = false) => req<Overview>("GET", `/overview${qs({ days, refresh })}`),
   overviewHosts: (metric: string, days: number, offset: number, limit: number, q: string, sort: string, desc: boolean) => req<OvHostsPage>("GET", `/overview/hosts${qs({ metric, days, offset, limit, q, sort, desc })}`),
   licenses: {
@@ -372,7 +420,7 @@ export const api = {
     create: (kind: Job["kind"], title: string, params: ReportParams | AuditParams | object, sourceIds: string[] = []) => req<Job>("POST", "/reports", { kind, title, params, source_ids: sourceIds }),
     get: (id: string) => req<Job>("GET", `/reports/${id}`),
     rows: (id: string, p: { offset: number; limit: number; q?: string; source?: string; program?: string; sort?: string; desc?: boolean }) => req<Page<SoftwareRow & Host & AuditResultRow>>("GET", `/reports/${id}/rows${qs(p)}`),
-    downloadUrl: (id: string, fmt: "csv" | "xlsx" | "html") => `/api/v1/reports/${id}/download/${fmt}`,
+    downloadUrl: (id: string, fmt: "csv" | "xlsx" | "html" | "pdf") => `/api/v1/reports/${id}/download/${fmt}`,
     cancel: (id: string) => req<Job>("POST", `/reports/${id}/cancel`),
     rerun: (id: string) => req<Job>("POST", `/reports/${id}/rerun`),
     remove: (id: string) => req<void>("DELETE", `/reports/${id}`),

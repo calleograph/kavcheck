@@ -4,6 +4,7 @@ import { api, type ProblemKey, type ProtHost, type ProtSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched, OnlineBadge } from "../components/Common";
 import { FilterBar } from "../components/FilterBar";
+import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
@@ -40,7 +41,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   });
   const data = list.extra as { summary?: ProtSummary | null; unsupported?: string[] } | null;
   const busy = list.loading;
-  const sel = useRowSel<number>(); const [report, setReport] = useState<"all" | "sel" | null>(null);
+  const sel = useRowSel<number>(); const ex = useExpanded<number>(); const [report, setReport] = useState<"all" | "sel" | null>(null);
   const canReport = ctx.me.user.role !== "viewer";
   // результат щелчка — список компьютеров ниже сводки: прокручиваем к нему, чтобы изменение было видно сразу
   const reveal = () => window.requestAnimationFrame(() => document.getElementById("prot-hosts")?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -148,16 +149,17 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
           <table className="table virt">
-            <thead><tr><CheckAll all={sel.allOf(list.items.map((h) => h.host_id))} some={sel.someOf(list.items.map((h) => h.host_id))} onToggle={() => sel.toggleMany(list.items.map((h) => h.host_id))} />
+            <thead><tr><CheckAll all={sel.allOf(list.items.map((h) => h.host_id))} some={sel.someOf(list.items.map((h) => h.host_id))} onToggle={() => sel.toggleMany(list.items.map((h) => h.host_id))} /><ExpandTh />
               <SortTh k="name" label="Компьютер" sort={sort} desc={desc} onSort={onSort} /><th>Онлайн</th><th>Защитный продукт</th><th className="hide-sm">Постоянная защита</th>
               <SortTh k="bases" label="Базы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="scan" label="Полная проверка" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <SortTh k="risk" label="Проблемы" sort={sort} desc={desc} onSort={onSort} /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /></tr></thead>
-            <tbody>
-              <VirtualRows list={list} colSpan={9} estimate={52} row={(h) => {
+            <VirtualRows group list={list} colSpan={10} estimate={52} row={(h) => {
                 const b = daysAgo(h.av?.bases ?? null); const old = h.problems.includes("bases_old");
                 return (
-                  <tr className={`clickable ${sel.has(h.host_id) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("a, input")) navigate(`/hosts/${h.host_id}`); }}>
+                  <>
+                  <tr className={`clickable ${sel.has(h.host_id) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("a, input, button")) navigate(`/hosts/${h.host_id}`); }}>
                     <td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td>
+                    <ExpandCell id={`p${h.host_id}`} open={ex.has(h.host_id)} onToggle={() => ex.toggle(h.host_id)} label={h.name} />
                     <td><Link to={`/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span>{h.zone && <span className="sub zone-sub" title="Зона ответственности">{h.zone}</span>}</td>
                     <td className="nowrap"><OnlineBadge online={h.online} seen={h.last_visible} />{h.online === false && h.last_info_update && <span className="sub">сведения от {fmtDate(h.last_info_update)}</span>}</td>
                     <td>{h.av ? <>{shortProduct(h.av.product)}<span className="sub mono">{h.av.build}</span></> : <span className="bad-text">нет</span>}{h.agent_build && <span className="sub nowrap">Агент <span className="mono">{h.agent_build}</span></span>}</td>
@@ -166,10 +168,23 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                     <td className="nowrap small hide-sm">{h.av ? (h.last_full_scan ? <span className={h.problems.includes("scan_old") ? "warn-text" : ""}>{fmtDate(h.last_full_scan)}</span> : <span className="muted">не выполнялась</span>) : "—"}</td>
                     <td><ProblemBadges problems={h.problems} />{h.hw?.problems.map((p) => <span key={p.key} className="sub small" title={p.level_ru}>{p.text}</span>)}</td>
                     <td className="nowrap small hide-sm">{fmt(h.last_connected)}</td>
-                  </tr>);
+                  </tr>
+                  <ExpandedRow id={`p${h.host_id}`} open={ex.has(h.host_id)} colSpan={10}>
+                    <XGrid>
+                      <XItem label="Компьютер">{h.fqdn || h.name}</XItem><XItem label="ОС">{h.os}{h.platform ? ` · ${h.platform}` : ""}</XItem><XItem label="Группа KSC">{h.group}</XItem>
+                      <XItem label="Защитный продукт">{h.av ? `${h.av.product} ${h.av.build}` : "не установлен или KSC не получал сведений"}</XItem>
+                      <XItem label="Состояние продукта">{h.av ? `${h.av.state_label || "—"}${h.av.has_rtp ? "" : " · постоянная защита не предусмотрена"}` : ""}</XItem><XItem label="Постоянная защита (KSC)">{h.rtp_label}</XItem>
+                      <XItem label="Базы">{h.av?.bases ? fmt(h.av.bases) : ""}</XItem><XItem label="Полная проверка">{h.av ? (h.last_full_scan ? fmt(h.last_full_scan) : "не выполнялась") : ""}</XItem>
+                      <XItem label="Агент администрирования">{h.agent_build}</XItem><XItem label="Статус KSC">{h.ksc_status ?? ""}</XItem><XItem label="Невылеченных объектов">{h.uncured ? num(h.uncured) : ""}</XItem>
+                      <XItem label="Подключение к KSC">{fmt(h.last_connected)} · {h.activity}</XItem><XItem label="Сведения об устройстве обновлены">{h.last_info_update ? fmt(h.last_info_update) : ""}</XItem>
+                      <XItem label="Проблемы" wide>{h.problems.length ? <ul className="xlist">{h.problems.map((p) => <li key={p}>{(s?.problems.find((x) => x.key === p)?.title ?? PROBLEM_SHORT[p])}</li>)}</ul> : "проблем не найдено"}</XItem>
+                      <XItem label="Ресурсы Linux-сервера" wide>{h.hw?.problems.length ? h.hw.problems.map((p) => p.text).join("; ") : ""}</XItem>
+                    </XGrid>
+                    <div><Link className="btn mini" to={`/hosts/${h.host_id}`}>Карточка компьютера</Link></div>
+                  </ExpandedRow>
+                  </>);
               }} />
-              {!list.items.length && !list.loading && <tr><td colSpan={9}><Empty icon="checkCircle" title={filtered ? "Ничего не найдено" : "Компьютеров нет"}>{filtered ? "По выбранным условиям компьютеров нет." : s?.online_only ? "Сейчас KSC не видит в сети ни одного устройства. Выключите «Только онлайн», чтобы увидеть все." : "В источнике нет компьютеров, подключавшихся к KSC за порог активности."}</Empty></td></tr>}
-            </tbody>
+            {!list.items.length && !list.loading && <tbody><tr><td colSpan={10}><Empty icon="checkCircle" title={filtered ? "Ничего не найдено" : "Компьютеров нет"}>{filtered ? "По выбранным условиям компьютеров нет." : s?.online_only ? "Сейчас KSC не видит в сети ни одного устройства. Выключите «Только онлайн», чтобы увидеть все." : "В источнике нет компьютеров, подключавшихся к KSC за порог активности."}</Empty></td></tr></tbody>}
           </table>)}
       </div>
       <ListFoot list={list} />

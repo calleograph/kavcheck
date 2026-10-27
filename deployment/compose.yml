@@ -131,6 +131,37 @@ services:
     stop_grace_period: 60s
     logging: *default-logging
 
+  # Сканер Pentest (Nmap): отдельный контейнер без доступа к данным отчётов и без лишних привилегий. По умолчанию — сканирование обычными соединениями (SYN-сканирование без привилегий невозможно):
+  # быстрее и точнее его режим включается отдельным файлом deployment/compose.pentest-raw.yml (только CAP_NET_RAW). Область разрешённых адресов задаёт администратор в «Администрирование → Pentest».
+  pentest:
+    image: ${IMAGE_REPO:-kavcheck}-backend:${IMAGE_TAG:?}
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      <<: *app-env
+      MALLOC_ARENA_MAX: "2"
+    mem_limit: ${PENTEST_MEM_LIMIT:-1g}
+    memswap_limit: ${PENTEST_MEM_LIMIT:-1g}
+    cpus: ${PENTEST_CPUS:-1.5}
+    pids_limit: 512
+    oom_score_adj: 500
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    command: ["python", "-m", "app.pentest.worker"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$$(find /tmp/pentest.alive -mmin -3 2>/dev/null)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    stop_grace_period: 40s
+    logging: *default-logging
+
   web:
     image: ${IMAGE_REPO:-kavcheck}-web:${IMAGE_TAG:?}
     build:

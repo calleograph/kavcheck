@@ -102,7 +102,7 @@ env_put IMAGE_TAG "$IMAGE_TAG"; env_put IMAGE_REPO "$IMAGE_REPO"
 step "Остановка приложения и резервная копия базы и .env"
 marker_set stage stopped
 dc up -d postgres >/dev/null && wait_healthy 120 postgres || stop_update generic "PostgreSQL не запустился"
-dc stop backend worker >/dev/null 2>&1 || true            # после копии в базу никто не пишет: восстановление при ошибке — без потери данных
+dc stop backend worker pentest >/dev/null 2>&1 || true            # после копии в базу никто не пишет: восстановление при ошибке — без потери данных
 action_log "приложение остановлено на время резервной копии и миграций"
 cp -p "$ENV_FILE" "$ENV_FILE.backup-$(date +%Y%m%d-%H%M%S)" && chmod 600 "$ENV_FILE".backup-* 2>/dev/null
 run_guarded "резервная копия" "$T_BACKUP" "$T_BACKUP" "$SCRIPTS_DIR/backup.sh" --env "$ENV_FILE" --label "pre-${OLD_VER}" || stop_update "$(guard_fail_code generic)" "Резервная копия не создана — миграции без неё не выполняются"

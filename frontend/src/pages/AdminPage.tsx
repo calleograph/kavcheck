@@ -3,6 +3,7 @@ import { ADMIN_TABS, type Ctx } from "../App";
 import { PageHead } from "../components/ui";
 import SourcesAdmin from "./admin/SourcesAdmin";
 import LicensesAdmin from "./admin/LicensesAdmin";
+import PentestAdmin from "./admin/PentestAdmin";
 import UsersAdmin from "./admin/UsersAdmin";
 import LdapAdmin from "./admin/LdapAdmin";
 import GeneralAdmin from "./admin/GeneralAdmin";
@@ -47,6 +48,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "system" && <SystemAdmin onOpen={go} />}
       {tab === "sources" && <SourcesAdmin ctx={ctx} />}
       {tab === "licenses" && <LicensesAdmin sources={ctx.sources} />}
+      {tab === "pentest" && <PentestAdmin />}
       {tab === "users" && <UsersAdmin ctx={ctx} />}
       {tab === "ldap" && <LdapAdmin sources={ctx.sources} />}
       {tab === "general" && <GeneralAdmin />}

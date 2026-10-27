@@ -7,3 +7,12 @@ export const bytes = (n: number | null | undefined) => { if (n == null) return "
 export const ago = (sec: number | null | undefined) => (sec == null ? "—" : sec < 90 ? `${sec} с назад` : sec < 5400 ? `${Math.round(sec / 60)} мин назад` : sec < 172800 ? `${Math.round(sec / 3600)} ч назад` : `${Math.round(sec / 86400)} сут назад`);
 export const plural = (n: number, one: string, few: string, many: string) => { const m10 = n % 10, m100 = n % 100; return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20) ? few : many; };
 export const versionLabel = (v: string, commit: string) => (commit && commit !== "unknown" ? `${v} (${commit.slice(0, 7)})` : v);
+
+/** Скрывает вероятные секреты в техническом тексте перед показом (ответы сервисов, баннеры, вывод скриптов): пароли, токены, ключи API, заголовки авторизации, пароль в адресе. Исходный текст в базе не меняется. */
+export function maskSecrets(text: string): string {
+  return (text || "")
+    .replace(/(authorization\s*:\s*)(basic|bearer|digest|negotiate)\s+\S+/gi, "$1$2 ••••")
+    .replace(/((?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|cookie|set-cookie)["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s;,&]+)/gi, "$1••••")
+    .replace(/(\/\/[^\s/:@]+:)[^\s/@]+(@)/g, "$1••••$2")
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, "-----BEGIN PRIVATE KEY----- •••• -----END PRIVATE KEY-----");
+}

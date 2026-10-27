@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type EolFinding, type EolMapping, type EolProductCard, type EolProductRow, type EolSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
@@ -7,6 +7,7 @@ import { EOL_STATUS_TEXT, EolBadge, EolDates, EolSev } from "../components/EolBi
 import { Icon } from "../components/Icons";
 import { ListFoot, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { CountButton, FilterBar, type FilterChip } from "../components/FilterBar";
+import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
@@ -73,7 +74,7 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
   const [sev, setSev] = useKept("eol.sev", ""); const [pub, setPub] = useKept("eol.pub", ""); const [prod, setProd] = useKept("eol.prod", "");
   const [srcId, setSrcId] = useKept("eol.src", ""); const [all, setAll] = useKept("eol.all", false);
   const [sort, setSort] = useKept("eol.sort", "severity"); const [desc, setDesc] = useKept("eol.desc", true);
-  const [panel, setPanel] = useState<EolFinding | null>(null); const [toast, show] = useToast();
+  const [panel, setPanel] = useState<EolFinding | null>(null); const [toast, show] = useToast(); const ex = useExpanded<string>();
   const [sp, setSp] = useSearchParams();
   const [report, setReport] = useState<{ title: string; params: Record<string, unknown> } | null>(null);
   useEffect(() => {                                                    // переход из сводки («показать» у ОС с неопределённым EOL) задаёт тип и состояние
@@ -133,14 +134,16 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
           <table className="table">
-            <thead><tr><SortTh k="severity" label="Критичность" sort={sort} desc={desc} onSort={onSort} /><SortTh k="title" label="Программа или ОС" sort={sort} desc={desc} onSort={onSort} />
+            <thead><tr><ExpandTh /><SortTh k="severity" label="Критичность" sort={sort} desc={desc} onSort={onSort} /><SortTh k="title" label="Программа или ОС" sort={sort} desc={desc} onSort={onSort} />
               <SortTh k="release" label="Продукт EOL" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="eol_from" label="Поддержка" sort={sort} desc={desc} onSort={onSort} />
               <SortTh k="hosts" label="Устройств" sort={sort} desc={desc} onSort={onSort} className="num" />{multi && <th className="hide-sm">Источник</th>}</tr></thead>
             <tbody>
               {list.items.map((f) => {
                 const k = keyOf(f);
                 return (
-                  <tr key={k} className={panel && keyOf(panel) === k ? "sel" : ""}>
+                  <Fragment key={k}>
+                  <tr className={panel && keyOf(panel) === k ? "sel" : ""}>
+                    <ExpandCell id={`e${k}`} open={ex.has(k)} onToggle={() => ex.toggle(k)} label={f.title} />
                     <td><EolSev f={f} />{!f.confirmed && f.status !== "undetermined" && <span className="sub small" title={f.condition}>не подтверждено</span>}</td>
                     <td><strong>{f.title}</strong>{f.kind === "app" && <span className="sub mono small">{f.version}</span>}{f.publisher && <span className="sub small">{f.publisher}</span>}<span className="sub small">{f.kind_ru}</span></td>
                     <td className="hide-sm">{f.eol_product ? <><a href={`https://endoflife.date/${f.eol_product}`} target="_blank" rel="noopener noreferrer">{f.eol_label}</a>{f.eol_release && <span className="sub mono small">ветка {f.eol_release}</span>}</> : <span className="muted">нет в базе</span>}
@@ -149,7 +152,20 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
                     <td className="num"><CountButton n={hostsOf(f)} onClick={() => setPanel(f)} label="Показать устройства" />
                       {!all && f.hosts > f.hosts_active && <span className="sub small muted">всего {num(f.hosts)}</span>}</td>
                     {multi && <td className="hide-sm small">{f.source}</td>}
-                  </tr>);
+                  </tr>
+                  <ExpandedRow id={`e${k}`} open={ex.has(k)} colSpan={multi ? 7 : 6}>
+                    <XGrid>
+                      <XItem label="Тип">{f.kind_ru}</XItem><XItem label="Версия">{f.kind === "app" ? <span className="mono">{f.version}</span> : f.version}</XItem><XItem label="Производитель">{f.publisher}</XItem>
+                      <XItem label="Продукт endoflife.date">{f.eol_product ? <a href={f.link || `https://endoflife.date/${f.eol_product}`} target="_blank" rel="noopener noreferrer">{f.eol_label}{f.eol_release ? `, ветка ${f.eol_release}` : ""}</a> : "не сопоставлен"}</XItem>
+                      <XItem label="Состояние"><EolBadge s={f.status} /></XItem>
+                      <XItem label="Стандартная поддержка до">{f.eol_from ? fmtDate(f.eol_from) : ""}</XItem><XItem label="Расширенная поддержка до">{f.eoes_from ? fmtDate(f.eoes_from) : ""}</XItem>
+                      <XItem label="Достоверность сопоставления">{f.confidence_ru}{!f.confirmed && " · не подтверждено: зависит от подписки, договора или сопоставлено по названию"}</XItem>
+                      <XItem label="Устройств">{num(f.hosts_active)} активных{f.hosts > f.hosts_active ? `, всего ${num(f.hosts)}` : ""}{multi ? ` · ${f.source}` : ""}</XItem>
+                      <XItem label="Условие и пояснение" wide>{f.condition}</XItem>
+                      <XItem label="Рассчитано">{fmt(f.computed_at)}</XItem>
+                    </XGrid>
+                  </ExpandedRow>
+                  </Fragment>);
               })}
               {!list.items.length && !list.loading && <tr><td colSpan={6}><Empty icon="checkCircle" title="Ничего не найдено">{sum && !Object.values(sum.sources).some((s) => s.ready) ? "Сопоставление ещё не рассчитано." : chips.length ? "Измените запрос или фильтры." : "Программы и ОС с истёкшей или приближающейся датой окончания поддержки не найдены."}</Empty></td></tr>}
             </tbody>

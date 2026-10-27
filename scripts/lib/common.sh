@@ -152,7 +152,7 @@ restore_db_exact() {
   local bk="$1" db="$POSTGRES_DB" keep
   [ -s "$bk" ] || { warn "Резервная копия $bk не найдена — восстановление базы невозможно"; return 1; }
   keep="${db}_${2:-failed}_$(date +%Y%m%d%H%M%S)"
-  dc stop backend worker >/dev/null 2>&1
+  dc stop backend worker pentest >/dev/null 2>&1
   local q='psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -tAc'
   dc exec -T postgres sh -c "$q \"SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '$db' AND pid <> pg_backend_pid()\"" >/dev/null 2>&1
   dc exec -T postgres sh -c "$q 'ALTER DATABASE \"$db\" RENAME TO \"$keep\"'" >/dev/null || { warn "Не удалось отложить текущую базу — восстановление не начато"; return 1; }

@@ -102,6 +102,18 @@ function SourceCard({ s, ecosystems, onChanged }: { s: VdbSourceInfo; ecosystems
             <span className="help">Для каждой выбранной экосистемы скачивается архив (Debian ≈ 80 МБ), затем — только изменённые записи (modified_id.csv). Linux-пакеты сверяются с исправлениями дистрибутива, включая переносимые. Архив удаляется сразу после разбора; на диске нужно места не меньше размера самого большого архива.</span></fieldset>
           <label className="check"><input type="checkbox" className="switch" checked={!!st.all_ecosystems} onChange={(e) => set("all_ecosystems", e.target.checked)} /><span className="check-body">Вся база OSV одним архивом (≈ 2,8 ГБ; нужно не менее 4 ГБ свободного места, загрузка и разбор — около часа)</span></label>
         </>}
+        {s.key === "oval" && <>
+          <fieldset className="qr-sections"><legend>Фиды OVAL</legend>
+            {((st.feeds as { name: string; url: string }[] | undefined) ?? []).map((f, i, all) => (
+              <div key={i} className="row wrap">
+                <label>Название<input value={f.name} maxLength={60} onChange={(e) => set("feeds", all.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} placeholder="например, ubuntu-jammy" /></label>
+                <label>Адрес (https://…, XML, .bz2 или .gz)<input className="mono" value={f.url} onChange={(e) => set("feeds", all.map((x, j) => (j === i ? { ...x, url: e.target.value } : x)))} /></label>
+                <button type="button" className="btn mini ghost danger" aria-label="Удалить фид" onClick={() => set("feeds", all.filter((_, j) => j !== i))}><Icon name="trash" size={15} /></button>
+              </div>))}
+            <button type="button" className="btn mini" onClick={() => set("feeds", [...(((st.feeds as unknown[]) ?? [])), { name: "", url: "" }])}><Icon name="plus" size={15} />Добавить фид</button>
+            <span className="help">Фиды задаёте вы: например, OVAL дистрибутива (Ubuntu, Debian, Red Hat). Загружаются определения vulnerability/patch с CVE; хранятся отдельно от записей баз уязвимостей и не запускают пересчёт находок по программам. OVAL оценивает состояние системы: в Pentest проверка выполняется по перечню пакетов устройства KSC, явно связанного с адресом; остальные условия дают «недостаточно данных».</span>
+          </fieldset>
+        </>}
         {s.key === "bdu" && <>
           <label>Адрес XML-выгрузки<input className="mono" value={String(st.url ?? "")} onChange={(e) => set("url", e.target.value)} /><span className="help">Если сервер не имеет доступа к сайту БДУ, скачайте выгрузку вручную и загрузите файл ниже.</span></label>
           <label className="check"><input type="checkbox" className="switch" checked={st.verify_tls !== false} onChange={(e) => set("verify_tls", e.target.checked)} /><span className="check-body">Проверять сертификат сайта</span></label>

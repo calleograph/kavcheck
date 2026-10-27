@@ -122,7 +122,11 @@ class VdbSync:
                     row.status, row.last_error, row.progress = "error", error[:1500], None
                 else:
                     row.status, row.last_ok_at, row.last_error, row.progress, row.channel = "ok", utcnow(), None, None, ctx.channel
-                    if S.INFO[key].get("own_store"):                    # источник со своими таблицами (endoflife.date): число продуктов
+                    if key == "oval":                                    # свои таблицы: число определений
+                        from ..models import OvalDef  # noqa: PLC0415
+
+                        row.records = int((await db.execute(select(func.count()).select_from(OvalDef))).scalar_one())
+                    elif S.INFO[key].get("own_store"):                  # источник со своими таблицами (endoflife.date): число продуктов
                         from ..eol.sync import count as eol_count  # noqa: PLC0415
 
                         row.records = await eol_count(self._sm)

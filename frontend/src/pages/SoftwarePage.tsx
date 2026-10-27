@@ -5,6 +5,7 @@ import { NoSource, type Ctx } from "../App";
 import { FilterBar } from "../components/FilterBar";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { Icon } from "../components/Icons";
+import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
 import { ListFoot, VirtualRows, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Dock, Empty, PageHead, SkelRows, SortTh, Tabs } from "../components/ui";
 import { CatalogView, PublishersView } from "./CatalogPage";
@@ -45,6 +46,7 @@ function Registry({ ctx }: { ctx: Ctx }) {
   const [applied, setApplied] = useState({ q, publisher, version });
   // отмеченные записи реестра живут весь сеанс: после карточки компьютера выбор и открытая панель на месте
   const [selected, setSelected] = useKept<Record<number, Product>>(`registry.sel:${sid}`, {});
+  const ex = useExpanded<number>();
   useEffect(() => { const t = window.setTimeout(() => setApplied({ q, publisher, version }), 350); return () => window.clearTimeout(t); }, [q, publisher, version]);
   const list = useInfinite<Product>(`registry:${sid}`, [applied, platform, installedOnly, all, sort, desc],
     (offset, limit) => api.software.registry({ ...applied, platform, installed_only: installedOnly, all_hosts: all, sort, desc, offset, limit }) as unknown as Promise<Chunk<Product>>);
@@ -77,25 +79,35 @@ function Registry({ ctx }: { ctx: Ctx }) {
         {list.initial ? <SkelRows cols={6} /> : (
           <table className="table virt">
             <thead><tr>
-              <th className="check"><span className="sr-only">Выбор</span></th>
+              <th className="check"><span className="sr-only">Выбор</span></th><ExpandTh />
               <SortTh k="name" label="Программа" sort={sort} desc={desc} onSort={onSort} />
               <SortTh k="version" label="Версия" sort={sort} desc={desc} onSort={onSort} />
               <SortTh k="publisher" label="Производитель" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
               <th className="num">Установок</th><th className="num">Компьютеров</th>
               <SortTh k="first_seen" label="Впервые в сети" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /></tr></thead>
-            <tbody>
-              <VirtualRows list={list} colSpan={7} estimate={46} row={(p) => (
+            <VirtualRows group list={list} colSpan={8} estimate={46} row={(p) => (
+              <>
                 <tr className={selected[p.product_id] ? "sel" : ""}>
                   <td className="check"><input type="checkbox" checked={!!selected[p.product_id]} onChange={() => toggle(p)} aria-label={`Выбрать ${p.name} ${p.version}`} disabled={!p.installs} /></td>
+                  <ExpandCell id={`s${p.product_id}`} open={ex.has(p.product_id)} onToggle={() => ex.toggle(p.product_id)} label={`${p.name} ${p.version}`} />
                   <td>{p.name}<span className="sub">{p.platform}</span></td>
                   <td><span className="mono">{p.version}</span>{p.upstream_version !== p.version && <span className="sub mono">upstream {p.upstream_version}</span>}</td>
                   <td className="small hide-sm">{p.publisher || <span className="muted">—</span>}</td>
                   <td className="num">{num(p.installs)}</td>
                   <td className="num">{p.installs ? <button type="button" className="count-btn" onClick={() => setParam("rec", String(p.product_id), { rn: `${p.name} ${p.version}` })} title="Показать компьютеры">{num(p.hosts)}</button> : num(p.hosts)}</td>
                   <td className="nowrap small hide-sm">{fmtDate(p.first_seen)}</td>
-                </tr>)} />
-              {!list.items.length && !list.loading && <tr><td colSpan={7}><Empty icon="search" title="Ничего не найдено">Измените название, производителя или версию. Уберите «Только установленные», чтобы увидеть и удалённые программы.</Empty></td></tr>}
-            </tbody>
+                </tr>
+                <ExpandedRow id={`s${p.product_id}`} open={ex.has(p.product_id)} colSpan={8}>
+                  <XGrid>
+                    <XItem label="Запись реестра KSC">{p.name}</XItem><XItem label="Платформа">{p.platform}</XItem><XItem label="Версия в реестре"><span className="mono">{p.version}</span></XItem>
+                    <XItem label="Версия разработчика (сравниваемая)">{p.upstream_version !== p.version ? <span className="mono">{p.upstream_version}</span> : "совпадает с версией в реестре"}</XItem>
+                    <XItem label="Производитель">{p.publisher}</XItem><XItem label="Впервые обнаружена">{fmtDate(p.first_seen)}</XItem>
+                    <XItem label="Установок и компьютеров">{num(p.installs)} установок на {num(p.hosts)} компьютерах{!p.installs ? " (программа удалена)" : ""}</XItem><XItem label="Идентификатор записи"><span className="mono">{p.product_id}</span></XItem>
+                  </XGrid>
+                  <p className="pt-note">Версия пакета не обязательно равна версии работающей программы. Компьютеры с этой версией — по числу в строке (правая панель).</p>
+                </ExpandedRow>
+              </>)} />
+            {!list.items.length && !list.loading && <tbody><tr><td colSpan={8}><Empty icon="search" title="Ничего не найдено">Измените название, производителя или версию. Уберите «Только установленные», чтобы увидеть и удалённые программы.</Empty></td></tr></tbody>}
           </table>)}
       </div>
       <ListFoot list={list} />

@@ -9,6 +9,7 @@ import { Fetched } from "../components/Common";
 import { CountButton, FilterBar } from "../components/FilterBar";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel, type QuickScopeOpts } from "../components/QuickReport";
+import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
 import { ListFoot, VirtualRows, useInfinite, useKept, useStaticList, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { useToast } from "../components/Toast";
@@ -155,7 +156,7 @@ function ListView({ ctx }: { ctx: Ctx }) {
   const [q, setQ] = useKept("vlist.q", ""); const [applied, setApplied] = useState(q);
   const [severity, setSeverity] = useKept<Sev>("vlist.severity", ""); const [patchable, setPatchable] = useKept("vlist.patchable", false); const [all, setAll] = useKept("vlist.all", false);
   const [sort, setSort] = useKept("vlist.sort", "risk"); const [desc, setDesc] = useKept("vlist.desc", true);
-  const sel = useRowSel<number>(); const [report, setReport] = useState<Report | null>(null);
+  const sel = useRowSel<number>(); const [report, setReport] = useState<Report | null>(null); const ex = useExpanded<number>();
   const canReport = ctx.me.user.role !== "viewer";
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 350); return () => window.clearTimeout(t); }, [q]);
   const list = useInfinite<VulnDescr>(`vulns-list:${sid}`, [applied, severity, patchable, all, sort, desc],
@@ -209,13 +210,14 @@ function ListView({ ctx }: { ctx: Ctx }) {
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={6} /> : (
           <table className="table virt">
-            <thead><tr><CheckAll all={sel.allOf(ids)} some={sel.someOf(ids)} onToggle={() => sel.toggleMany(ids)} />
+            <thead><tr><CheckAll all={sel.allOf(ids)} some={sel.someOf(ids)} onToggle={() => sel.toggleMany(ids)} /><ExpandTh />
               <SortTh k="name" label="Уязвимость" sort={sort} desc={desc} onSort={onSort} /><SortTh k="risk" label="Опасность" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">Программы</th>
               <SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" /><SortTh k="total" label="Обнаружений" sort={sort} desc={desc} onSort={onSort} className="num hide-sm" /><th className="hide-sm">Исправление</th><th><span className="sr-only">Действия</span></th></tr></thead>
-            <tbody>
-              <VirtualRows list={list} colSpan={8} estimate={58} row={(v) => (
+            <VirtualRows group list={list} colSpan={9} estimate={58} row={(v) => (
+              <>
                 <tr className={sel.has(v.descr_id) ? "sel" : ""}>
                   <td className="check"><input type="checkbox" aria-label={`Выбрать ${v.kla_id}`} checked={sel.has(v.descr_id)} onChange={() => sel.toggle(v.descr_id)} /></td>
+                  <ExpandCell id={`v${v.descr_id}`} open={ex.has(v.descr_id)} onToggle={() => ex.toggle(v.descr_id)} label={v.kla_id} />
                   <td>{v.url ? <a href={v.url} target="_blank" rel="noopener noreferrer" className="mono strong-link">{v.kla_id}<Icon name="external" size={13} className="ext" /></a> : <span className="mono">{v.kla_id}</span>}
                     <span className="sub mono">{v.cve.length ? <CompactList items={v.cve} label="CVE" /> : "без CVE"}</span></td>
                   <td><span className={`sev ${v.severity === "critical" ? "crit" : v.severity === "high" ? "high" : "warn"}`}>{v.severity_label}</span></td>
@@ -223,9 +225,20 @@ function ListView({ ctx }: { ctx: Ctx }) {
                   <td className="num"><CountButton n={v.hosts} onClick={() => setPanel(v)} label="Показать компьютеры с этой уязвимостью" /></td><td className="num hide-sm">{num(v.total)}</td>
                   <td className="hide-sm">{v.patchable ? <span className="badge ok">доступно</span> : <span className="muted small">нет</span>}</td>
                   <td className="actions">{canReport && <button type="button" className="btn mini ghost row-act" onClick={() => setReport(reportFor([v.descr_id], `Отчёт по уязвимости ${v.cve[0] ?? v.kla_id}`))}><Icon name="file" size={15} />Отчёт по этой уязвимости</button>}</td>
-                </tr>)} />
-              {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="checkCircle" title="Уязвимостей не найдено">{applied || severity || patchable ? "По этим условиям ничего нет. Проверьте написание CVE или включите «Все устройства»." : "KSC не нашёл неисправленных уязвимостей."}</Empty></td></tr>}
-            </tbody>
+                </tr>
+                <ExpandedRow id={`v${v.descr_id}`} open={ex.has(v.descr_id)} colSpan={9}>
+                  <XGrid>
+                    <XItem label="Идентификатор KSC">{v.kla_id}</XItem><XItem label="Опасность">{v.severity_label}</XItem>
+                    <XItem label="Компьютеров">{num(v.hosts)} · обнаружений {num(v.total)}</XItem><XItem label="Исправление">{v.patchable ? `доступно для ${num(v.patchable)} обнаружений` : "нет"}</XItem>
+                    <XItem label="Последнее обнаружение">{fmt(v.last_detected)}</XItem>
+                    <XItem label="CVE" wide>{v.cve.length ? v.cve.map((c, i) => <span key={c}>{i > 0 && ", "}<a href={`https://nvd.nist.gov/vuln/detail/${c}`} target="_blank" rel="noopener noreferrer" className="mono">{c}</a></span>) : "без CVE"}</XItem>
+                    <XItem label="Бюллетени и обновления">{v.kb.length ? v.kb.join(", ") : ""}</XItem>
+                    <XItem label="Описание в первоисточнике">{v.url ? <a href={v.url} target="_blank" rel="noopener noreferrer">{v.url.replace(/^https?:\/\//, "").slice(0, 70)}</a> : ""}</XItem>
+                    <XItem label="Затронутые программы" wide>{v.products.join("; ")}</XItem>
+                  </XGrid>
+                </ExpandedRow>
+              </>)} />
+            {!list.items.length && !list.loading && <tbody><tr><td colSpan={9}><Empty icon="checkCircle" title="Уязвимостей не найдено">{applied || severity || patchable ? "По этим условиям ничего нет. Проверьте написание CVE или включите «Все устройства»." : "KSC не нашёл неисправленных уязвимостей."}</Empty></td></tr></tbody>}
           </table>)}
       </div>
       <ListFoot list={list} />

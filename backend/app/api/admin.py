@@ -439,6 +439,15 @@ async def system(request: Request, su: SessionUser = Depends(require_admin), db:
                   "detail": ("нет сигнала от службы — проверьте контейнер worker" if age is None or age >= 120 else
                              "задания не берутся в работу дольше 5 минут" if stuck else f"сигнал {int(age)} с назад; отчётов в работе {running}, в очереди {queued}" + _worker_mem(hb))})
     out["checks"]["worker"] = {"ok": w_ok, "running": running, "queued": queued, "last_done": (await db.execute(select(func.max(ReportJob.finished_at)).where(ReportJob.status == "done"))).scalar_one()}
+    pt = await db.get(ServiceHeartbeat, "pentest")                                    # сканер Pentest: необязательная служба (старые установки её не имеют) — «не работает» только при заданиях в очереди
+    pt_age = (utcnow() - pt.at).total_seconds() if pt else None
+    from ..models import PtJob  # noqa: PLC0415
+
+    pt_queued = int((await db.execute(select(func.count()).select_from(PtJob).where(PtJob.status.in_(("queued", "running"))))).scalar_one())
+    pt_ok = (pt_age is not None and pt_age < 120) or (pt is None and not pt_queued)
+    comps.append({"key": "pentest", "title": "Сканер Pentest (Nmap)", "ok": True if pt_ok and pt is not None else None if pt is None and not pt_queued else False,
+                  "detail": (f"сигнал {int(pt_age)} с назад; Nmap {(pt.data or {}).get('nmap', '—')}, заданий в работе {(pt.data or {}).get('jobs_running', 0)}, в очереди {pt_queued}" if pt_age is not None and pt_age < 120
+                             else "служба не запущена: сканирование не используется" if pt is None and not pt_queued else "нет сигнала от сканера — проверьте контейнер pentest; задания ждут в очереди")})
     try:
         async with httpx.AsyncClient(timeout=2.5) as cl:
             r = await cl.get(os.environ.get("WEB_HEALTH_URL", "http://web:8080/healthz"))

@@ -9,6 +9,7 @@ import ChangePasswordPage from "./pages/ChangePasswordPage";
 import SecurityPage from "./pages/SecurityPage";
 import DashboardPage from "./pages/DashboardPage";
 // разделы загружаются по первому обращению: стартовая загрузка — оболочка, вход и главная
+const PentestPage = lazy(() => import("./pages/PentestPage"));
 const SoftwarePage = lazy(() => import("./pages/SoftwarePage"));
 const HostsPage = lazy(() => import("./pages/HostsPage"));
 const HostPage = lazy(() => import("./pages/HostsPage").then((m) => ({ default: m.HostPage })));
@@ -33,7 +34,7 @@ export const ALL_PAGES = ["/eol", "/devices", "/reports", "/zones"];
 /** Страницы, для которых «Все источники» не требуют пояснения: главная и независимые от KSC разделы. */
 const scopeAware = (pathname: string) => pathname === "/" || pathname.startsWith("/pentest") || ALL_PAGES.some((p) => pathname.startsWith(p));
 
-const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
+const NAV: { to: string; label: string; icon: IconName; end?: boolean; roles?: string[] }[] = [
   { to: "/", label: "Главная", icon: "home", end: true },
   { to: "/software", label: "Программы", icon: "layers" },
   { to: "/hosts", label: "Компьютеры", icon: "monitor" },
@@ -44,11 +45,12 @@ const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" },
   { to: "/events", label: "События безопасности", icon: "bell" },
   { to: "/zones", label: "Зоны ответственности", icon: "grid" },
+  { to: "/pentest", label: "Pentest", icon: "target", roles: ["analyst", "admin"] },
   { to: "/reports", label: "Отчёты", icon: "file" },
 ];
 export const ADMIN_TABS: { id: string; label: string }[] = [
   { id: "system", label: "Состояние системы" }, { id: "sources", label: "Источники KSC" }, { id: "licenses", label: "Лицензии" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" },
-  { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "zcache", label: "Расчёт данных зон" }, { id: "eolcfg", label: "EOL и пользователи" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
+  { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "zcache", label: "Расчёт данных зон" }, { id: "eolcfg", label: "EOL и пользователи" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "pentest", label: "Pentest" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
 ];
 
 type Theme = "system" | "light" | "dark";
@@ -187,13 +189,13 @@ function Shell({ me, version, onLogout, children, sources, current, onPick, all,
           <div className="nav-list">
             <NavIndicator deps={[pathname, search, adminOpen]} />
             <div className="nav-label">Аудит</div>
-            {NAV.map((n) => <NavLink key={n.to} to={n.to === "/vdb" && vdbNew > 0 ? "/vdb?tab=mine" : n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.to === "/vdb" && vdbNew > 0 && <span className="nav-badge" title="Новых уязвимостей с высокой и критической опасностью или признаком эксплуатации, затрагивающих установленное ПО">{vdbNew}</span>}</NavLink>)}
+            {NAV.filter((n) => !n.roles || n.roles.includes(me.user.role)).map((n) => <NavLink key={n.to} to={n.to === "/vdb" && vdbNew > 0 ? "/vdb?tab=mine" : n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.to === "/vdb" && vdbNew > 0 && <span className="nav-badge" title="Новых уязвимостей с высокой и критической опасностью или признаком эксплуатации, затрагивающих установленное ПО">{vdbNew}</span>}</NavLink>)}
             {me.user.is_admin && <>
               <button type="button" className="nav-label nav-toggle" aria-expanded={adminOpen} onClick={toggleAdmin}>Администрирование<Icon name="chevronD" size={14} /></button>
               {adminOpen && ADMIN_TABS.map((t) => {
                 const active = inAdmin && tab === t.id;
                 return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>
-                  <Icon name={({ system: "gauge", sources: "database", licenses: "key", users: "users", ldap: "key", general: "sliders", zones: "grid", zcache: "clock", eolcfg: "users", mail: "mail", org: "file", catalog: "package", vdb: "vault", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
+                  <Icon name={({ system: "gauge", sources: "database", licenses: "key", users: "users", ldap: "key", general: "sliders", zones: "grid", zcache: "clock", eolcfg: "users", mail: "mail", org: "file", catalog: "package", vdb: "vault", pentest: "target", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
               })}
             </>}
           </div>
@@ -243,7 +245,7 @@ export default function App() {
   useEffect(() => { if (me) void reloadSources(); }, [me, reloadSources]);
   useEffect(() => { setUnauthorizedHandler(() => { setCsrf(""); setMe(null); }); return () => setUnauthorizedHandler(null); }, []);
   useEffect(() => {
-    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/devices", "Устройства и пользователи"], ["/eol", "EOL"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
+    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/devices", "Устройства и пользователи"], ["/eol", "EOL"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/pentest", "Pentest"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
     const t = me ? (titles.find(([p]) => pathname.startsWith(p))?.[1] ?? "Главная") : "Вход";
     document.title = `${t} — ${me?.site_name || "KAV Checker"}`;
   }, [pathname, me]);
@@ -276,6 +278,7 @@ export default function App() {
           <Route path="/vdb" element={<VdbPage key={currentId} ctx={ctx} />} />
           <Route path="/protection" element={<ProtectionPage key={currentId} ctx={ctx} />} />
           <Route path="/events" element={<EventsPage key={currentId} ctx={ctx} />} />
+          <Route path="/pentest" element={me.user.role === "viewer" ? <Navigate to="/" replace /> : <PentestPage ctx={ctx} />} />
           <Route path="/zones" element={<ZonesPage key={currentId} ctx={ctx} />} />
           <Route path="/zones/:zid" element={<ZonesPage key={currentId} ctx={ctx} />} />
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />

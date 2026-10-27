@@ -53,6 +53,9 @@ INFO = {
             "terms": "Открытая выгрузка; данные распространяются на условиях CC-BY 4.0 и лицензий исходных баз. Первая загрузка — архивы выбранных экосистем, дальше — только изменённые записи"},
     "eol": {"title": "endoflife.date (жизненный цикл ПО)", "url": "https://endoflife.date/docs/api/v1/", "mode": "incremental", "own_store": True, "channels": ["API v1 endoflife.date (products/full)"],
             "terms": "Открытый API endoflife.date (лицензия MIT на данные). Это не база уязвимостей: сведения о датах окончания поддержки продуктов и их веток. Документ загружается условным запросом (ETag); изменившиеся продукты обновляются, остальные не переписываются. Окончание поддержки показывается как отдельная проблема EOL, а не как CVE"},
+    "oval": {"title": "OVAL (определения проверок)", "url": "https://oval.mitre.org/", "mode": "full", "own_store": True, "channels": ["Фиды OVAL по адресам из настроек (XML, .bz2, .gz)"],
+             "terms": "Фиды задаёт администратор (Ubuntu, Debian, Red Hat и др.): определения vulnerability/patch с CVE хранятся отдельно от записей баз уязвимостей. OVAL описывает проверки состояния системы: по сети можно "
+                      "проверить лишь версию сервиса, поэтому тесты пакетов оцениваются только по перечню пакетов устройства, явно связанного с KSC; остальные — «недостаточно данных»"},
     "bdu": {"title": "БДУ ФСТЭК России", "url": "https://bdu.fstec.ru/", "mode": "full", "channels": ["Выгрузка vulxml.zip с сайта bdu.fstec.ru", "Файл, загруженный вручную"],
             "terms": "XML-выгрузка с сайта (≈34 МБ в архиве); условия использования — по тексту на bdu.fstec.ru, приложение хранит ссылку на первоисточник. Сертификат сайта выдан УЦ Минцифры России: его корневой и промежуточный сертификаты поставляются с приложением и применяются только к этому источнику"},
 }
@@ -578,4 +581,37 @@ async def run_eol(ctx: RunCtx) -> None:
     await run_channels(ctx, [("api", INFO["eol"]["channels"][0], _eol_api)])
 
 
-SOURCES: dict[str, Callable[[RunCtx], Awaitable[None]]] = {"kev": run_kev, "bdu": run_bdu, "nvd": run_nvd, "osv": run_osv, "eol": run_eol}
+async def _oval_feeds(ctx: RunCtx) -> None:
+    from ..pentest import oval  # noqa: PLC0415
+
+    feeds = [f for f in (ctx.settings.get("feeds") or []) if isinstance(f, dict) and f.get("url") and f.get("name")]
+    if not feeds:
+        await ctx.progress("фиды OVAL не заданы в настройках источника")
+        return
+    cur = dict(ctx.cursor or {})
+    done: dict = dict(cur.get("feeds") or {})
+    for i, f in enumerate(feeds):
+        name, url = str(f["name"])[:60], str(f["url"])
+        dest = ctx.tmp() / f"oval-{i}.xml"
+        await ctx.progress(f"фид «{name}»: загрузка")
+        cond = ctx.has_data and not ctx.force
+        got = await ctx.http.download(url, dest, etag=(done.get(name) or {}).get("etag", "") if cond else "", progress=ctx.dl_progress(name))
+        if got.not_modified:
+            continue
+        await ctx.progress(f"фид «{name}»: разбор и запись")
+        try:
+            n = await oval.store_feed(ctx.sm, name, oval.batches(oval.parse(dest)))
+        except Exception as exc:  # noqa: BLE001 — повреждённый фид не должен ломать остальные; прежние определения этого фида сохраняются (транзакция откатывается)
+            raise FetchError(f"Фид «{name}»: файл не разобран ({type(exc).__name__}: {str(exc)[:120]})") from None
+        dest.unlink(missing_ok=True)
+        ctx.fetched += n
+        ctx.changed += n
+        done[name] = {"etag": got.etag, "definitions": n, "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    ctx.new_cursor = {"feeds": done}
+
+
+async def run_oval(ctx: RunCtx) -> None:
+    await run_channels(ctx, [("feeds", INFO["oval"]["channels"][0], _oval_feeds)])
+
+
+SOURCES: dict[str, Callable[[RunCtx], Awaitable[None]]] = {"kev": run_kev, "bdu": run_bdu, "nvd": run_nvd, "osv": run_osv, "eol": run_eol, "oval": run_oval}

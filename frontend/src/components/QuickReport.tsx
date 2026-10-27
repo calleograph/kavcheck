@@ -56,7 +56,7 @@ export type QuickScopeOpts = { period?: boolean; severity?: boolean; patchable?:
 const EXT_STATUSES: [string, string][] = [["confirmed", "Подтверждено источником"], ["potential", "Потенциально затронуто"], ["clarify", "Требуется уточнение"], ["insufficient", "Данных недостаточно"], ["fixed", "Исправлено (показать отдельно)"]];
 const EOL_STATUSES: [string, string][] = [["eol", "Стандартная поддержка закончилась (EOL)"], ["extended", "Только расширенная (платная) поддержка"], ["upcoming", "Окончание поддержки приближается"], ["undetermined", "ОС: не удалось определить EOL (причина указана)"]];
 const SECTIONS: [string, string][] = [["software", "Установленное ПО"], ["vulns", "Уязвимости"], ["protection", "Состояние защиты"]];
-const FORMATS: [string, string][] = [["xlsx", "Excel (XLSX)"], ["html", "HTML для руководства"], ["csv", "CSV"]];
+const FORMATS: [string, string][] = [["xlsx", "Excel (XLSX)"], ["csv", "CSV"], ["pdf", "PDF"], ["html", "HTML для руководства"]];
 const PREVIEW_SHOWN = 60;
 
 /** Затронутые компьютеры одной строкой (имена-ссылки на карточки); длинный список сворачивается. Список строится по строкам предпросмотра (до 1 000), полный — в файле. */

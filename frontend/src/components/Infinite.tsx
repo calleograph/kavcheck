@@ -88,11 +88,15 @@ export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset:
 
 /** Строки таблицы с виртуализацией: в DOM только видимые строки; при подходе к концу — следующая порция.
  *  scrollEl — контейнер со своей прокруткой (боковая панель, окно); без него — прокрутка страницы. */
-export function VirtualRows<T>({ list, colSpan, row, estimate = 44, scrollEl }: {
+export function VirtualRows<T>({ list, colSpan, row, estimate = 44, scrollEl, group }: {
   list: Infinite<T>; colSpan: number; row: (item: T, index: number) => ReactElement; estimate?: number; scrollEl?: RefObject<HTMLElement | null>;
+  /** каждая запись — свой `<tbody>` (строка записи и раскрывающаяся строка подробностей измеряются вместе); таблица не должна иметь внешнего `<tbody>` */
+  group?: boolean;
 }) {
   const anchor = useRef<HTMLTableRowElement>(null);
   const [margin, setMargin] = useState(0);
+  const Pad = ({ h, a }: { h: number; a?: boolean }) => (group ? <tbody aria-hidden><tr ref={a ? anchor : undefined} className="v-pad"><td colSpan={colSpan} style={{ height: Math.max(0, h) }} /></tr></tbody>
+    : <tr ref={a ? anchor : undefined} className="v-pad" aria-hidden><td colSpan={colSpan} style={{ height: Math.max(0, h) }} /></tr>);
   useLayoutEffect(() => {
     const el = anchor.current;
     if (!el) return;
@@ -137,9 +141,10 @@ export function VirtualRows<T>({ list, colSpan, row, estimate = 44, scrollEl }: 
   const bottom = vis.length ? v.getTotalSize() - (vis[vis.length - 1].end - margin) : 0;
   return (
     <>
-      <tr ref={anchor} className="v-pad" aria-hidden><td colSpan={colSpan} style={{ height: Math.max(0, top) }} /></tr>
-      {vis.map((vi) => cloneElement(row(list.items[vi.index], vi.index) as ReactElement<{ ref?: unknown; "data-index"?: number }>, { key: vi.key, ref: v.measureElement, "data-index": vi.index }))}
-      <tr className="v-pad" aria-hidden><td colSpan={colSpan} style={{ height: Math.max(0, bottom) }} /></tr>
+      {Pad({ h: top, a: true })}
+      {group ? vis.map((vi) => <tbody key={vi.key} ref={v.measureElement} data-index={vi.index}>{row(list.items[vi.index], vi.index)}</tbody>)
+        : vis.map((vi) => cloneElement(row(list.items[vi.index], vi.index) as ReactElement<{ ref?: unknown; "data-index"?: number }>, { key: vi.key, ref: v.measureElement, "data-index": vi.index }))}
+      {Pad({ h: bottom })}
     </>
   );
 }

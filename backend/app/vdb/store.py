@@ -215,14 +215,14 @@ async def revision(db: AsyncSession, source_id) -> str:
     """Отпечаток состояния данных, от которых зависит сопоставление: время загрузки источников, число решений администратора, построение каталога источника KSC."""
     from ..models import CatalogState, VdbMapping  # noqa: PLC0415
 
-    srcs = (await db.execute(select(VdbSource.key, VdbSource.last_ok_at, VdbSource.active_generation, VdbSource.enabled).where(VdbSource.key != "eol").order_by(VdbSource.key))).all()
+    srcs = (await db.execute(select(VdbSource.key, VdbSource.last_ok_at, VdbSource.active_generation, VdbSource.enabled).where(VdbSource.key.notin_(("eol", "oval"))).order_by(VdbSource.key))).all()
     maps = (await db.execute(select(func.count(), func.max(VdbMapping.created_at)).select_from(VdbMapping))).one()
     built = (await db.execute(select(CatalogState.built_at).where(CatalogState.source_id == source_id))).scalar_one_or_none()
     return "|".join([",".join(f"{k}:{t.isoformat() if t else ''}:{g}:{int(e)}" for k, t, g, e in srcs), f"{maps[0]}:{maps[1]}", str(built)])
 
 
 DEFAULTS = {"kev": (True, 12, {}), "nvd": (False, 6, {"years_back": 3}), "osv": (False, 24, {"ecosystems": ["Debian", "Alpine", "Red Hat", "AlmaLinux", "Rocky Linux"]}),
-            "bdu": (False, 24, {"url": "https://bdu.fstec.ru/files/documents/vulxml.zip", "verify_tls": True, "builtin_ca": True}), "eol": (True, 24, {"url": "https://endoflife.date/api/v1"})}
+            "bdu": (False, 24, {"url": "https://bdu.fstec.ru/files/documents/vulxml.zip", "verify_tls": True, "builtin_ca": True}), "eol": (True, 24, {"url": "https://endoflife.date/api/v1"}), "oval": (False, 24, {"feeds": []})}
 
 
 async def ensure_sources(db: AsyncSession) -> None:
