@@ -27,7 +27,7 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
@@ -36,8 +36,20 @@ class QuickPreviewIn(BaseModel):
 FEATURE = {"quick_vulns": "vulnerabilities", "quick_protection": "protection", "quick_events": "events", "quick_hosts": "hosts", "quick_extvulns": "software"}
 
 
+async def maybe_source(request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)) -> KscSource | None:
+    """Выбранный источник или None: отчёты, не зависящие от KSC (Pentest), строятся и без источника."""
+    try:
+        return await current_source(request, su, db)
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            return None
+        raise
+
+
 @router.post("/preview")
-async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
+async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depends(require_user), src: KscSource | None = Depends(maybe_source), db: AsyncSession = Depends(get_db)):
+    if src is None and body.kind != "quick_pentest":
+        raise HTTPException(status_code=409, detail={"code": "no_source", "message": "Источник KSC не выбран."})
     if body.kind == "version_audit":
         try:
             params = AuditParams.model_validate(body.params).model_dump()
@@ -79,6 +91,20 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         general = await request.app.state.settings_svc.get(db, "general")
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), sm=request.app.state.session_maker, source_id=src.id, source_ids=ids)
         doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
+        return _answer(doc, ctx.now)
+    if body.kind == "quick_pentest":                  # результаты сканирования: PostgreSQL, источники KSC не нужны; права — аналитик и администратор
+        if su.role == "viewer":
+            raise HTTPException(status_code=403, detail="Результаты Pentest доступны аналитику и администратору")
+        try:
+            params = QUICK_PARAMS[body.kind].model_validate(body.params).model_dump()
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
+        general = await request.app.state.settings_svc.get(db, "general")
+        ctx = quick.Ctx(source_name="Pentest", activity_days=int(general.activity_days), sm=request.app.state.session_maker)
+        try:
+            doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
+        except KscError as exc:
+            raise HTTPException(status_code=422, detail=exc.message) from None
         return _answer(doc, ctx.now)
     if body.kind == "quick_overview":                 # главная: записи защиты из общего кэша страницы «Состояние защиты»; несколько источников — «Все источники»
         import uuid  # noqa: PLC0415

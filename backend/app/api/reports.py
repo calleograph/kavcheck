@@ -36,6 +36,8 @@ def job_out(j: ReportJob) -> dict:
 
 
 def can_see(su: SessionUser, j: ReportJob) -> bool:
+    if j.kind == "quick_pentest":                          # результаты сканирования не принадлежат источнику KSC: права — аналитик и администратор
+        return su.role in ("analyst", "admin")
     ids = job_sources(j)
     return bool(ids) and all(su.can_use_source(uuid.UUID(i)) for i in ids)
 
@@ -85,10 +87,10 @@ async def enqueue(request: Request, db: AsyncSession, su: SessionUser, *, kind: 
     same = next((j for j in live if list(j.source_ids or [str(j.source_id)]) == ids and (j.params or {}) == params and j.title == title[:300]), None)
     if same is not None:                                   # двойной щелчок или повторная отправка: тот же отчёт уже формируется — второе задание не создаётся
         return same
-    job = ReportJob(id=uuid.uuid4(), source_id=sources[0].id, source_ids=[str(s.id) for s in sources], source_name=", ".join(s.name for s in sources)[:600], kind=kind,
+    job = ReportJob(id=uuid.uuid4(), source_id=sources[0].id if sources else None, source_ids=[str(s.id) for s in sources], source_name=(", ".join(s.name for s in sources) or "Pentest")[:600], kind=kind,
                     title=title[:300], params=params, created_by=su.display_name, created_by_id=su.user_id)
     db.add(job)
-    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action=audit_action, target_type="report", target_id=str(job.id), source_id=sources[0].id,
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action=audit_action, target_type="report", target_id=str(job.id), source_id=sources[0].id if sources else None,
                 details={"kind": kind, "title": title, "sources": [s.name for s in sources], **(extra or {})})
     await db.commit()
     await request.app.state.journal.emit("report", "report_queued", user=su.username, source=job.source_name[:120], message=title, data={"job_id": str(job.id), "kind": kind})
@@ -109,14 +111,16 @@ async def list_jobs(source_only: bool = True, offset: int = Query(0, ge=0), limi
                     db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(ReportJob).order_by(ReportJob.created_at.desc()).offset(offset).limit(limit * 3))).scalars().all()
     cur = str(su.current_source_id) if su.current_source_id else None
-    out = [j for j in rows if can_see(su, j) and (not source_only or not cur or cur in job_sources(j))]
+    out = [j for j in rows if can_see(su, j) and (not source_only or not cur or cur in job_sources(j) or j.kind == "quick_pentest")]
     return {"items": [job_out(j) for j in out[:limit]]}
 
 
 @router.post("", status_code=201)
 async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     params = validate_params(body.kind, body.params)
-    if body.kind in ("quick_zone", "quick_eol", "quick_devices", "quick_overview"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю
+    if body.kind == "quick_pentest":
+        sources = []
+    elif body.kind in ("quick_zone", "quick_eol", "quick_devices", "quick_overview"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю
         from ..services.sources import visible_sources  # noqa: PLC0415
 
         ids = body.source_ids or [s.id for s in await visible_sources(db, su)]
@@ -182,8 +186,8 @@ async def job_rows(job_id: uuid.UUID, request: Request, offset: int = Query(0, g
 
 @router.get("/{job_id}/download/{fmt}")
 async def download(job_id: uuid.UUID, fmt: str, request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    if fmt not in ("csv", "xlsx", "html"):
-        raise HTTPException(status_code=404, detail="Формат: csv | xlsx | html")
+    if fmt not in ("csv", "xlsx", "html", "pdf"):
+        raise HTTPException(status_code=404, detail="Формат: csv | xlsx | html | pdf")
     j = await _job(db, job_id, su)
     p: Path = job_dir(request.app.state.settings, j.id) / f"report.{fmt}"
     if j.status != "done" or not p.exists():
@@ -191,7 +195,7 @@ async def download(job_id: uuid.UUID, fmt: str, request: Request, su: SessionUse
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="report.download", target_type="report", target_id=str(j.id), source_id=j.source_id, details={"format": fmt})
     await db.commit()
     name = f"kavcheck_{j.kind}_{j.created_at:%Y%m%d_%H%M}.{fmt}"
-    media = {"csv": "text/csv; charset=utf-8", "html": "text/html; charset=utf-8"}.get(fmt, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    media = {"csv": "text/csv; charset=utf-8", "html": "text/html; charset=utf-8", "pdf": "application/pdf"}.get(fmt, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     return FileResponse(p, media_type=media, filename=name, content_disposition_type="attachment", headers={"X-Content-Type-Options": "nosniff"})
 
 

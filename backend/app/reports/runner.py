@@ -21,7 +21,7 @@ from ..services import catalog as catalog_svc
 from ..services.audit import Journal
 from ..services.resources import RES, MemoryPressure
 from ..services.settings import ReportsSettings, SettingsService
-from . import audit, builder, export, quick, quick_export
+from . import quick_pdf, audit, builder, export, quick, quick_export
 
 log = logging.getLogger("app.reports")
 WORKER = f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}"
@@ -179,15 +179,19 @@ class Runner:
         """Быстрый контекстный отчёт (уязвимости, компьютеры, защита, события): тот же построитель, что у предпросмотра; выгрузки XLSX, HTML, CSV."""
         started = utcnow()
         async with self._sm() as db:
-            src = await db.get(KscSource, job.source_id)
+            src = await db.get(KscSource, job.source_id) if job.source_id else None
             rcfg: ReportsSettings = await self._svc.get(db, "reports")  # type: ignore[assignment]
             general = await self._svc.get(db, "general")
             org = (await self._svc.get(db, "organization")).model_dump()
             hw = await self._svc.get(db, "hardware")
-        if src is None:
+        if src is None and job.kind != "quick_pentest":                    # результаты Pentest не принадлежат источнику KSC
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
-        client = SourceClient(conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), concurrency=self._cfg.ksc_concurrency, name=src.name)
+        if src is None:
+            src = KscSource(id=uuid.uuid4(), name="Pentest")                  # только имя для шапки отчёта; в базу не записывается
+            client = None
+        else:
+            client = SourceClient(conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), concurrency=self._cfg.ksc_concurrency, name=src.name)
         flag = {"cancel": False}
         loop = asyncio.get_running_loop()
 
@@ -305,6 +309,10 @@ class Runner:
         quick_export.write_csv_main(d / "report.csv", doc)
         quick_export.write_xlsx(d / "report.xlsx", doc)
         quick_export.write_html(d / "report.html", doc)
+        try:
+            quick_pdf.write_pdf(d / "report.pdf", doc)
+        except Exception:  # noqa: BLE001 — PDF вспомогательный: сбой его построения не должен лишать отчёт XLSX, CSV и HTML
+            log.warning("PDF отчёта не построен", exc_info=True)
 
     async def _execute_audit(self, job: ReportJob) -> None:
         """Проверка версий по одному или нескольким источникам: источники обрабатываются по очереди, каждый на своём соединении."""

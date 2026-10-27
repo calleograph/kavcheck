@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ALLOW_FILE = ROOT / "scripts" / "private-data.allow"
 SKIP_SUFFIX = {".png", ".jpg", ".ico", ".svg", ".woff", ".woff2", ".lock", ".dump"}
-SKIP_NAMES = {"package-lock.json", "private-data.allow"}
+SKIP_NAMES = {"package-lock.json", "private-data.allow", "LICENSE-DejaVu.txt"}          # текст лицензии шрифта: публичные контакты авторов
 SELF = "scripts/check_private_data.py"
 TLDS = "com|org|net|ru|su|io|ai|dev|app|cloud|local|lan|corp|internal|intranet|home|test|invalid|example"
 DOMAIN = re.compile(r"(?<![\w@.-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:%s))(?![\w-]|\.[a-z])" % TLDS, re.I)

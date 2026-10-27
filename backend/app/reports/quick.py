@@ -24,8 +24,8 @@ from ..ksc import vulns as V
 from ..ksc.driver import KscError, SourceClient
 from ..search import any_field, matcher
 
-QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview")
-KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры"}
+QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_pentest")
+KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры", "quick_pentest": "Результаты Pentest"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
 ONLINE_RU = {True: "в сети", False: "не в сети", None: "нет данных"}
@@ -539,6 +539,10 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
         from .quick_overview import build_overview  # noqa: PLC0415
 
         BUILDERS[kind] = build_overview
+    if kind == "quick_pentest" and kind not in BUILDERS:
+        from .quick_pentest import build_pentest  # noqa: PLC0415
+
+        BUILDERS[kind] = build_pentest
     if kind not in BUILDERS:
         raise KscError("kind", f"Неизвестный вид быстрого отчёта: {kind}")
     if params.get("detail") == "summary" and kind == "quick_eol":
@@ -550,7 +554,7 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
 
 # Таблицы, которые входят только в подробный отчёт: построчные перечни (обнаружения, компьютеры, устройства, события). В кратком остаются сводные таблицы и показатели.
 DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "software", "vulns"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
-                 "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}}
+                 "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}, "quick_pentest": {"hosts", "ports"}}
 
 
 def shape(kind: str, doc: dict, p: dict) -> dict:
