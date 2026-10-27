@@ -19,6 +19,19 @@ router = APIRouter(prefix="/protection", tags=["protection"])
 PROBLEM_RE = "^(|ok|hw|" + "|".join(P.PROBLEMS) + ")$"
 
 
+async def protection_base(request: Request, db: AsyncSession, src: KscSource, *, refresh: bool = False) -> tuple[list[dict], float]:
+    """Набор записей защиты по источнику (кэш в памяти процесса; общий для страницы «Состояние защиты» и главной): (записи, время расчёта)."""
+    rcfg = await request.app.state.settings_svc.get(db, "reports")
+    hw = await request.app.state.settings_svc.get(db, "hardware")
+    client = request.app.state.sources.client(src)
+    groups_src = src
+
+    async def make() -> list[dict]:
+        return await P.load(client, exclude_slaves=rcfg.exclude_slave_servers, groups=await groups_cached(request, groups_src), hw_cfg=hw)
+
+    return await request.app.state.cache.get((str(src.id), "protection", rcfg.exclude_slave_servers, hw.model_dump_json()), request.app.state.settings.cache_ttl_seconds, make, refresh=refresh, swr=request.app.state.settings.cache_swr_seconds)
+
+
 @router.get("")
 async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_RE), q_: str = Query("", alias="q", max_length=200), group: str = Query("", max_length=200),
                      hw_level: str = Query("", pattern="^(|critical|warning)$"), product: str = Query("", max_length=64), build: str = Query("", max_length=64), bases_days: int = Query(3, ge=1, le=90),
@@ -33,14 +46,9 @@ async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_
         return {"items": [], "total": 0, "offset": offset, "limit": limit, "unsupported": miss, "summary": None}
     general = await request.app.state.settings_svc.get(db, "general")
     rcfg = await request.app.state.settings_svc.get(db, "reports")
-    client = request.app.state.sources.client(src)
     hw = await request.app.state.settings_svc.get(db, "hardware")
-
-    async def make() -> list[dict]:
-        return await P.load(client, exclude_slaves=rcfg.exclude_slave_servers, groups=await groups_cached(request, src), hw_cfg=hw)
-
     try:
-        base, at = await request.app.state.cache.get((str(src.id), "protection", rcfg.exclude_slave_servers, hw.model_dump_json()), request.app.state.settings.cache_ttl_seconds, make, refresh=refresh, swr=request.app.state.settings.cache_swr_seconds)
+        base, at = await protection_base(request, db, src, refresh=refresh)
     except KscError as exc:
         raise _ksc(exc) from None
     if zone:

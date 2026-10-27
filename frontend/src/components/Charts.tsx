@@ -52,3 +52,33 @@ export function HBars({ rows, selected, onSelect, label, unit = "" }: { rows: Se
     </ul>
   );
 }
+
+export interface TrendPoint { day: string; active: number; total: number }
+
+/** График динамики: активные компьютеры (площадь) на фоне общего числа объектов (пунктир). Данные накапливаются по суткам, пока их мало — честная подпись вместо «линии из двух точек». */
+export function Trend({ points, since, label }: { points: TrendPoint[]; since: string | null; label: string }) {
+  if (points.length < 2) {
+    return <p className="trend-empty">{points.length ? "Накоплен один срез." : "Срезов пока нет."} График строится по ежедневным срезам: он появится, когда их будет не меньше двух{since ? ` (первый — ${new Date(since).toLocaleDateString("ru-RU")})` : ""}.</p>;
+  }
+  const W = 320, H = 110, PX = 4, PY = 10;
+  const maxV = Math.max(...points.map((p) => Math.max(p.total, p.active)), 1);
+  const minV = Math.min(...points.map((p) => p.active));
+  const lo = Math.max(0, minV - (maxV - minV) * 0.15 - 1);
+  const x = (i: number) => PX + (i / (points.length - 1)) * (W - 2 * PX);
+  const y = (v: number) => H - PY - ((v - lo) / Math.max(maxV - lo, 1)) * (H - 2 * PY);
+  const line = (k: "active" | "total") => points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(p[k]).toFixed(1)}`).join(" ");
+  const last = points[points.length - 1], first = points[0];
+  const d = (iso: string) => new Date(iso).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+  return (
+    <figure className="trend">
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} preserveAspectRatio="none" className="trend-svg">
+        <path d={`${line("active")} L${x(points.length - 1).toFixed(1)} ${H - PY} L${x(0).toFixed(1)} ${H - PY} Z`} className="trend-area" />
+        <path d={line("total")} className="trend-total" vectorEffect="non-scaling-stroke" />
+        <path d={line("active")} className="trend-line" vectorEffect="non-scaling-stroke" />
+        <circle cx={x(points.length - 1)} cy={y(last.active)} r="3" className="trend-dot" vectorEffect="non-scaling-stroke" />
+      </svg>
+      <figcaption className="trend-cap"><span>{d(first.day)}: <b>{num(first.active)}</b></span><span>{d(last.day)}: <b>{num(last.active)}</b> из {num(last.total)}</span></figcaption>
+      <table className="sr-only"><caption>{label}</caption><thead><tr><th>Дата</th><th>Активные</th><th>Всего</th></tr></thead><tbody>{points.map((p) => <tr key={p.day}><td>{p.day}</td><td>{p.active}</td><td>{p.total}</td></tr>)}</tbody></table>
+    </figure>
+  );
+}

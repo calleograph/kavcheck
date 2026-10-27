@@ -56,7 +56,22 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices";
+export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview";
+
+export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
+export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
+export interface OvLicenseGroup { key: string; product: string; kind: string; limit: number | null; used: number | null; free: number | null; over: boolean; expires_at: string | null; state: "active" | "expiring" | "expired" | "unknown"; shared: boolean; basis: string; pool: string; notes: string[]; origin: string[];
+  sources: { id: string; name: string; lic_key: string; limit: number | null; used: number | null; origin: string; updated_at: string | null }[] }
+export interface OvLicenses { totals: { groups: number; limit: number | null; used: number | null; free: number | null; share: number | null; next_expiry: string | null; expired: number; expiring: number; complete: boolean; shared: number };
+  groups: OvLicenseGroup[]; by_source: Record<string, { limit: number | null; used: number | null; groups: number; polled_at: string | null; error: string | null; note: string | null }> }
+export type OvSource = { id: string; name: string; error: string | null; synced_at: string | null; ksc_version?: string | null; last_check_ok?: boolean | null; duplicate_of?: string; snapshot?: boolean; license?: OvLicenses["by_source"][string] | null } & Partial<Record<OvMetric, number>>;
+export interface Overview {
+  days: number; periods_available: number[]; scope: { all: boolean; sources: number; ok: number; duplicates: Record<string, string> };
+  totals: Record<OvMetric, number> | null; periods: OvPeriod[]; extra: { agent_installed: number; av_any: number } | null; sources: OvSource[]; licenses: OvLicenses;
+  security: { vulns: number | null; hosts_crit: number | null; ext_crit_hosts: number | null; snapshot_missing?: number; eol: { excluded?: boolean; os_items?: number; os_devices?: number; app_items?: number; app_devices?: number; not_ready?: number } | null };
+  trend: { points: { day: string; active: number; total: number }[]; since: string | null }; trend_key: string; pentest: { jobs: number; findings: number; confirmed: number; last_at: string | null } | null;
+  stale_days: number; bases_days: number; generated_at: string; labels: Record<string, string> }
+export interface OvHostsPage { items: { host_id: number; name: string; ip: string; os: string; group: string; last_connected: string | null; days_since_connection: number | null; online: boolean | null; source_id: string; source: string }[]; total: number; title: string }
 export interface QuickCol { key: string; title: string; type: string }
 export interface QuickMetric { key: string; label: string; value: number | string; hint: string; tone: string }
 /** Документ быстрого отчёта без строк: один источник правды для просмотра, XLSX, HTML и CSV. */
@@ -187,7 +202,7 @@ let csrf = "";
 let sourceId: string | null = null;
 let allSources = false;
 /** Разделы, которые умеют работать со всеми источниками сразу (заголовок X-Source-Id: all); остальные получают выбранный источник. */
-const ALL_OK = /^\/(eol|devices|quick\/preview|reports)(\/|\?|$)/;
+const ALL_OK = /^\/(eol|devices|quick\/preview|reports|overview|licenses)(\/|\?|$)/;
 let onUnauthorized: (() => void) | null = null;
 export const setCsrf = (t: string) => { csrf = t; };
 export const setSourceId = (id: string | null) => { sourceId = id; };
@@ -246,6 +261,17 @@ export const api = {
   selectSource: (source_id: string) => req<{ current: string }>("POST", "/auth/source", { source_id }),
   version: () => req<{ version: string; commit: string; built_at: string }>("GET", "/version"),
   dashboard: (refresh = false) => req<Dashboard>("GET", `/dashboard${qs({ refresh })}`),
+  overview: (days: number, refresh = false) => req<Overview>("GET", `/overview${qs({ days, refresh })}`),
+  overviewHosts: (metric: string, days: number, offset: number, limit: number, q: string, sort: string, desc: boolean) => req<OvHostsPage>("GET", `/overview/hosts${qs({ metric, days, offset, limit, q, sort, desc })}`),
+  licenses: {
+    list: () => req<OvLicenses>("GET", "/licenses"),
+    all: () => req<OvLicenses>("GET", "/licenses/all"),
+    diag: () => req<{ items: { source_id: string; source: string; polled_at: string | null; error: string | null; records: number; diag: { tables?: string[]; mapped?: Record<string, Record<string, string>>; note?: string } | null }[] }>("GET", "/licenses/diag"),
+    refresh: () => req<{ requested: number }>("POST", "/licenses/refresh"),
+    addManual: (b: { source_id: string; product: string; kind?: string; expires_at?: string | null; limit_n?: number | null; used_n?: number | null; pool?: string; note?: string }) => req<{ lic_key: string }>("POST", "/licenses/manual", b),
+    removeManual: (source_id: string, key: string) => req<void>("DELETE", `/licenses/manual/${source_id}/${key}`),
+    setPool: (source_id: string, lic_key: string, pool: string) => req<void>("PUT", "/licenses/pool", { source_id, lic_key, pool }),
+  },
   software: {
     registry: (p: Record<string, string | number | boolean | undefined>) => req<Page<Product>>("GET", `/software${qs(p)}`),
     rules: () => req<{ items: { key: string; name: string; description: string | null; builtin: boolean }[] }>("GET", "/software/rules"),

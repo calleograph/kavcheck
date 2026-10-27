@@ -76,7 +76,7 @@ function AffectedHosts({ rows, total, expected, link, onClose }: { rows: Record<
   );
 }
 
-const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices"];
+const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview"];
 // выбор строк и фильтры страницы в шаблон не попадают: они берутся с той страницы, откуда открыт конструктор
 const CONTEXT_KEYS = ["host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "zone", "group_contains", "threat", "product", "build", "problem"];
 
@@ -182,13 +182,13 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
         {doc && (<>
           <div className="qr-hero">
             <span className="qr-big">{hosts ? num(Number(hosts.value)) : num(data!.total)}</span>
-            <span className="qr-cap">{hosts ? (kind === "quick_eol" ? plural(Number(hosts.value), "устройство с проблемой поддержки", "устройства с проблемой поддержки", "устройств с проблемой поддержки") : kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : kind === "quick_devices" ? plural(Number(hosts.value), "устройство", "устройства", "устройств") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
+            <span className="qr-cap">{hosts ? (kind === "quick_eol" ? plural(Number(hosts.value), "устройство с проблемой поддержки", "устройства с проблемой поддержки", "устройств с проблемой поддержки") : kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : kind === "quick_devices" ? plural(Number(hosts.value), "устройство", "устройства", "устройств") : kind === "quick_overview" ? plural(Number(hosts.value), "компьютер в списке", "компьютера в списке", "компьютеров в списке") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
               {hosts?.hint && <span className="muted small"> · {hosts.hint}</span>}</span>
           </div>
           {BUILDABLE.includes(kind) && <Builder kind={kind} params={params} columnsAll={doc.columns_all ?? []} onChange={(patch) => setExtra({ ...extra, ...patch })} canSave={canReport} />}
           {data && (kind === "quick_extvulns" || kind === "quick_vulns" || kind === "version_audit" || kind === "quick_eol") && <AffectedHosts rows={data.items} total={data.total} expected={hosts ? Number(hosts.value) : null} link={sourceIds.length <= 1 && kind !== "quick_eol"} onClose={onClose} />}
           <dl className="qr-cond">{doc.conditions.map((c) => <div key={c.label}><dt>{c.label}</dt><dd>{c.text}</dd></div>)}</dl>
-          <div className="qr-metrics">{doc.metrics.filter((m) => m.key !== "hosts").map((m) => (
+          <div className="qr-metrics">{doc.metrics.filter((m) => m !== hosts).map((m) => (
             <div key={m.key} className="qr-metric" title={m.hint}><b className={m.tone === "danger" ? "bad-text" : ""}>{typeof m.value === "number" ? num(m.value) : m.value}</b><span>{m.label}</span></div>))}</div>
           {doc.severity && doc.severity.levels.some((l) => l.value > 0) && (
             <div className="qr-sev" aria-label={doc.severity.title}>

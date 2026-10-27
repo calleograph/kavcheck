@@ -59,6 +59,10 @@ CREATE TABLE dbo.hst_hwinv_dev (nId int IDENTITY PRIMARY KEY, nHostId bigint NOT
   nCpuSpeed int NULL, nCpuCores int NULL, nCpuThreads int NULL, bDeleted bit NOT NULL DEFAULT 0);
 CREATE INDEX IX_hst_hwinv_dev_host ON dbo.hst_hwinv_dev (nHostId, bDeleted);
 GO
+-- лицензии (структура условная: в реальных KSC названия столбцов отличаются, KAV Checker определяет их по смыслу — ksc/licenses.py); binKeyData — данные ключа, приложением не читаются
+CREATE TABLE dbo.keys (nId int PRIMARY KEY, wstrProductName nvarchar(256) NULL, nLicenseType int NULL, tmExpirationLimit datetime NULL, nLicenseCount int NULL, nUsed int NULL, wstrSerial nvarchar(64) NULL, binKeyData varbinary(max) NULL);
+CREATE TABLE dbo.keys_installed (nId int PRIMARY KEY, wstrComment nvarchar(100) NULL, nCode int NULL);
+GO
 -- Группы: 0 — корень управляемых, 1 — нераспределённые, 10 — Серверы, 11 — Web (внутри Серверов), 12 — Рабочие станции
 INSERT INTO dbo.v_akpub_adm_group VALUES (0, N'Управляемые устройства', 2, 0), (1, N'Нераспределенные устройства', NULL, 0), (10, N'Серверы', 0, 0), (11, N'Web', 10, 0), (12, N'Рабочие станции', 0, 0);
 -- Устройства: nIp — первый октет в старшем байте (192.0.2.x = 3221225984 + x)
@@ -202,6 +206,10 @@ INSERT INTO dbo.vapm_vulnerability_occurence VALUES
  (9908,2,8903,NULL,NULL,DATEADD(day,-1,GETUTCDATE()),NULL,0,1), (9909,5,8001,NULL,REPLICATE('b',31)+'8',DATEADD(day,-40,GETUTCDATE()),NULL,0,0),
  (9910,9,8001,NULL,NULL,DATEADD(day,-40,GETUTCDATE()),NULL,0,0);
 
+INSERT INTO dbo.keys (nId, wstrProductName, nLicenseType, tmExpirationLimit, nLicenseCount, nUsed, wstrSerial, binKeyData) VALUES
+  (1, N'Kaspersky Endpoint Security для бизнеса', 1, DATEADD(day, 200, GETUTCDATE()), 250, 6, N'0000-000001-00000001', 0x0102),
+  (2, N'Kaspersky Security для серверов', 1, DATEADD(day, 20, GETUTCDATE()), 20, NULL, N'0000-000002-00000002', 0x0304);
+INSERT INTO dbo.keys_installed VALUES (1, N'служебная', 0);
 -- Учётная запись только для чтения (так же, как рекомендуется для реальной базы KSC)
 IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'kavcheck_ro') CREATE LOGIN kavcheck_ro WITH PASSWORD = 'KavCheck-Test-Pass-1', CHECK_POLICY = OFF; -- private-data: ignore (тестовый пароль синтетической базы)
 IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'kavcheck_ro') CREATE USER kavcheck_ro FOR LOGIN kavcheck_ro;

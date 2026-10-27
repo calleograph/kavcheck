@@ -24,8 +24,8 @@ from ..ksc import vulns as V
 from ..ksc.driver import KscError, SourceClient
 from ..search import any_field, matcher
 
-QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices")
-KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи"}
+QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview")
+KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
 ONLINE_RU = {True: "в сети", False: "не в сети", None: "нет данных"}
@@ -47,6 +47,7 @@ class Ctx:
     zone_hosts: set | None = None                      # компьютеры выбранной зоны (фильтр «Зона ответственности»); None — без отбора
     hw_cfg: object | None = None                       # настройки контроля аппаратных ресурсов Linux-серверов (None — без оценки)
     source_ids: list | None = None                     # источники отчёта, не привязанного к одному (EOL); None — только source_id
+    records_for: Callable | None = None                # асинхронно: источник → (записи защиты, время получения); отчёт «Сводка инфраструктуры» (главная)
     org: dict = field(default_factory=dict)            # данные организации для шапки и подвала (настройки «Организация и оформление отчётов»)
 
 
@@ -534,6 +535,10 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
         from .quick_devices import build_devices  # noqa: PLC0415
 
         BUILDERS[kind] = build_devices
+    if kind == "quick_overview" and kind not in BUILDERS:
+        from .quick_overview import build_overview  # noqa: PLC0415
+
+        BUILDERS[kind] = build_overview
     if kind not in BUILDERS:
         raise KscError("kind", f"Неизвестный вид быстрого отчёта: {kind}")
     if params.get("detail") == "summary" and kind == "quick_eol":
@@ -545,7 +550,7 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
 
 # Таблицы, которые входят только в подробный отчёт: построчные перечни (обнаружения, компьютеры, устройства, события). В кратком остаются сводные таблицы и показатели.
 DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "software", "vulns"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
-                 "quick_eol": {"devices"}, "quick_devices": {"devices"}}
+                 "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}}
 
 
 def shape(kind: str, doc: dict, p: dict) -> dict:

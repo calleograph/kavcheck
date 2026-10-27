@@ -26,10 +26,12 @@ const AdminPage = lazy(() => import("./pages/AdminPage"));
 const EolPage = lazy(() => import("./pages/EolPage"));
 const DevicesPage = lazy(() => import("./pages/DevicesPage"));
 
-export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; /** выбрано «Все источники» (разделы, которые это умеют, показывают данные всех доступных источников) */ all: boolean; reloadSources: () => Promise<void> }
+export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; /** выбрано «Все источники» (разделы, которые это умеют, показывают данные всех доступных источников) */ all: boolean; reloadSources: () => Promise<void>; /** переключить источник или «Все источники» (id = "all") */ setScope: (id: string) => void }
 
 /** Разделы, работающие со всеми источниками сразу; остальные показывают выбранный источник. */
 export const ALL_PAGES = ["/eol", "/devices", "/reports", "/zones"];
+/** Страницы, для которых «Все источники» не требуют пояснения: главная и независимые от KSC разделы. */
+const scopeAware = (pathname: string) => pathname === "/" || pathname.startsWith("/pentest") || ALL_PAGES.some((p) => pathname.startsWith(p));
 
 const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/", label: "Главная", icon: "home", end: true },
@@ -45,7 +47,7 @@ const NAV: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/reports", label: "Отчёты", icon: "file" },
 ];
 export const ADMIN_TABS: { id: string; label: string }[] = [
-  { id: "system", label: "Состояние системы" }, { id: "sources", label: "Источники KSC" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" },
+  { id: "system", label: "Состояние системы" }, { id: "sources", label: "Источники KSC" }, { id: "licenses", label: "Лицензии" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" },
   { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "zcache", label: "Расчёт данных зон" }, { id: "eolcfg", label: "EOL и пользователи" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "updates", label: "Обновления" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" },
 ];
 
@@ -191,7 +193,7 @@ function Shell({ me, version, onLogout, children, sources, current, onPick, all,
               {adminOpen && ADMIN_TABS.map((t) => {
                 const active = inAdmin && tab === t.id;
                 return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>
-                  <Icon name={({ system: "gauge", sources: "database", users: "users", ldap: "key", general: "sliders", zones: "grid", zcache: "clock", eolcfg: "users", mail: "mail", org: "file", catalog: "package", vdb: "vault", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
+                  <Icon name={({ system: "gauge", sources: "database", licenses: "key", users: "users", ldap: "key", general: "sliders", zones: "grid", zcache: "clock", eolcfg: "users", mail: "mail", org: "file", catalog: "package", vdb: "vault", updates: "upload", journal: "journal", audit: "history" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
               })}
             </>}
           </div>
@@ -208,9 +210,9 @@ function Shell({ me, version, onLogout, children, sources, current, onPick, all,
           <UserMenu me={me} version={version} onLogout={onLogout} />
         </header>
         <main id="main" tabIndex={-1}>
-          {all && sources.length > 1 && !ALL_PAGES.some((p) => pathname.startsWith(p)) && !inAdmin && (
+          {all && sources.length > 1 && !scopeAware(pathname) && !inAdmin && (
             <p className="scope-note" role="status"><Icon name="info" size={15} />Выбрано «Все источники», но этот раздел работает с одним источником — показан «{current?.name}». <button type="button" className="link-btn" onClick={() => onAll(false)}>Работать с «{current?.name}»</button></p>)}
-          {all && sources.some((s) => s.last_check_ok === false) && ALL_PAGES.some((p) => pathname.startsWith(p)) && (
+          {all && sources.some((s) => s.last_check_ok === false) && scopeAware(pathname) && !pathname.startsWith("/pentest") && (
             <p className="scope-note warn" role="status"><Icon name="alert" size={15} />Источник «{sources.filter((s) => s.last_check_ok === false).map((s) => s.name).join("», «")}» недоступен или не прошёл проверку: показаны сохранённые данные, они могут быть неактуальными.</p>)}
           {children}
         </main>
@@ -256,12 +258,13 @@ export default function App() {
   if (me.must_enroll_totp) return <main className="forced-shell"><SecurityPage me={me} forced onLogout={logout} onEnrolled={() => api.me().then((m) => { setCsrf(m.csrf_token); setMe(m); })} /></main>;
   const current = sources.find((s) => s.id === currentId) ?? null;
   const allOn = all && sources.length > 1;
-  const ctx: Ctx = { me, sources, current, all: allOn, reloadSources };
+  const setScope = (id: string) => { if (id === "all") onAll(true); else { onAll(false); void pick(id); } };
+  const ctx: Ctx = { me, sources, current, all: allOn, reloadSources, setScope };
   return (
     <Shell me={me} version={version} onLogout={logout} sources={sources} current={current} onPick={pick} all={allOn} onAll={onAll}>
       <Suspense fallback={<div className="center"><span className="spin" role="status" aria-label="Загрузка" /></div>}>
         <Routes>
-          <Route path="/" element={<DashboardPage key={currentId} ctx={ctx} />} />
+          <Route path="/" element={<DashboardPage key={`${currentId}:${allOn}`} ctx={ctx} />} />
           <Route path="/software" element={<SoftwarePage key={currentId} ctx={ctx} />} />
           <Route path="/software/p/:key" element={<ProductPage key={currentId} ctx={ctx} />} />
           <Route path="/eol" element={<EolPage key={`${currentId}:${allOn}`} ctx={ctx} />} />

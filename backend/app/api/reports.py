@@ -116,7 +116,7 @@ async def list_jobs(source_only: bool = True, offset: int = Query(0, ge=0), limi
 @router.post("", status_code=201)
 async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     params = validate_params(body.kind, body.params)
-    if body.kind in ("quick_zone", "quick_eol", "quick_devices"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю
+    if body.kind in ("quick_zone", "quick_eol", "quick_devices", "quick_overview"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю
         from ..services.sources import visible_sources  # noqa: PLC0415
 
         ids = body.source_ids or [s.id for s in await visible_sources(db, su)]

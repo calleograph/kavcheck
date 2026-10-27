@@ -1057,3 +1057,52 @@ class DeviceUser(Base):
     seen_n: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     initial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)           # замечен при первом опросе источника: дата входа неизвестна, в «за 7 суток» не входит, пока не появился в списке вошедших
     __table_args__ = (Index("ix_dev_users_login", "login"), Index("ix_dev_users_host", "source_id", "host_id", "last_seen_at"))
+
+
+# ------------------------------------------------------------------------------------------------ главная: лицензии и ежедневные срезы
+class LicenseState(Base):
+    """Состояние чтения лицензий по источнику KSC (читает worker): когда, чем закончилось, какие таблицы и столбцы найдены (для диагностики администратором)."""
+    __tablename__ = "lic_state"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    polled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                         # последнее успешное чтение
+    error: Mapped[str | None] = mapped_column(Text)
+    error_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    requested_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    records_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    diag: Mapped[dict | None] = mapped_column(JSONType)                                       # найденные таблицы, сопоставление столбцов, пояснение, если лицензии не прочитаны
+
+
+class LicenseRecord(Base):
+    """Лицензия источника: из KSC (origin=ksc, заменяется при каждом чтении) либо внесена администратором (origin=manual). Полные ключи не хранятся: fp — HMAC-отпечаток серийного номера."""
+    __tablename__ = "lic_records"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    lic_key: Mapped[str] = mapped_column(String(40), primary_key=True)                        # отпечаток либо хэш (продукт, срок, лимит); для ручных — случайный
+    origin: Mapped[str] = mapped_column(String(6), nullable=False, default="ksc")             # ksc | manual
+    product: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    kind: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    limit_n: Mapped[int | None] = mapped_column(Integer)
+    used_n: Mapped[int | None] = mapped_column(Integer)                                       # пусто — KSC не сообщает использование
+    state: Mapped[str] = mapped_column(String(10), nullable=False, default="unknown")         # active | expiring | expired | unknown
+    fp: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    note: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class LicenseOverride(Base):
+    """Решение администратора: лицензия источника входит в общий пул (запись KSC не меняется). Лицензии с одним пулом считаются один раз: лимит — общий, использование — суммой."""
+    __tablename__ = "lic_overrides"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    lic_key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    pool: Mapped[str] = mapped_column(String(120), nullable=False)
+    set_by: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    set_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class OverviewDaily(Base):
+    """Ежедневный срез показателей главной по источнику (для графика динамики): одна строка в сутки, хранится ограниченное время."""
+    __tablename__ = "ov_daily"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    taken_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)

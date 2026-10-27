@@ -364,3 +364,25 @@ def test_eol_os_query_and_linux_distribution_from_packages():
     assert pk and all(n in {"base-files", "astra-version"} or n.endswith("-release") for lst in pk.values() for n, _v in lst)
     hits = [os_release(r["os_name"], r["os_major"], r["os_minor"], r["os_build"], platform=r["platform"], packages=pk.get(int(r["host_id"]))) for r in rows if C._needs_packages(r)]
     assert any(isinstance(h, OsHit) and h.product in ("debian", "ubuntu") for h in hits)
+
+
+def test_licenses_are_read_by_discovered_columns_without_key_data():
+    from app.ksc import licenses as KL  # noqa: PLC0415
+
+    got = asyncio.run(KL.read(SourceClient(params()), "test-secret"))
+    recs = sorted(got["records"], key=lambda r: r["limit_n"] or 0)
+    assert [(r["product"][:12], r["limit_n"], r["used_n"]) for r in recs] == [("Kaspersky Se", 20, None), ("Kaspersky En", 250, 6)]
+    assert recs[0]["state"] == "expiring" and recs[1]["state"] == "active" and all(r["fp"] for r in recs)
+    assert "keys" in got["diag"]["tables"] and "binKeyData" not in str(got["diag"]["mapped"])               # данные ключа не читаются
+    assert "0000-000001" not in str(got)                                                                     # серийный номер наружу не уходит
+
+
+def test_licenses_without_tables_report_diagnostics():
+    from app.ksc import licenses as KL  # noqa: PLC0415
+
+    class NoTables:
+        async def run(self, sql, params=None, *, max_rows=0):
+            return []
+
+    got = asyncio.run(KL.read(NoTables(), "s"))
+    assert got["records"] == [] and "нет таблиц" in got["diag"]["note"]

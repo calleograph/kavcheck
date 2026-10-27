@@ -12,6 +12,8 @@ LAYOUTS: dict[str, list[dict]] = {
     "quick_extvulns": [{"id": "hosts", "section": "summary", "title": "Потенциально затронутые компьютеры"}, {"id": "vulns", "section": "detail", "title": "Уязвимости"},
                        {"id": "programs", "section": "detail", "title": "Программы и версии"}, {"id": "rows", "section": "detail", "title": "Обнаружения (подробно)"}],
     "quick_devices": [{"id": "by_os", "section": "summary", "title": "Распределение по операционным системам"}, {"id": "devices", "section": "detail", "title": "Устройства (подробно)"}],
+    "quick_overview": [{"id": "sources", "section": "summary", "title": "Источники данных"}, {"id": "periods", "section": "summary", "title": "Активность по периодам"},
+                       {"id": "licenses", "section": "summary", "title": "Лицензии Kaspersky"}, {"id": "hosts", "section": "detail", "title": "Компьютеры (список)"}],
     "quick_eol": [{"id": "rows", "section": "summary", "title": "Программы и ОС с EOL"}, {"id": "devices", "section": "detail", "title": "Устройства"}],
     "quick_hosts": [{"id": "hosts_short", "table": "hosts", "section": "summary", "title": "Состояние компьютеров", "where": "",
                      "cols": ["name", "ip", "os", "online", "last_connected", "problems", "v_critical", "v_high", "v_warning", "software"]},
