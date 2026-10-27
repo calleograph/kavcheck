@@ -37,7 +37,8 @@ export function HostsDrawer({ title, lede, listKey, deps, fetchPage, onClose, ac
   const withVersions = showVersions ?? list.items.some((h) => vers(h).length > 0);
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } };
   const th = (k: keyof NonNullable<typeof sortKeys>, label: string, cls = "") => (sortKeys?.[k] ? <SortTh k={sortKeys[k]!} label={label} sort={sort} desc={desc} onSort={onSort} className={cls} /> : <th className={cls}>{label}</th>);
-  const cols = 5 + (withVersions ? 1 : 0) + (multiSource ? 1 : 0);
+  const hasState = list.items.some((h) => h.online !== undefined || h.active !== undefined);        // столбец «Состояние» только если источник списка отдаёт признак сети или активности
+  const cols = 4 + (hasState ? 1 : 0) + (withVersions ? 1 : 0) + (multiSource ? 1 : 0);
   const cardLink = (h: DrawerHost) => (h.source_id ? `/devices?card=${h.source_id}:${h.host_id}` : `/hosts/${h.host_id}`);
   return (
     <Modal side title={title} lede={lede} onClose={onClose} scrollRef={scroll}>
@@ -49,12 +50,12 @@ export function HostsDrawer({ title, lede, listKey, deps, fetchPage, onClose, ac
       {list.error && list.initial && <div className="alert error" role="alert"><div className="alert-body">{list.error}</div></div>}
       {list.initial ? <SkelRows rows={8} cols={5} /> : !list.items.length ? <Empty icon="monitor" title="Устройств нет">{applied ? "По этому запросу в списке ничего не найдено." : "По этим условиям устройств не найдено."}</Empty> : (
         <table className="table compact virt">
-          <thead><tr>{th("name", "Компьютер")}<th>Состояние</th>{withVersions && <th>Установленная версия</th>}{th("os", "ОС", "hide-sm")}{th("group", multiSource ? "Группа и зоны" : "Группа KSC", "hide-sm")}
+          <thead><tr>{th("name", "Компьютер")}{hasState && <th>Состояние</th>}{withVersions && <th>Установленная версия</th>}{th("os", "ОС", "hide-sm")}{th("group", multiSource ? "Группа и зоны" : "Группа KSC", "hide-sm")}
             {multiSource && <th className="hide-sm">Источник</th>}{th("last_connected", "Подключение к KSC")}</tr></thead>
           <tbody>
             <VirtualRows list={list} colSpan={cols} estimate={44} scrollEl={scroll} row={(h) => (
               <tr><td><Link to={cardLink(h)} className="strong-link">{h.name}</Link><span className="sub mono nowrap">{h.ip || "—"}</span></td>
-                <td>{h.online !== undefined ? <OnlineBadge online={h.online} seen={h.last_visible ?? null} /> : <span className="muted small">{h.active === false ? "давно не подключался" : h.active ? "активен" : "—"}</span>}</td>
+                {hasState && <td>{h.online !== undefined ? <OnlineBadge online={h.online} seen={h.last_visible ?? null} /> : <span className="muted small">{h.active === false ? "давно не подключался" : h.active ? "активен" : "—"}</span>}</td>}
                 {withVersions && <td className="mono small">{vers(h).map((v, i) => <span key={i} className="block" title={v.app_name}>{v.app_version}</span>)}</td>}
                 <td className="small hide-sm">{h.os || "—"}</td><td className="small hide-sm">{[h.group, ...(h.zones ?? [])].filter(Boolean).join(" · ") || "—"}</td>
                 {multiSource && <td className="small hide-sm">{h.source ?? ""}</td>}

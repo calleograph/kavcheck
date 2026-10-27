@@ -12,7 +12,7 @@ import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components
 import { useToast } from "../components/Toast";
 import { CVSS_RANGES, CvssCell, Kev, LevelBadge, StatusBadge } from "../components/VdbBits";
 import { FilterBar } from "../components/FilterBar";
-import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
+import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
 
 type Tab = "search" | "mine" | "sources";
@@ -338,8 +338,8 @@ function PlanView({ ctx, filters, canEdit, onOpen }: { ctx: Ctx; filters: { newO
   const setClass = async (r: VdbPlanRow, c: VdbCategory | "") => { try { await api.vdb.setClass(r.product_key, c); show(c ? "Категория назначена" : "Возвращено автоматическое определение"); list.reload(); } catch (e) { show((e as ApiError).message, "error"); } };
   return (
     <>
-      <div className="toolbar"><div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Продукт в плане (можно с *)" aria-label="Поиск продукта" /><MaskHint /></div>
-        <span className="muted small">{extra?.summary ? `${num(extra.summary.products)} ${plural(extra.summary.products, "продукт", "продукта", "продуктов")} · ${num(extra.summary.vulns)} уникальных уязвимостей` : ""}</span></div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Продукт в плане (можно с *)", label: "Поиск продукта" }} chips={q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []} onReset={() => setQ("")}
+        count={extra?.summary ? { n: extra.summary.products, noun: ["продукт", "продукта", "продуктов"], hint: <span className="muted"> · {num(extra.summary.vulns)} уникальных уязвимостей</span> } : undefined} />
       <p className="muted small">Что обновить в первую очередь: одна строка — один продукт каталога. «Компьютеров» — по каталогу, до проверки: компьютер с несколькими затронутыми версиями считается по каждой. Точный список компьютеров — «Проверить» у уязвимости.</p>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>

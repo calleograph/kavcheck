@@ -251,6 +251,9 @@ async def test_report_constructor_detail_columns_finding_context_and_templates(c
     short = await preview({"statuses": ["eol", "extended", "upcoming", "undetermined"], "detail": "summary"})
     assert [t["id"] for t in short["doc"]["tables"]] == ["rows", "summary"] and short["total"] == full["total"]       # краткий: сводные таблицы без построчного списка устройств
     assert any("Краткий отчёт" in n for n in short["doc"]["notes"])
+    m = lambda d, k: next(x["value"] for x in d["doc"]["metrics"] if x["key"] == k)  # noqa: E731
+    assert m(short, "hosts") == m(full, "hosts") > 0                                                # краткий отчёт считает устройства агрегатом: число совпадает с подробным
+    assert [lv["value"] for lv in short["doc"]["severity"]["levels"]] == [lv["value"] for lv in full["doc"]["severity"]["levels"]]
     cols = await preview({"statuses": ["eol"], "columns": ["title", "hosts", "nonexistent"]})
     assert [c["key"] for c in cols["columns"]] == ["title", "hosts"] and set(cols["items"][0]) >= {"title", "hosts", "condition"}      # в таблицу попадают выбранные, строки остаются полными
     one = await preview({"statuses": ["eol"], "finding": {"source_id": str(sid), "kind": "os", "subject": "Microsoft Windows Server 2008 R2 Standard", "version": "6.1.7601"}})

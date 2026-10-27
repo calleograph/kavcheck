@@ -11,7 +11,7 @@ import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { ZoneField } from "../components/ZoneBits";
-import { Empty, MaskHint, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
+import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
 
 type Tab = "infra" | "products" | "mappings";
@@ -182,12 +182,16 @@ function ProductsView({ ctx }: { ctx: Ctx }) {
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } };
   return (
     <>
-      <div className="toolbar">
-        <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Продукт: windows, ubuntu, *sql*" aria-label="Поиск продукта" /><MaskHint /></div>
-        <Segmented<string> label="Состояние" value={state} onChange={setState} options={[["", "Все"], ["installed", "Есть у нас"], ["supported", "Поддерживаются"], ["eol", "Все ветки завершены"]]} />
-        <label className="field">Категория<select value={cat} onChange={(e) => setCat(e.target.value)}><option value="">Все</option>{cats.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>
-        <label className="field">Производитель<input value={vendor} onChange={(e) => setVendor(e.target.value.trim())} placeholder="microsoft, canonical…" className="w-md" /></label>
-      </div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Продукт: windows, ubuntu, *sql*", label: "Поиск продукта" }}
+        primary={<Segmented<string> label="Состояние" value={state} onChange={setState} options={[["", "Все"], ["installed", "Есть у нас"], ["supported", "Поддерживаются"], ["eol", "Все ветки завершены"]]} />}
+        more={<>
+          <label className="field">Категория<select value={cat} onChange={(e) => setCat(e.target.value)}><option value="">Все</option>{cats.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>
+          <label className="field">Производитель<input value={vendor} onChange={(e) => setVendor(e.target.value.trim())} placeholder="microsoft, canonical…" /></label>
+        </>}
+        moreActive={[cat, vendor].filter(Boolean).length}
+        chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(state ? [{ id: "st", label: `Состояние: ${{ installed: "есть у нас", supported: "поддерживаются", eol: "все ветки завершены" }[state] ?? state}`, onRemove: () => setState("") }] : []),
+          ...(cat ? [{ id: "cat", label: `Категория: ${cat}`, onRemove: () => setCat("") }] : []), ...(vendor ? [{ id: "vnd", label: `Производитель: ${vendor}`, onRemove: () => setVendor("") }] : [])]}
+        onReset={() => { setQ(""); setState(""); setCat(""); setVendor(""); }} count={{ n: list.initial ? null : list.total, noun: ["продукт", "продукта", "продуктов"] }} />
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={5} /> : (
           <table className="table"><thead><tr><SortTh k="name" label="Продукт" sort={sort} desc={desc} onSort={onSort} /><SortTh k="category" label="Категория" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
@@ -246,7 +250,7 @@ function MappingsView({ ctx, onChanged }: { ctx: Ctx; onChanged: () => void }) {
           <td className="small hide-sm">{m.created_by} · {fmtDate(m.created_at)}</td><td className="actions">{canEdit && <button type="button" className="btn mini ghost" onClick={() => del(m)}>Удалить</button>}</td></tr>)}
           {maps && !maps.length && <tr><td colSpan={4} className="muted">Решений пока нет.</td></tr>}</tbody></table></div>
       <h3 className="h3">Программы без соответствия</h3>
-      <div className="toolbar"><div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Название или производитель" aria-label="Поиск программы" /><MaskHint /></div></div>
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Название или производитель", label: "Поиск программы" }} chips={q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []} onReset={() => setQ("")} />
       {un && un.ambiguous.length > 0 && <>
         <p className="muted small">Спорные — подходит несколько продуктов endoflife.date, EOL не присвоен до вашего решения:</p>
         <div className="table-scroll"><table className="table compact"><tbody>{un.ambiguous.map((a) => <tr key={a.catalog_key}><td><strong>{a.name}</strong><span className="sub small">{a.publisher}</span></td><td className="small">{a.reason}</td>

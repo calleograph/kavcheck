@@ -64,16 +64,18 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         est = sum(r["hosts"] if p.get("include_inactive") else r["hosts_active"] for r in rows)         # строк в таблице устройств (устройство × проблема)
         if p.get("devices", True) and est > ctx.max_rows:
             raise KscError("too_many_rows", f"Строк в таблице устройств около {est}, предел отчёта — {ctx.max_rows}: отключите таблицу устройств, выберите зону, состояние или критичность либо повысьте предел в «Администрирование → Общие настройки»")
+        # устройства находок + данные подготовленных зон (только нужные поля, без загрузки всех компьютеров источника)
+        J = (EolHost.__table__.join(EolFinding.__table__, and_(EolFinding.source_id == EolHost.source_id, EolFinding.kind == EolHost.kind, EolFinding.subject == EolHost.subject, EolFinding.version == EolHost.version))
+             .outerjoin(ZcSource.__table__, and_(ZcSource.source_id == EolHost.source_id, ZcSource.gen > 0))
+             .outerjoin(ZcHost.__table__, and_(ZcHost.source_id == EolHost.source_id, ZcHost.host_id == EolHost.host_id, ZcHost.gen == ZcSource.gen)))
+        dcond = list(cond)
+        if zone:
+            J = J.join(ZcHostZone.__table__, and_(ZcHostZone.source_id == EolHost.source_id, ZcHostZone.host_id == EolHost.host_id, ZcHostZone.gen == ZcSource.gen, ZcHostZone.zone_id == zone))
+        if not p.get("include_inactive"):
+            dcond.append(or_(ZcHost.active.is_(True), ZcHost.host_id.is_(None)))
+        agg_hosts: tuple[int, dict[int, int]] | None = None
         if p.get("devices", True):
-            # одним потоковым запросом: устройства находок + данные подготовленных зон (только нужные поля, без загрузки всех компьютеров источника)
-            J = (EolHost.__table__.join(EolFinding.__table__, and_(EolFinding.source_id == EolHost.source_id, EolFinding.kind == EolHost.kind, EolFinding.subject == EolHost.subject, EolFinding.version == EolHost.version))
-                 .outerjoin(ZcSource.__table__, and_(ZcSource.source_id == EolHost.source_id, ZcSource.gen > 0))
-                 .outerjoin(ZcHost.__table__, and_(ZcHost.source_id == EolHost.source_id, ZcHost.host_id == EolHost.host_id, ZcHost.gen == ZcSource.gen)))
-            dcond = list(cond)
-            if zone:
-                J = J.join(ZcHostZone.__table__, and_(ZcHostZone.source_id == EolHost.source_id, ZcHostZone.host_id == EolHost.host_id, ZcHostZone.gen == ZcSource.gen, ZcHostZone.zone_id == zone))
-            if not p.get("include_inactive"):
-                dcond.append(or_(ZcHost.active.is_(True), ZcHost.host_id.is_(None)))
+            # одним потоковым запросом
             q = (select(EolHost.source_id, EolHost.host_id, EolFinding.severity, EolFinding.kind, EolFinding.title, EolFinding.version, EolFinding.status, EolFinding.eol_from, ZcHost.host_id.label("zh"), ZcHost.name,
                         ZcHost.os, ZcHost.last_connected, ZcHost.active, ZcHost.data["ip"].as_string().label("ip"), ZcHost.data["group"].as_string().label("grp"), ZcHost.data["zones"].as_json().label("zones"))
                  .select_from(J).where(*dcond).order_by(R.SEV_ORDER.desc(), func.lower(ZcHost.name), EolFinding.title, EolHost.host_id))
@@ -83,13 +85,20 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                                 "os": (r.os if known else "") or "", "group": r.grp or "", "zones": ", ".join(str(z) for z in (r.zones or [])), "last_connected": r.last_connected if known else None,
                                 "active": ("да" if r.active else "нет") if known else "нет данных", "kind_ru": R.KIND_RU.get(r.kind, r.kind), "title": r.title, "version": r.version,
                                 "status_ru": R.STATUS_RU.get(r.status, r.status), "eol_from": r.eol_from, "host_key": (str(r.source_id), hid)})
+        else:                                           # краткий отчёт: число устройств и распределение по наихудшей критичности — агрегатом в самой базе, без построчного списка
+            sub = select(EolHost.source_id, EolHost.host_id, func.max(R.SEV_ORDER).label("w")).select_from(J).where(*dcond).group_by(EolHost.source_id, EolHost.host_id).subquery()
+            by_w = {int(w): int(n) for w, n in (await db.execute(select(sub.c.w, func.count()).group_by(sub.c.w))).all()}
+            agg_hosts = (sum(by_w.values()), by_w)
     rank = {"critical": 3, "high": 2, "warning": 1}
     worst: dict[tuple, int] = {}                                              # у устройства учитывается наивысшая критичность: сумма по уровням равна числу устройств
     for r in devices:
         worst[r["host_key"]] = max(worst.get(r["host_key"], 0), rank.get(r["severity"], 0))
     level = {k: sum(1 for v in worst.values() if v == rank[k]) for k in rank}
     uniq = {r.pop("host_key") for r in devices}
-    metrics = [metric("hosts", "Устройств с проблемой поддержки", len(uniq), "устройство с несколькими проблемами считается один раз", "danger" if uniq else "ok"),
+    n_hosts = agg_hosts[0] if agg_hosts else len(uniq)
+    if agg_hosts:
+        level = {k: agg_hosts[1].get(rank[k], 0) for k in rank}
+    metrics = [metric("hosts", "Устройств с проблемой поддержки", n_hosts, "устройство с несколькими проблемами считается один раз", "danger" if n_hosts else "ok"),
                metric("items", "Программ и ОС (версий)", len(rows)), metric("eol", "Стандартная поддержка закончилась", sum(1 for r in rows if r["status"] == "eol"), "", "danger" if any(r["status"] == "eol" for r in rows) else "ok"),
                metric("extended", "Только расширенная (платная) поддержка", sum(1 for r in rows if r["status"] == "extended"), "не подтверждено: зависит от подписки или договора"),
                metric("upcoming", "Скоро заканчивается", sum(1 for r in rows if r["status"] == "upcoming"))]
