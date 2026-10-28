@@ -287,7 +287,7 @@ async def test_scope_permissions_exclusions_and_validation(client, app, fake):  
     await login(client, "admin", "Admin-Passw0rd-123")
     pv = (await client.post("/api/v1/hunt/preview", json={"cves": [CVE], "scope": {"kind": "custom", "text": "192.0.2.10-12", "exclude": "192.0.2.11"}})).json()
     assert pv["targets"] == 2 and pv["criteria"] == 1 and pv["ports"] == [80, 443, 8080, 8443] and "Выбрано 2 адресов" in pv["text"] and "4 TCP-портов" in pv["text"]
-    out = await client.post("/api/v1/hunt/jobs", json={"cves": [CVE], "mode": "network", "scope": {"kind": "custom", "text": "8.8.8.8"}, "confirm_scope": True})
+    out = await client.post("/api/v1/hunt/jobs", json={"cves": [CVE], "mode": "network", "scope": {"kind": "custom", "text": "198.51.100.7"}, "confirm_scope": True})
     assert out.status_code == 422                                                                                 # вне области разрешений
     assert (await client.post("/api/v1/hunt/jobs", json={"cves": [CVE], "mode": "network", "scope": {"kind": "custom", "text": "192.0.2.10"}})).status_code == 422       # без подтверждения области
     assert (await client.post("/api/v1/hunt/jobs", json={"cves": [CVE], "mode": "network", "ports": "99999", "scope": {"kind": "custom", "text": "192.0.2.10"}, "confirm_scope": True})).status_code == 422
