@@ -32,7 +32,7 @@ async def finalize(db: AsyncSession, job_id: uuid.UUID, logic: str = "any", n_cr
         c = cands.get(r.ip) or []
         if len(c) == 1:
             d = c[0]
-            r.source_id, r.host_id, r.host_name, r.os, r.last_connected, r.group_name = d["source_id"], d["host_id"], d["name"], d["os"], d["last_connected"], d["group"]
+            r.source_id, r.host_id, r.host_name, r.os, r.last_connected, r.group_name = d["source_id"], d["host_id"], (d["name"] or "")[:300], (d["os"] or "")[:200], d["last_connected"], (d["group"] or "")[:300]
         elif len(c) > 1:
             r.ambiguous = True
             r.evidence = [*r.evidence, ev("ksc", f"Адрес совпал с несколькими устройствами KSC ({len(c)}): " + "; ".join(f"{x['name']} ({x['source']})" for x in c[:5]) + ". Устройства разных источников не объединяются.")]

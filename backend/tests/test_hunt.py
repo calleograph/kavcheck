@@ -324,6 +324,9 @@ async def test_report_default_statuses_columns_order_and_disclaimer(client, app,
     r = (await hprev(client, j)).json()
     assert [x["ip"] for x in r["items"]] == ["192.0.2.10"] and r["total"] == 1                              # по умолчанию «Подтверждено» и «Вероятно»; «Требует проверки» не включено
     cols = r["doc"]["columns_all"]
+    assert [c["title"] for c in r["doc"]["tables"][0]["columns"]] == ["Имя компьютера", "Пользователь / владелец", "Зона ответственности", "IP-адрес", "Продукт", "Обнаруженная версия", "Результат", "Основание обнаружения"]      # по умолчанию — 8 обязательных
+    extra = (await hprev(client, j, columns=["host", "ip", "port", "os"])).json()["doc"]["tables"][0]["columns"]
+    assert [c["key"] for c in extra] == ["host", "ip", "port", "os"] and len(cols) > 8                       # остальное — по выбору
     assert [c["key"] for c in cols[:8]] == ["host", "user", "zone", "ip", "product", "version", "status_ru", "evidence"] and cols[0]["title"] == "Имя компьютера"
     assert any("не доказывает отсутствие" in n for n in r["doc"]["notes"])
     cond = {c["label"]: c["text"] for c in r["doc"]["conditions"]}

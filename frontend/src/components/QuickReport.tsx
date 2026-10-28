@@ -145,7 +145,7 @@ function Builder({ kind, params, columnsAll, onChange, canSave }: { kind: string
 export function QuickReportPanel({ kind, params: base, title, lede, options = { scope: true }, activityDays, canReport, sourceIds = [], onClose }: {
   kind: QuickKind | "version_audit"; params: Record<string, unknown>; title: string; lede?: string; options?: QuickScopeOpts; activityDays: number; canReport: boolean; sourceIds?: string[]; onClose: () => void;
 }) {
-  const [extra, setExtra] = useState<Record<string, unknown>>(() => (options.levels ? { levels: defaultLevels(base) } : {}));
+  const [extra, setExtra] = useState<Record<string, unknown>>(() => (options.levels ? { levels: defaultLevels(base) } : options.hunt ? { columns: ["host", "user", "zone", "ip", "product", "version", "status_ru", "evidence"] } : {}));
   const params = useMemo(() => ({ ...base, ...extra }), [base, extra]);
   const key = JSON.stringify(params);
   const [data, setData] = useState<QuickPreview | null>(null);

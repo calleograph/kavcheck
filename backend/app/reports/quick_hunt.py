@@ -23,6 +23,7 @@ MAIN_COLS = [col("host", "Имя компьютера"), col("user", "Польз
 COV_COLS = [col("ip", "IP-адрес", "mono"), col("state_ru", "Итог проверки"), col("ports", "Открытых портов", "num"), col("error", "Причина")]
 STATE_RU = {"done": "проверен", "down": "не отвечает", "error": "не удалось проверить", "pending": "не проверялся", "up": "не завершён", "ports": "не завершён", "svc": "не завершён", "chk": "не завершён"}
 MODE_RU = {"ksc": "по данным KSC", "network": "сетевая проверка", "combined": "комбинированный (KSC и сеть)"}
+DEFAULT_COLS = ["host", "user", "zone", "ip", "product", "version", "status_ru", "evidence"]       # обязательный состав отчёта; остальное — по выбору столбцов (при нескольких критериях добавляется «Критерий»)
 DISCLAIMER = "Отсутствие совпадения при сетевом сканировании не доказывает отсутствие уязвимого программного обеспечения: продукт может не раскрывать версию, работать без открытого порта или за другим сервисом."
 
 
@@ -78,12 +79,15 @@ async def build_hunt(client: SourceClient | None, p: dict, ctx: Ctx) -> dict:
                metric("confirmed", "Подтверждено", cnt.get("confirmed", 0)), metric("probable", "Вероятно уязвимы", cnt.get("probable", 0)),
                metric("needs_check", "Требуют проверки (в задании)", unconfirmed, "не входят в отчёт, если статус не выбран", "warn" if unconfirmed else ""),
                metric("incomplete", "Не удалось проверить / неполные проверки", incomplete, "", "warn" if incomplete else "ok")]
-    tables = [{"id": "hits", "title": "Затронутые компьютеры", "columns": MAIN_COLS, "rows": out, "note": "Одна строка — компьютер и критерий. Сначала подтверждённые, затем вероятные; внутри — по имени компьютера."}]
+    multi = len(h.get("criteria", [])) > 1
+    keys = [k for k in (p.get("columns") or []) if any(c["key"] == k for c in MAIN_COLS)] or [*DEFAULT_COLS, *(["criterion"] if multi else [])]
+    shown = [next(c for c in MAIN_COLS if c["key"] == k) for k in keys]
+    tables = [{"id": "hits", "title": "Затронутые компьютеры", "columns": shown, "rows": out, "note": "Одна строка — компьютер и критерий. Сначала подтверждённые, затем вероятные; внутри — по имени компьютера."}]
     if p.get("coverage"):
         tables.append({"id": "coverage", "title": "Журнал охвата проверки", "columns": COV_COLS, "rows": [{"ip": ip, "state_ru": STATE_RU.get(st, st), "ports": n, "error": e or ""} for ip, st, n, e in hosts],
                        "note": "Все адреса задания, включая не затронутые: «проверен» означает, что сканер просмотрел выбранные порты."})
     notes = [DISCLAIMER, "Статус «Вероятно» — продукт и версия соответствуют условию, но дополнительные условия уязвимости не подтверждены. «Подтверждено» — только если безопасная проверка подтвердила проблему."]
     if len(rows) >= LIMIT:
         notes.append(f"В отчёт включены первые {LIMIT} записей.")
-    return {"title": "Результаты целевого поиска уязвимостей", "subtitle": job.title, "conditions": cond, "metrics": metrics, "severity": None, "notes": notes, "tables": tables, "hunt": True,
+    return {"title": "Результаты целевого поиска уязвимостей", "subtitle": job.title, "conditions": cond, "metrics": metrics, "severity": None, "notes": notes, "tables": tables, "hunt": True, "columns_all": [{"key": c["key"], "title": c["title"]} for c in MAIN_COLS],
             "hunt_statuses": statuses, "hunt_filters": [{"key": k, "label": RS.STATUS_RU[k], "n": cnt.get(k, 0)} for k in statuses]}

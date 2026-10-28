@@ -186,3 +186,12 @@ async def test_api_admin_only_download_validation_and_run(client, app, tmp_path)
         assert (await client.get(f"/api/v1/admin/logs/archives/{f.name}")).status_code == 403
     finally:
         f.unlink(missing_ok=True)
+
+
+async def test_unwritable_archive_directory_keeps_rows_and_warns(app, tmp_path):
+    await seed(app)
+    blocker = tmp_path / "_logs"
+    blocker.write_text("файл вместо каталога: создать архив нельзя")
+    rep = await R.run(app.state.session_maker, cfg(journal_days=30, journal_archive=True, audit_days=365), str(tmp_path))
+    assert await count(app, EventLog) == 38 and await count(app, AuditLog) == 10                              # записи не удалены, пока их нельзя сохранить в архив
+    assert any("архив недоступен" in w for w in rep["warnings"])

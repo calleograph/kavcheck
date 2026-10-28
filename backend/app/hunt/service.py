@@ -152,7 +152,7 @@ async def _ksc_stage(db: AsyncSession, app, job: PtJob, crits: list[dict], hunt:
             for r in rows:
                 st, note = K.status_of(c, r)
                 at = info.get("fetched_at") or utcnow()
-                db.add(HuntHit(job_id=job.id, crit_key=c["key"], vuln_key=c.get("cve", ""), ip=r["ip"] or "", source_id=src.id, host_id=int(r["host_id"]), host_name=r["name"], os=r["os"] or "", group_name=r["group"] or "",
+                db.add(HuntHit(job_id=job.id, crit_key=c["key"], vuln_key=c.get("cve", ""), ip=r["ip"] or "", source_id=src.id, host_id=int(r["host_id"]), host_name=(r["name"] or "")[:300], os=(r["os"] or "")[:200], group_name=(r["group"] or "")[:300],
                                last_connected=r["last_connected"], product=r["app_name"][:200], version=(r["app_version"] or "")[:120], status=st, basis="ksc", data_at=at,
                                evidence=[RS.ev("ksc", f"KSC «{src.name}»: установленный продукт {r['app_name']}, версия {r['app_version'] or 'не указана'}, сведения получены {at:%d.%m.%Y}" + (f". {note}" if note else ""), at)]))
             total += len(rows)

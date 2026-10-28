@@ -80,7 +80,7 @@ export default function Results({ jobId, canReport, admin, activityDays, current
                 {cols.has("host") && <td><b>{r.host_name || <span className="muted">{r.ip ? "нет в KSC" : "—"}</span>}</b>{r.ambiguous && <span className="badge" title="Адрес совпал с несколькими устройствами KSC">неоднозначно</span>}</td>}
                 {cols.has("user") && <td className={r.user === "Не определён" ? "muted" : ""}>{r.user}</td>}
                 {cols.has("zone") && <td className={r.zone === "Не назначена" ? "muted" : ""}>{r.zone}</td>}
-                {cols.has("ip") && <td className="mono small">{r.ip}{r.port ? `:${r.port}` : ""}</td>}
+                {cols.has("ip") && <td className="mono small nowrap">{r.ip}{r.port ? `:${r.port}` : ""}</td>}
                 {cols.has("product") && <td>{r.product || "—"}{r.vuln_key && job.hunt.criteria.length > 1 && <span className="sub mono small">{r.vuln_key}</span>}</td>}
                 {cols.has("version") && <td className="mono small">{r.version || "не определена"}{r.diff && <span className="badge warn" title="Версии в KSC и по сети различаются">различие</span>}</td>}
                 {cols.has("status") && <td><span className={`badge ${ST_TONE[r.status]}`}>{r.status_ru}</span></td>}

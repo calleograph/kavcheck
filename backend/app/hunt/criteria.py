@@ -101,7 +101,7 @@ async def resolve_cve(db: AsyncSession, cve: str) -> dict:
     kb_key = keyc.most_common(1)[0][0] if keyc else None
     rel = [a for a in cpe if (KB.kb_for_cpe(a.vendor_key, a.product_key) or KB.kb_for_text(a.product)) == kb_key] if kb_key else cpe
     ranges = [_range_row(a) for a in rel][:200]
-    title = (v.title if v and v.title else cve)
+    title = ((v.title if v and v.title else cve) or cve)[:140]
     warns: list[str] = []
     checks = await checks_for(db, cve)
     if not v and not aff:
@@ -115,7 +115,7 @@ async def resolve_cve(db: AsyncSession, cve: str) -> dict:
     if kb_key and KB.KB[kb_key]["note"]:
         warns.append(KB.KB[kb_key]["note"])
     prod = KB.KB[kb_key]["title"] if kb_key else (rel[0].product if rel else "")
-    return {"key": cve, "kind": "cve", "title": f"{cve}: {title}"[:300], "cve": cve, "kb": kb_key or "", "product": prod, "mode": "ranges", "ranges": ranges, "versions": [], "catalog": KB.KB[kb_key]["catalog"] if kb_key else ([f"{prod}*"] if prod else []), "ports": await suggest_ports(db, kb_key, KB.KB[kb_key]["aliases"] if kb_key else []),
+    return {"key": cve, "kind": "cve", "title": f"{cve}: {title}"[:300], "cve": cve, "kb": kb_key or "", "product": prod, "mode": "ranges", "ranges": ranges, "versions": [], "catalog": KB.KB[kb_key]["catalog"] if kb_key else ([prod] if prod else []), "ports": await suggest_ports(db, kb_key, KB.KB[kb_key]["aliases"] if kb_key else []),
             "checks": checks, "warnings": warns, "known": bool(v), "severity": v.sev_rank if v else 0, "score": v.score if v else None, "exploited": bool(v and v.exploited)}
 
 
@@ -132,7 +132,7 @@ async def resolve_product(db: AsyncSession, spec: dict) -> dict:
     c: dict = {"key": f"prod:{kb_key or KB.norm(name)}"[:80], "kind": "product", "title": name or (KB.KB[kb_key]["title"] if kb_key else ""), "cve": "", "kb": kb_key or "", "product": name, "mode": mode,
                "versions": [v.strip() for v in spec.get("versions", []) if str(v).strip()][:50], "v_min": (spec.get("v_min") or "").strip(), "v_max": (spec.get("v_max") or "").strip(), "below": (spec.get("below") or "").strip(),
                "above": (spec.get("above") or "").strip(), "only_vulnerable": bool(spec.get("only_vulnerable")), "only_eol": bool(spec.get("only_eol")), "ranges": [], "checks": [], "warnings": [],
-               "catalog": [cat.name + "*"] if cat is not None else (KB.KB[kb_key]["catalog"] if kb_key else ([name + "*"] if name else []))}
+               "catalog": [cat.name] if cat is not None else (KB.KB[kb_key]["catalog"] if kb_key else ([name] if name else []))}
     if mode == "exact" and not c["versions"] or mode == "range" and not (c["v_min"] or c["v_max"]) or mode == "below" and not c["below"] or mode == "above" and not c["above"]:
         raise ValueError(f"Для условия «{mode}» не указана версия")
     if not (name or kb_key):

@@ -6,23 +6,23 @@ import re
 
 WEB = [80, 443, 8080, 8443]
 KB: dict[str, dict] = {
-    "php": {"title": "PHP", "aliases": ["php"], "cpe": [("php", "php")], "ports": WEB, "catalog": ["php*"], "rx": [r"PHP/([0-9][\w.+~-]*)"], "presence": [r"X-Powered-By:\s*PHP\b", r"PHPSESSID="],
+    "php": {"title": "PHP", "aliases": ["php"], "cpe": [("php", "php")], "ports": WEB, "catalog": ["php"], "rx": [r"PHP/([0-9][\w.+~-]*)"], "presence": [r"X-Powered-By:\s*PHP\b", r"PHPSESSID="],
             "note": "PHP обычно работает за Apache или nginx и может не раскрывать версию в ответах сервера: сетевая проверка не даёт полного охвата, используйте и данные KSC."},
-    "apache": {"title": "Apache HTTP Server", "aliases": ["apache httpd", "apache http server", "httpd"], "cpe": [("apache", "http_server")], "ports": WEB, "catalog": ["apache http server*", "apache httpd*"],
+    "apache": {"title": "Apache HTTP Server", "aliases": ["apache httpd", "apache http server", "httpd"], "cpe": [("apache", "http_server")], "ports": WEB, "catalog": ["apache http server", "apache httpd"],
                "rx": [r"Apache/([0-9][\w.+~-]*)"], "note": "Версию может скрывать настройка ServerTokens."},
-    "nginx": {"title": "nginx", "aliases": ["nginx"], "cpe": [("nginx", "nginx"), ("f5", "nginx")], "ports": WEB, "catalog": ["nginx*"], "rx": [r"nginx/([0-9][\w.+~-]*)"],
+    "nginx": {"title": "nginx", "aliases": ["nginx"], "cpe": [("nginx", "nginx"), ("f5", "nginx")], "ports": WEB, "catalog": ["nginx"], "rx": [r"nginx/([0-9][\w.+~-]*)"],
               "note": "Версию может скрывать server_tokens off."},
-    "openssh": {"title": "OpenSSH", "aliases": ["openssh"], "cpe": [("openbsd", "openssh")], "ports": [22], "catalog": ["openssh*"], "rx": [r"OpenSSH[_ ]([0-9][\w.+~-]*)"],
-                "note": "Для CVE клиентской части OpenSSH сетевая проверка сервера неприменима."},
-    "redis": {"title": "Redis", "aliases": ["redis key-value store", "redis"], "cpe": [("redislabs", "redis"), ("redis", "redis")], "ports": [6379], "catalog": ["redis*"], "rx": [],
+    "openssh": {"title": "OpenSSH", "aliases": ["openssh"], "cpe": [("openbsd", "openssh")], "ports": [22], "catalog": ["openssh"], "rx": [r"OpenSSH[_ ]([0-9][\w.+~-]*)"],
+                "note": "Часть CVE OpenSSH относится к клиенту (ssh, scp) и по сети на сервере не проверяется: у таких CVE результат — «Требует проверки» или совпадений нет."},
+    "redis": {"title": "Redis", "aliases": ["redis key-value store", "redis"], "cpe": [("redislabs", "redis"), ("redis", "redis")], "ports": [6379], "catalog": ["redis"], "rx": [],
               "note": "Версия сообщается только при доступе к серверу без аутентификации."},
-    "mssql": {"title": "Microsoft SQL Server", "aliases": ["microsoft sql server", "ms-sql"], "cpe": [("microsoft", "sql_server")], "ports": [1433], "catalog": ["microsoft sql server*"], "rx": [],
+    "mssql": {"title": "Microsoft SQL Server", "aliases": ["microsoft sql server", "ms-sql"], "cpe": [("microsoft", "sql_server")], "ports": [1433], "catalog": ["microsoft sql server"], "rx": [],
               "note": "Версия определяется по ответу службы SQL Server; порт может быть нестандартным (динамические порты экземпляров)."},
-    "bitrix": {"title": "1С-Битрикс", "aliases": ["bitrix", "1c-bitrix", "1с-битрикс"], "cpe": [("1c-bitrix", "1c-bitrix")], "ports": WEB, "catalog": ["1с-битрикс*", "1c-bitrix*", "bitrix*"],
+    "bitrix": {"title": "1С-Битрикс", "aliases": ["bitrix", "1c-bitrix", "1с-битрикс"], "cpe": [("1c-bitrix", "1c-bitrix")], "ports": WEB, "catalog": ["1с-битрикс", "1c-bitrix", "bitrix"],
                "rx": [r"X-Powered-CMS:\s*Bitrix Site Manager(?:\s*\(\s*([0-9][\w.]*))?"], "note": "Версия платформы часто не раскрывается; признак присутствия — заголовок ответа."},
-    "tomcat": {"title": "Apache Tomcat", "aliases": ["apache tomcat", "tomcat"], "cpe": [("apache", "tomcat")], "ports": [8080, 8443, 8009], "catalog": ["apache tomcat*"], "rx": [r"Apache Tomcat/([0-9][\w.+~-]*)"], "note": ""},
-    "mysql": {"title": "MySQL", "aliases": ["mysql"], "cpe": [("oracle", "mysql")], "ports": [3306], "catalog": ["mysql*"], "rx": [], "note": ""},
-    "postgresql": {"title": "PostgreSQL", "aliases": ["postgresql"], "cpe": [("postgresql", "postgresql")], "ports": [5432], "catalog": ["postgresql*"], "rx": [], "note": ""},
+    "tomcat": {"title": "Apache Tomcat", "aliases": ["apache tomcat", "tomcat"], "cpe": [("apache", "tomcat")], "ports": [8080, 8443, 8009], "catalog": ["apache tomcat"], "rx": [r"Apache Tomcat/([0-9][\w.+~-]*)"], "note": ""},
+    "mysql": {"title": "MySQL", "aliases": ["mysql"], "cpe": [("oracle", "mysql")], "ports": [3306], "catalog": ["mysql"], "rx": [], "note": ""},
+    "postgresql": {"title": "PostgreSQL", "aliases": ["postgresql"], "cpe": [("postgresql", "postgresql")], "ports": [5432], "catalog": ["postgresql"], "rx": [], "note": ""},
 }
 
 

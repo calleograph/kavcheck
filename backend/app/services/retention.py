@@ -150,6 +150,17 @@ async def _move(sm: async_sessionmaker[AsyncSession], key: str, where: list, cfg
     return {"rows": done, "files": [p.name for p in (w.files if w else [])]}
 
 
+async def _safe_move(rep: dict, title: str, *a, **kw) -> dict:
+    """Перенос в архив с защитой от недоступного каталога: записи не удаляются, если архив не записан, а администратор видит причину (а не молчаливую ошибку цикла)."""
+    try:
+        return await _move(*a, **kw)
+    except OSError as exc:
+        msg = f"{title}: архив недоступен для записи ({type(exc).__name__}: {str(exc)[:120]}) — записи не удалены."
+        if msg not in rep["warnings"]:
+            rep["warnings"].append(msg)
+        return {"rows": 0, "files": []}
+
+
 async def run(sm: async_sessionmaker[AsyncSession], cfg, reports_dir: str, *, busy: bool = False, force: bool = False) -> dict:
     """Один прогон: срок → объём → квота → срок архивов → проверка диска. Возвращает отчёт (сохраняется в состоянии и показывается администратору)."""
     rep: dict = {"at": utcnow().isoformat(), "moved": {}, "warnings": [], "deleted_archives": [], "deferred": False}
@@ -168,13 +179,13 @@ async def run(sm: async_sessionmaker[AsyncSession], cfg, reports_dir: str, *, bu
             if days:                                               # 1) срок хранения
                 if key == "journal" and cfg.journal_by_category:
                     for cat, d in cfg.journal_by_category.items():
-                        r = await _move(sm, key, [m.category == cat, m.at < now - timedelta(days=d)], cfg, directory, arch)
+                        r = await _safe_move(rep, t["title"], sm, key, [m.category == cat, m.at < now - timedelta(days=d)], cfg, directory, arch)
                         moved["rows"] += r["rows"]
                         moved["files"] += r["files"]
                     rest = [m.category.notin_(list(cfg.journal_by_category))]
                 else:
                     rest = []
-                r = await _move(sm, key, [*rest, m.at < now - timedelta(days=days)], cfg, directory, arch)
+                r = await _safe_move(rep, t["title"], sm, key, [*rest, m.at < now - timedelta(days=days)], cfg, directory, arch)
                 moved["rows"] += r["rows"]
                 moved["files"] += r["files"]
             cap = getattr(cfg, t["max"])
@@ -186,7 +197,7 @@ async def run(sm: async_sessionmaker[AsyncSession], cfg, reports_dir: str, *, bu
                         rep["warnings"].append(f"Журнал действий занимает больше заданного предела ({cap} МБ), но записи аудита по объёму не удаляются.")
                     elif st["rows"]:
                         drop = int(st["rows"] * (1 - 0.9 * cap * 1024 * 1024 / st["bytes"])) + 1
-                        r = await _move(sm, key, [], cfg, directory, arch, max_rows=drop)
+                        r = await _safe_move(rep, t["title"], sm, key, [], cfg, directory, arch, max_rows=drop)
                         moved["rows"] += r["rows"]
                         moved["files"] += r["files"]
                         rep["warnings"].append(f"{t['title']}: объём превышал {cap} МБ — удалено самых старых записей: {r['rows']}.")
@@ -213,7 +224,7 @@ async def run(sm: async_sessionmaker[AsyncSession], cfg, reports_dir: str, *, bu
             for key in ("journal", "pt_events"):                   # сжатие: записи старше половины срока — в архив (данные сохраняются, места занимают меньше)
                 t = TYPES[key]
                 days = getattr(cfg, t["days"])
-                r = await _move(sm, key, [t["model"].at < now - timedelta(days=max(1, days // 2))], cfg, directory, True)
+                r = await _safe_move(rep, t["title"], sm, key, [t["model"].at < now - timedelta(days=max(1, days // 2))], cfg, directory, True)
                 rep["moved"][key]["rows"] += r["rows"]
                 rep["moved"][key]["files"] += r["files"]
             total = await usage(sm, directory)

@@ -565,7 +565,7 @@ def shape(kind: str, doc: dict, p: dict) -> dict:
     """Настройки конструктора, общие для всех быстрых отчётов: подробность («summary» — показатели и сводные таблицы, «full» — все записи, полные перечни CVE, устройств и пользователей)
     и состав столбцов основной таблицы (`columns`: ключи в нужном порядке; неизвестные пропускаются, пусто — все). Числа и условия отчёта не меняются."""
     tables = list(doc["tables"])
-    doc = {**doc, "columns_all": [{"key": c["key"], "title": c["title"]} for c in tables[0]["columns"]] if tables else []}      # для выбора столбцов в конструкторе
+    doc = {**doc, "columns_all": doc.get("columns_all") or ([{"key": c["key"], "title": c["title"]} for c in tables[0]["columns"]] if tables else [])}      # для выбора столбцов в конструкторе
     if p.get("detail") == "summary":
         keep = [t for t in tables if t["id"] not in DETAIL_TABLES.get(kind, set())]
         rows = [{"metric": m["label"], "value": m["value"], "hint": m.get("hint") or ""} for m in doc.get("metrics", [])]

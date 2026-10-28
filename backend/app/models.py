@@ -1252,7 +1252,7 @@ class HuntHit(Base):
     host_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     os: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     user_name: Mapped[str] = mapped_column(String(256), nullable=False, default="")           # последний замеченный пользователь (не владелец и не интерактивный сеанс)
-    user_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    user_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="")
     zone: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     group_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     product: Mapped[str] = mapped_column(String(200), nullable=False, default="")

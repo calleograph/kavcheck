@@ -23,7 +23,7 @@ def upgrade() -> None:
         sa.Column("crit_key", sa.String(80), nullable=False), sa.Column("vuln_key", sa.String(80), nullable=False, server_default=""), sa.Column("ip", sa.String(45), nullable=False, server_default=""),
         sa.Column("port", sa.Integer(), nullable=True), sa.Column("source_id", sa.Uuid(), nullable=True), sa.Column("host_id", sa.BigInteger(), nullable=True),
         sa.Column("host_name", sa.String(300), nullable=False, server_default=""), sa.Column("os", sa.String(200), nullable=False, server_default=""),
-        sa.Column("user_name", sa.String(256), nullable=False, server_default=""), sa.Column("user_kind", sa.String(16), nullable=False, server_default=""),
+        sa.Column("user_name", sa.String(256), nullable=False, server_default=""), sa.Column("user_kind", sa.String(40), nullable=False, server_default=""),
         sa.Column("zone", sa.String(120), nullable=False, server_default=""), sa.Column("group_name", sa.String(300), nullable=False, server_default=""),
         sa.Column("product", sa.String(200), nullable=False, server_default=""), sa.Column("version", sa.String(120), nullable=False, server_default=""),
         sa.Column("status", sa.String(14), nullable=False), sa.Column("basis", sa.String(8), nullable=False, server_default="network"), sa.Column("evidence", js, nullable=False),
