@@ -7,7 +7,7 @@ import { Empty, SkelRows } from "../../components/ui";
 import { fmt, fmtDate, num } from "../../util";
 
 type Diag = Awaited<ReturnType<typeof api.licenses.diag>>["items"];
-const STATE_RU: Record<OvLicenseGroup["state"], string> = { active: "действует", expiring: "скоро истекает", expired: "истекла", unknown: "срок не указан" };
+const STATE_RU: Record<OvLicenseGroup["state"], string> = { active: "действует", expiring: "скоро истекает", expired: "истекла", unknown: "срок не указан", perpetual: "бессрочная" };
 
 /** Администрирование лицензий: что прочитано из KSC, общие пулы, ручной ввод (когда KSC не отдаёт сведения) и диагностика чтения. Ключи не хранятся и не показываются. */
 export default function LicensesAdmin({ sources }: { sources: SourceRef[] }) {
@@ -70,14 +70,14 @@ export default function LicensesAdmin({ sources }: { sources: SourceRef[] }) {
 }
 
 function ManualDialog({ sources, onClose, onDone }: { sources: SourceRef[]; onClose: () => void; onDone: () => void }) {
-  const [f, setF] = useState({ source_id: sources[0]?.id ?? "", product: "", kind: "", expires: "", limit: "", used: "", pool: "", note: "" });
+  const [f, setF] = useState({ source_id: sources[0]?.id ?? "", product: "", kind: "", expires: "", perpetual: false, limit: "", used: "", pool: "", note: "" });
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setBusy(true); setErr("");
-    try { await api.licenses.addManual({ source_id: f.source_id, product: f.product.trim(), kind: f.kind.trim(), expires_at: f.expires ? new Date(f.expires + "T23:59:59Z").toISOString() : null, limit_n: f.limit === "" ? null : Number(f.limit), used_n: f.used === "" ? null : Number(f.used), pool: f.pool.trim(), note: f.note.trim() }); onDone(); }
+    try { await api.licenses.addManual({ source_id: f.source_id, product: f.product.trim(), kind: f.kind.trim(), expires_at: f.expires && !f.perpetual ? new Date(f.expires + "T23:59:59Z").toISOString() : null, perpetual: f.perpetual, limit_n: f.limit === "" ? null : Number(f.limit), used_n: f.used === "" ? null : Number(f.used), pool: f.pool.trim(), note: f.note.trim() }); onDone(); }
     catch (x) { setErr((x as ApiError).message); } finally { setBusy(false); }
   };
-  const set = (k: keyof typeof f, v: string) => setF({ ...f, [k]: v });
+  const set = (k: keyof typeof f, v: string | boolean) => setF({ ...f, [k]: v });
   return (
     <Modal title="Внести лицензию вручную" lede="Не вводите лицензионные ключи — достаточно продукта, лимита и срока." onClose={onClose} footer={<><button className="btn" onClick={onClose}>Отмена</button><button className="btn primary" form="lic-manual" disabled={busy || !f.product.trim() || !f.source_id}>Сохранить</button></>}>
       <form id="lic-manual" onSubmit={submit} className="stack">
@@ -86,8 +86,9 @@ function ManualDialog({ sources, onClose, onDone }: { sources: SourceRef[]; onCl
         <label className="field">Продукт<input value={f.product} onChange={(e) => set("product", e.target.value)} maxLength={200} required /></label>
         <div className="grid-2"><label className="field">Лимит, шт.<input type="number" min={0} value={f.limit} onChange={(e) => set("limit", e.target.value)} /></label>
           <label className="field">Использовано, шт.<input type="number" min={0} value={f.used} onChange={(e) => set("used", e.target.value)} placeholder="не известно" /></label></div>
-        <div className="grid-2"><label className="field">Срок действия до<input type="date" value={f.expires} onChange={(e) => set("expires", e.target.value)} /></label>
+        <div className="grid-2"><label className="field">Срок действия до<input type="date" value={f.perpetual ? "" : f.expires} disabled={f.perpetual} onChange={(e) => set("expires", e.target.value)} /></label>
           <label className="field">Тип лицензии<input value={f.kind} onChange={(e) => set("kind", e.target.value)} maxLength={80} placeholder="коммерческая, подписка…" /></label></div>
+        <label className="check"><input type="checkbox" checked={f.perpetual} onChange={(e) => set("perpetual", e.target.checked)} />Бессрочная лицензия (срока действия нет). Без даты и без этой отметки срок считается неизвестным, и лицензия не входит в лимит действующих.</label>
         <label className="field">Общий пул (необязательно)<input value={f.pool} onChange={(e) => set("pool", e.target.value)} maxLength={120} placeholder="одинаковое название у лицензий, которые используются совместно" /></label>
         <label className="field">Примечание<input value={f.note} onChange={(e) => set("note", e.target.value)} maxLength={300} /></label>
       </form>

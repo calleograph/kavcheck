@@ -8,7 +8,8 @@ NOW = datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc)
 
 def rec(**kw):
     base = {"av": {"code": "KES", "product": "Kaspersky Endpoint Security for Windows", "build": "12.6.0.438", "state": 3, "state_label": "запущен",
-                   "bases": NOW - timedelta(hours=5), "has_rtp": True}, "rtp_state": 4, "mask": 0, "uncured": 0, "last_full_scan": NOW - timedelta(days=2)}
+                   "bases": NOW - timedelta(hours=5), "has_rtp": True}, "rtp_state": 4, "mask": 0, "uncured": 0, "last_full_scan": NOW - timedelta(days=2),
+            "online": True, "last_connected": NOW - timedelta(minutes=5)}
     return {**base, **kw}
 
 
@@ -21,6 +22,33 @@ def test_problems():
     assert p(rec(av={**rec()["av"], "bases": None})) == ["bases_old"]
     assert p(rec(mask=512 | 2048 | 1024, last_full_scan=None)) == ["infected", "license", "scan_old", "reboot"]   # порядок — по важности
     assert protection.problems(rec(av={**rec()["av"], "bases": NOW - timedelta(days=4)}), NOW, bases_days=7, scan_days=30) == []
+
+
+def test_offline_shutdown_state_is_not_a_failure():
+    """Связь и защита независимы: выключенный компьютер последним отчётом «остановлена» не получает «Защита не работает»."""
+    p = lambda r: protection.problems(r, NOW, bases_days=3, scan_days=30)   # noqa: E731
+    av = rec()["av"]
+    for soft in ({"rtp_state": 1}, {"av": {**av, "state": 7}}, {"av": {**av, "state": 0}}, {"mask": 4}, {"mask": 2}):
+        assert p(rec(**soft)) == ["rtp_off"]                                                  # на связи — остановка настоящая
+        assert p(rec(online=False, **soft)) == []                                             # не на связи — похоже на выключение
+        assert protection.state_unknown(rec(online=False, **soft), NOW) and not protection.state_unknown(rec(**soft), NOW)
+    for hard in ({"rtp_state": 9}, {"rtp_state": 2}, {"av": {**av, "state": 6}}, {"av": {**av, "state": 4}}):
+        assert p(rec(online=False, **hard)) == ["rtp_off"]                                    # сбой и приостановка сохраняются без связи
+        assert not protection.state_unknown(rec(online=False, **hard), NOW)
+    assert p(rec(online=False, av={**av, "bases": NOW - timedelta(days=4)})) == ["bases_old"]  # базы — по дате, связь не важна
+
+
+def test_connected_uses_ksc_flag_then_last_connection():
+    assert protection.connected(rec(online=True), NOW) and not protection.connected(rec(online=False, last_connected=NOW), NOW)   # флаг важнее времени подключения
+    assert protection.connected(rec(online=None, last_connected=NOW - timedelta(minutes=10)), NOW)
+    assert not protection.connected(rec(online=None, last_connected=NOW - timedelta(hours=3)), NOW)
+    assert not protection.connected(rec(online=None, last_connected=None), NOW)
+
+
+def test_no_av_needs_a_report_from_the_agent():
+    p = lambda r: protection.problems(r, NOW, bases_days=3, scan_days=30)   # noqa: E731
+    assert p(rec(av=None, last_connected=None, last_full_scan=None)) == []                    # Агент не отчитывался: нет данных
+    assert p(rec(av=None, last_connected=None, mask=32, last_full_scan=None)) == ["no_av"]    # KSC прямо сообщает отсутствие
 
 
 def test_versions_newest_first():

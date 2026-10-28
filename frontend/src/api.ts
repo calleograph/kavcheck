@@ -58,12 +58,12 @@ export interface SecEvent { host_known: boolean; event_id: number; at: string | 
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
 export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest";
 
-export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
+export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "offline" | "unknown" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
-export interface OvLicenseGroup { key: string; product: string; kind: string; limit: number | null; used: number | null; free: number | null; over: boolean; expires_at: string | null; state: "active" | "expiring" | "expired" | "unknown"; shared: boolean; basis: string; pool: string; notes: string[]; origin: string[];
+export interface OvLicenseGroup { key: string; product: string; kind: string; limit: number | null; used: number | null; free: number | null; over: boolean; expires_at: string | null; state: "active" | "expiring" | "expired" | "unknown" | "perpetual"; shared: boolean; basis: string; pool: string; notes: string[]; origin: string[];
   sources: { id: string; name: string; lic_key: string; limit: number | null; used: number | null; origin: string; updated_at: string | null }[] }
-export interface OvLicenses { totals: { groups: number; limit: number | null; used: number | null; free: number | null; share: number | null; next_expiry: string | null; expired: number; expiring: number; complete: boolean; shared: number };
-  groups: OvLicenseGroup[]; by_source: Record<string, { limit: number | null; used: number | null; free: number | null; groups: number; polled_at: string | null; error: string | null; note: string | null }> }
+export interface OvLicenses { totals: { groups: number; limit: number | null; used: number | null; free: number | null; share: number | null; next_expiry: string | null; expired: number; expired_limit: number | null; expiring: number; perpetual: number; unknown: number; unknown_limit: number | null; valid: number; complete: boolean; shared: number };
+  groups: OvLicenseGroup[]; by_source: Record<string, { limit: number | null; used: number | null; free: number | null; groups: number; expired: number; unknown: number; unknown_limit: number | null; polled_at: string | null; error: string | null; note: string | null }> }
 export type OvSource = { id: string; name: string; error: string | null; synced_at: string | null; ksc_version?: string | null; last_check_ok?: boolean | null; duplicate_of?: string; snapshot?: boolean; license?: OvLicenses["by_source"][string] | null } & Partial<Record<OvMetric, number>>;
 export interface Overview {
   days: number; periods_available: number[]; scope: { all: boolean; sources: number; ok: number; duplicates: Record<string, string> };
@@ -333,7 +333,7 @@ export const api = {
     all: () => req<OvLicenses>("GET", "/licenses/all"),
     diag: () => req<{ items: { source_id: string; source: string; polled_at: string | null; error: string | null; records: number; diag: { tables?: string[]; mapped?: Record<string, Record<string, string>>; note?: string } | null }[] }>("GET", "/licenses/diag"),
     refresh: () => req<{ requested: number }>("POST", "/licenses/refresh"),
-    addManual: (b: { source_id: string; product: string; kind?: string; expires_at?: string | null; limit_n?: number | null; used_n?: number | null; pool?: string; note?: string }) => req<{ lic_key: string }>("POST", "/licenses/manual", b),
+    addManual: (b: { source_id: string; product: string; kind?: string; expires_at?: string | null; perpetual?: boolean; limit_n?: number | null; used_n?: number | null; pool?: string; note?: string }) => req<{ lic_key: string }>("POST", "/licenses/manual", b),
     removeManual: (source_id: string, key: string) => req<void>("DELETE", `/licenses/manual/${source_id}/${key}`),
     setPool: (source_id: string, lic_key: string, pool: string) => req<void>("PUT", "/licenses/pool", { source_id, lic_key, pool }),
   },

@@ -43,7 +43,7 @@ function KpiCard({ title, sub, rows, onOpen, children, big, loading }: { title: 
   );
 }
 
-const STATE_RU: Record<OvLicenseGroup["state"], string> = { active: "действует", expiring: "скоро истекает", expired: "истекла", unknown: "срок не указан" };
+const STATE_RU: Record<OvLicenseGroup["state"], string> = { active: "действует", expiring: "скоро истекает", expired: "истекла", unknown: "срок не указан", perpetual: "бессрочная" };
 
 export default function DashboardPage({ ctx }: { ctx: Ctx }) {
   const [days, setDays] = useState<number>(() => { try { const v = Number(localStorage.getItem("kc:ov-days")); return PERIODS.includes(v) ? v : 30; } catch { return 30; } });
@@ -81,8 +81,10 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
     { key: "protected", label: "Защищены", value: t ? t.protected : null, metric: "protected", tone: "ok" },
     { key: "av", label: "Защита установлена", value: t ? t.av_installed : null, metric: "av_installed" },
     { key: "noav", label: "Без защиты", value: t ? t.no_av : null, metric: "no_av", tone: "bad" },
-    { key: "rtp", label: "Защита не работает", value: t ? t.rtp_off : null, metric: "rtp_off", tone: "bad" },
-    { key: "bases", label: "Устаревшие базы", value: t ? t.bases_old : null, metric: "bases_old", tone: "warn" },
+    { key: "rtp", label: "Защита не работает", value: t ? t.rtp_off : null, metric: "rtp_off", tone: "bad", hint: "KSC сообщает остановку" },
+    { key: "bases", label: "Устаревшие базы", value: t ? t.bases_old : null, metric: "bases_old", tone: "warn", hint: "по дате баз, независимо от связи" },
+    { key: "offline", label: "Нет связи", value: t ? t.offline ?? null : null, metric: "offline", tone: "warn", hint: "защита не считается остановленной" },
+    { key: "unknown", label: "Состояние неизвестно", value: t ? t.unknown ?? null : null, metric: "unknown", tone: "warn", hint: "не на связи, отчёт похож на выключение" },
     { key: "stale", label: "Давно нет сведений", value: t ? t.stale_info : null, metric: "stale_info", tone: "warn" },
   ];
   const secRows: Row[] = [
@@ -111,6 +113,8 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
   const protBars = t ? [
     { key: "protected", label: "Защищены", value: t.protected, tone: "ok" }, { key: "rtp_off", label: "Защита не работает", value: t.rtp_off, tone: "critical" },
     { key: "bases_old", label: "Устаревшие базы", value: t.bases_old, tone: "high" }, { key: "no_av", label: "Без защиты", value: t.no_av, tone: "critical" },
+    { key: "offline", label: "Нет связи", value: t.offline ?? 0, tone: "none", hint: "активные за период, которых KSC сейчас не видит" },
+    { key: "unknown", label: "Состояние неизвестно", value: t.unknown ?? 0, tone: "warning", hint: "не на связи, последний отчёт похож на выключение" },
   ] : [];
 
   return (
@@ -134,10 +138,11 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
           ) : (
             <>
               <ul className="kpi-list">
-                <KpiRow r={{ key: "limit", label: "Всего лицензий", value: lic.limit, hint: lic.shared ? `общих пулов: ${lic.shared}, каждый считается один раз` : undefined }} onOpen={open} big />
-                <KpiRow r={{ key: "used", label: "Использовано", value: lic.used, hint: lic.used === null ? "KSC не сообщает использование" : !lic.complete ? "не по всем лицензиям" : undefined }} onOpen={open} />
-                <KpiRow r={{ key: "free", label: "Свободно", value: lic.free, tone: lic.free === 0 ? "bad" : undefined, hint: !lic.complete && lic.free !== null ? "по лицензиям с известным использованием" : undefined }} onOpen={open} />
-                <KpiRow r={{ key: "exp", label: "Ближайший срок", value: lic.next_expiry || lic.expired ? 0 : null, text: lic.next_expiry ? fmtDate(lic.next_expiry) : lic.expired ? "истёк" : undefined, tone: lic.expired ? "bad" : lic.expiring ? "warn" : undefined, hint: lic.expired ? `истекло: ${lic.expired}` : lic.expiring ? `скоро истекает: ${lic.expiring}` : undefined }} onOpen={open} />
+                <KpiRow r={{ key: "limit", label: "Лимит действующих лицензий", value: lic.limit, hint: lic.limit === 0 ? "действующих лицензий нет" : lic.shared ? `на сегодня; общих пулов: ${lic.shared}, каждый считается один раз` : "на сегодня; истёкшие не входят" }} onOpen={open} big />
+                <KpiRow r={{ key: "used", label: "Использовано", value: lic.used, hint: lic.used === null ? "KSC не сообщает использование" : !lic.complete ? "известно не по всем действующим" : undefined }} onOpen={open} />
+                <KpiRow r={{ key: "free", label: "Свободно", value: lic.free, tone: lic.free === 0 ? "bad" : undefined, hint: lic.free === null && lic.valid > 0 ? "использование известно не по всем действующим" : undefined }} onOpen={open} />
+                {lic.unknown > 0 && <KpiRow r={{ key: "unk", label: "Срок не указан", value: lic.unknown_limit ?? lic.unknown, tone: "warn", hint: `лицензий: ${lic.unknown}; в лимит действующих не входят` }} onOpen={open} />}
+                <KpiRow r={{ key: "exp", label: "Ближайший срок", value: lic.next_expiry || lic.expired ? 0 : null, text: lic.next_expiry ? fmtDate(lic.next_expiry) : lic.expired ? "истёк" : undefined, tone: lic.expired ? "bad" : lic.expiring ? "warn" : undefined, hint: lic.expired ? `истекло: ${lic.expired}${lic.expired_limit ? ` (лимит ${num(lic.expired_limit)})` : ""}` : lic.expiring ? `скоро истекает: ${lic.expiring}` : undefined }} onOpen={open} />
                 <KpiRow r={{ key: "share", label: "Доля использования", value: lic.share, text: lic.share === null ? undefined : `${lic.share}%`, tone: lic.share !== null && lic.share >= 95 ? "bad" : lic.share !== null && lic.share >= 85 ? "warn" : undefined }} onOpen={open} />
               </ul>
               {lic.share !== null && <div className="lic-bar" role="img" aria-label={`Использовано ${lic.share}% лицензий`}><i style={{ width: `${Math.min(100, lic.share)}%` }} className={lic.share >= 95 ? "bad" : lic.share >= 85 ? "warn" : ""} /></div>}
@@ -192,7 +197,8 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
               <p><b>Активный компьютер</b> — Агент администрирования подключался к Серверу администрирования за выбранный период (поле <code>tmLastNagentConnected</code>). Это единственный признак активности.</p>
               <p>Отдельно и независимо считаются: <b>виден в сети</b> (последняя видимость), <b>Агент установлен</b>, <b>защитный продукт установлен</b>, <b>защита работает</b> (постоянная защита и состояние продукта) и <b>лицензия</b> (по данным KSC). Один признак не подменяет другой.</p>
               <p><b>Сервер / станция</b> — по названию ОС. Linux приходит в KSC как «Linux» без редакции, поэтому такие компьютеры показаны отдельно («тип не определён»).</p>
-              <p><b>Лицензии</b>: ключи не хранятся; один ключ на нескольких KSC (общий пул) считается один раз — лимит общий, использование суммируется. Объединить лицензии вручную может администратор.</p>
+              <p><b>Связь и защита</b> — независимые признаки. «Нет связи» — активные за период компьютеры, которых KSC сейчас не видит; это не значит, что защита остановлена. «Защита не работает» — KSC сообщает остановку, приостановку или сбой (у компьютера не на связи учитываются только приостановка и сбой). Если отчёт компьютера без связи похож на остановку — это «Состояние неизвестно»: так выглядит и обычное выключение. «Устаревшие базы» считаются по фактической дате баз. «Без защиты» — KSC сообщает отсутствие антивируса.</p>
+              <p><b>Лицензии</b>: ключи не хранятся; один ключ на нескольких KSC (общий пул) считается один раз — лимит общий, использование суммируется. «Лимит действующих лицензий» — только лицензии, действующие сегодня (включая бессрочные); истёкшие остаются в списке, но в сумму не входят, лицензии без указанного срока показаны отдельно. «Свободно» считается, только если использование известно по всем действующим. Объединить лицензии вручную может администратор.</p>
               {d && <table className="table compact"><caption className="sr-only">Признаки по периодам</caption><thead><tr><th>Период</th><th className="num">Подключались</th><th className="num">Видны в сети</th><th className="num">Защита установлена</th><th className="num">Защита работает</th></tr></thead>
                 <tbody>{d.periods.map((p) => <tr key={p.days}><td>{p.days} сут</td><td className="num">{num(p.connected)}</td><td className="num">{num(p.visible)}</td><td className="num">{num(p.av_installed)}</td><td className="num">{num(p.av_running)}</td></tr>)}</tbody></table>}
             </div>

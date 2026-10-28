@@ -23,6 +23,11 @@ RTP = {0: "неизвестно", 1: "остановлена", 2: "приост�
 PRODUCT_STATE = {0: "не запущен", 1: "только что запущен", 2: "инициализация", 3: "запущен", 4: "приостановлен", 5: "деинициализация", 6: "критическая ошибка", 7: "завершает работу", 8: "удаляется"}
 RTP_BAD = {1, 2, 9}
 STATE_BAD = {0, 4, 6, 7, 8}
+# Выключенный компьютер последним отчётом сообщает «остановлена / не запущен / завершает работу»: это следствие выключения, а не отказ защиты.
+# Приостановка и сбой (RTP 2, 9; продукт 4, 6) сохраняются и без связи — их «жёсткие» признаки. Остальные признаки учитываются только пока компьютер на связи.
+RTP_HARD = {2, 9}
+STATE_HARD = {4, 6}
+CONNECTED_WITHIN = timedelta(minutes=30)          # запасной признак «на связи», если KSC не передаёт флаг «видимо»: Агент синхронизируется раз в 15 мин по умолчанию
 AGENT = "1103"
 
 # порядок — по важности для специалиста ИБ: сначала то, что означает отсутствие защиты
@@ -65,12 +70,47 @@ def record(h: dict, products: list[dict], groups: dict | None, now: datetime) ->
             "uncured": int(h.get("uncured") or 0)}
 
 
+def connected(r: dict, now: datetime) -> bool:
+    """Компьютер на связи сейчас. Связь и состояние антивируса — независимые признаки: по первому нельзя судить о втором.
+    Основа — флаг KSC «видимо» (`online`); нет флага — подключение Агента не старше CONNECTED_WITHIN."""
+    if r.get("online") is not None:
+        return bool(r["online"])
+    last = _utc(r.get("last_connected"))
+    return last is not None and now - last <= CONNECTED_WITHIN
+
+
+def stop_signal(r: dict) -> str:
+    """Что сообщает KSC о постоянной защите: "hard" (приостановлена, сбой), "soft" (остановлена, не запущен, завершает работу — как при выключении) или "" (нет признаков)."""
+    av = r.get("av")
+    if not av:
+        return ""
+    if r.get("rtp_state") in RTP_HARD or av.get("state") in STATE_HARD:
+        return "hard"
+    return "soft" if r.get("rtp_state") in RTP_BAD or av.get("state") in STATE_BAD or r["mask"] & (2 | 4) else ""
+
+
+def rtp_off(r: dict, now: datetime) -> bool:
+    """«Защита не работает»: KSC сообщает остановку, и этому можно верить — сбой/приостановка в любом случае, остальное — только у компьютера на связи."""
+    sig = stop_signal(r)
+    return sig == "hard" or (sig == "soft" and connected(r, now))
+
+
+def state_unknown(r: dict, now: datetime) -> bool:
+    """«Состояние неизвестно»: последний отчёт похож на остановку, но компьютер не на связи, а отличить отказ от выключения нельзя."""
+    return stop_signal(r) == "soft" and not connected(r, now)
+
+
+def no_av(r: dict) -> bool:
+    """«Без защиты» — KSC сообщает «антивирус не установлен» либо Агент уже передавал сведения, а защитного продукта среди них нет (устройство без подключений Агента — нет данных, не «без защиты»)."""
+    return bool(r["mask"] & 32) or (not r["av"] and r.get("last_connected") is not None)
+
+
 def problems(r: dict, now: datetime, *, bases_days: int, scan_days: int) -> list[str]:
     out, av, mask = [], r["av"], r["mask"]
-    if not av or mask & 32:
+    if no_av(r):
         out.append("no_av")
     if av:
-        if r["rtp_state"] in RTP_BAD or av["state"] in STATE_BAD or mask & (2 | 4):
+        if rtp_off(r, now):
             out.append("rtp_off")
         if not av["bases"] or now - av["bases"] > timedelta(days=bases_days):
             out.append("bases_old")
@@ -141,7 +181,7 @@ def scope(base: list[dict], *, now: datetime, activity_days: int, include_inacti
         if online_only and online_data and r.get("online") is not True:
             offline += 1
             continue
-        out.append({**r, "problems": problems(r, now, bases_days=bases_days, scan_days=scan_days)})
+        out.append({**r, "problems": problems(r, now, bases_days=bases_days, scan_days=scan_days), "state_unknown": state_unknown(r, now)})
     return out, {"hidden": hidden, "offline": offline, "online_data": online_data, "online_only": bool(online_only and online_data)}
 
 

@@ -14,11 +14,11 @@ from tests.conftest import login
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
 
 
-def host(i, days, os_name="Windows 11 Pro", platform="Windows", av=True, mask=0, rtp=4, bases_h=5, info_days=1, name=None):
+def host(i, days, os_name="Windows 11 Pro", platform="Windows", av=True, mask=0, rtp=4, bases_h=5, info_days=1, name=None, av_state=3):
     last = None if days is None else NOW - timedelta(days=days)
     return {"host_id": i, "name": name or f"pc{i}", "fqdn": f"pc{i}.example.local", "ip": f"192.0.2.{i}", "os": os_name, "os_version": "", "platform": platform, "group": "Группа",
             "last_connected": last, "last_visible": last, "last_info_update": NOW - timedelta(days=info_days), "days_since_connection": days, "online": None, "rtp_state": rtp, "mask": mask,
-            "av": {"code": "KES", "product": "KES", "build": "12.0", "state": 3, "bases": NOW - timedelta(hours=bases_h), "has_rtp": True} if av else None,
+            "av": {"code": "KES", "product": "KES", "build": "12.0", "state": av_state, "bases": NOW - timedelta(hours=bases_h), "has_rtp": True} if av else None,
             "agent_build": "15.0" if days is not None else "", "last_full_scan": NOW, "uncured": 0}
 
 
@@ -53,6 +53,45 @@ def test_protection_metrics_are_among_active_and_list_matches_count():
     assert sm60["no_av"] == 1 and sm60["active"] == 7
     for key in C.METRICS:                                                              # число и список — один предикат
         assert len(C.pick(RECS, key, 30, NOW)) == C.summarize(RECS, 30, NOW)[key]
+
+
+def off(i, days, **kw):
+    """Компьютер, который KSC сейчас не видит (online=False)."""
+    return {**host(i, days, **kw), "online": False}
+
+
+def on(i, days, **kw):
+    return {**host(i, days, **kw), "online": True}
+
+
+def test_offline_computer_with_shutdown_report_is_not_protection_failure():
+    """Выключенный компьютер отчитался «защита остановлена»/«завершает работу»: это не отказ защиты. Связь и защита — разные признаки."""
+    recs = [off(1, 0.2, rtp=1), off(2, 0.5, av_state=7), off(3, 0.4, mask=4),            # похоже на выключение: не на связи
+            on(4, 0.01, rtp=1), on(5, 0.01, av_state=0), on(6, 0.01, mask=2),            # то же, но компьютер на связи — действительно остановлена
+            off(7, 0.3), on(8, 0.01),                                                    # не на связи с работающей защитой и на связи с ней же
+            off(9, 0.3, rtp=9), off(10, 0.3, av_state=6), off(11, 0.3, av_state=4)]      # сбой, критическая ошибка, приостановка видны и без связи
+    sm = C.summarize(recs, 7, NOW)
+    assert sm["offline"] == 7 and sm["active"] == 11
+    assert sm["rtp_off"] == 3 + 3 and sm["unknown"] == 3
+    assert sorted(r["host_id"] for r in C.pick(recs, "rtp_off", 7, NOW)) == [4, 5, 6, 9, 10, 11]
+    assert sorted(r["host_id"] for r in C.pick(recs, "unknown", 7, NOW)) == [1, 2, 3]
+    assert sorted(r["host_id"] for r in C.pick(recs, "protected", 7, NOW)) == [7, 8]              # последнее достоверное состояние работает — защищены, в том числе без связи
+    assert sorted(r["host_id"] for r in C.pick(recs, "offline", 7, NOW)) == [1, 2, 3, 7, 9, 10, 11]
+    for key in C.METRICS:                                                                         # число главной и список при нажатии — один предикат
+        assert len(C.pick(recs, key, 7, NOW)) == sm[key]
+    assert {r["host_id"] for r in C.pick(recs, "protected", 7, NOW)} & {r["host_id"] for r in C.pick(recs, "unknown", 7, NOW)} == set()
+
+
+def test_old_bases_are_judged_by_date_even_without_connection():
+    recs = [off(1, 0.5, bases_h=24 * 6), off(2, 0.5, bases_h=5), on(3, 0.01, bases_h=24 * 6)]
+    assert sorted(r["host_id"] for r in C.pick(recs, "bases_old", 7, NOW)) == [1, 3]
+
+
+def test_no_av_requires_reliable_data():
+    never = {**host(1, 1, av=False), "last_connected": None, "days_since_connection": None, "agent_build": ""}      # Агент ни разу не отчитывался: нет данных, а не «без защиты»
+    assert C.summarize([never], 90, NOW)["no_av"] == 0
+    assert C.summarize([off(2, 0.5, av=False)], 7, NOW)["no_av"] == 1                      # Агент отчитывался, антивируса среди продуктов нет
+    assert C.summarize([off(3, 0.5, mask=32)], 7, NOW)["no_av"] == 1                       # KSC сообщает «антивирус не установлен»
 
 
 def test_rtp_off_counts_only_hosts_with_protection():
@@ -121,6 +160,64 @@ def test_infinite_values_are_not_limits():
     assert KL._int(10**9 - 1) is not None and KL._int(2**31 - 1) is None and KL._dt(datetime(2100, 1, 1)) is None and KL._dt(datetime(1970, 1, 1)) is None
 
 
+def test_perpetual_is_not_the_same_as_unknown_term():
+    """Дата 2100+ — «без срока» (бессрочная, считается); нулевая дата и пустое значение — срок не указан (не считается)."""
+    rows = [{"p": "Вечная", "e": datetime(2100, 1, 1), "l": 10}, {"p": "Нулевая", "e": datetime(1970, 1, 1), "l": 20}, {"p": "Пустая", "e": None, "l": 30}]
+    st = {r["product"]: (r["state"], r["expires_at"]) for r in KL.to_records(rows, {"product": "p", "expires": "e", "limit": "l"}, "keys", "s", NOW)}
+    assert st == {"Вечная": ("perpetual", None), "Нулевая": ("unknown", None), "Пустая": ("unknown", None)}
+
+
+def test_license_state_is_recalculated_for_today():
+    """Сохранённое «active» не доверяется: на сегодня срок проверяется заново; «бессрочная» хранится без даты и только по метке."""
+    from app.overview.service import _state
+
+    mk = lambda exp, state: LicenseRecord(source_id=uuid.uuid4(), lic_key="k", expires_at=exp, state=state)    # noqa: E731
+    assert _state(mk(datetime.now(timezone.utc) - timedelta(days=1), "active")) == "expired"
+    assert _state(mk(datetime.now(timezone.utc) + timedelta(days=400), "expired")) == "active"
+    assert _state(mk(datetime.now(timezone.utc) + timedelta(days=10), "active")) == "expiring"
+    assert _state(mk(None, "perpetual")) == "perpetual" and _state(mk(None, "unknown")) == "unknown" and _state(mk(None, "active")) == "unknown"
+
+
+def test_limit_counts_only_valid_licenses():
+    exp = NOW - timedelta(days=1)
+    groups = LP.merge([lic(1, "a", 100, 30, product="Действующая"), lic(1, "b", 500, 0, product="Истёкшая", exp=exp, state="expired"),
+                       lic(1, "c", 40, 10, product="Бессрочная", exp=NOW, state="perpetual"), lic(1, "d", 70, None, product="Срок неизвестен", state="unknown")])
+    t = LP.totals(groups)
+    assert t["limit"] == 140 and t["used"] == 40                     # 100 + 40; истёкшие 500 и неизвестные 70 не входят
+    assert (t["expired"], t["expired_limit"], t["unknown"], t["unknown_limit"], t["perpetual"], t["valid"], t["groups"]) == (1, 500, 1, 70, 1, 2, 4)
+    assert {g["product"]: g["state"] for g in groups} == {"Действующая": "active", "Истёкшая": "expired", "Бессрочная": "perpetual", "Срок неизвестен": "unknown"}   # в списке остаются все
+    assert t["free"] == 100 and t["share"] == 29 and t["complete"]    # свободно и доля — только по действующим
+
+
+def test_no_valid_licenses_is_zero_not_missing():
+    t = LP.totals(LP.merge([lic(1, "a", 100, 10, exp=NOW - timedelta(days=5), state="expired")]))
+    assert t["limit"] == 0 and t["free"] is None and t["share"] is None and t["expired"] == 1 and t["expired_limit"] == 100
+    assert LP.totals(LP.merge([lic(1, "a", None, None)]))["limit"] is None          # действующая, но лимит неизвестен — нет данных
+    assert LP.totals([])["limit"] is None
+
+
+def test_free_is_not_guessed_when_usage_of_a_valid_license_is_unknown():
+    t = LP.totals(LP.merge([lic(1, "a", 100, 30, product="Известно"), lic(1, "b", 50, None, product="Не известно")]))
+    assert t["limit"] == 150 and t["used"] == 30 and t["free"] is None and t["share"] is None and not t["complete"]
+    # неизвестное использование истёкшей лицензии свободных действующих не отменяет
+    t2 = LP.totals(LP.merge([lic(1, "a", 100, 30, product="Действует"), lic(1, "b", 50, None, product="Истекла", exp=NOW - timedelta(days=1), state="expired")]))
+    assert t2["free"] == 70 and t2["complete"]
+
+
+def test_shared_key_across_sources_counted_once_and_expiry_uses_latest():
+    old, new = NOW - timedelta(days=3), NOW + timedelta(days=300)
+    a = lic(1, "a", 200, 50, fp="F", exp=old, state="expired")
+    b = lic(2, "b", 200, 70, fp="F", exp=new, state="active")           # на втором сервере ключ уже продлён
+    g = LP.merge([a, b])
+    assert len(g) == 1 and g[0]["state"] == "active" and g[0]["expires_at"] == new and g[0]["shared"]
+    t = LP.totals(g)
+    assert (t["limit"], t["used"], t["free"]) == (200, 120, 80)           # лимит один раз, а не 400
+    both_expired = LP.totals(LP.merge([a, lic(2, "b", 200, 70, fp="F", exp=old, state="expired")]))
+    assert both_expired["limit"] == 0 and both_expired["expired"] == 1
+    mixed = LP.merge([lic(1, "a", 100, 1, fp="P", exp=old, state="expired"), lic(2, "b", 100, 1, fp="P", exp=NOW, state="perpetual")])
+    assert mixed[0]["state"] == "perpetual" and mixed[0]["expires_at"] is None
+
+
 # ------------------------------------------------------------------------------------------------ API
 async def _setup(client, app, monkeypatch, names=("KSC-A",), recs=None):
     await login(client, "admin", "Admin-Passw0rd-123")
@@ -182,7 +279,7 @@ async def test_all_sources_exclude_duplicate_connection(client, app, monkeypatch
 
 async def test_license_admin_flow_manual_pool_and_permissions(client, app, monkeypatch):
     s1, s2 = await _setup(client, app, monkeypatch, names=("KSC-A", "KSC-B"))
-    add = lambda sid, **kw: client.post("/api/v1/licenses/manual", json={"source_id": sid, "product": "Kaspersky Endpoint Security", "limit_n": 100, "used_n": 40, **kw})  # noqa: E731
+    add = lambda sid, **kw: client.post("/api/v1/licenses/manual", json={"source_id": sid, "product": "Kaspersky Endpoint Security", "limit_n": 100, "used_n": 40, "expires_at": (NOW + timedelta(days=200)).isoformat(), **kw})  # noqa: E731
     k1 = (await add(s1)).json()
     k2 = (await add(s2, used_n=20)).json()
     lic = (await client.get("/api/v1/licenses", headers={"X-Source-Id": "all"})).json()
@@ -192,6 +289,13 @@ async def test_license_admin_flow_manual_pool_and_permissions(client, app, monke
     lic = (await client.get("/api/v1/licenses", headers={"X-Source-Id": "all"})).json()
     assert lic["totals"]["limit"] == 100 and lic["totals"]["used"] == 60 and lic["totals"]["groups"] == 1 and lic["groups"][0]["shared"]
     assert (await client.delete(f"/api/v1/licenses/manual/{s1}/{k1['lic_key']}")).status_code == 204
+    # без даты и без отметки «бессрочная» срок неизвестен: лицензия видна, но в лимит действующих не входит; с отметкой — входит
+    nodate = (await add(s2, expires_at=None, pool="", limit_n=50, product="Без срока")).json()
+    perp = (await add(s2, expires_at=None, perpetual=True, pool="", limit_n=30, used_n=5, product="Бессрочная")).json()
+    t = (await client.get("/api/v1/licenses", headers={"X-Source-Id": "all"})).json()["totals"]
+    assert t["limit"] == 100 + 30 and t["unknown"] == 1 and t["unknown_limit"] == 50 and t["perpetual"] == 1
+    for k in (nodate, perp):
+        assert (await client.delete(f"/api/v1/licenses/manual/{s2}/{k['lic_key']}")).status_code == 204
     async with app.state.session_maker() as db:
         db.add(LicenseRecord(source_id=uuid.UUID(s1), lic_key="ksc1", origin="ksc", product="KES", updated_at=datetime.now(timezone.utc)))
         await db.commit()

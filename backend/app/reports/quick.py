@@ -397,7 +397,7 @@ async def build_protection(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         conds.append({"label": "Выбрано компьютеров", "text": str(len(p["host_ids"]))})
     conds += scope_conditions(p, ctx) + [{"label": "Порог баз / полной проверки", "text": f"{bases_days} / {scan_days} сут"}]
     on, off, nodata = _unique_online(rows)
-    protected = sum(1 for h in hosts if h["av"] and not {"rtp_off", "bases_old", "no_av"} & set(h["problems"]))
+    protected = sum(1 for h in hosts if h["av"] and not h.get("state_unknown") and not {"rtp_off", "bases_old", "no_av"} & set(h["problems"]))
     metrics = [metric("hosts", "Компьютеров в отчёте", len(rows), f"в области отчёта всего: {len(hosts)}", "danger" if problem not in ("", "ok") and rows else ""),
                metric("online", "Из них в сети сейчас", on, f"не в сети: {off}; нет данных: {nodata}"),
                metric("protected", "Защищены (область отчёта)", f"{round(protected / len(hosts) * 100) if hosts else 0}%", f"{protected} из {len(hosts)}: антивирус работает, базы свежее {bases_days} сут")]

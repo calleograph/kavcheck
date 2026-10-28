@@ -201,6 +201,7 @@ class ManualIn(BaseModel):
     product: str = Field(min_length=1, max_length=200)
     kind: str = Field(default="", max_length=80)
     expires_at: datetime | None = None
+    perpetual: bool = False                                  # бессрочная: срока нет и это известно; без даты и без флага срок «не указан» и в лимит действующих не входит
     limit_n: int | None = Field(default=None, ge=0, le=10**8)
     used_n: int | None = Field(default=None, ge=0, le=10**8)
     pool: str = Field(default="", max_length=120)
@@ -268,7 +269,7 @@ async def add_manual(body: ManualIn, su: SessionUser = Depends(require_admin), d
     key = "m" + hashlib.sha1(f"{body.source_id}{body.product}{utcnow().isoformat()}".encode()).hexdigest()[:20]
     now = utcnow()
     rec = LicenseRecord(source_id=body.source_id, lic_key=key, origin="manual", product=body.product.strip(), kind=body.kind.strip(), expires_at=body.expires_at, limit_n=body.limit_n,
-                        used_n=body.used_n, state="unknown", fp="", note=body.note.strip(), updated_at=now)
+                        used_n=body.used_n, state="perpetual" if body.perpetual and body.expires_at is None else "unknown", fp="", note=body.note.strip(), updated_at=now)
     db.add(rec)
     if body.pool.strip():
         db.add(LicenseOverride(source_id=body.source_id, lic_key=key, pool=body.pool.strip(), set_by=su.display_name))

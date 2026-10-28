@@ -21,7 +21,7 @@ PERIOD_COLS = [col("days", "Период, сут", "num"), col("connected", "П�
                col("av_installed", "Защита установлена", "num"), col("av_running", "Защита работает", "num")]
 LIC_COLS = [col("product", "Продукт"), col("kind", "Тип"), col("limit", "Лимит", "num"), col("used", "Использовано", "num"), col("free", "Свободно", "num"), col("expires", "Срок действия (UTC)", "date"),
             col("state_ru", "Состояние"), col("scope", "Принадлежность"), col("sources", "Источники"), col("basis", "Данные")]
-STATE_RU = {"active": "действует", "expiring": "скоро истекает", "expired": "истекла", "unknown": "срок не указан"}
+STATE_RU = {"active": "действует", "expiring": "скоро истекает", "expired": "истекла", "unknown": "срок не указан", "perpetual": "бессрочная"}
 
 
 def _lic_rows(groups: list[dict]) -> list[dict]:
@@ -92,11 +92,16 @@ async def build_overview(client: SourceClient | None, p: dict, ctx: Ctx) -> dict
                metric("other_os", "Тип ОС не определён", tot["other_os"], "например, Linux без указания редакции в KSC"),
                metric("inactive", "Неактивные компьютеры", tot["inactive"], f"без связи с KSC дольше {days} сут", "warn" if tot["inactive"] else ""), metric("total", "Всего объектов в KSC", tot["total"]),
                metric("protected", "Защищены", tot["protected"], "защита работает, базы не старше 3 сут"), metric("no_av", "Без защиты", tot["no_av"], "", "danger" if tot["no_av"] else "ok"),
-               metric("rtp_off", "Защита не работает", tot["rtp_off"], "", "danger" if tot["rtp_off"] else "ok"), metric("bases_old", "Устаревшие базы", tot["bases_old"]),
+               metric("rtp_off", "Защита не работает", tot["rtp_off"], "KSC сообщает остановку защиты; отсутствие связи сюда не входит", "danger" if tot["rtp_off"] else "ok"),
+               metric("bases_old", "Устаревшие базы", tot["bases_old"], "по фактической дате баз, независимо от связи"),
+               metric("offline", "Нет связи", tot["offline"], "активные за период, которых KSC сейчас не видит; защита на них не считается остановленной", "warn" if tot["offline"] else ""),
+               metric("unknown", "Состояние неизвестно", tot["unknown"], "последний отчёт похож на остановку, но компьютер не на связи (так выглядит и выключение)", "warn" if tot["unknown"] else ""),
                metric("stale_info", "Сведения давно не поступали", tot["stale_info"], f"активные, сведения об устройстве не обновлялись дольше {C.STALE_DAYS} сут"),
-               metric("lic_limit", "Лицензий всего", lt["limit"] if lt["limit"] is not None else "нет данных", "общие пулы считаются один раз"),
-               metric("lic_used", "Лицензий использовано", lt["used"] if lt["used"] is not None else "нет данных", "по данным KSC или внесённым вручную"),
-               metric("lic_free", "Лицензий свободно", lt["free"] if lt["free"] is not None else "нет данных")]
+               metric("lic_limit", "Лимит действующих лицензий", lt["limit"] if lt["limit"] is not None else "нет данных", "на сегодня; общие пулы считаются один раз, истёкшие и со сроком «не указан» не входят"),
+               metric("lic_used", "Лицензий использовано", lt["used"] if lt["used"] is not None else "нет данных", "по действующим; данные KSC или внесённые вручную"),
+               metric("lic_free", "Лицензий свободно", lt["free"] if lt["free"] is not None else "нет данных", "считается, только если использование известно по всем действующим"),
+               metric("lic_unknown", "Лицензий со сроком «не указан»", lt["unknown_limit"] if lt["unknown_limit"] is not None else lt["unknown"], "лимит; в лимит действующих не входит", "warn" if lt["unknown"] else ""),
+               metric("lic_expired", "Истёкших лицензий", lt["expired"], "остаются в списке, в лимит действующих не входят", "warn" if lt["expired"] else "ok")]
     cond = [{"label": "Источники", "text": ", ".join(s.name for s in scope) or "—"}, {"label": "Период активности", "text": f"{days} сут (Агент подключался к KSC)"}]
     if only:
         cond.append({"label": "Показатель", "text": (C.METRICS.get(only) or (DB_METRICS[only],))[0]})

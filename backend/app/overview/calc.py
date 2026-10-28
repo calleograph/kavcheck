@@ -6,6 +6,10 @@
   «защита работает» (постоянная защита и состояние продукта), «лицензия истекла по статусу KSC».
 * **Сервер / рабочая станция** — по названию ОС (Windows Server, …Server, «Сервер» — сервер; остальные Windows и macOS — станция). Linux в KSC приходит как «Linux» без редакции: такие
   компьютеры считаются отдельно («тип не определён»), а не относятся к серверам или станциям наугад.
+* **Связь и защита — независимые признаки.** «Нет связи» — активные за период компьютеры, которых KSC сейчас не видит; сам по себе этот признак не означает, что защита остановлена.
+  «Защита не работает» — KSC сообщает остановку (приостановка/сбой — всегда; «остановлена/не запущен/завершает работу» — только у компьютера на связи, иначе это след выключения).
+  Если последний отчёт похож на остановку, а компьютер не на связи, — «Состояние неизвестно». «Устаревшие базы» считаются по фактической дате баз независимо от связи.
+  «Без защиты» — KSC сообщает отсутствие антивируса либо Агент передавал сведения, а защитного продукта среди них нет.
 * Показатели защиты считаются среди активных компьютеров; «давно не поступали сведения» — активные, у которых KSC не обновлял сведения об устройстве дольше `STALE_DAYS`.
 Один предикат на показатель используется и для числа, и для списка (боковая панель), поэтому они всегда совпадают."""
 from __future__ import annotations
@@ -41,11 +45,6 @@ def _av_ok(r: dict) -> bool:
     return bool(r.get("av")) and not (r["mask"] & 32)
 
 
-def rtp_off(r: dict) -> bool:
-    av = r.get("av")
-    return bool(av) and (r.get("rtp_state") in P.RTP_BAD or av.get("state") in P.STATE_BAD or bool(r["mask"] & (2 | 4)))
-
-
 def bases_old(r: dict, now: datetime) -> bool:
     av = r.get("av")
     return bool(av) and (not av.get("bases") or now - av["bases"] > timedelta(days=BASES_DAYS))
@@ -66,11 +65,13 @@ METRICS: dict[str, tuple[str, object]] = {
     "workstations": ("Активные рабочие станции", lambda r, d, n: is_active(r, d) and kind_of(r) == "workstation"),
     "other_os": ("Активные, тип ОС не определён", lambda r, d, n: is_active(r, d) and kind_of(r) == "other"),
     "av_installed": ("С установленной защитой", lambda r, d, n: is_active(r, d) and _av_ok(r)),
-    "no_av": ("Без защиты", lambda r, d, n: is_active(r, d) and not _av_ok(r)),
-    "rtp_off": ("С неработающей защитой", lambda r, d, n: is_active(r, d) and _av_ok(r) and rtp_off(r)),
+    "no_av": ("Без защиты", lambda r, d, n: is_active(r, d) and P.no_av(r)),
+    "rtp_off": ("Защита не работает", lambda r, d, n: is_active(r, d) and _av_ok(r) and P.rtp_off(r, n)),
+    "offline": ("Нет связи", lambda r, d, n: is_active(r, d) and not P.connected(r, n)),
+    "unknown": ("Состояние неизвестно", lambda r, d, n: is_active(r, d) and _av_ok(r) and P.state_unknown(r, n)),
     "bases_old": ("С устаревшими базами", lambda r, d, n: is_active(r, d) and _av_ok(r) and bases_old(r, n)),
     "stale_info": ("Сведения давно не поступали", lambda r, d, n: is_active(r, d) and info_stale(r, n)),
-    "protected": ("Защищены", lambda r, d, n: is_active(r, d) and _av_ok(r) and not rtp_off(r) and not bases_old(r, n)),
+    "protected": ("Защищены", lambda r, d, n: is_active(r, d) and _av_ok(r) and not P.rtp_off(r, n) and not P.state_unknown(r, n) and not bases_old(r, n)),
     "license_expired": ("Лицензия истекла (статус KSC)", lambda r, d, n: is_active(r, d) and bool(r["mask"] & 512)),
 }
 
@@ -89,7 +90,7 @@ def summarize(records: list[dict], days: int, now: datetime | None = None) -> di
     for d in PERIODS:
         act = [r for r in records if is_active(r, d)]
         periods.append({"days": d, "connected": len(act), "visible": sum(1 for r in records if r.get("last_visible") and (n - r["last_visible"]).days <= d),
-                        "av_installed": sum(1 for r in act if _av_ok(r)), "av_running": sum(1 for r in act if _av_ok(r) and not rtp_off(r)),
+                        "av_installed": sum(1 for r in act if _av_ok(r)), "av_running": sum(1 for r in act if _av_ok(r) and not P.rtp_off(r, n) and not P.state_unknown(r, n)),
                         "servers": sum(1 for r in act if kind_of(r) == "server"), "workstations": sum(1 for r in act if kind_of(r) == "workstation")})
     out["periods"] = periods
     out["agent_installed"] = sum(1 for r in records if r.get("agent_build"))

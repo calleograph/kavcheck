@@ -38,14 +38,15 @@ async def licenses_block(db: AsyncSession, srcs: list[KscSource]) -> dict:
         mine = [g for g in LP.merge([r for r in recs if r["source_id"] == s.id], ov)]
         t = LP.totals(mine)
         st = states.get(s.id)
-        by_src[str(s.id)] = {"limit": t["limit"], "used": t["used"], "free": t["free"], "groups": t["groups"], "polled_at": st.polled_at if st else None, "error": st.error if st else None,
+        by_src[str(s.id)] = {"limit": t["limit"], "used": t["used"], "free": t["free"], "groups": t["groups"], "expired": t["expired"], "unknown": t["unknown"], "unknown_limit": t["unknown_limit"], "polled_at": st.polled_at if st else None, "error": st.error if st else None,
                              "note": ((st.diag or {}).get("note") if st and st.diag else None) or None}
     return {"totals": tot, "groups": groups, "by_source": by_src}
 
 
 def _state(r: LicenseRecord) -> str:
+    """Состояние на сегодня: срок считается заново при каждом запросе, сохранённое значение нужно только для «бессрочной» (в базе она без даты)."""
     if r.expires_at is None:
-        return "unknown"
+        return "perpetual" if r.state == "perpetual" else "unknown"
     now = utcnow()
     return "expired" if r.expires_at <= now else "expiring" if (r.expires_at - now).days <= 60 else "active"
 

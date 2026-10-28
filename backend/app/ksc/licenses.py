@@ -62,27 +62,33 @@ def _int(v) -> int | None:
 def _dt(v) -> datetime | None:
     if isinstance(v, datetime):
         d = v if v.tzinfo else v.replace(tzinfo=timezone.utc)
-        return d if d.year > 1971 and d.year < 2100 else None        # 1970 и 2100+ — «без срока»
+        return d if 1971 < d.year < 2100 else None
     return None
 
 
-def state_of(expires: datetime | None, now: datetime, soon_days: int = 60) -> str:
+def is_perpetual(v) -> bool:
+    """Дата 2100 года и позже — служебное значение KSC «без срока». Нулевая дата (1970) и пустое значение — срок не указан, а не бессрочность."""
+    return isinstance(v, datetime) and v.year >= 2100
+
+
+def state_of(expires: datetime | None, now: datetime, soon_days: int = 60, perpetual: bool = False) -> str:
     if expires is None:
-        return "unknown"
+        return "perpetual" if perpetual else "unknown"
     return "expired" if expires <= now else "expiring" if (expires - now).days <= soon_days else "active"
 
 
 def to_records(rows: list[dict], mapping: dict[str, str], table: str, secret: str, now: datetime) -> list[dict]:
     out = []
     for r in rows:
-        exp, lim, used = _dt(r.get(mapping.get("expires", ""))), _int(r.get(mapping.get("limit", ""))), _int(r.get(mapping.get("used", "")))
+        raw = r.get(mapping.get("expires", ""))
+        exp, lim, used = _dt(raw), _int(r.get(mapping.get("limit", ""))), _int(r.get(mapping.get("used", "")))
         if exp is None and lim is None:
             continue
         kind = r.get(mapping.get("kind", ""))
         kind = KIND_RU.get(kind, str(kind)) if isinstance(kind, int) else str(kind or "")
         product = str(r.get(mapping.get("product", "")) or "").strip() or "Продукт Kaspersky (название не указано в KSC)"
         fp = fingerprint(r.get(mapping.get("serial", "")), secret)
-        out.append({"product": product[:200], "kind": kind[:80], "expires_at": exp, "limit_n": lim, "used_n": used, "state": state_of(exp, now), "fp": fp, "table": table})
+        out.append({"product": product[:200], "kind": kind[:80], "expires_at": exp, "limit_n": lim, "used_n": used, "state": state_of(exp, now, perpetual=is_perpetual(raw)), "fp": fp, "table": table})
     return out
 
 
