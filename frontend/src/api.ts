@@ -103,7 +103,12 @@ export interface LogsOverview { items: LogType[]; external: { key: string; title
   totals: { logs_bytes: number; archive_bytes: number; files: number; quota_bytes: number | null; used_bytes: number; oldest: string | null }; disk: { free: number | null; total: number | null; warn: boolean };
   last_run: string | null; next_run: string | null; requested: boolean; report: { at: string; warnings: string[]; deferred: boolean; deleted_archives: string[]; moved: Record<string, { rows: number }> } | null }
 export interface PtLogPage { items: PtLogEvent[]; first_id: number | null; last_id: number | null; active: boolean; status: string; status_ru: string; counts: { total: number; warn: number; error: number } }
-export interface PtOverview { enabled: boolean; scanner: { alive: boolean; age_s: number | null; data: { nmap?: string; scan?: string; net_raw?: boolean; jobs_running?: number } }; active: number; results: { jobs: number; findings: number; confirmed: number; last_at: string | null } | null;
+export type CompStatus = "current" | "update" | "deferred" | "incompatible" | "review" | "unknown" | "unavailable";
+export interface CompRow { key: string; title: string; group: string; purpose: string; running: boolean | null; installed: string | null; verified: string | null; latest: string | null; latest_url: string | null; published_at: string | null;
+  checked_at: string | null; check_error: string; status: CompStatus; status_ru: string; why: string; release_notes: string; compat: string; limits: string; branch: string; decision: { status: string; reason: string; note: string } }
+export interface CompTable { items: CompRow[]; reviewed_for: string; reviewed_at: string; note: string; checked_at: string | null; requested: boolean; counts: Record<CompStatus, number> }
+export interface PtTool { key: string; title: string; running: boolean | null; installed: string | null; latest: string | null; status: CompStatus; status_ru: string; why: string }
+export interface PtOverview { enabled: boolean; tools: PtTool[]; scanner: { alive: boolean; age_s: number | null; data: { nmap?: string; scan?: string; net_raw?: boolean; jobs_running?: number } }; active: number; results: { jobs: number; findings: number; confirmed: number; last_at: string | null } | null;
   recent: PtJob[]; latest_sev: Record<string, number>; policy: { allowed: string[] | null; max_targets: number; large_threshold: number; full_ports_max_targets: number; safe_scripts_enabled: boolean; scan_type: string; max_rate: number } }
 export interface PtProfiles { items: { key: string; title: string; ports: string; builtin: boolean; count: number | null; intensity?: number }[]; safe_audit: { enabled: boolean; scripts: string[]; risk: string }; evidence_scripts: string[] }
 export interface PtPreview { unique: number; tokens: number; duplicates: number; kinds: Record<string, number>; rejected: { input: string; reason: string }[]; rejected_n: number; sample: string[]; names: Record<string, string[]>;
@@ -544,6 +549,8 @@ export const api = {
     resetBuiltin: () => req<{ ok: boolean }>("POST", "/admin/rules/reset-builtin"),
     audit: (p: Record<string, string | number | undefined>) => req<{ items: AuditRow[] }>("GET", `/admin/audit${qs(p)}`),
     journal: (p: Record<string, string | number | undefined>) => req<{ items: JournalRow[]; errors_24h: number }>("GET", `/admin/journal${qs(p)}`),
+    components: () => req<CompTable>("GET", "/admin/components"),
+    checkComponents: () => req<{ requested: boolean }>("POST", "/admin/components/check"),
     logs: () => req<LogsOverview>("GET", "/admin/logs"),
     saveLogs: (b: Record<string, unknown>) => req<{ changed: string[] }>("PUT", "/admin/logs/settings", b),
     runLogs: () => req<{ requested: boolean }>("POST", "/admin/logs/run"),

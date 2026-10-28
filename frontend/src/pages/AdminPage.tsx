@@ -19,6 +19,7 @@ import OrgAdmin from "./admin/OrgAdmin";
 import CacheAdmin from "./admin/CacheAdmin";
 import EolAdmin from "./admin/EolAdmin";
 import LogsAdmin from "./admin/LogsAdmin";
+import ComponentsAdmin from "./admin/ComponentsAdmin";
 
 const LEDE: Record<string, string> = {
   system: "Работают ли сервисы KAV Checker и доступны ли источники KSC.",
@@ -37,6 +38,7 @@ const LEDE: Record<string, string> = {
   updates: "Версия KAV Checker, релизы GitHub, обновление, откат и резервные копии.",
   journal: "Входы, проверки и запросы к источникам, формирование отчётов, ошибки.",
   audit: "Кто, что и когда сделал в KAV Checker.",
+  components: "Что установлено в KAV Checker, какие версии доступны у разработчиков и какие решения приняты по обновлению. Обновление приложения — только проверенным выпуском.",
   logs: "Сроки, объём, архивы и квота всех журналов: событий приложения, действий, выполнения заданий Pentest. Результаты сканирований этими настройками не затрагиваются.",
 };
 
@@ -61,6 +63,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "zcache" && <CacheAdmin />}
       {tab === "eolcfg" && <EolAdmin />}
       {tab === "logs" && <LogsAdmin />}
+      {tab === "components" && <ComponentsAdmin />}
       {tab === "mail" && <MailAdmin sources={ctx.sources} />}
       {tab === "org" && <OrgAdmin />}
       {tab === "catalog" && <CatalogAdmin />}

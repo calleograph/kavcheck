@@ -27,7 +27,8 @@ class GeneralSettings(_Group):
     activity_days: int = Field(default=30, ge=1, le=3650)            # «Показывать компьютеры, активные за последние N суток»: остальные скрыты в рабочих разделах
     timezone: str = Field(default="UTC", max_length=64)
     report_keep_days: int = Field(default=90, ge=1, le=3650)         # сколько хранить сформированные отчёты
-    journal_keep_days: int = Field(default=90, ge=1, le=3650)
+    journal_keep_days: int = Field(default=90, ge=1, le=3650)         # устарело: срок хранения журнала событий задаётся в «Журналы и хранение»
+    components_check: bool = True                                    # фоновая проверка доступных версий компонентов (GitHub, PyPI, npm, endoflife.date); без доступа в интернет кэш остаётся пустым
 
     @field_validator("timezone")
     @classmethod

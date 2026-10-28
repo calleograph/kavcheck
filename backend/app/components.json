@@ -1,0 +1,538 @@
+{
+ "reviewed_for": "0.13.0",
+ "reviewed_at": "2026-10-28",
+ "note": "Реестр проверяется при подготовке каждого выпуска (docs/RELEASE.md): verified — версия, проверенная в выпуске; decision — решение разработчика.",
+ "components": [
+  {
+   "key": "backend",
+   "title": "KAV Checker — backend",
+   "group": "KAV Checker",
+   "purpose": "HTTP API и логика приложения",
+   "installed": "app",
+   "source": "github:calleograph/kavcheck",
+   "verified": "",
+   "release_notes": "https://github.com/calleograph/kavcheck/releases",
+   "compat": "Обновляется только выпуском KAV Checker",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": "Обновление выполняет администратор (Администрирование → Обновления)"
+   }
+  },
+  {
+   "key": "worker",
+   "title": "KAV Checker — worker",
+   "group": "KAV Checker",
+   "purpose": "Фоновые задачи: отчёты, каталог, базы уязвимостей, расчёты",
+   "installed": "worker",
+   "source": "github:calleograph/kavcheck",
+   "verified": "",
+   "release_notes": "https://github.com/calleograph/kavcheck/releases",
+   "compat": "Версия должна совпадать с backend",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "nmap",
+   "title": "Nmap",
+   "group": "Сканер Pentest",
+   "purpose": "Обнаружение хостов, TCP-порты, определение сервисов и версий, скрипты NSE",
+   "installed": "nmap",
+   "source": "gh-tags:nmap/nmap",
+   "verified": "7.95",
+   "release_notes": "https://nmap.org/changelog.html",
+   "compat": "Устанавливается пакетом Debian в образ backend; версия обновляется при пересборке образа",
+   "limits": "Версия пакета Debian может отставать от последнего релиза nmap.org",
+   "decision": {
+    "status": "deferred",
+    "reason": "Nmap ставится пакетом Debian: версия обновляется вместе с базовым образом при пересборке. Сборка последнего релиза nmap.org из исходников не проверялась.",
+    "note": ""
+   }
+  },
+  {
+   "key": "nuclei",
+   "title": "Nuclei",
+   "group": "Сканер Pentest",
+   "purpose": "Проверка веб-приложений, конфигураций и известных CVE шаблонами",
+   "installed": "nuclei",
+   "source": "github:projectdiscovery/nuclei",
+   "verified": "3.11.1",
+   "release_notes": "https://github.com/projectdiscovery/nuclei/releases",
+   "compat": "Запускается только сканером с фиксированной командной строкой; версия и SHA-256 закреплены в Dockerfile",
+   "limits": "Обновление движка — только выпуском образа",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "nuclei_templates",
+   "title": "Шаблоны Nuclei",
+   "group": "Сканер Pentest",
+   "purpose": "Каталог проверок; выполняются только разрешённые политикой безопасности",
+   "installed": "templates",
+   "source": "github:projectdiscovery/nuclei-templates",
+   "verified": "10.5.1",
+   "release_notes": "https://github.com/projectdiscovery/nuclei-templates/releases",
+   "compat": "Шаблоны обновляются независимо (Администрирование → Pentest: шаблоны и проверки) по модели утверждения и контроля SHA-256",
+   "limits": "Новые опасные шаблоны не разрешаются автоматически",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "postgresql",
+   "title": "PostgreSQL",
+   "group": "Платформа",
+   "purpose": "Внутренняя база KAV Checker",
+   "installed": "pg",
+   "source": "eol:postgresql",
+   "branch": "16",
+   "verified": "16",
+   "release_notes": "https://www.postgresql.org/docs/release/",
+   "compat": "Образ postgres:16-alpine; минорные выпуски ветки 16 совместимы",
+   "limits": "",
+   "decision": {
+    "status": "deferred",
+    "reason": "Переход на новую основную версию PostgreSQL требует переноса данных (дамп/pg_upgrade) и не выполняется обычным обновлением приложения. Минорные выпуски ветки 16 приходят с обновлением образа.",
+    "note": "Решение разработчика: остаёмся на ветке 16 до отдельного плана миграции"
+   }
+  },
+  {
+   "key": "python",
+   "title": "Python",
+   "group": "Платформа",
+   "purpose": "Среда выполнения backend и worker",
+   "installed": "python",
+   "source": "eol:python",
+   "branch": "3.12",
+   "verified": "3.12",
+   "release_notes": "https://docs.python.org/3/whatsnew/",
+   "compat": "Образ python:3.12-slim",
+   "limits": "",
+   "decision": {
+    "status": "deferred",
+    "reason": "Образ собирается на ветке 3.12; переход на другую ветку Python требует полного прогона тестов и проверки бинарных зависимостей в образе — не выполнен в этом релизе.",
+    "note": ""
+   }
+  },
+  {
+   "key": "nginx",
+   "title": "nginx (web)",
+   "group": "Платформа",
+   "purpose": "Раздача интерфейса и обратный прокси",
+   "installed": "static",
+   "source": "eol:nginx",
+   "branch": "1.27",
+   "verified": "1.27",
+   "release_notes": "https://nginx.org/en/CHANGES",
+   "compat": "Образ nginxinc/nginx-unprivileged:1.27-alpine",
+   "limits": "",
+   "decision": {
+    "status": "deferred",
+    "reason": "Ветка 1.27 проверена с конфигурацией проксирования KAV Checker; новая ветка не проверялась.",
+    "note": ""
+   }
+  },
+  {
+   "key": "node",
+   "title": "Node.js (сборка интерфейса)",
+   "group": "Интерфейс",
+   "purpose": "Сборка интерфейса (образ node:24-alpine)",
+   "installed": "static",
+   "source": "eol:nodejs",
+   "branch": "24",
+   "verified": "24",
+   "release_notes": "https://nodejs.org/en/blog/release",
+   "compat": "Только на этапе сборки образа",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_fastapi",
+   "title": "FastAPI",
+   "group": "Backend (Python)",
+   "purpose": "HTTP-фреймворк",
+   "installed": "py:fastapi",
+   "source": "pypi:fastapi",
+   "verified": "0.162.0",
+   "release_notes": "https://pypi.org/project/fastapi/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_uvicorn",
+   "title": "Uvicorn",
+   "group": "Backend (Python)",
+   "purpose": "Сервер приложений",
+   "installed": "py:uvicorn",
+   "source": "pypi:uvicorn",
+   "verified": "0.54.0",
+   "release_notes": "https://pypi.org/project/uvicorn/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_sqlalchemy",
+   "title": "SQLAlchemy",
+   "group": "Backend (Python)",
+   "purpose": "Доступ к внутренней базе",
+   "installed": "py:SQLAlchemy",
+   "source": "pypi:SQLAlchemy",
+   "verified": "2.1.6",
+   "release_notes": "https://pypi.org/project/SQLAlchemy/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_asyncpg",
+   "title": "asyncpg",
+   "group": "Backend (Python)",
+   "purpose": "Драйвер PostgreSQL",
+   "installed": "py:asyncpg",
+   "source": "pypi:asyncpg",
+   "verified": "0.32.0",
+   "release_notes": "https://pypi.org/project/asyncpg/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_alembic",
+   "title": "Alembic",
+   "group": "Backend (Python)",
+   "purpose": "Миграции внутренней базы",
+   "installed": "py:alembic",
+   "source": "pypi:alembic",
+   "verified": "1.20.1",
+   "release_notes": "https://pypi.org/project/alembic/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_pydantic",
+   "title": "Pydantic",
+   "group": "Backend (Python)",
+   "purpose": "Проверка данных и настроек",
+   "installed": "py:pydantic",
+   "source": "pypi:pydantic",
+   "verified": "2.14.1",
+   "release_notes": "https://pypi.org/project/pydantic/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_pydantic_settings",
+   "title": "pydantic-settings",
+   "group": "Backend (Python)",
+   "purpose": "Конфигурация из окружения",
+   "installed": "py:pydantic-settings",
+   "source": "pypi:pydantic-settings",
+   "verified": "2.16.1",
+   "release_notes": "https://pypi.org/project/pydantic-settings/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_ldap3",
+   "title": "ldap3",
+   "group": "Backend (Python)",
+   "purpose": "Вход через LDAPS",
+   "installed": "py:ldap3",
+   "source": "pypi:ldap3",
+   "verified": "2.9.1",
+   "release_notes": "https://pypi.org/project/ldap3/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_cryptography",
+   "title": "cryptography",
+   "group": "Backend (Python)",
+   "purpose": "Шифрование секретов",
+   "installed": "py:cryptography",
+   "source": "pypi:cryptography",
+   "verified": "50.0.2",
+   "release_notes": "https://pypi.org/project/cryptography/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_argon2_cffi",
+   "title": "argon2-cffi",
+   "group": "Backend (Python)",
+   "purpose": "Хэширование паролей",
+   "installed": "py:argon2-cffi",
+   "source": "pypi:argon2-cffi",
+   "verified": "25.1.0",
+   "release_notes": "https://pypi.org/project/argon2-cffi/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_httpx",
+   "title": "httpx",
+   "group": "Backend (Python)",
+   "purpose": "HTTP-клиент (базы уязвимостей, проверки версий)",
+   "installed": "py:httpx",
+   "source": "pypi:httpx",
+   "verified": "0.28.1",
+   "release_notes": "https://pypi.org/project/httpx/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_pymssql",
+   "title": "pymssql",
+   "group": "Backend (Python)",
+   "purpose": "Драйвер SQL Server (чтение KSC)",
+   "installed": "py:pymssql",
+   "source": "pypi:pymssql",
+   "verified": "2.4.6",
+   "release_notes": "https://pypi.org/project/pymssql/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_openpyxl",
+   "title": "openpyxl",
+   "group": "Backend (Python)",
+   "purpose": "Выгрузка XLSX (потоковая)",
+   "installed": "py:openpyxl",
+   "source": "pypi:openpyxl",
+   "verified": "3.1.5",
+   "release_notes": "https://pypi.org/project/openpyxl/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_segno",
+   "title": "segno",
+   "group": "Backend (Python)",
+   "purpose": "QR-коды для TOTP",
+   "installed": "py:segno",
+   "source": "pypi:segno",
+   "verified": "1.6.6",
+   "release_notes": "https://pypi.org/project/segno/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_reportlab",
+   "title": "ReportLab",
+   "group": "Backend (Python)",
+   "purpose": "Формирование PDF",
+   "installed": "py:reportlab",
+   "source": "pypi:reportlab",
+   "verified": "5.1.0",
+   "release_notes": "https://pypi.org/project/reportlab/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "npm_react",
+   "title": "React",
+   "group": "Интерфейс (npm)",
+   "purpose": "Интерфейс",
+   "installed": "static",
+   "source": "npm:react",
+   "verified": "19.3.1",
+   "release_notes": "https://www.npmjs.com/package/react?activeTab=versions",
+   "compat": "Версии зафиксированы в frontend/package-lock.json",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "npm_react_dom",
+   "title": "React DOM",
+   "group": "Интерфейс (npm)",
+   "purpose": "Интерфейс",
+   "installed": "static",
+   "source": "npm:react-dom",
+   "verified": "19.3.1",
+   "release_notes": "https://www.npmjs.com/package/react-dom?activeTab=versions",
+   "compat": "Версии зафиксированы в frontend/package-lock.json",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "npm_react_router_dom",
+   "title": "React Router",
+   "group": "Интерфейс (npm)",
+   "purpose": "Маршрутизация",
+   "installed": "static",
+   "source": "npm:react-router-dom",
+   "verified": "7.18.4",
+   "release_notes": "https://www.npmjs.com/package/react-router-dom?activeTab=versions",
+   "compat": "Версии зафиксированы в frontend/package-lock.json",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "npm_tanstack_react_virtual",
+   "title": "TanStack Virtual",
+   "group": "Интерфейс (npm)",
+   "purpose": "Виртуальные списки",
+   "installed": "static",
+   "source": "npm:@tanstack/react-virtual",
+   "verified": "3.14.10",
+   "release_notes": "https://www.npmjs.com/package/@tanstack/react-virtual?activeTab=versions",
+   "compat": "Версии зафиксированы в frontend/package-lock.json",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "npm_typescript",
+   "title": "TypeScript",
+   "group": "Интерфейс (npm)",
+   "purpose": "Компилятор интерфейса (сборка)",
+   "installed": "static",
+   "source": "npm:typescript",
+   "verified": "5.9.3",
+   "release_notes": "https://www.npmjs.com/package/typescript?activeTab=versions",
+   "compat": "Версии зафиксированы в frontend/package-lock.json",
+   "limits": "",
+   "decision": {
+    "status": "deferred",
+    "reason": "Основная версия: переход требует отдельной проверки сборки и интерфейса — не выполнен в этом релизе.",
+    "note": ""
+   }
+  },
+  {
+   "key": "npm_vite",
+   "title": "Vite",
+   "group": "Интерфейс (npm)",
+   "purpose": "Сборка интерфейса",
+   "installed": "static",
+   "source": "npm:vite",
+   "verified": "6.4.5",
+   "release_notes": "https://www.npmjs.com/package/vite?activeTab=versions",
+   "compat": "Версии зафиксированы в frontend/package-lock.json",
+   "limits": "",
+   "decision": {
+    "status": "deferred",
+    "reason": "Основная версия: переход требует отдельной проверки сборки и интерфейса — не выполнен в этом релизе.",
+    "note": ""
+   }
+  },
+  {
+   "key": "npm_vitest",
+   "title": "Vitest",
+   "group": "Интерфейс (npm)",
+   "purpose": "Тесты интерфейса (не входит в образ)",
+   "installed": "static",
+   "source": "npm:vitest",
+   "verified": "3.2.7",
+   "release_notes": "https://www.npmjs.com/package/vitest?activeTab=versions",
+   "compat": "Версии зафиксированы в frontend/package-lock.json",
+   "limits": "",
+   "decision": {
+    "status": "deferred",
+    "reason": "Основная версия: переход требует отдельной проверки сборки и интерфейса — не выполнен в этом релизе.",
+    "note": ""
+   }
+  }
+ ]
+}
