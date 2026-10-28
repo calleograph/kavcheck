@@ -236,6 +236,19 @@ class PentestSettings(_Group):
     retention_days: int = Field(default=180, ge=7, le=3650)                                 # сколько хранить завершённые задания
     evidence_max_kb: int = Field(default=8, ge=1, le=256)                                   # предел размера технических доказательств одного порта
     custom_profiles: list[dict] = Field(default_factory=list, max_length=20)                # профили портов, добавленные администратором: {key, name, ports, intensity}
+    # Nuclei и расширенные проверки (шаблоны выполняются только из каталога разрешённых проверок: «Pentest → Шаблоны и проверки»)
+    nuclei_enabled: bool = True                                                              # Nuclei можно выключить целиком: задания остаются на Nmap
+    nuclei_rate: int = Field(default=50, ge=1, le=1000)                                      # запросов в секунду на запуск Nuclei (-rl)
+    nuclei_concurrency: int = Field(default=10, ge=1, le=100)                               # одновременных шаблонов (-c)
+    nuclei_bulk: int = Field(default=10, ge=1, le=100)                                       # одновременных целей на шаблон (-bs)
+    nuclei_timeout_s: int = Field(default=10, ge=2, le=120)                                  # время ожидания ответа одного запроса
+    nuclei_batch_hosts: int = Field(default=8, ge=1, le=64)                                  # хостов в одном запуске Nuclei (результаты готовых пачек сохраняются сразу)
+    nuclei_run_timeout_s: int = Field(default=900, ge=5, le=14400)                          # предельное время одного запуска Nuclei
+    nuclei_memory_mb: int = Field(default=1024, ge=256, le=16384)                            # предел памяти процесса Nuclei (GOMEMLIMIT и контроль размера процесса)
+    nuclei_nice: int = Field(default=10, ge=0, le=19)
+    nuclei_max_requests: int = Field(default=20_000, ge=100, le=1_000_000)                  # бюджет запросов на задание: при превышении проверки останавливаются, результаты сохраняются
+    nse_ssl_enum: bool = False                                                               # разрешить ssl-enum-ciphers (десятки TLS-рукопожатий на порт) в профиле «расширенное»
+    hit_retention_days: int = Field(default=60, ge=1, le=3650)                               # сырые результаты Nuclei хранятся не дольше (находки — по сроку хранения заданий)
 
     @field_validator("allowed_networks", "denied_networks")
     @classmethod

@@ -47,6 +47,10 @@ def _t(v, kind: str = "text", cap: int = 700) -> str:
 
 
 def write_pdf(path: Path, doc: dict) -> None:
+    if doc.get("pentest"):
+        from .pentest_pdf import write_pdf as write_pentest  # noqa: PLC0415
+
+        return write_pentest(path, doc)
     _fonts()
     from reportlab.lib import colors  # noqa: PLC0415
     from reportlab.lib.pagesizes import A4, landscape  # noqa: PLC0415

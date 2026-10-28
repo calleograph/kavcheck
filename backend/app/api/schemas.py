@@ -341,6 +341,15 @@ class QuickPentest(Params):
     cve: str = Field(default="", max_length=100)
     exploited: bool = False
     hide_not_confirmed: bool = False
+    category: str = Field(default="", max_length=80)
+    engine: str = Field(default="", max_length=60)
+    levels: list[str] = Field(default_factory=lambda: ["critical"], max_length=5)         # уровни критичности отчёта; по умолчанию только критические
+
+    @field_validator("levels")
+    @classmethod
+    def _levels(cls, v: list[str]) -> list[str]:
+        ok = [x for x in dict.fromkeys(v) if x in ("critical", "high", "medium", "low", "info")]
+        return ok or ["critical"]
 
 
 class QuickOverview(Params):

@@ -1140,6 +1140,7 @@ class PtJob(Base):
     sev: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)              # распределение находок по опасности
     nmap_version: Mapped[str] = mapped_column(String(40), nullable=False, default="")
     vdb_rev: Mapped[str] = mapped_column(String(80), nullable=False, default="")           # состояние баз уязвимостей при анализе
+    engines: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)          # версии и режимы движков задания: nuclei, шаблоны, набор проверок, число запросов
     base_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)                              # задание, на основе которого создано
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1160,6 +1161,7 @@ class PtHost(Base):
     findings_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_sev: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     scan_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    notes: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)             # неполные проверки хоста: Nuclei не уложился во время, проверка недоступна и т. п. (видны в отчёте)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     __table_args__ = (Index("ix_pt_hosts_ip", "ip", "job_id"), Index("ix_pt_hosts_state", "job_id", "state"))
 
@@ -1182,6 +1184,7 @@ class PtPort(Base):
     conf: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                    # уверенность Nmap 0–10
     banner: Mapped[str] = mapped_column(Text, nullable=False, default="")                    # исходный ответ сервиса (обрезан по настройке)
     scripts: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)           # результаты безопасных скриптов: [{id, output}]
+    skipped: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)           # уязвимости, исключённые как неприменимые к сервису: [{key, reason, kind}] (роль компонента, платформа, исправление дистрибутива)
     __table_args__ = (Index("ix_pt_ports_service", "job_id", "service"),)
 
 
@@ -1205,6 +1208,8 @@ class PtFinding(Base):
     product: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     version: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     evidence: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)          # объяснение: источники, диапазоны, отклонённые условия, проверки (OVAL, скрипты)
+    category: Mapped[str] = mapped_column(String(12), nullable=False, default="cve", server_default="cve")          # cve | config | web | exposure | tls | service
+    engines: Mapped[str] = mapped_column(String(40), nullable=False, default="nmap", server_default="nmap")       # движки доказательств через запятую: nmap, nse, nuclei, oval
     __table_args__ = (Index("ix_pt_findings_job", "job_id", "sev"), Index("ix_pt_findings_host", "job_id", "ip", "port"), Index("ix_pt_findings_key", "vuln_key"))
 
 
@@ -1218,6 +1223,68 @@ class PtEvent(Base):
     stage: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     ip: Mapped[str] = mapped_column(String(45), nullable=False, default="")
     message: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+
+
+class PtHit(Base):
+    """Необработанный результат проверки Nuclei: хранится до анализа и показывается в техническом приложении отчёта. Секреты в ответах скрыты ещё до записи."""
+    __tablename__ = "pt_hits"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("pt_jobs.id", ondelete="CASCADE"), nullable=False)
+    ip: Mapped[str] = mapped_column(String(45), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    engine: Mapped[str] = mapped_column(String(8), nullable=False, default="nuclei")
+    check_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    sev: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cves: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    tags: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    matched_at: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    vhost: Mapped[str] = mapped_column(String(253), nullable=False, default="")
+    extracted: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    info: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)               # описание, рекомендация, ссылки из шаблона
+    __table_args__ = (Index("ix_pt_hits_host", "job_id", "ip", "port"),)
+
+
+class PtCheck(Base):
+    """Каталог проверок Pentest (скрипты Nmap NSE и шаблоны Nuclei): назначение, воздействие, политика и решение администратора. Выполняются только разрешённые (`state = allowed`)."""
+    __tablename__ = "pt_checks"
+    engine: Mapped[str] = mapped_column(String(8), primary_key=True)                         # nse | nuclei
+    check_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    category: Mapped[str] = mapped_column(String(24), nullable=False, default="")           # web | cve | config | exposure | tls | ssh | smb | dns | db | mail | ftp | rdp | cache | tech
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    severity: Mapped[str] = mapped_column(String(10), nullable=False, default="info")
+    protocols: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    impact: Mapped[str] = mapped_column(String(12), nullable=False, default="low")          # passive | low | moderate | intrusive
+    policy: Mapped[str] = mapped_column(String(10), nullable=False, default="review")       # safe — входит в проверенный набор; review — только по утверждению администратора; forbidden — не выполняется никогда
+    policy_reason: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    state: Mapped[str] = mapped_column(String(8), nullable=False, default="blocked")        # allowed | blocked
+    decided_by: Mapped[str] = mapped_column(String(300), nullable=False, default="")        # кто изменил решение вручную (пусто — действует политика)
+    tags: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    cves: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    path: Mapped[str] = mapped_column(String(400), nullable=False, default="")             # файл шаблона относительно каталога шаблонов
+    requests: Mapped[int] = mapped_column(Integer, nullable=False, default=1)              # оценка числа запросов на цель (бюджет задания)
+    meta: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)             # рекомендация, ссылки, порты TCP-шаблона, продукт, CVSS — из шаблона
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    templates_ver: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    __table_args__ = (Index("ix_pt_checks_sel", "engine", "state", "category"),)
+
+
+class PtEngine(Base):
+    """Состояние внешнего движка (Nuclei): версия, шаблоны (версия, контрольная сумма, источник), запрос администратора на обновление или импорт."""
+    __tablename__ = "pt_engine"
+    key: Mapped[str] = mapped_column(String(16), primary_key=True)
+    version: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    templates_ver: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    templates_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    templates_source: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    templates_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    templates_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="idle")          # idle | working | error
+    message: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    request: Mapped[dict | None] = mapped_column(JSONType)                                    # {action: update | import, by, at}: исполняет сканер
 
 
 class PtLink(Base):

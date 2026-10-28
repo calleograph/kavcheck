@@ -548,13 +548,13 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
     if params.get("detail") == "summary" and kind == "quick_eol":
         params = {**params, "devices": False}                 # краткий отчёт не строит таблицу устройств (самая тяжёлая часть)
     doc = await BUILDERS[kind](client, params, ctx)
-    doc.update(kind=kind, generated_at=ctx.now.isoformat(timespec="seconds"), source=ctx.source_name, org=ctx.org)
+    doc.update(kind=kind, generated_at=ctx.now.isoformat(timespec="seconds"), source="" if kind == "quick_pentest" else ctx.source_name, org=ctx.org)      # автономный Pentest не принадлежит источнику KSC
     return shape(kind, doc, params)
 
 
 # Таблицы, которые входят только в подробный отчёт: построчные перечни (обнаружения, компьютеры, устройства, события). В кратком остаются сводные таблицы и показатели.
 DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "software", "vulns"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
-                 "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}, "quick_pentest": {"hosts", "ports"}}
+                 "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}, "quick_pentest": {"hosts", "ports", "hits", "skipped"}}
 
 
 def shape(kind: str, doc: dict, p: dict) -> dict:
@@ -582,7 +582,7 @@ def shape(kind: str, doc: dict, p: dict) -> dict:
 
 def brief(doc: dict) -> dict:
     """Документ без строк таблиц (для хранения в сводке отчёта и ответа предпросмотра): строки основной таблицы — отдельно, остальные — числом."""
-    out = {k: v for k, v in doc.items() if k not in ("tables", "host_details")}
+    out = {k: v for k, v in doc.items() if k not in ("tables", "host_details", "pentest")}
     if out.get("org"):
         out["org"] = {k: v for k, v in out["org"].items() if k != "logo"}          # логотип в сводке отчёта не хранится
     return {**out, "tables": [{"id": t["id"], "title": t["title"], "columns": t["columns"], "n": len(t["rows"]), "note": t.get("note", "")} for t in doc["tables"]]}

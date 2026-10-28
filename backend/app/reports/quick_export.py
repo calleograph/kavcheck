@@ -86,7 +86,8 @@ def write_xlsx(path: Path, doc: dict) -> None:
     if doc.get("subtitle"):
         put([doc["subtitle"]])
     put(["Сформирован (UTC)", _fmt(doc.get("generated_at"), "date")])
-    put(["Источник KSC", doc.get("source") or ""])
+    if doc.get("source"):
+        put(["Источник KSC", doc.get("source")])
     for m in doc.get("meta") or []:
         put([m["label"], m["text"]])
     s.append([])
@@ -267,6 +268,10 @@ def _host_card(d: dict, esc=html.escape) -> str:
 
 
 def render_html(doc: dict) -> str:
+    if doc.get("pentest"):                                   # Pentest: свой иерархический документ (хост → сервис → находка)
+        from .pentest_html import render  # noqa: PLC0415
+
+        return render(doc)
     esc = html.escape
     org = org_lines(doc)
     blocks = [b for b in L.resolve(doc) if b["entry"].get("html") != "never" and not (b["entry"].get("html") == "technical" and doc.get("level") == "management")]

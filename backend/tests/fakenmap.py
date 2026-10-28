@@ -43,7 +43,7 @@ for ip in targets:
             else:
                 cpe = f'<cpe>{p["cpe"]}</cpe>' if p.get("cpe") else ""
                 banner = f'<script id="banner" output={quoteattr(p["banner"])}/>' if p.get("banner") else ""
-                scripts = "".join(f'<script id="{s["id"]}" output={quoteattr(s.get("output", ""))}><elem key="state">{s["state"]}</elem><table key="ids">{"".join("<elem>CVE:" + c + "</elem>" for c in s.get("ids", []))}</table></script>' for s in p.get("scripts", []))
+                scripts = "".join(f'<script id="{s["id"]}" output={quoteattr(s.get("output", ""))}><elem key="state">{s.get("state", "")}</elem><table key="ids">{"".join("<elem>CVE:" + c + "</elem>" for c in s.get("ids", []))}</table></script>' for s in p.get("scripts", []))
                 out.append(f'<port protocol="tcp" portid="{p["port"]}"><state state="open"/><service name={quoteattr(p.get("service", ""))} product={quoteattr(p.get("product", ""))} '
                            f'version={quoteattr(p.get("version", ""))} extrainfo={quoteattr(p.get("extrainfo", ""))} method="probed" conf="10">{cpe}</service>{banner}{scripts}</port>')
         out.append("</ports>")
