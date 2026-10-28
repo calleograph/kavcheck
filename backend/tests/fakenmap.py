@@ -20,6 +20,10 @@ for ip in targets:
     spec = sc.get(ip, {})
     if spec.get("hang") == stage:
         time.sleep(600)
+    if spec.get("fail_once") == stage and not os.path.exists(os.environ["FAKE_NMAP_LOG"] + f".once.{ip}.{stage}"):       # временный сбой: первый запуск неудачен, повтор проходит
+        open(os.environ["FAKE_NMAP_LOG"] + f".once.{ip}.{stage}", "w").close()
+        print("temporary failure", file=sys.stderr)
+        sys.exit(1)
     if spec.get("fail") == stage:
         print("Failed to resolve", file=sys.stderr)
         sys.exit(1)

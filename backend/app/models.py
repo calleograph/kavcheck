@@ -1145,6 +1145,8 @@ class PtJob(Base):
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+    stages: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)           # состояние каждого этапа: {этап: {state, at, ms, note}}
+    diag: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)             # итог контроля полноты: причины неполного выполнения и сведения о пропущенном
     __table_args__ = (Index("ix_pt_jobs_status", "status", "created_at"),)
 
 
@@ -1223,6 +1225,28 @@ class PtEvent(Base):
     stage: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     ip: Mapped[str] = mapped_column(String(45), nullable=False, default="")
     message: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    # структурированные поля диагностики (миграция 0019): живой журнал, скачивание, сводка причин неполного выполнения
+    engine: Mapped[str] = mapped_column(String(10), nullable=False, default="")             # nmap | nse | nuclei | oval | match | scanner
+    kind: Mapped[str] = mapped_column(String(10), nullable=False, default="")               # step (ход) | skip (не применимо, не ошибка) | problem (неисполненная проверка) | info
+    port: Mapped[int | None] = mapped_column(Integer)
+    check_id: Mapped[str] = mapped_column(String(160), nullable=False, default="")          # скрипт NSE, шаблон Nuclei, запуск
+    rc: Mapped[int | None] = mapped_column(Integer)                                          # код завершения процесса
+    ms: Mapped[int | None] = mapped_column(Integer)                                          # длительность, мс
+    retry: Mapped[str] = mapped_column(String(8), nullable=False, default="")               # safe (повтор безопасен) | no | done (повтор уже выполнен)
+    attempt: Mapped[int | None] = mapped_column(Integer)                                     # номер запуска задания (после перезапуска сканера — следующий)
+    incomplete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)        # событие объясняет неисполненную обязательную часть
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")                   # технические подробности: вывод ошибки (усечён, секреты скрыты)
+
+
+class CompCheck(Base):
+    """Последняя известная версия компонента по данным официального источника (проверяется в фоне, кэшируется; страница внешних сервисов не опрашивает)."""
+    __tablename__ = "comp_checks"
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    latest: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    url: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    error: Mapped[str] = mapped_column(String(300), nullable=False, default="")
 
 
 class PtHit(Base):
