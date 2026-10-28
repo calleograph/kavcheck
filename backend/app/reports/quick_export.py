@@ -268,6 +268,10 @@ def _host_card(d: dict, esc=html.escape) -> str:
 
 
 def render_html(doc: dict) -> str:
+    if doc.get("hunt"):                                      # CVE Hunt: компактный перечень затронутых компьютеров
+        from .hunt_html import render as render_hunt  # noqa: PLC0415
+
+        return render_hunt(doc)
     if doc.get("pentest"):                                   # Pentest: свой иерархический документ (хост → сервис → находка)
         from .pentest_html import render  # noqa: PLC0415
 

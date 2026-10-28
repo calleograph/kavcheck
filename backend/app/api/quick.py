@@ -27,7 +27,7 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
@@ -48,7 +48,7 @@ async def maybe_source(request: Request, su: SessionUser = Depends(require_user)
 
 @router.post("/preview")
 async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depends(require_user), src: KscSource | None = Depends(maybe_source), db: AsyncSession = Depends(get_db)):
-    if src is None and body.kind != "quick_pentest":
+    if src is None and body.kind not in ("quick_pentest", "quick_hunt"):
         raise HTTPException(status_code=409, detail={"code": "no_source", "message": "Источник KSC не выбран."})
     if body.kind == "version_audit":
         try:
@@ -92,7 +92,7 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), sm=request.app.state.session_maker, source_id=src.id, source_ids=ids)
         doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
         return _answer(doc, ctx.now)
-    if body.kind == "quick_pentest":                  # результаты сканирования: PostgreSQL, источники KSC не нужны; права — аналитик и администратор
+    if body.kind in ("quick_pentest", "quick_hunt"):  # результаты сканирования: PostgreSQL, источники KSC не нужны; права — аналитик и администратор
         if su.role == "viewer":
             raise HTTPException(status_code=403, detail="Результаты Pentest доступны аналитику и администратору")
         try:

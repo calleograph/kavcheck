@@ -184,7 +184,7 @@ class Runner:
             general = await self._svc.get(db, "general")
             org = (await self._svc.get(db, "organization")).model_dump()
             hw = await self._svc.get(db, "hardware")
-        if src is None and job.kind != "quick_pentest":                    # результаты Pentest не принадлежат источнику KSC
+        if src is None and job.kind not in ("quick_pentest", "quick_hunt"):                    # результаты Pentest не принадлежат источнику KSC
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
         if src is None:

@@ -36,7 +36,7 @@ def job_out(j: ReportJob) -> dict:
 
 
 def can_see(su: SessionUser, j: ReportJob) -> bool:
-    if j.kind == "quick_pentest":                          # результаты сканирования не принадлежат источнику KSC: права — аналитик и администратор
+    if j.kind in ("quick_pentest", "quick_hunt"):          # результаты сканирования не принадлежат источнику KSC: права — аналитик и администратор
         return su.role in ("analyst", "admin")
     ids = job_sources(j)
     return bool(ids) and all(su.can_use_source(uuid.UUID(i)) for i in ids)
@@ -111,14 +111,14 @@ async def list_jobs(source_only: bool = True, offset: int = Query(0, ge=0), limi
                     db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(ReportJob).order_by(ReportJob.created_at.desc()).offset(offset).limit(limit * 3))).scalars().all()
     cur = str(su.current_source_id) if su.current_source_id else None
-    out = [j for j in rows if can_see(su, j) and (not source_only or not cur or cur in job_sources(j) or j.kind == "quick_pentest")]
+    out = [j for j in rows if can_see(su, j) and (not source_only or not cur or cur in job_sources(j) or j.kind in ("quick_pentest", "quick_hunt"))]
     return {"items": [job_out(j) for j in out[:limit]]}
 
 
 @router.post("", status_code=201)
 async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     params = validate_params(body.kind, body.params)
-    if body.kind == "quick_pentest":
+    if body.kind in ("quick_pentest", "quick_hunt"):
         sources = []
     elif body.kind in ("quick_zone", "quick_eol", "quick_devices", "quick_overview"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю
         from ..services.sources import visible_sources  # noqa: PLC0415

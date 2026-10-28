@@ -218,6 +218,7 @@ class PentestSettings(_Group):
     # Область разрешений: оператор может сканировать только адреса внутри неё. По умолчанию — частные сети (RFC 1918, ULA) и документационный 192.0.2.0/24; публичные адреса — только если добавлены сюда.
     allowed_networks: list[str] = Field(default_factory=lambda: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "192.0.2.0/24"], max_length=200)
     denied_networks: list[str] = Field(default_factory=list, max_length=200)               # исключения из области разрешений (всегда не сканируются)
+    hunt_networks: list[str] = Field(default_factory=list, max_length=200)                 # «вся инфраструктура» для CVE Hunt: сети, которые просматривает целевой поиск (в пределах области разрешений); плюс активные компьютеры KSC
     allow_loopback: bool = False                                                            # сканирование самого сервера (127.0.0.0/8, ::1) — только для проверки установки
     max_targets: int = Field(default=4096, ge=1, le=262_144)                              # адресов в одном задании
     large_threshold: int = Field(default=256, ge=1, le=262_144)                           # с этого числа адресов запуск требует отдельного подтверждения
@@ -251,7 +252,7 @@ class PentestSettings(_Group):
     nse_ssl_enum: bool = False                                                               # разрешить ssl-enum-ciphers (десятки TLS-рукопожатий на порт) в профиле «расширенное»
     hit_retention_days: int = Field(default=60, ge=1, le=3650)                               # сырые результаты Nuclei хранятся не дольше (находки — по сроку хранения заданий)
 
-    @field_validator("allowed_networks", "denied_networks")
+    @field_validator("allowed_networks", "denied_networks", "hunt_networks")
     @classmethod
     def _nets(cls, v: list[str]) -> list[str]:
         import ipaddress  # noqa: PLC0415

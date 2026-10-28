@@ -1238,6 +1238,35 @@ class PtEvent(Base):
     detail: Mapped[str] = mapped_column(Text, nullable=False, default="")                   # технические подробности: вывод ошибки (усечён, секреты скрыты)
 
 
+class HuntHit(Base):
+    """Результат целевого поиска (CVE Hunt): компьютер × критерий. Статусы: confirmed | probable | needs_check | failed (не удалось проверить). «Не обнаружено» не хранится — охват задания виден по хостам задания."""
+    __tablename__ = "hunt_hits"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("pt_jobs.id", ondelete="CASCADE"), nullable=False)
+    crit_key: Mapped[str] = mapped_column(String(80), nullable=False)                         # критерий задания: CVE-… либо ключ продукта
+    vuln_key: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    ip: Mapped[str] = mapped_column(String(45), nullable=False, default="")
+    port: Mapped[int | None] = mapped_column(Integer)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)                                  # устройство KSC (не склеивается с другим источником по имени или адресу)
+    host_id: Mapped[int | None] = mapped_column(BigInteger)
+    host_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    os: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    user_name: Mapped[str] = mapped_column(String(256), nullable=False, default="")           # последний замеченный пользователь (не владелец и не интерактивный сеанс)
+    user_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    zone: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    group_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    product: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    version: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(14), nullable=False)
+    basis: Mapped[str] = mapped_column(String(8), nullable=False, default="network")          # ksc | network | both
+    evidence: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)           # [{kind, text, at}]: «как определено»
+    data_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                              # возраст использованных данных
+    last_connected: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    ambiguous: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)           # адрес совпал с несколькими устройствами KSC
+    diff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)               # версия в KSC и по сети различаются
+    __table_args__ = (Index("ix_hunt_hits_job", "job_id", "status"), Index("ix_hunt_hits_ip", "job_id", "ip"))
+
+
 class CompCheck(Base):
     """Последняя известная версия компонента по данным официального источника (проверяется в фоне, кэшируется; страница внешних сервисов не опрашивает)."""
     __tablename__ = "comp_checks"
