@@ -356,7 +356,7 @@ async def journal_export(range_: str = Query("24h", alias="range"), su: SessionU
 
 @router.post("/journal/purge")
 async def journal_purge(request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    keep = (await request.app.state.settings_svc.get(db, "general")).journal_keep_days
+    keep = (await request.app.state.settings_svc.get(db, "logs")).journal_days
     n = (await db.execute(delete(EventLog).where(EventLog.at < utcnow() - timedelta(days=keep)))).rowcount
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="journal.purge", target_type="journal", target_id="event_log", details={"deleted": n, "keep_days": keep})
     await db.commit()

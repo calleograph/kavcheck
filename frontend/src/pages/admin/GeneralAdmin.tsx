@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { api, type ApiError, type SettingsValues } from "../../api";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
@@ -44,7 +45,7 @@ export default function GeneralAdmin() {
           </div>
           <div className="cols">
             <label>Хранить отчёты, дней<input type="number" min={1} max={3650} value={Number(v.report_keep_days ?? 90)} onChange={(e) => set("report_keep_days", Number(e.target.value))} /></label>
-            <label>Хранить журнал событий, дней<input type="number" min={1} max={3650} value={Number(v.journal_keep_days ?? 90)} onChange={(e) => set("journal_keep_days", Number(e.target.value))} /></label>
+            <div className="field"><span>Хранение журналов</span><Link className="link-btn" to="/admin?tab=logs">Администрирование → Журналы и хранение</Link><span className="help">Сроки, объём, архивы и квота журналов задаются там</span></div>
           </div>
         </>); }}
       </Group>

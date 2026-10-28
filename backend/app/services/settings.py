@@ -264,8 +264,45 @@ class PentestSettings(_Group):
         return out
 
 
+class LogsSettings(_Group):
+    """Хранение журналов (Администрирование → «Журналы и хранение»). Операционные журналы чистятся по сроку и объёму; журнал действий (аудит) — отдельная политика: по умолчанию не удаляется,
+    а при заданном сроке записи сначала переносятся в сжатый архив. Результаты сканирований этими настройками не затрагиваются."""
+    journal_days: int = Field(default=30, ge=1, le=3650)             # журнал событий приложения (ошибки, источники KSC, каталог, EOL, базы уязвимостей, отчёты, система)
+    journal_max_mb: int = Field(default=500, ge=0, le=102_400)       # 0 — без предела объёма
+    journal_archive: bool = False                                    # перед удалением переносить записи в сжатый архив
+    journal_by_category: dict[str, int] = Field(default_factory=dict, max_length=20)   # срок по категориям события (auth, ksc, report, catalog, worker, admin, system), суток; остальные — journal_days
+    audit_days: int = Field(default=0, ge=0, le=3650)                # журнал действий: 0 — не удалять; иначе не меньше 90 суток, записи удаляются только после переноса в архив
+    audit_max_mb: int = Field(default=0, ge=0, le=102_400)           # для аудита предел объёма только предупреждает: записи по объёму не удаляются
+    pt_events_days: int = Field(default=90, ge=1, le=3650)           # журналы выполнения заданий Pentest (находки и результаты не затрагиваются)
+    pt_events_max_mb: int = Field(default=200, ge=0, le=102_400)
+    pt_events_archive: bool = False
+    archive_days: int = Field(default=180, ge=1, le=3650)            # срок хранения архивов
+    archive_max_files: int = Field(default=200, ge=1, le=10_000)     # предел числа архивных файлов
+    archive_file_mb: int = Field(default=50, ge=1, le=1024)          # ротация по размеру: файл архива закрывается и начинается следующий
+    compress: bool = True                                            # архивы сжимаются gzip
+    quota_mb: int = Field(default=1024, ge=0, le=1_048_576)          # общий предел журналов в базе и архивов; 0 — без предела
+    auto_clean: bool = True                                          # автоматическая очистка по сроку и объёму
+    rotate_hours: int = Field(default=24, ge=1, le=168)              # как часто запускается ротация
+    disk_warn_free_mb: int = Field(default=2048, ge=100, le=1_048_576)   # предупреждать, когда на диске данных свободно меньше
+
+    @field_validator("audit_days")
+    @classmethod
+    def _audit(cls, v: int) -> int:
+        if 0 < v < 90:
+            raise ValueError("журнал действий нельзя хранить меньше 90 суток (0 — не удалять)")
+        return v
+
+    @field_validator("journal_by_category")
+    @classmethod
+    def _cats(cls, v: dict[str, int]) -> dict[str, int]:
+        for k, d in v.items():
+            if not (isinstance(k, str) and k.isalnum() and len(k) <= 24 and isinstance(d, int) and 1 <= d <= 3650):
+                raise ValueError("сроки по категориям: имя категории и число суток от 1 до 3650")
+        return v
+
+
 GROUPS: dict[str, type[_Group]] = {"pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
-                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings}
+                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings}
 
 
 class SettingsService:

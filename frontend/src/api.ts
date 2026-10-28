@@ -96,6 +96,12 @@ export interface PtLogEvent { id: number; at: string; level: "debug" | "info" | 
 export interface PtStageState { ru: string; state: "pending" | "running" | "done" | "skipped" | "error" | "cancelled" | "limited"; note?: string; ms?: number }
 export interface PtDiag { reasons: { text: string; engine: string; stage: string; n: number; hosts: number; event_id: number | null; retry: string }[]; skipped: Record<string, string>; completeness: string; no_version: number }
 export interface PtJobFull extends PtJob { events: PtLogEvent[]; changes: PtChanges | null; stages: Record<string, PtStageState>; diag: PtDiag; log: { total: number; warn: number; error: number } }
+export interface LogType { key: string; title: string; owner: string; location: string; format: string; purpose: string; kind: string; tab: string; days: number; max_mb: number; archive: boolean; mandatory: boolean;
+  rows: number; bytes: number; oldest: string | null; archives: number; archive_bytes: number }
+export interface LogsOverview { items: LogType[]; external: { key: string; title: string; owner: string; location: string; format: string; purpose: string }[]; settings: Record<string, number | boolean | Record<string, number>>;
+  archives: { name: string; type: string; bytes: number; at: string; gz: boolean }[];
+  totals: { logs_bytes: number; archive_bytes: number; files: number; quota_bytes: number | null; used_bytes: number; oldest: string | null }; disk: { free: number | null; total: number | null; warn: boolean };
+  last_run: string | null; next_run: string | null; requested: boolean; report: { at: string; warnings: string[]; deferred: boolean; deleted_archives: string[]; moved: Record<string, { rows: number }> } | null }
 export interface PtLogPage { items: PtLogEvent[]; first_id: number | null; last_id: number | null; active: boolean; status: string; status_ru: string; counts: { total: number; warn: number; error: number } }
 export interface PtOverview { enabled: boolean; scanner: { alive: boolean; age_s: number | null; data: { nmap?: string; scan?: string; net_raw?: boolean; jobs_running?: number } }; active: number; results: { jobs: number; findings: number; confirmed: number; last_at: string | null } | null;
   recent: PtJob[]; latest_sev: Record<string, number>; policy: { allowed: string[] | null; max_targets: number; large_threshold: number; full_ports_max_targets: number; safe_scripts_enabled: boolean; scan_type: string; max_rate: number } }
@@ -538,6 +544,11 @@ export const api = {
     resetBuiltin: () => req<{ ok: boolean }>("POST", "/admin/rules/reset-builtin"),
     audit: (p: Record<string, string | number | undefined>) => req<{ items: AuditRow[] }>("GET", `/admin/audit${qs(p)}`),
     journal: (p: Record<string, string | number | undefined>) => req<{ items: JournalRow[]; errors_24h: number }>("GET", `/admin/journal${qs(p)}`),
+    logs: () => req<LogsOverview>("GET", "/admin/logs"),
+    saveLogs: (b: Record<string, unknown>) => req<{ changed: string[] }>("PUT", "/admin/logs/settings", b),
+    runLogs: () => req<{ requested: boolean }>("POST", "/admin/logs/run"),
+    removeArchive: (name: string) => req<void>("DELETE", `/admin/logs/archives/${encodeURIComponent(name)}`),
+    archiveUrl: (name: string) => `/api/v1/admin/logs/archives/${encodeURIComponent(name)}`,
     journalExportUrl: (range: string) => `/api/v1/admin/journal/export.csv${qs({ range })}`,
     journalPurge: () => req<{ deleted: number }>("POST", "/admin/journal/purge"),
     system: () => req<SystemStatus>("GET", "/admin/system"),

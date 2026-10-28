@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api, type AuditRow, type JournalRow } from "../../api";
 import { ConfirmDialog } from "../../components/Dialogs";
@@ -34,6 +35,7 @@ export function JournalAdmin() {
         <select value={level} onChange={(e) => setLevel(e.target.value)} aria-label="Уровень" className="w-auto"><option value="">Все уровни</option><option value="warn">Предупреждения и ошибки</option><option value="error">Только ошибки</option><option value="info">Сведения</option></select>
         <select value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Компонент" className="w-auto"><option value="">Все компоненты</option>{Object.entries(CATEGORY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
         <a className="btn" href={api.admin.journalExportUrl(range === "custom" ? "30d" : range || "30d")} download><Icon name="download" />CSV</a>
+        <Link className="link-btn small" to="/admin?tab=logs&type=journal">Настройки хранения</Link>
       </div>
       {data && (data.errors_24h ? <div className="alert error"><Icon name="alert" /><div className="alert-body">За последние сутки ошибок: <b>{data.errors_24h}</b>. <button className="link-btn" onClick={() => { setLevel("error"); setRange("24h"); }}>Показать только их</button></div></div>
         : <div className="alert ok"><Icon name="checkCircle" /><div className="alert-body">За последние сутки ошибок нет.</div></div>)}
@@ -70,6 +72,7 @@ export function AuditAdmin() {
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Кто, что или объект" aria-label="Поиск" /><MaskHint /></div>
         <input className="mono w-md" value={action} onChange={(e) => setAction(e.target.value)} placeholder="report." aria-label="Действие начинается с" />
+        <Link className="link-btn small" to="/admin?tab=logs&type=audit">Настройки хранения</Link>
         <p className="note">Хранится отдельно от журнала событий. Пароли и секреты не записываются; у проверок подключения указана длительность.</p>
       </div>
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
