@@ -79,7 +79,17 @@ export type PtConfidence = "confirmed" | "probable" | "needs_check" | "not_confi
 export interface PtJob { id: string; title: string; status: PtStatus; status_ru: string; stage: string; stage_ru: string; pct: number; profile: string; created_by: string; created_at: string; started_at: string | null; finished_at: string | null;
   duration_s: number | null; targets_n: number; hosts_up: number; hosts_done: number; ports_open: number; services_n: number; findings_n: number; findings_confirmed: number; errors_n: number; incomplete_n: number; max_sev: number; max_sev_ru: string;
   sev: Record<string, number>; nmap_version: string; vdb_rev: string; error: string | null; cancel_requested: boolean; attempts: number; base_job_id: string | null;
-  options?: { ports?: string; discovery?: string; intensity?: number; safe_audit?: boolean }; targets_input?: string; rejected?: { input: string; reason: string }[] }
+  engines?: { nmap?: string; nuclei_version?: string; templates_ver?: string; requests?: number; scan?: PtScan };
+  options?: { ports?: string; discovery?: string; intensity?: number; safe_audit?: boolean; scan?: PtScan }; targets_input?: string; rejected?: { input: string; reason: string }[] }
+export interface PtScan { preset: string; nse: boolean; nse_groups: string[]; nuclei?: boolean; cats: string[]; active: boolean }
+export interface PtModes { presets: { key: string; title: string; about: string; nse: boolean; nuclei: boolean; cats: string[] }[];
+  nse_groups: { key: string; title: string; scripts: { id: string; title: string; impact: string; requests: number }[] }[];
+  nuclei: { key: string; title: string; templates: number; about: string; load: string; default: boolean }[];
+  engine: PtEngine; settings: { nuclei_enabled: boolean; nuclei_rate: number; nuclei_max_requests: number }; active_note: string }
+export interface PtEngine { version: string; templates_ver: string; templates_sha256: string; templates_source: string; templates_n: number; templates_at: string | null; status: string; message: string; pending: string | null; ready: boolean;
+  checks?: Record<string, number>; allowed?: Record<string, number> }
+export interface PtCheck { engine: "nse" | "nuclei"; id: string; category: string; category_ru: string; name: string; description: string; severity: string; protocols: string; impact: string; policy: "safe" | "review" | "forbidden";
+  policy_reason: string; state: "allowed" | "blocked"; decided_by: string; tags: string[]; cves: string[]; requests: number; updated_at: string; templates_ver: string }
 export interface PtChanges { against: { job_id: string; title: string; at: string }; hosts_compared: number; new_hosts: number; totals: { ports_opened: number; ports_closed: number; services_changed: number; findings_new: number; findings_not_seen: number }; hosts: ({ ip: string } & Record<string, number | string>)[]; note: string }
 export interface PtJobFull extends PtJob { events: { at: string; level: string; stage: string; ip: string; message: string }[]; changes: PtChanges | null }
 export interface PtOverview { enabled: boolean; scanner: { alive: boolean; age_s: number | null; data: { nmap?: string; scan?: string; net_raw?: boolean; jobs_running?: number } }; active: number; results: { jobs: number; findings: number; confirmed: number; last_at: string | null } | null;
@@ -88,17 +98,19 @@ export interface PtProfiles { items: { key: string; title: string; ports: string
 export interface PtPreview { unique: number; tokens: number; duplicates: number; kinds: Record<string, number>; rejected: { input: string; reason: string }[]; rejected_n: number; sample: string[]; names: Record<string, string[]>;
   estimate: { ports_per_host?: number; seconds?: number; text?: string; probes?: number; error?: string }; warnings: string[]; default_profile: string; needs_large_confirm: boolean; max_targets: number }
 export interface PtFindingRow { id: number; ip: string; host: string; proto: string; port: number; service: string; product: string; version: string; vuln_key: string; title: string; sev: number; sev_ru: string; score: number | null; score_version: string;
-  exploited: boolean; confidence: PtConfidence; confidence_ru: string; basis: string; basis_ru: string; rule: string }
+  exploited: boolean; confidence: PtConfidence; confidence_ru: string; basis: string; basis_ru: string; rule: string; category?: string; category_ru?: string; engines?: string[]; engines_ru?: string[] }
 export interface PtScore { score: number; version: string; severity_ru?: string; vector?: string; origin_label?: string; url?: string; source_title?: string }
 export interface PtFindingDetail extends Omit<PtFindingRow, "service" | "host"> { host: string; evidence: Record<string, unknown> & { match?: { vendor?: string; product?: string; version?: string; via?: string; sources: { source: string; ext_id: string; affected: string; verdict: string }[]; notes: string[] };
-    checks?: { script: string; state: string; output: string }[]; limits?: string; oval?: { status: string; reason: string; at: string; by: string; facts?: string; definitions: { def_id: string; feed: string; title: string; version: number; result: string; reason?: string; tests?: { id: string; kind: string; name?: string; status: string; detail: string }[] }[] } };
+    checks?: { script: string; state: string; output: string; engine?: string; template?: string; matched_at?: string; extracted?: string[]; missing?: string[]; methods?: string[]; algorithms?: string[] }[]; limits?: string;
+    distro?: { release: string; installed: string; fixed: string; state: string }; oval?: { status: string; reason: string; at: string; by: string; facts?: string; definitions: { def_id: string; feed: string; title: string; version: number; result: string; reason?: string; tests?: { id: string; kind: string; name?: string; status: string; detail: string }[] }[] } };
   service: { name: string; product: string; version: string; extrainfo: string; tunnel: string; cpe: string[]; method: string; conf: number; banner: string; scripts: { id: string; output: string; state?: string; ids?: string[] }[] } | null;
   scan: { at: string | null; job: string; nmap: string; vdb_rev: string };
-  vuln: { known: boolean; title?: string; description?: string; severity?: number; exploited?: boolean; cvss?: PtScore | null; all_scores?: PtScore[]; published?: string | null; modified?: string | null; sources?: string[]; ids?: string[]; refs?: string[]; fix?: string; fix_available?: boolean | null; affected?: { vendor: string; product: string; source: string; text: string }[] } }
+  category?: string; category_ru?: string; category_help?: string; engines_ru?: string[];
+  vuln: { known: boolean; kb?: boolean; impact?: string; title?: string; description?: string; severity?: number; exploited?: boolean; cvss?: PtScore | null; all_scores?: PtScore[]; published?: string | null; modified?: string | null; sources?: string[]; ids?: string[]; refs?: string[]; fix?: string; fix_available?: boolean | null; affected?: { vendor: string; product: string; source: string; text: string }[] } }
 export interface PtHostRow { ip: string; host: string; names: string[]; state: string; state_ru: string; ports_n: number; findings_n: number; max_sev: number; max_sev_ru: string; error: string; error_stage: string; scan_ms: number }
 export interface PtPort { proto: string; port: number; service: string; product: string; version: string; extrainfo: string; tunnel: string; cpe: string[]; method: string; conf: number; banner: string; scripts: { id: string; state?: string }[] }
 export interface PtHostCard { ip: string; names: string[]; job: { id: string; title: string; at: string; status: string; status_ru: string; nmap: string; vdb_rev: string }; state: string; state_ru: string; error: string; error_stage: string; ports: PtPort[];
-  findings: { id: number; port: number; proto: string; vuln_key: string; title: string; sev: number; sev_ru: string; score: number | null; exploited: boolean; confidence: PtConfidence; confidence_ru: string; basis_ru: string; product: string; version: string }[];
+  findings: { id: number; port: number; proto: string; vuln_key: string; title: string; sev: number; sev_ru: string; score: number | null; exploited: boolean; confidence: PtConfidence; confidence_ru: string; basis_ru: string; product: string; version: string; category_ru?: string; engines_ru?: string[] }[];
   max_sev: number; max_sev_ru: string; history: { job_id: string; title: string; at: string; state: string; state_ru: string; ports_n: number; findings_n: number; max_sev: number; max_sev_ru: string; current: boolean }[];
   changes: ({ against: { job_id: string; title: string; at: string }; ports_opened: PtPort[]; ports_closed: PtPort[]; services_changed: { proto: string; port: number; before: string; after: string }[]; findings_new: PtHostCard["findings"]; findings_not_seen: PtHostCard["findings"]; note: string }) | null;
   ksc: { linked: { source_id: string; source: string; host_id: number; set_by: string; set_at: string }[]; candidates: { source_id: string; source: string; host_id: number; name: string; os: string }[] } }
@@ -300,12 +312,17 @@ export const api = {
     job: (id: string) => req<PtJobFull>("GET", `/pentest/jobs/${id}`),
     cancel: (id: string) => req<PtJob>("POST", `/pentest/jobs/${id}/cancel`),
     remove: (id: string) => req<void>("DELETE", `/pentest/jobs/${id}`),
-    clone: (id: string) => req<{ title: string; targets: string; profile: string; ports: string; discovery: string; intensity: number; safe_audit: boolean; base_job_id: string }>("GET", `/pentest/jobs/${id}/clone`),
+    clone: (id: string) => req<{ title: string; targets: string; profile: string; ports: string; discovery: string; intensity: number; safe_audit: boolean; base_job_id: string; scan: PtScan | null }>("GET", `/pentest/jobs/${id}/clone`),
     findings: (id: string, p: Record<string, string | number | boolean | undefined>) => req<{ items: PtFindingRow[]; total: number }>("GET", `/pentest/jobs/${id}/findings${qs(p)}`),
     finding: (id: string, fid: number) => req<PtFindingDetail>("GET", `/pentest/jobs/${id}/findings/${fid}`),
     oval: (id: string, fid: number) => req<PtFindingDetail>("POST", `/pentest/jobs/${id}/findings/${fid}/oval`),
     hosts: (id: string, p: Record<string, string | number | boolean | undefined>) => req<{ items: PtHostRow[]; total: number }>("GET", `/pentest/jobs/${id}/hosts${qs(p)}`),
     host: (ip: string, jobId?: string) => req<PtHostCard>("GET", `/pentest/hosts/${encodeURIComponent(ip)}${qs({ job_id: jobId })}`),
+    modes: () => req<PtModes>("GET", "/pentest/modes"),
+    engine: () => req<PtEngine>("GET", "/pentest/engine"),
+    engineRequest: (action: "update" | "import") => req<{ ok: boolean }>("POST", "/pentest/engine/request", { action }),
+    checks: (p: Record<string, string | number | boolean | undefined>) => req<{ items: PtCheck[]; total: number; facets: { engine: string; category: string; policy: string; state: string; n: number }[] }>("GET", `/pentest/checks${qs(p)}`),
+    setCheck: (engine: string, id: string, state: "allowed" | "blocked", confirm_risk = false) => req<PtCheck>("PUT", `/pentest/checks/${engine}/${encodeURIComponent(id).replace(/%2F/g, "/")}`, { state, confirm_risk }),
     link: (ip: string, source_id: string, host_id: number) => req<void>("PUT", "/pentest/links", { ip, source_id, host_id }),
     unlink: (ip: string, source_id: string) => req<void>("DELETE", `/pentest/links/${encodeURIComponent(ip)}/${source_id}`),
   },

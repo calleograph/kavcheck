@@ -52,12 +52,34 @@ function cell(c: QuickCol, v: string | number | null | undefined) {
   return c.type === "mono" ? <span className="mono small nowrap">{v}</span> : <>{v}</>;
 }
 
-export type QuickScopeOpts = { period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean };
+export type QuickScopeOpts = { levels?: boolean; period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean };
 const EXT_STATUSES: [string, string][] = [["confirmed", "Подтверждено источником"], ["potential", "Потенциально затронуто"], ["clarify", "Требуется уточнение"], ["insufficient", "Данных недостаточно"], ["fixed", "Исправлено (показать отдельно)"]];
 const EOL_STATUSES: [string, string][] = [["eol", "Стандартная поддержка закончилась (EOL)"], ["extended", "Только расширенная (платная) поддержка"], ["upcoming", "Окончание поддержки приближается"], ["undetermined", "ОС: не удалось определить EOL (причина указана)"]];
 const SECTIONS: [string, string][] = [["software", "Установленное ПО"], ["vulns", "Уязвимости"], ["protection", "Состояние защиты"]];
 const FORMATS: [string, string][] = [["xlsx", "Excel (XLSX)"], ["csv", "CSV"], ["pdf", "PDF"], ["html", "HTML для руководства"]];
 const PREVIEW_SHOWN = 60;
+export const LEVELS: [string, string][] = [["critical", "Критические"], ["high", "Высокие"], ["medium", "Средние"], ["low", "Низкие"], ["info", "Информационные"]];
+const SEV_NAMES = LEVELS.map((l) => l[0]);
+/** Уровни по умолчанию: только критические; если отчёт открыт со страницы с фильтром критичности — уровни этого фильтра. */
+export const defaultLevels = (base: Record<string, unknown>): string[] => {
+  const fromPage = String(base.severity ?? "").split(",").map((x) => x.trim()).filter((x) => SEV_NAMES.includes(x));
+  return fromPage.length ? fromPage : ["critical"];
+};
+
+/** Выбор уровней критичности отчёта: независимые галочки, «Выбрать все» и «Сбросить» (возврат к критическим). Общий для отчётов, данные которых имеют уровень критичности; на результаты в базе не влияет. */
+export function SeverityLevels({ value, onChange, levels = LEVELS, def = ["critical"] }: { value: string[]; onChange: (v: string[]) => void; levels?: [string, string][]; def?: string[] }) {
+  const toggle = (k: string, on: boolean) => onChange(on ? levels.map((l) => l[0]).filter((x) => value.includes(x) || x === k) : value.filter((x) => x !== k));
+  return (
+    <fieldset className="qr-levels" aria-label="Уровни критичности">
+      <legend>Уровни критичности</legend>
+      <div className="qr-levels-row">
+        {levels.map(([k, l]) => <label key={k} className="check"><input type="checkbox" checked={value.includes(k)} disabled={value.length === 1 && value.includes(k)} onChange={(e) => toggle(k, e.target.checked)} /><span className={`dot-sev lv-${k}`} />{l}</label>)}
+        <span className="qr-levels-btns"><button type="button" className="link-btn" onClick={() => onChange(levels.map((l) => l[0]))}>Выбрать все</button><button type="button" className="link-btn" onClick={() => onChange(def)}>Сбросить</button></span>
+      </div>
+      <p className="muted small">В отчёт, все его таблицы и показатели войдут только выбранные уровни. По умолчанию — критические. Общее число находок всех уровней показывается отдельно.</p>
+    </fieldset>
+  );
+}
 
 /** Затронутые компьютеры одной строкой (имена-ссылки на карточки); длинный список сворачивается. Список строится по строкам предпросмотра (до 1 000), полный — в файле. */
 function AffectedHosts({ rows, total, expected, link, onClose }: { rows: Record<string, unknown>[]; total: number; expected: number | null; link: boolean; onClose: () => void }) {
@@ -123,7 +145,7 @@ function Builder({ kind, params, columnsAll, onChange, canSave }: { kind: string
 export function QuickReportPanel({ kind, params: base, title, lede, options = { scope: true }, activityDays, canReport, sourceIds = [], onClose }: {
   kind: QuickKind | "version_audit"; params: Record<string, unknown>; title: string; lede?: string; options?: QuickScopeOpts; activityDays: number; canReport: boolean; sourceIds?: string[]; onClose: () => void;
 }) {
-  const [extra, setExtra] = useState<Record<string, unknown>>({});
+  const [extra, setExtra] = useState<Record<string, unknown>>(() => (options.levels ? { levels: defaultLevels(base) } : {}));
   const params = useMemo(() => ({ ...base, ...extra }), [base, extra]);
   const key = JSON.stringify(params);
   const [data, setData] = useState<QuickPreview | null>(null);
@@ -179,6 +201,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
         {msg && <div className="alert info" role="status"><span className="spin accent" /><div className="alert-body">{msg}</div></div>}
         {!data && !err && <div className="qr-loading" role="status"><span className="spin accent" />Считаем затронутые компьютеры…</div>}
         {data?.unsupported && <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет нужных объектов KSC ({data.unsupported.join(", ")}): отчёт недоступен.</div></div>}
+        {options.levels && <SeverityLevels value={(params.levels as string[] | undefined) ?? ["critical"]} onChange={(v) => setExtra({ ...extra, levels: v })} />}
         {doc && (<>
           <div className="qr-hero">
             <span className="qr-big">{hosts ? num(Number(hosts.value)) : num(data!.total)}</span>

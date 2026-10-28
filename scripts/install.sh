@@ -18,7 +18,7 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 2
 fi
 load_env; validate_project_name; require_vars DATA_ROOT APP_PUBLIC_URL APP_MASTER_KEY POSTGRES_PASSWORD; check_placeholders
-mkdir -p "$DATA_ROOT"/{postgres,reports,backups,updater,state} || die "Не удалось создать каталоги в $DATA_ROOT"
+mkdir -p "$DATA_ROOT"/{postgres,reports,backups,updater,state,pentest-import} || die "Не удалось создать каталоги в $DATA_ROOT"
 chmod 1777 "$DATA_ROOT/updater"; chown 10001 "$DATA_ROOT/reports" 2>/dev/null || chmod 777 "$DATA_ROOT/reports"
 host_version_info
 [ -n "$NPM_OPT" ] && env_set NPM_REGISTRY "${NPM_OPT%/}" && ok "Зеркало npm: $NPM_REGISTRY (сохранено в .env)"

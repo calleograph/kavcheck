@@ -1328,3 +1328,21 @@ tr.xrow:hover > td { background: var(--surface-2); }
 .ov-sources .table-scroll { max-height: 188px; overflow: auto; }
 .ov-sources .ov-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
 @media (max-width: 720px) { .ov-sources .table-scroll { max-height: none; } }
+
+/* Pentest 0.12: выбор проверок, уровни критичности отчёта, каталог проверок */
+.pt-checks { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; }
+.pt-checks > li { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.pt-checks .pt-note { display: block; margin-top: 2px; }
+.pt-checks .pt-on { color: var(--ok, #1b6e46); margin-right: 6px; }
+.pt-checks > li:first-child { display: flex; gap: 6px; align-items: flex-start; background: color-mix(in srgb, var(--panel, #fff) 92%, var(--accent, #1b3a5c)); }
+.qr-levels { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px 10px; margin: 0 0 10px; }
+.qr-levels legend { padding: 0 6px; font-weight: 600; }
+.qr-levels-row { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.qr-levels-btns { margin-left: auto; display: flex; gap: 12px; }
+.dot-sev.lv-critical { background: #b3261e; } .dot-sev.lv-high { background: #c25a00; } .dot-sev.lv-medium { background: #9a7b00; } .dot-sev.lv-low { background: #3a6ea5; } .dot-sev.lv-info { background: #6b7580; }
+.pt-engine { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 18px; margin: 8px 0; }
+.pt-engine dt { color: var(--muted); font-size: var(--fs-sm); } .pt-engine dd { margin: 0 0 6px; font-weight: 500; word-break: break-all; }
+.pt-pol { display: inline-block; padding: 0 7px; border-radius: 4px; font-size: var(--fs-sm); border: 1px solid; }
+.pt-pol.safe { color: #1b6e46; border-color: #b6dcc6; background: #eaf6ef; } .pt-pol.review { color: #7a4500; border-color: #e6c28f; background: #fff4e2; } .pt-pol.forbidden { color: #8a1710; border-color: #e3a39f; background: #fdecea; }
+.qr-levels .check { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+.qr-levels .dot-sev { margin: 0; }

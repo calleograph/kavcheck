@@ -63,3 +63,11 @@ ip:169\.254\.\d+\.\d+
 ip:224\.0\.0\.\d+
 oval.mitre.org
 mitre.org
+
+# Pentest 0.12: публичные первоисточники в базе знаний проверок и имена алгоритмов SSH в тестах
+redis.io
+mongodb.com
+ssh.com
+owasp.org
+cve.org
+openssh.com

@@ -4,6 +4,7 @@ import { PageHead } from "../components/ui";
 import SourcesAdmin from "./admin/SourcesAdmin";
 import LicensesAdmin from "./admin/LicensesAdmin";
 import PentestAdmin from "./admin/PentestAdmin";
+import ChecksAdmin from "./admin/ChecksAdmin";
 import UsersAdmin from "./admin/UsersAdmin";
 import LdapAdmin from "./admin/LdapAdmin";
 import GeneralAdmin from "./admin/GeneralAdmin";
@@ -31,6 +32,7 @@ const LEDE: Record<string, string> = {
   org: "Название организации, подразделение, логотип и примечания для шапок и подвалов отчётов.",
   catalog: "Как записи реестра KSC объединяются в продукты и ветки: состояние каталога, ручные исправления, правила для опытных.",
   vdb: "Источники сведений об уязвимостях (NVD, CISA KEV, OSV, БДУ ФСТЭК): включение, расписание обновления, состояние загрузок и решения по сопоставлению продуктов.",
+  ptchecks: "Pentest: движок Nuclei и шаблоны (версия, контрольная сумма, обновление), каталог проверок Nmap NSE и Nuclei с политикой безопасности и решениями администратора.",
   updates: "Версия KAV Checker, релизы GitHub, обновление, откат и резервные копии.",
   journal: "Входы, проверки и запросы к источникам, формирование отчётов, ошибки.",
   audit: "Кто, что и когда сделал в KAV Checker.",
@@ -49,6 +51,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "sources" && <SourcesAdmin ctx={ctx} />}
       {tab === "licenses" && <LicensesAdmin sources={ctx.sources} />}
       {tab === "pentest" && <PentestAdmin />}
+      {tab === "ptchecks" && <ChecksAdmin />}
       {tab === "users" && <UsersAdmin ctx={ctx} />}
       {tab === "ldap" && <LdapAdmin sources={ctx.sources} />}
       {tab === "general" && <GeneralAdmin />}

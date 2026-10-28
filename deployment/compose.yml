@@ -143,9 +143,14 @@ services:
     environment:
       <<: *app-env
       MALLOC_ARENA_MAX: "2"
-    mem_limit: ${PENTEST_MEM_LIMIT:-1g}
-    memswap_limit: ${PENTEST_MEM_LIMIT:-1g}
-    cpus: ${PENTEST_CPUS:-1.5}
+      PENTEST_DATA: /data/pentest
+      PENTEST_IMPORT: /import
+    volumes:
+      - pentest_data:/data/pentest                       # шаблоны Nuclei (обновляются по запросу администратора); восстанавливаются из образа, в резервные копии не входят
+      - ${PENTEST_IMPORT_DIR:-${DATA_ROOT}/pentest-import}:/import:ro      # офлайн-импорт: nuclei-templates-*.tar.gz и файл .sha256
+    mem_limit: ${PENTEST_MEM_LIMIT:-2g}
+    memswap_limit: ${PENTEST_MEM_LIMIT:-2g}
+    cpus: ${PENTEST_CPUS:-2}
     pids_limit: 512
     oom_score_adj: 500
     init: true
@@ -179,3 +184,6 @@ services:
       timeout: 5s
       retries: 5
     logging: *default-logging
+
+volumes:
+  pentest_data: {}
