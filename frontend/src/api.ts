@@ -91,7 +91,12 @@ export interface PtEngine { version: string; templates_ver: string; templates_sh
 export interface PtCheck { engine: "nse" | "nuclei"; id: string; category: string; category_ru: string; name: string; description: string; severity: string; protocols: string; impact: string; policy: "safe" | "review" | "forbidden";
   policy_reason: string; state: "allowed" | "blocked"; decided_by: string; tags: string[]; cves: string[]; requests: number; updated_at: string; templates_ver: string }
 export interface PtChanges { against: { job_id: string; title: string; at: string }; hosts_compared: number; new_hosts: number; totals: { ports_opened: number; ports_closed: number; services_changed: number; findings_new: number; findings_not_seen: number }; hosts: ({ ip: string } & Record<string, number | string>)[]; note: string }
-export interface PtJobFull extends PtJob { events: { at: string; level: string; stage: string; ip: string; message: string }[]; changes: PtChanges | null }
+export interface PtLogEvent { id: number; at: string; level: "debug" | "info" | "warn" | "error"; stage: string; ip: string; port: number | null; message: string; engine: string; kind: string; check_id: string;
+  rc: number | null; ms: number | null; retry: string; attempt: number | null; incomplete: boolean; detail: string }
+export interface PtStageState { ru: string; state: "pending" | "running" | "done" | "skipped" | "error" | "cancelled" | "limited"; note?: string; ms?: number }
+export interface PtDiag { reasons: { text: string; engine: string; stage: string; n: number; hosts: number; event_id: number | null; retry: string }[]; skipped: Record<string, string>; completeness: string; no_version: number }
+export interface PtJobFull extends PtJob { events: PtLogEvent[]; changes: PtChanges | null; stages: Record<string, PtStageState>; diag: PtDiag; log: { total: number; warn: number; error: number } }
+export interface PtLogPage { items: PtLogEvent[]; first_id: number | null; last_id: number | null; active: boolean; status: string; status_ru: string; counts: { total: number; warn: number; error: number } }
 export interface PtOverview { enabled: boolean; scanner: { alive: boolean; age_s: number | null; data: { nmap?: string; scan?: string; net_raw?: boolean; jobs_running?: number } }; active: number; results: { jobs: number; findings: number; confirmed: number; last_at: string | null } | null;
   recent: PtJob[]; latest_sev: Record<string, number>; policy: { allowed: string[] | null; max_targets: number; large_threshold: number; full_ports_max_targets: number; safe_scripts_enabled: boolean; scan_type: string; max_rate: number } }
 export interface PtProfiles { items: { key: string; title: string; ports: string; builtin: boolean; count: number | null; intensity?: number }[]; safe_audit: { enabled: boolean; scripts: string[]; risk: string }; evidence_scripts: string[] }
@@ -311,6 +316,8 @@ export const api = {
     jobs: (p: Record<string, string | number | boolean | undefined>) => req<{ items: PtJob[]; total: number }>("GET", `/pentest/jobs${qs(p)}`),
     job: (id: string) => req<PtJobFull>("GET", `/pentest/jobs/${id}`),
     cancel: (id: string) => req<PtJob>("POST", `/pentest/jobs/${id}/cancel`),
+    log: (id: string, p: { after?: number; before?: number; limit?: number; level?: string; engine?: string }) => req<PtLogPage>("GET", `/pentest/jobs/${id}/log${qs(p)}`),
+    logUrl: (id: string, fmt: "txt" | "jsonl") => `/api/v1/pentest/jobs/${id}/log/download?fmt=${fmt}`,
     remove: (id: string) => req<void>("DELETE", `/pentest/jobs/${id}`),
     clone: (id: string) => req<{ title: string; targets: string; profile: string; ports: string; discovery: string; intensity: number; safe_audit: boolean; base_job_id: string; scan: PtScan | null }>("GET", `/pentest/jobs/${id}/clone`),
     findings: (id: string, p: Record<string, string | number | boolean | undefined>) => req<{ items: PtFindingRow[]; total: number }>("GET", `/pentest/jobs/${id}/findings${qs(p)}`),
