@@ -10,6 +10,7 @@ import SecurityPage from "./pages/SecurityPage";
 import DashboardPage from "./pages/DashboardPage";
 // разделы загружаются по первому обращению: стартовая загрузка — оболочка, вход и главная
 const PentestPage = lazy(() => import("./pages/PentestPage"));
+const HuntPage = lazy(() => import("./pages/HuntPage"));
 const SoftwarePage = lazy(() => import("./pages/SoftwarePage"));
 const HostsPage = lazy(() => import("./pages/HostsPage"));
 const HostPage = lazy(() => import("./pages/HostsPage").then((m) => ({ default: m.HostPage })));
@@ -32,7 +33,7 @@ export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; 
 /** Разделы, работающие со всеми источниками сразу; остальные показывают выбранный источник. */
 export const ALL_PAGES = ["/eol", "/devices", "/reports", "/zones"];
 /** Страницы, для которых «Все источники» не требуют пояснения: главная и независимые от KSC разделы. */
-const scopeAware = (pathname: string) => pathname === "/" || pathname.startsWith("/pentest") || ALL_PAGES.some((p) => pathname.startsWith(p));
+const scopeAware = (pathname: string) => pathname === "/" || pathname.startsWith("/pentest") || pathname.startsWith("/hunt") || ALL_PAGES.some((p) => pathname.startsWith(p));
 
 const NAV: { to: string; label: string; icon: IconName; end?: boolean; roles?: string[] }[] = [
   { to: "/", label: "Главная", icon: "home", end: true },
@@ -45,6 +46,7 @@ const NAV: { to: string; label: string; icon: IconName; end?: boolean; roles?: s
   { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" },
   { to: "/events", label: "События безопасности", icon: "bell" },
   { to: "/zones", label: "Зоны ответственности", icon: "grid" },
+  { to: "/hunt", label: "CVE Hunt", icon: "search", roles: ["analyst", "admin"] },
   { to: "/pentest", label: "Pentest", icon: "target", roles: ["analyst", "admin"] },
   { to: "/reports", label: "Отчёты", icon: "file" },
 ];
@@ -245,7 +247,7 @@ export default function App() {
   useEffect(() => { if (me) void reloadSources(); }, [me, reloadSources]);
   useEffect(() => { setUnauthorizedHandler(() => { setCsrf(""); setMe(null); }); return () => setUnauthorizedHandler(null); }, []);
   useEffect(() => {
-    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/devices", "Устройства и пользователи"], ["/eol", "EOL"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/pentest", "Pentest"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
+    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/devices", "Устройства и пользователи"], ["/eol", "EOL"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/pentest", "Pentest"], ["/hunt", "CVE Hunt"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
     const t = me ? (titles.find(([p]) => pathname.startsWith(p))?.[1] ?? "Главная") : "Вход";
     document.title = `${t} — ${me?.site_name || "KAV Checker"}`;
   }, [pathname, me]);
@@ -278,6 +280,7 @@ export default function App() {
           <Route path="/vdb" element={<VdbPage key={currentId} ctx={ctx} />} />
           <Route path="/protection" element={<ProtectionPage key={currentId} ctx={ctx} />} />
           <Route path="/events" element={<EventsPage key={currentId} ctx={ctx} />} />
+          <Route path="/hunt" element={me.user.role === "viewer" ? <Navigate to="/" replace /> : <HuntPage ctx={ctx} />} />
           <Route path="/pentest" element={me.user.role === "viewer" ? <Navigate to="/" replace /> : <PentestPage ctx={ctx} />} />
           <Route path="/zones" element={<ZonesPage key={currentId} ctx={ctx} />} />
           <Route path="/zones/:zid" element={<ZonesPage key={currentId} ctx={ctx} />} />

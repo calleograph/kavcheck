@@ -57,6 +57,7 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
         <CatalogStateLine state={p.state} canRebuild={canEdit} onRebuilt={() => setTick((x) => x + 1)} />
         <button className="btn" onClick={() => setSp((x) => { x.delete("v"); x.delete("b"); x.set("all", "1"); return x; })}><Icon name="monitor" />Где установлено</button>
         {canEdit && <Link className="btn" to={checkHref()}><Icon name="target" />Проверить версии</Link>}
+        {ctx.me.user.role !== "viewer" && ctx.current && <Link className="btn" to={`/hunt?tab=new&pname=${encodeURIComponent(p.name)}&psrc=${ctx.current.id}&pkey=${encodeURIComponent(p.key)}`} title="Целевой поиск этого продукта: KSC и сетевая проверка"><Icon name="search" />Найти в инфраструктуре</Link>}
         <ReportButton onClick={() => installs(`Установки: ${p.name}`)} title="Отчёт об установках этой программы (все версии) с вашими фильтрами в конструкторе" />
       </PageHead>
       <div className="meters">

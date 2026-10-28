@@ -163,6 +163,7 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
                       <XItem label="Устройств">{num(f.hosts_active)} активных{f.hosts > f.hosts_active ? `, всего ${num(f.hosts)}` : ""}{multi ? ` · ${f.source}` : ""}</XItem>
                       <XItem label="Условие и пояснение" wide>{f.condition}</XItem>
                       <XItem label="Рассчитано">{fmt(f.computed_at)}</XItem>
+                      {f.kind === "app" && ctx.me.user.role !== "viewer" && <XItem label="Поиск"><Link className="btn mini" to={`/hunt?tab=new&pname=${encodeURIComponent(f.title)}&psrc=${f.source_id}&pmode=exact&pver=${encodeURIComponent(f.version)}`}>Найти в инфраструктуре</Link></XItem>}
                     </XGrid>
                   </ExpandedRow>
                   </Fragment>);

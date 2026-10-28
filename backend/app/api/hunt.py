@@ -91,7 +91,7 @@ async def options(request: Request, su: SessionUser = Depends(require_analyst), 
     """Источники, зоны и подсказки для мастера."""
     s = await request.app.state.settings_svc.get(db, "pentest")
     srcs = [{"id": str(x.id), "name": x.name} for x in (await db.execute(select(KscSource).where(KscSource.is_active.is_(True)).order_by(KscSource.position))).scalars() if su.can_use_source(x.id)]
-    return {"sources": srcs, "zones": await SC.zone_options(db), "hunt_networks": s.hunt_networks if su.is_admin else None, "enabled": s.enabled,
+    return {"sources": srcs, "zones": await SC.zone_options(db), "hunt_networks": s.hunt_networks if su.is_admin else None, "enabled": s.enabled, "large_threshold": s.large_threshold,
             "products": [{"key": k, "title": v["title"], "ports": v["ports"]} for k, v in KB.KB.items()]}
 
 

@@ -204,7 +204,8 @@ export function VdbCardPanel({ ctx, id, onClose, onReport }: { ctx: Ctx; id: str
   const affected = m.filter((x) => x.status !== "fixed");
   return (
     <Modal side wide title={c?.key ?? id} lede={c?.title} onClose={onClose}
-      footer={c && canReport ? <button className="btn primary" onClick={() => { onReport({ title: `Проверка инфраструктуры: ${c.key}`, keys: [c.key] }); onClose(); }}><Icon name="target" />Проверить инфраструктуру</button> : undefined}>
+      footer={c && canReport ? <><button className="btn primary" onClick={() => { onReport({ title: `Проверка инфраструктуры: ${c.key}`, keys: [c.key] }); onClose(); }}><Icon name="target" />Проверить инфраструктуру</button>
+        {/^CVE-\d{4}-\d{4,7}$/i.test(c.key) && <Link className="btn" to={`/hunt?tab=new&cve=${encodeURIComponent(c.key)}`} title="Целевой поиск этой CVE на компьютерах: данные KSC и сетевая проверка"><Icon name="search" />Найти в инфраструктуре</Link>}</> : undefined}>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       {!c && !err && <SkelRows rows={6} cols={2} />}
       {c && <div className="vdb-card">

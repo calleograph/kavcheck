@@ -56,7 +56,7 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest";
+export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt";
 
 export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "offline" | "unknown" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
@@ -102,6 +102,18 @@ export interface LogsOverview { items: LogType[]; external: { key: string; title
   archives: { name: string; type: string; bytes: number; at: string; gz: boolean }[];
   totals: { logs_bytes: number; archive_bytes: number; files: number; quota_bytes: number | null; used_bytes: number; oldest: string | null }; disk: { free: number | null; total: number | null; warn: boolean };
   last_run: string | null; next_run: string | null; requested: boolean; report: { at: string; warnings: string[]; deferred: boolean; deleted_archives: string[]; moved: Record<string, { rows: number }> } | null }
+export type HuntStatus = "confirmed" | "probable" | "needs_check" | "failed";
+export interface HuntProductIn { name: string; source_id?: string; product_key?: string; kb?: string; mode: "any" | "exact" | "range" | "below" | "above"; versions: string[]; v_min: string; v_max: string; below: string; above: string; only_vulnerable: boolean; only_eol: boolean }
+export interface HuntScopeIn { kind: "all" | "sources" | "zones" | "groups" | "custom"; sources: string[]; zones: string[]; group: string; text: string; exclude: string; active_days?: number | null }
+export interface HuntCriterion { key: string; kind: "cve" | "product"; title: string; cve: string; product: string; kb: string; mode: string; ports: number[]; warnings: string[]; checks: { id: string; engine: string; name: string }[]; ranges?: unknown[]; known?: boolean; condition?: string }
+export interface HuntRow { id: number; crit_key: string; vuln_key: string; ip: string; port: number | null; host_name: string; os: string; user: string; user_kind: string; zone: string; product: string; version: string; status: HuntStatus; status_ru: string;
+  basis: "ksc" | "network" | "both"; basis_ru: string; source_id: string | null; host_id: number | null; data_at: string | null; last_connected: string | null; ambiguous: boolean; diff: boolean; group: string; evidence_short: string }
+export interface HuntDetail extends HuntRow { evidence: { kind: string; text: string; at: string }[] }
+export interface HuntPage { items: HuntRow[]; total: number; offset: number; limit: number; counts: Record<HuntStatus, number>; zones: string[] }
+export interface HuntJob extends PtJobFull { hunt: { mode: "ksc" | "network" | "combined"; logic: "any" | "all"; ports: number[]; scope: Record<string, unknown>; criteria: HuntCriterion[]; counts: Record<HuntStatus, number>; checked: number; total: number } }
+export interface HuntHistoryRow extends PtJob { mode: string; logic: string; criteria: { key: string; title: string }[]; counts: Partial<Record<HuntStatus, number>> }
+export interface HuntCompare { base_job_id: string; new: HuntRow[]; kept: HuntRow[]; gone: HuntRow[]; unknown: HuntRow[]; counts: Record<"new" | "kept" | "gone" | "unknown", number>; note: string }
+export interface HuntPreview { targets: number; ksc_hosts: number; sources: number; networks: number; excluded: number; criteria: number; ports: number[]; ports_spec: string; rejected: { input: string; reason: string }[]; text: string }
 export interface PtLogPage { items: PtLogEvent[]; first_id: number | null; last_id: number | null; active: boolean; status: string; status_ru: string; counts: { total: number; warn: number; error: number } }
 export type CompStatus = "current" | "update" | "deferred" | "incompatible" | "review" | "unknown" | "unavailable";
 export interface CompRow { key: string; title: string; group: string; purpose: string; running: boolean | null; installed: string | null; verified: string | null; latest: string | null; latest_url: string | null; published_at: string | null;
@@ -319,6 +331,20 @@ export const api = {
   selectSource: (source_id: string) => req<{ current: string }>("POST", "/auth/source", { source_id }),
   version: () => req<{ version: string; commit: string; built_at: string }>("GET", "/version"),
   dashboard: (refresh = false) => req<Dashboard>("GET", `/dashboard${qs({ refresh })}`),
+  hunt: {
+    options: () => req<{ sources: { id: string; name: string }[]; zones: { id: string; name: string }[]; hunt_networks: string[] | null; enabled: boolean; large_threshold: number; products: { key: string; title: string; ports: number[] }[] }>("GET", "/hunt/options"),
+    suggest: (q: string) => req<{ cves: { id: string; title: string; sev: number; exploited: boolean }[]; products: { name: string; kb: string; source_id: string; product_key: string; hosts: number | null }[] }>("GET", `/hunt/suggest${qs({ q })}`),
+    resolve: (b: { cves: string[]; products: HuntProductIn[] }) => req<{ criteria: HuntCriterion[] }>("POST", "/hunt/resolve", b),
+    preview: (b: { cves: string[]; products: HuntProductIn[]; scope: HuntScopeIn; ports: string }) => req<HuntPreview>("POST", "/hunt/preview", b),
+    create: (b: Record<string, unknown>) => req<HuntJob>("POST", "/hunt/jobs", b),
+    jobs: (p: Record<string, string | number | undefined>) => req<{ items: HuntHistoryRow[]; total: number }>("GET", `/hunt/jobs${qs(p)}`),
+    job: (id: string) => req<HuntJob>("GET", `/hunt/jobs/${id}`),
+    results: (id: string, p: Record<string, string | number | boolean | undefined>) => req<HuntPage>("GET", `/hunt/jobs/${id}/results${qs(p)}`),
+    detail: (id: string, hid: number) => req<HuntDetail>("GET", `/hunt/jobs/${id}/results/${hid}`),
+    compare: (id: string) => req<HuntCompare | null>("GET", `/hunt/jobs/${id}/compare`),
+    repeat: (id: string) => req<HuntJob>("POST", `/hunt/jobs/${id}/repeat`),
+    cancel: (id: string) => req<PtJob>("POST", `/pentest/jobs/${id}/cancel`),
+  },
   pentest: {
     overview: () => req<PtOverview>("GET", "/pentest/overview"),
     profiles: () => req<PtProfiles>("GET", "/pentest/profiles"),

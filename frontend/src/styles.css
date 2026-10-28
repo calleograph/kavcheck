@@ -1367,3 +1367,23 @@ tr.xrow:hover > td { background: var(--surface-2); }
 .pt-ev-detail { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0 0 6px; } .pt-ev-detail dt { font-size: var(--fs-xs, .75rem); color: var(--muted); } .pt-ev-detail dd { margin: 0; }
 @media (max-width: 640px) { .pt-ln { grid-template-columns: 8ch 1fr; } .pt-ln .lv, .pt-ln .tag { display: none; } .pt-console-body { height: 200px; } }
 @media (prefers-reduced-motion: reduce) { .pt-prog.indet i { animation: none; margin-left: 30%; } }
+
+/* CVE Hunt */
+.hunt-search { position: relative; }
+.hunt-sug { position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 4px; list-style: none; background: var(--surface, #fff); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgb(0 0 0 / .14); max-height: 340px; overflow-y: auto; }
+.hunt-sug button { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; width: 100%; text-align: left; padding: 8px 10px; border: 0; background: transparent; border-radius: 7px; font: inherit; cursor: pointer; color: inherit; }
+.hunt-sug button:hover, .hunt-sug button:focus-visible { background: var(--sunken); }
+.hunt-sug .pad { padding: 8px 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-x { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--sunken); font-size: var(--fs-sm, .85rem); }
+.chip-x button { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 50%; background: transparent; cursor: pointer; color: var(--muted); }
+.chip-x button:hover { background: var(--line); color: var(--ink); }
+.hunt-prod { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 8px; }
+.hunt-crit { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; } .hunt-crit .sub { display: block; }
+.hunt-sum { display: flex; gap: 8px; align-items: flex-start; font-weight: 600; }
+.hunt-ev { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; } .hunt-ev li { display: grid; gap: 2px; padding: 8px 10px; background: var(--sunken); border-radius: 8px; } .hunt-ev b { font-size: var(--fs-xs, .75rem); color: var(--muted); font-weight: 600; } .hunt-ev span { overflow-wrap: anywhere; }
+.hunt-bar { flex-wrap: wrap; } .seg-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg-chips .chip { padding: 5px 12px; border: 1px solid var(--line-strong); border-radius: 99px; background: transparent; font: inherit; cursor: pointer; color: inherit; }
+.seg-chips .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.popover-lite { position: relative; } .popover-lite summary { list-style: none; cursor: pointer; } .popover-lite .pop { position: absolute; right: 0; z-index: 15; margin-top: 4px; padding: 10px; display: grid; gap: 6px; min-width: 220px; background: var(--surface, #fff); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgb(0 0 0 / .14); }
+.hunt-table td { vertical-align: top; }
