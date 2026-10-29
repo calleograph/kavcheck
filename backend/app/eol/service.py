@@ -65,6 +65,14 @@ class EolService:
 
     async def run_source(self, source_id: uuid.UUID) -> dict | None:
         """Расчёт источника под арендой: если его уже выполняет другой (этот или иной worker), второй запуск не стартует. Аренда продлевается, пока процесс жив."""
+        async with self._sm() as db:
+            src = await db.get(KscSource, source_id)
+        async with JOBS.slot("eol", str(source_id), task=f"EOL: {src.name if src else source_id}") as ok:       # место — до аренды: ожидание не выглядит выполнением
+            if not ok:
+                return None
+            return await self._leased(source_id)
+
+    async def _leased(self, source_id: uuid.UUID) -> dict | None:
         lease = await JOBS.acquire("eol", str(source_id), "запуск")
         if lease is None:
             return None
@@ -122,30 +130,29 @@ class EolService:
             tasks.add(t)
             t.add_done_callback(tasks.discard)
         try:
-            async with RES.heavy(f"EOL: {src.name}", 1):
-                client = self._sources.client(src)
-                for attempt in (1, 2):
-                    try:
-                        res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), soon_days=int(cfg.soon_days), res=RES, progress=progress, lease=lease)  # type: ignore[attr-defined]
-                        if res and res.get("diag"):
-                            self._note(src.name, res["diag"])
-                        return res
-                    except LeaseLost:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 — прежние данные остаются; причина видна: пользователю — понятно, администратору — подробно
-                        d = describe(exc, stage["v"], "расчёт EOL источника")
-                        if attempt == 1 and d.code == "database" and d.transient:
-                            log.warning("EOL: временный сбой базы, повтор расчёта", extra={"source": src.name, "error": d.technical})
-                            await asyncio.sleep(5)
-                            continue
-                        log.warning("EOL: расчёт источника не удался", extra={"source": src.name, "stage": stage["v"], "code": d.code, "error": d.technical})
-                        async with self._sm() as db:
-                            await db.execute(update(EolState).where(EolState.source_id == source_id).values(error=d.friendly, error_detail=d.technical[:2000], error_at=utcnow(), progress=None, started_at=None,
-                                                                                                          diag={"stage": stage["v"], "code": d.code, "attempts": attempt}))
-                            await db.commit()
-                        if self._journal:
-                            await self._journal.emit("system", "eol_compute_failed", level="warning", message=f"EOL «{src.name}»: {d.friendly}", data={"source": src.name, "stage": stage["v"], "code": d.code, "detail": d.technical[:600]})
-                        return None
+            client = self._sources.client(src)
+            for attempt in (1, 2):
+                try:
+                    res = await C.compute_source(self._sm, client, src, activity_days=int(general.activity_days), exclude_slaves=bool(reports.exclude_slave_servers), soon_days=int(cfg.soon_days), res=RES, progress=progress, lease=lease)  # type: ignore[attr-defined]
+                    if res and res.get("diag"):
+                        self._note(src.name, res["diag"])
+                    return res
+                except LeaseLost:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — прежние данные остаются; причина видна: пользователю — понятно, администратору — подробно
+                    d = describe(exc, stage["v"], "расчёт EOL источника")
+                    if attempt == 1 and d.code == "database" and d.transient:
+                        log.warning("EOL: временный сбой базы, повтор расчёта", extra={"source": src.name, "error": d.technical})
+                        await asyncio.sleep(5)
+                        continue
+                    log.warning("EOL: расчёт источника не удался", extra={"source": src.name, "stage": stage["v"], "code": d.code, "error": d.technical})
+                    async with self._sm() as db:
+                        await db.execute(update(EolState).where(EolState.source_id == source_id).values(error=d.friendly, error_detail=d.technical[:2000], error_at=utcnow(), progress=None, started_at=None,
+                                                                                                      diag={"stage": stage["v"], "code": d.code, "attempts": attempt}))
+                        await db.commit()
+                    if self._journal:
+                        await self._journal.emit("system", "eol_compute_failed", level="warning", message=f"EOL «{src.name}»: {d.friendly}", data={"source": src.name, "stage": stage["v"], "code": d.code, "detail": d.technical[:600]})
+                    return None
         except MemoryPressure as exc:                                          # ожидание места для тяжёлой задачи: расчёт отложен, прежний результат цел
             d = describe(exc, "ожидание ресурсов", "запуск расчёта")
             log.warning("EOL: расчёт отложен: %s", exc)

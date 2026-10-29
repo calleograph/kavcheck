@@ -165,6 +165,14 @@ class CatalogScheduler:
             return CB.signature(s)
 
     async def build(self, source_id: uuid.UUID, reason: str = "") -> None:
+        """Построить каталог источника: сначала место у ограничителя ресурсов (ожидание не держит аренду и не выглядит «строится»), затем аренда и сборка."""
+        from .jobs import JOBS  # noqa: PLC0415
+
+        async with JOBS.slot("catalog", str(source_id), task=f"каталог программ {source_id}") as ok:
+            if ok:
+                await self._build(source_id, reason)
+
+    async def _build(self, source_id: uuid.UUID, reason: str = "") -> None:
         """Построить каталог источника под арендой: второй исполнитель того же источника невозможен, результат публикуется одной транзакцией и только если аренда ещё наша."""
         from .jobs import JOBS, LeaseLost  # noqa: PLC0415
 
@@ -196,9 +204,8 @@ class CatalogScheduler:
                     fams, stats = CB.build(s, activity_days=activity_days, overrides=ov, progress=progress)
                     return sig, fams, stats
 
-            async with RES.heavy("сборка каталога", 1):
-                await lease.stage("чтение данных KSC")
-                sig, fams, stats = await asyncio.to_thread(work)
+            await lease.stage("чтение данных KSC")
+            sig, fams, stats = await asyncio.to_thread(work)
             ms = int((time.perf_counter() - started) * 1000)
             async with self._sm() as db:
                 await lease.fence(db)                                  # публикация нового поколения — только если аренда не перехвачена: запоздавший результат не затрёт новый

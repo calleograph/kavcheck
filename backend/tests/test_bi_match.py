@@ -171,7 +171,7 @@ async def test_service_fixed_and_variable_names_unavailable_smb_and_retention(ap
     share.mkdir()
     state = {"down": False, "t": T0}
 
-    def fake_fetch(conn, mode, rule, allowed, dst, max_bytes, stable_s):
+    def fake_fetch(conn, mode, rule, allowed, dst, max_bytes, stable_s, on_fetch=None):
         if state["down"]:
             raise S.SmbError("tcp", "Порт 445 сервера files.example.local недоступен: Connection refused")
         files = [S.FileInfo(p.name, p.stat().st_size, datetime.fromtimestamp(p.stat().st_mtime, timezone.utc)) for p in share.iterdir()]

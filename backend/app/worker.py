@@ -43,7 +43,7 @@ async def main() -> None:
         log.error("APP_MASTER_KEY некорректен — пароли источников недоступны")
         box = None
     svc, journal = SettingsService(box), Journal(sm)
-    JOBS.configure(sm, ttl=settings.job_lease_seconds, version=settings.app_version)
+    JOBS.configure(sm, ttl=settings.job_lease_seconds, version=settings.app_version, stall_s=settings.job_stall_seconds, stall_hard_s=settings.job_stall_hard_seconds, journal=journal)
     try:
         if n := await JOBS.recover_own():
             log.warning("Аренды заданий прежнего процесса сняты, задания будут запущены заново: %s", n)
@@ -69,6 +69,11 @@ async def main() -> None:
             log.warning("EOL: прерванные расчёты сброшены, будут запущены заново")
     except Exception:  # noqa: BLE001 — например, миграция ещё не применена
         log.warning("EOL: не удалось сбросить состояние расчётов", exc_info=True)
+    try:
+        if n := await bi.recover():
+            log.warning("BI: импорты, прерванные перезапуском, завершены с понятным статусом: %s", n)
+    except Exception:  # noqa: BLE001
+        log.warning("BI: не удалось проверить прерванные импорты", exc_info=True)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

@@ -132,8 +132,12 @@ class SourceClient:
             return rows
 
     async def run(self, sql: str, params: dict | tuple | None = None, *, max_rows: int = 100_000) -> list[dict]:
+        from ..services.jobs import touch_current  # noqa: PLC0415
+
         async with self._sem:
-            return await asyncio.to_thread(self.run_sync, sql, params, max_rows=max_rows)
+            rows = await asyncio.to_thread(self.run_sync, sql, params, max_rows=max_rows)
+        touch_current()                      # запрос к KSC выполнен — ход выполнения фонового задания (сторож зависаний не сочтёт его стоящим)
+        return rows
 
     def run_many_sync(self, items: list[tuple[str, dict | tuple | None]], *, max_rows: int = 100_000) -> list[list[dict]]:
         """Несколько запросов на одном соединении (отчёты)."""

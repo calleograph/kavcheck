@@ -13,7 +13,10 @@ interface Form { id?: string; name: string; is_active: boolean; smb_host: string
 const DEF_OPT: BiOptions = { partial: true, max_reject_pct: 5, drift_pct: 20, max_mb: 50, max_rows: 200000, keep_files: 10, keep_days: 90, retry_minutes: 60, retries: 3, stable_s: 10, full_snapshot: true, owner_drift_pct: 25 };
 const empty = (): Form => ({ name: "", is_active: true, smb_host: "", smb_port: 445, smb_share: "", smb_path: "", username: "", password: "", password_set: false, smb_encrypt: true, file_mode: "fixed", file_name: "computers.xlsx",
   schedule_time: "06:00", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", options: { ...DEF_OPT }, profile: {} });
-const ST_CLS: Record<string, string> = { ok: "ok", unchanged: "ok", partial: "warn", rejected: "err", failed: "err", running: "accent" };
+const ST_CLS: Record<string, string> = { ok: "ok", unchanged: "ok", partial: "warn", rejected: "err", failed: "err", running: "accent", queued: "", waiting: "warn", connecting: "accent", fetching: "accent",
+  checking: "accent", importing: "accent", matching: "accent" };
+/** Импорт в работе: от постановки в очередь до итога (страница обновляется сама). */
+const ACTIVE = ["queued", "waiting", "connecting", "fetching", "checking", "importing", "matching", "running"];
 const unc = (s: { smb_host: string; smb_share: string; smb_path: string }) => `\\\\${s.smb_host}\\${s.smb_share}${s.smb_path ? "\\" + s.smb_path.replace(/\//g, "\\") : ""}`;
 
 /** BI-системы — Excel через SMB: подключение только на чтение, расписание, правило выбора файла, сопоставление столбцов, проверки, хранение и журнал импортов. */
@@ -25,7 +28,7 @@ export default function BiSourcesAdmin() {
   const upRef = useRef<HTMLInputElement>(null); const [upFor, setUpFor] = useState<string>("");
   const load = useCallback(() => api.bi.sources().then((r) => { setItems(r.items); setFields(r.fields); }).catch((e) => setError((e as ApiError).message)), []);
   useEffect(() => { void load(); api.admin.settings("bi").then((r) => setAllowed((r.allowed_hosts as string[] | undefined) ?? [])).catch(() => setAllowed([])); }, [load]);
-  useEffect(() => { if (!items?.some((s) => s.queued || s.last?.status === "running")) return; const t = window.setInterval(() => void load(), 4000); return () => window.clearInterval(t); }, [items, load]);
+  useEffect(() => { if (!items?.some((s) => s.queued || ACTIVE.includes(s.last?.status ?? ""))) return; const t = window.setInterval(() => void load(), 4000); return () => window.clearInterval(t); }, [items, load]);
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((x) => (x ? { ...x, f: { ...x.f, [k]: v } } : x));
   const setOpt = <K extends keyof BiOptions>(k: K, v: BiOptions[K]) => setForm((x) => (x ? { ...x, f: { ...x.f, options: { ...x.f.options, [k]: v } } } : x));
   const body = (f: Form) => ({ name: f.name.trim(), is_active: f.is_active, smb_host: f.smb_host.trim(), smb_port: f.smb_port, smb_share: f.smb_share.trim(), smb_path: f.smb_path.trim(), username: f.username.trim(), smb_encrypt: f.smb_encrypt,
@@ -71,6 +74,8 @@ export default function BiSourcesAdmin() {
           <div className="muted small">{s.file_mode === "fixed" ? `Файл «${s.file_name}»` : `Новейший файл по маске «${s.file_name}»`} · ежедневно в {s.schedule_time} ({s.timezone}) · следующая загрузка {fmt(s.next_run_at)}
             {" "}· {s.smb_encrypt ? "шифрование SMB 3.x обязательно" : "без обязательного шифрования"} · {s.profile?.columns ? `столбцов сопоставлено: ${Object.keys(s.profile.columns).length}` : "сопоставление столбцов не настроено"}</div>
           {stale && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Последнее получение {last!.status === "failed" ? "не удалось" : "отклонено"}: {last!.message}. Показываются сведения последнего успешного снимка от {fmtDate(pub!.snapshot_at)}.</div></div>}
+          {last && ACTIVE.includes(last.status) && <div className={`alert ${last.status === "waiting" ? "warn" : "info"}`} role="status"><span className="spin sm" aria-hidden />
+            <div className="alert-body"><b>Импорт: {last.status_ru}</b>{last.message ? ` — ${last.message}` : ""}<span className="sub">поставлен в очередь {fmt(last.started_at)}{last.by ? ` · ${last.by}` : ""}</span></div></div>}
           {!pub && last && ["failed", "rejected"].includes(last.status) && <div className="alert warn"><Icon name="alert" /><div className="alert-body">{last.status_ru}: {last.message}</div></div>}
           <dl className="kv pairs bi-state">
             <div><dt>Последнее успешное получение</dt><dd>{fmt(s.last_ok_at)}</dd></div>

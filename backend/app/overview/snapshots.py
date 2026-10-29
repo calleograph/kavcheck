@@ -71,16 +71,15 @@ class SnapshotService:
             rcfg = await self._svc.get(db, "reports")
         if src is None:
             return False
-        async with JOBS.run("ov_snapshot", str(sid), "чтение записей защиты") as lease:
+        async with JOBS.run_heavy("ov_snapshot", str(sid), "чтение записей защиты", task=f"срез главной: {src.name}") as lease:
             if lease is None:
                 return False
             self.current = src.name
             try:
-                async with RES.heavy(f"срез главной: {src.name}", 1):
-                    client = self._sources.client(src)
-                    recs = await P.load(client, exclude_slaves=rcfg.exclude_slave_servers, groups=await H.groups_map(client), hw_cfg=None)
-                    data = payload(recs)
-                    del recs
+                client = self._sources.client(src)
+                recs = await P.load(client, exclude_slaves=rcfg.exclude_slave_servers, groups=await H.groups_map(client), hw_cfg=None)
+                data = payload(recs)
+                del recs
                 async with self._sm() as db:
                     await lease.fence(db)
                     await store(db, sid, data)

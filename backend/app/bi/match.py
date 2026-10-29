@@ -108,6 +108,15 @@ def decide(dev: dict, cands: list[dict], owner_locals: set[str], logins_of, same
     return ("auto" if strong else "candidate"), sig
 
 
+async def stale(sm: async_sessionmaker[AsyncSession], bi_source_id) -> bool:
+    """Нужно ли пересопоставление: снимок BI или поколение данных KSC изменились (два лёгких запроса; без аренды и записи в журнал заданий)."""
+    async with sm() as db:
+        src = await db.get(BiSource, bi_source_id)
+        if src is None or src.last_import_id is None:
+            return False
+        return f"{src.last_import_id}|{gens_stamp(await ksc_gens(db))}"[:600] != src.match_stamp
+
+
 async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool = False, lease=None) -> dict | None:
     """Пересчитать сопоставление источника BI. Без изменений в снимке и данных KSC — пропуск (если не force)."""
     async with sm() as db:

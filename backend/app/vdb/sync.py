@@ -259,25 +259,26 @@ class VdbSync:
                 log.warning("Анализ уязвимостей отложен: %s", exc)
 
     async def analyze_keys(self, keys: set[str]) -> None:
-        async with RES.heavy("анализ уязвимостей", RES.slots):
-            async with self._sm() as db:
-                sids = [s for s in (await db.execute(select(KscSource.id).where(KscSource.is_active.is_(True)))).scalars().all()]
-                for sid in sids:
-                    async with JOBS.run("vdb_analyze", str(sid)) as lease:                 # один анализ источника за раз (между worker тоже); идёт чужой — пропускаем: полный анализ по ревизии догонит
-                        if lease is None:
-                            continue
-                        await analyze(db, sid, keys=sorted(keys), res=RES)
-                        self._analyzed[sid] = await store.revision(db, sid)
-                await db.commit()
+        async with self._sm() as db:
+            sids = [s for s in (await db.execute(select(KscSource.id).where(KscSource.is_active.is_(True)))).scalars().all()]
+        for sid in sids:
+            # место, затем аренда; один анализ источника за раз (между worker тоже); идёт чужой — пропускаем: полный анализ по ревизии догонит
+            async with JOBS.run_heavy("vdb_analyze", str(sid), "анализ изменённых уязвимостей", task=f"анализ уязвимостей {sid}") as lease:
+                if lease is None:
+                    continue
+                async with self._sm() as db:
+                    await analyze(db, sid, keys=sorted(keys), res=RES, lease=lease)
+                    self._analyzed[sid] = await store.revision(db, sid)
+                    await db.commit()
 
     async def analyze_full(self, source_id: uuid.UUID) -> int | None:
-        async with RES.heavy("анализ уязвимостей", RES.slots):         # тяжёлые задачи (каталог, анализ, расчёт дашбордов) идут по одной
-            async with JOBS.run("vdb_analyze", str(source_id)) as lease:
-                if lease is None:
-                    return None
-                async with self._sm() as db:
-                    n = await analyze(db, source_id, keys=None, res=RES)
-                    await db.commit()
+        # одно место (не все): анализ не задерживает каталог, расчёты по KSC и импорт BI; ожидание места не держит аренду
+        async with JOBS.run_heavy("vdb_analyze", str(source_id), "анализ уязвимостей", task=f"анализ уязвимостей {source_id}") as lease:
+            if lease is None:
+                return None
+            async with self._sm() as db:
+                n = await analyze(db, source_id, keys=None, res=RES, lease=lease)
+                await db.commit()
         return n
 
 
@@ -285,7 +286,7 @@ def _utc(d: datetime) -> datetime:
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
-async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None, *, batch: int = 300, res: Resources | None = None) -> int:
+async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None, *, batch: int = 300, res: Resources | None = None, lease=None) -> int:
     """Сопоставить уязвимости с каталогом источника и обновить находки (без обращения к KSC). keys=None — полный пересчёт по продуктам каталога.
     Данные обрабатываются порциями по `batch` уязвимостей: записи источников читаются как строки без ORM, результат порции сразу сохраняется и фиксируется, память не растёт
     с числом уязвимостей (в памяти — каталог, множество уже обработанных ключей и одна порция). Прерванный пересчёт безопасно повторяется: находки меняются по ключу."""
@@ -298,8 +299,14 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     scope = None if keys is None else set(keys)
     matched: set[str] = set()
     now = utcnow()
+    total, done, t0 = len(all_keys), 0, time.monotonic()
+    log.info("Анализ уязвимостей начат", extra={"source_id": str(source_id), "keys": total, "products": len(prods)})
     async for part, rows in M.iter_affected(db, all_keys, batch):
-        matches = [m for m in M.matches_from(matcher, rows) if m.status in M.AFFECTED]
+        # сопоставление — чистые вычисления Python: в отдельном потоке, иначе событийный цикл стоит и продление аренд, этапы и другие задания ждут
+        matches = [m for m in await asyncio.to_thread(lambda rows=rows: list(M.matches_from(matcher, rows))) if m.status in M.AFFECTED]
+        done += len(part)
+        if lease is not None:
+            await lease.stage("анализ уязвимостей", f"обработано {min(done, total)} из {total} уязвимостей, найдено {len(matched)}")
         by: dict[str, list[M.Match]] = {}
         for m in matches:
             by.setdefault(m.vuln_key, []).append(m)
@@ -346,4 +353,5 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
         await db.execute(delete(VdbFinding).where(VdbFinding.source_id == source_id, VdbFinding.vuln_key.in_(stale[i:i + 400])))
         await db.execute(delete(VdbFindingProduct).where(VdbFindingProduct.source_id == source_id, VdbFindingProduct.vuln_key.in_(stale[i:i + 400])))
     await db.commit()
+    log.info("Анализ уязвимостей завершён", extra={"source_id": str(source_id), "keys": total, "matched": len(matched), "duration_s": round(time.monotonic() - t0)})
     return len(matched)

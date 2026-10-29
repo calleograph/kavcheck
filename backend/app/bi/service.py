@@ -20,7 +20,7 @@ from . import match as M
 from . import smb as S
 
 log = logging.getLogger("app.bi")
-TICK_S = 60
+TICK_S = 15                                   # ручной запуск импорта начинается не позже чем через такт; проверка запросов дешёвая
 
 
 def next_run(hhmm: str, tz, after: datetime) -> datetime:
@@ -68,6 +68,18 @@ def rotate(stored: list[BiImport], keep_files: int, keep_days: int, now: datetim
     return out
 
 
+async def enqueue(db: AsyncSession, sid: uuid.UUID, *, trigger: str, by: str = "") -> uuid.UUID:
+    """Строка журнала импорта «в очереди» — с момента постановки (запуск вручную, загрузка файла, расписание), а не только после начала обработки.
+    Уже есть незавершённая — она и используется: повторный запрос не плодит строк."""
+    cur = (await db.execute(select(BiImport).where(BiImport.source_id == sid, BiImport.status.in_(IM.ACTIVE)).order_by(BiImport.started_at.desc()).limit(1))).scalars().first()
+    if cur is not None:
+        return cur.id
+    imp = BiImport(source_id=sid, started_at=utcnow(), trigger=trigger, by=by[:300], status="queued", message="Задание поставлено в очередь")
+    db.add(imp)
+    await db.flush()
+    return imp.id
+
+
 class BiService:
     def __init__(self, sm: async_sessionmaker[AsyncSession], settings, svc, journal=None):
         self._sm, self._settings, self._svc, self._journal = sm, settings, svc, journal
@@ -102,6 +114,10 @@ class BiService:
     async def rematch(self, sid: uuid.UUID, force: bool = False) -> None:
         from ..services.jobs import JOBS  # noqa: PLC0415
 
+        if JOBS.busy_here("bi", str(sid)):                       # импорт этого источника ждёт места или идёт: сопоставление выполнит он
+            return
+        if not force and not await M.stale(self._sm, sid):        # ничего не изменилось: аренду не берём, журнал и история заданий не засоряются каждым тактом
+            return
         async with JOBS.run("bi", str(sid), "сопоставление") as lease:
             if lease is None:
                 return
@@ -110,38 +126,95 @@ class BiService:
             except Exception:  # noqa: BLE001 — сопоставление повторится на следующем такте; опубликованный снимок не затрагивается
                 log.exception("Сопоставление BI с KSC не удалось", extra={"source": str(sid)})
 
+    async def _state(self, imp_id: uuid.UUID, status: str, message: str | None = None, lease=None) -> None:
+        """Видимое состояние импорта: строка журнала и этап аренды (для «Состояния системы»)."""
+        async with self._sm() as db:
+            row = await db.get(BiImport, imp_id)
+            if row is not None and (row.status in IM.ACTIVE or status in IM.ACTIVE):
+                row.status = status
+                if message is not None:
+                    row.message = message[:2000]
+                await db.commit()
+        if lease is not None:
+            await lease.stage(IM.STATUS_RU.get(status, status))
+
     async def run_source(self, sid: uuid.UUID) -> BiImport | None:
+        """Импорт источника. Своя полоса ограничителя (`bi`): анализ уязвимостей, каталог и расчёты по KSC не задерживают импорт. Строка журнала — с постановки в очередь:
+        «в очереди» → «ожидает исполнителя» (если место занято) → «подключение к SMB» → «получение Excel» → «проверка структуры» → «импорт» → «сопоставление с KSC» → итог."""
         from ..services.jobs import JOBS  # noqa: PLC0415
 
-        async with JOBS.run("bi", str(sid), "импорт") as lease:
-            if lease is None:
-                return None
-            try:
-                async with RES.heavy(f"BI: импорт {sid}", 1):
-                    imp = await self._run(sid, lease)
-            except MemoryPressure as exc:
-                log.warning("Импорт BI отложен: %s", exc)
-                return None
-            if imp is not None and imp.status in ("ok", "partial", "unchanged"):
-                try:
-                    await M.run(self._sm, sid, force=imp.status != "unchanged", lease=lease)
-                except Exception:  # noqa: BLE001
-                    log.exception("Сопоставление BI с KSC не удалось", extra={"source": str(sid)})
-            return imp
-
-    async def _run(self, sid: uuid.UUID, lease) -> BiImport | None:
-        now = utcnow()
+        if JOBS.busy_here("bi", str(sid)):                       # уже ждёт места или выполняется в этом процессе
+            return None
         async with self._sm() as db:
             src = await db.get(BiSource, sid)
             if src is None:
+                return None
+            req = dict(src.request or {})
+            imp_id = uuid.UUID(req["imp_id"]) if req.get("imp_id") else await enqueue(db, sid, trigger="upload" if req.get("upload") else "manual" if req else "schedule", by=str(req.get("by") or ""))
+            await db.commit()
+            name = src.name
+
+        def waiting() -> None:
+            busy = ", ".join(sorted(RES.active)) or "—"
+            self._spawn(self._state(imp_id, "waiting", f"Ожидает исполнителя: место для импорта занято ({busy})"))
+
+        async with JOBS.run_heavy("bi", str(sid), "в очереди", task=f"BI: импорт «{name}»", lane="bi", on_wait=waiting) as lease:
+            if lease is None:                                    # выполняет другой исполнитель: строка останется в очереди и будет взята им или следующим тактом
+                return None
+            try:
+                imp = await self._run(sid, lease, imp_id)
+            except MemoryPressure as exc:
+                log.warning("Импорт BI отложен: %s", exc)
+                await self._state(imp_id, "queued", f"Отложено: не хватает памяти фоновой службы ({exc}); повтор на следующем такте")
+                return None
+            if imp is not None and imp.status in ("ok", "partial", "unchanged"):
+                final, msg = imp.status, imp.message
+                await self._state(imp.id, "matching", None, lease)
+                try:
+                    await M.run(self._sm, sid, force=imp.status != "unchanged", lease=lease)
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("Сопоставление BI с KSC не удалось", extra={"source": str(sid)})
+                    msg = f"{msg}; сопоставление с KSC не удалось ({type(exc).__name__}), повторится автоматически"
+                async with self._sm() as db:
+                    row = await db.get(BiImport, imp.id)
+                    if row is not None:
+                        row.status, row.message = final, msg[:2000]
+                        await db.commit()
+                imp.status = final
+            return imp
+
+    async def recover(self) -> int:
+        """При старте worker: импорты, прерванные перезапуском (обновление приложения, сбой), не остаются «в работе» навсегда — им ставится понятный итог;
+        опубликованные данные при этом не менялись (публикация — одна транзакция). Строки «в очереди» с ещё не взятым запросом остаются и будут выполнены."""
+        n = 0
+        async with self._sm() as db:
+            rows = (await db.execute(select(BiImport).where(BiImport.status.in_(IM.ACTIVE)))).scalars().all()
+            for r in rows:
+                src = await db.get(BiSource, r.source_id)
+                if r.status == "queued" and src is not None and (src.request or {}).get("imp_id") == str(r.id):
+                    continue
+                r.status, r.finished_at = "failed", utcnow()
+                r.message = "Прервано перезапуском фоновой службы (например, обновлением приложения): опубликованные данные не изменены. " + \
+                    ("Импорт по расписанию повторится автоматически." if r.trigger == "schedule" else "Запустите импорт снова.")
+                if src is not None and r.trigger == "schedule":
+                    src.fail_n = (src.fail_n or 0) + 1
+                n += 1
+            await db.commit()
+        return n
+
+    async def _run(self, sid: uuid.UUID, lease, imp_id: uuid.UUID) -> BiImport | None:
+        now = utcnow()
+        async with self._sm() as db:
+            src = await db.get(BiSource, sid)
+            imp = await db.get(BiImport, imp_id)
+            if src is None or imp is None:
                 return None
             req = dict(src.request or {})
             scheduled = not req
             src.request, src.last_try_at = None, now
             if scheduled or (src.next_run_at and src.next_run_at <= now):
                 src.next_run_at = next_run(src.schedule_time, IM.tz_of(src), now)
-            imp = BiImport(source_id=sid, started_at=now, trigger="upload" if req.get("upload") else "manual" if req else "schedule", by=str(req.get("by") or "")[:300], status="running")
-            db.add(imp)
+            imp.started_at, imp.status, imp.message = now, "fetching" if req.get("upload") else "connecting", ""        # время начала — начало обработки (поставлено в очередь — раньше)
             await db.commit()
             name, mode, rule, opt = src.name, src.file_mode, src.file_name, IM.options(src)
             password = self._svc.decrypt(src.password_enc, f"bi.{sid}") if not req.get("upload") else ""
@@ -156,7 +229,12 @@ class BiService:
                 up.rename(incoming)
                 fname, fsize, fmtime = str(req.get("name") or up.name), incoming.stat().st_size, None
             else:
-                fi = await asyncio.to_thread(self._fetch, conn, mode, rule, list(cfg.allowed_hosts), incoming, int(opt["max_mb"]) * 1024 * 1024, float(opt["stable_s"]))  # type: ignore[attr-defined]
+                await lease.stage(IM.STATUS_RU["connecting"])
+                loop = asyncio.get_running_loop()
+
+                def fetching() -> None:                         # из потока получения: соединение установлено, файл выбран — идёт копирование
+                    loop.call_soon_threadsafe(lambda: self._spawn(self._state(imp.id, "fetching", None, lease)))
+                fi = await asyncio.to_thread(self._fetch, conn, mode, rule, list(cfg.allowed_hosts), incoming, int(opt["max_mb"]) * 1024 * 1024, float(opt["stable_s"]), fetching)  # type: ignore[attr-defined]
                 fname, fsize, fmtime = fi.name, fi.size, fi.mtime
             imp = await IM.import_file(self._sm, sid, incoming, file_name=fname, file_size=fsize, file_mtime=fmtime, trigger=imp.trigger, by=imp.by, force=bool(req.get("force")),
                                        lease=lease, imp_id=imp.id, store_dir=base)
@@ -194,7 +272,7 @@ class BiService:
         return imp
 
     @staticmethod
-    def _fetch(conn: S.Conn, mode: str, rule: str, allowed: list[str], dst: Path, max_bytes: int, stable_s: float) -> S.FileInfo:
+    def _fetch(conn: S.Conn, mode: str, rule: str, allowed: list[str], dst: Path, max_bytes: int, stable_s: float, on_fetch=None) -> S.FileInfo:
         why = S.host_allowed(conn.host, allowed)
         if why:
             raise S.SmbError("allowed", why)
@@ -203,6 +281,8 @@ class BiService:
             hit, _cand, why = S.choose(s.listing(), mode, rule)
             if hit is None:
                 raise S.SmbError("choose", why)
+            if on_fetch is not None:
+                on_fetch()
             return S.fetch_stable(s, hit.name, dst, max_bytes, stable_s)
 
     async def _emit(self, event: str, source: str, message: str, level: str = "info") -> None:

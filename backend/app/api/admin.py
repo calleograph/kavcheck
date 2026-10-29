@@ -382,9 +382,10 @@ async def _jobs_status(db: AsyncSession, hb, srcs: list) -> dict:
     now = utcnow()
     leases = (await db.execute(select(JobLease).order_by(JobLease.kind, JobLease.scope))).scalars().all()
     interrupted = int((await db.execute(select(func.count()).select_from(JobRun).where(JobRun.status.in_(("interrupted", "lost")), JobRun.finished_at >= now - timedelta(hours=24)))).scalar_one())
-    out: dict[str, Any] = {"leases": [{"kind": x.kind, "scope": names.get(x.scope, x.scope), "owner": x.owner, "stage": x.stage, "started_at": x.started_at, "heartbeat_age_s": int((now - x.heartbeat_at).total_seconds()),
+    out: dict[str, Any] = {"leases": [{"kind": x.kind, "scope": names.get(x.scope, x.scope), "owner": x.owner, "stage": x.stage, "started_at": x.started_at, "heartbeat_age_s": int((now - x.heartbeat_at).total_seconds()), "progress": x.progress,
                                        "alive": x.lease_until >= now, "app_version": x.app_version} for x in leases], "interrupted_24h": interrupted,
                            "worker": {"rss_mb": res.get("rss_mb"), "peak_mb": res.get("peak_mb"), "soft_mb": res.get("soft_mb"), "hard_mb": res.get("hard_mb"), "active": res.get("active") or [], "deferred": res.get("deferred"),
+                                      "waiting": res.get("waiting") or [], "lanes": res.get("lanes") or {}, "slots": res.get("slots"), "slots_requested": res.get("slots_requested"), "cpus": res.get("cpus"),
                                       "started_at": hb.started_at if hb is not None else None},
                            "sources": per, "reports": {"median_s": round(secs[len(secs) // 2], 1) if secs else None, "max_s": round(secs[-1], 1) if secs else None, "done_sample": len(secs), "failed_24h": int(failed_24h)}}
     if db.bind.dialect.name == "postgresql":

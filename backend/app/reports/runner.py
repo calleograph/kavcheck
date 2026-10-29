@@ -70,6 +70,13 @@ class Runner:
     async def run_job(self, job: ReportJob) -> None:
         from ..services.jobs import JOBS  # noqa: PLC0415
 
+        async with JOBS.slot("report", str(job.id), task=f"отчёт {job.kind}", lane="interactive") as ok:    # место в полосе отчётов — до аренды; при нехватке ждут, а не копят память
+            if ok:
+                await self._leased(job)
+
+    async def _leased(self, job: ReportJob) -> None:
+        from ..services.jobs import JOBS  # noqa: PLC0415
+
         lease = await JOBS.acquire("report", str(job.id), "запуск")
         if lease is None:                                       # задание уже ведёт другой исполнитель
             return
@@ -91,18 +98,17 @@ class Runner:
 
     async def _run_job(self, job: ReportJob) -> None:
         async with self._sem:
-            async with RES.heavy(f"отчёт {job.kind}", 1, interactive=True):          # отчёты идут под общим ограничителем: при занятых слотах или нехватке памяти ждут, а не копят память
-                for attempt in range(len(self.RETRY_DELAYS) + 1):
-                    await self._execute(job)
-                    if attempt == len(self.RETRY_DELAYS):
-                        break
-                    async with self._sm() as db:
-                        cur = await db.get(ReportJob, job.id)
-                    if cur is None or cur.status != "failed" or not any(t in (cur.error or "") for t in self.TRANSIENT):
-                        break
-                    delay = self.RETRY_DELAYS[attempt]
-                    await self._set(job.id, status="running", error=None, finished_at=None, progress=f"Источник недоступен: {cur.error[:120]}. Повтор через {delay} с (попытка {attempt + 2} из {len(self.RETRY_DELAYS) + 1})")
-                    await asyncio.sleep(delay)
+            for attempt in range(len(self.RETRY_DELAYS) + 1):
+                await self._execute(job)
+                if attempt == len(self.RETRY_DELAYS):
+                    break
+                async with self._sm() as db:
+                    cur = await db.get(ReportJob, job.id)
+                if cur is None or cur.status != "failed" or not any(t in (cur.error or "") for t in self.TRANSIENT):
+                    break
+                delay = self.RETRY_DELAYS[attempt]
+                await self._set(job.id, status="running", error=None, finished_at=None, progress=f"Источник недоступен: {cur.error[:120]}. Повтор через {delay} с (попытка {attempt + 2} из {len(self.RETRY_DELAYS) + 1})")
+                await asyncio.sleep(delay)
 
     async def _execute(self, job: ReportJob) -> None:
         if job.kind == "version_audit":

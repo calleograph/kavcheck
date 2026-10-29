@@ -5,7 +5,7 @@ import { Empty, SkelRows } from "../../components/ui";
 import { bytes, fmt, fmtTs, num, versionLabel } from "../../util";
 
 const CATALOG: Record<string, [string, string]> = { ready: ["построен", "ok"], interrupted: ["прервано, будет повторено", "warn"], building: ["строится", "accent"], failed: ["ошибка", "err"], empty: ["не построен", "warn"] };
-const KIND_RU: Record<string, string> = { catalog: "каталог программ", eol: "расчёт EOL", vdb_sync: "загрузка базы уязвимостей", vdb_analyze: "анализ уязвимостей", zonecache: "данные зон", zjob: "расчёт зон", report: "отчёт" };
+const KIND_RU: Record<string, string> = { catalog: "каталог программ", eol: "расчёт EOL", vdb_sync: "загрузка базы уязвимостей", vdb_analyze: "анализ уязвимостей", zonecache: "данные зон", zjob: "расчёт зон", report: "отчёт", bi: "импорт BI", devices: "опрос пользователей", licenses: "чтение лицензий", ov_snapshot: "срез главной", pentest: "Pentest" };
 const ACTION: Record<string, string> = { update: "обновление", rollback: "откат", backup: "резервная копия", restore: "восстановление" };
 
 function Usage({ used, total, label }: { used: number | null | undefined; total: number | null | undefined; label: string }) {
@@ -20,6 +20,8 @@ function Usage({ used, total, label }: { used: number | null | undefined; total:
 }
 
 /** Состояние системы: компоненты, ресурсы сервера, данные, источники KSC и каталог, безопасность, ошибки фоновых задач, история обновлений. */
+const LANE_RU: Record<string, string> = { bg: "очередь тяжёлых расчётов", bi: "очередь BI", interactive: "очередь отчётов" };
+
 export default function SystemAdmin({ onOpen }: { onOpen: (tab: string) => void }) {
   const [s, setS] = useState<SystemStatus | null>(null);
   const [err, setErr] = useState("");
@@ -72,10 +74,12 @@ export default function SystemAdmin({ onOpen }: { onOpen: (tab: string) => void 
           </table></div>)}
       </div>
       <div className="card flush">
-        <div className="card-head"><h2>Фоновые расчёты</h2><span className="muted small">Что считает worker, сколько это заняло и чем закончилось; тяжёлая работа идёт по одной задаче</span></div>
+        <div className="card-head"><h2>Фоновые расчёты</h2><span className="muted small">Что считает worker, что ждёт исполнителя и чем закончилось; BI и отчёты — в своих очередях и не ждут тяжёлые расчёты</span></div>
         <dl className="kv compact pad-x">
           <div><dt>Память worker</dt><dd>{s.jobs.worker.rss_mb != null ? <>{num(s.jobs.worker.rss_mb)} МБ <span className="muted small">· пик {num(s.jobs.worker.peak_mb ?? 0)} МБ, мягкий предел {num(s.jobs.worker.soft_mb ?? 0)}, жёсткий {num(s.jobs.worker.hard_mb ?? 0)} МБ{s.jobs.worker.deferred ? ` · отложено задач: ${s.jobs.worker.deferred}` : ""}</span></> : <span className="muted">нет сигнала</span>}</dd></div>
-          <div><dt>Сейчас выполняется</dt><dd>{s.jobs.leases.length ? s.jobs.leases.map((l) => <span key={`${l.kind}:${l.scope}`} className="block">{KIND_RU[l.kind] ?? l.kind}{l.scope ? ` · ${l.scope}` : ""}: {l.stage || "…"} <span className={`muted small ${l.alive ? "" : "bad-text"}`}>(сигнал {l.heartbeat_age_s} с назад{l.alive ? "" : ", исполнитель не отвечает — задание будет перезапущено"})</span></span>) : <span className="muted">ничего</span>}</dd></div>
+          <div><dt>Сейчас выполняется</dt><dd>{s.jobs.leases.length ? s.jobs.leases.map((l) => <span key={`${l.kind}:${l.scope}`} className="block">{KIND_RU[l.kind] ?? l.kind}{l.scope ? ` · ${l.scope}` : ""}: {l.stage || "…"}{l.progress ? <span className="muted small"> — {l.progress}</span> : null} <span className={`muted small ${l.alive ? "" : "bad-text"}`}>(сигнал {l.heartbeat_age_s} с назад{l.alive ? "" : ", исполнитель не отвечает — задание будет перезапущено"})</span></span>) : <span className="muted">ничего</span>}</dd></div>
+          <div><dt>Ожидает исполнителя</dt><dd>{s.jobs.worker.waiting?.length ? s.jobs.worker.waiting.map((w, i) => <span key={i} className="block">{w.task} <span className="muted small">· {LANE_RU[w.lane] ?? w.lane}, ждёт {Math.round(w.wait_s / 60)} мин</span></span>)
+            : <span className="muted">очереди нет</span>}{s.jobs.worker.slots != null && <span className="sub">мест для тяжёлых расчётов: {s.jobs.worker.slots}{s.jobs.worker.slots_requested && s.jobs.worker.slots_requested > s.jobs.worker.slots ? ` (задано ${s.jobs.worker.slots_requested}, ограничено процессорами и памятью контейнера: CPU ${s.jobs.worker.cpus})` : ""}; импорт BI и отчёты — отдельные очереди</span>}</dd></div>
           <div><dt>Прервано за сутки</dt><dd>{s.jobs.interrupted_24h ? <span className="warn-text">{s.jobs.interrupted_24h} — перезапуск или сбой; задания возобновляются автоматически</span> : <span className="ok-text">нет</span>}</dd></div>
           <div><dt>Отчёты</dt><dd>{s.jobs.reports.median_s != null ? <>типичная длительность {s.jobs.reports.median_s} с, самый долгий из последних {s.jobs.reports.done_sample} — {s.jobs.reports.max_s} с</> : <span className="muted">готовых отчётов ещё нет</span>}{s.jobs.reports.failed_24h > 0 && <span className="bad-text"> · неудачных за сутки: {s.jobs.reports.failed_24h}</span>}</dd></div>
           {s.jobs.postgres && <div><dt>Долгие транзакции PostgreSQL</dt><dd>{s.jobs.postgres.long_transactions.length ? s.jobs.postgres.long_transactions.map((t) => `${t.state}: ${t.count}, самая давняя ${t.oldest_s} с`).join("; ") : <span className="ok-text">нет (дольше минуты)</span>}</dd></div>}

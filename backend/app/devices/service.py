@@ -71,7 +71,7 @@ class DevicesService:
             return None
         from ..services.jobs import JOBS  # noqa: PLC0415
 
-        async with JOBS.run("devices", str(sid)) as lease:                  # опрос источника ведёт один исполнитель; недоступный источник занимает только свою задачу
+        async with JOBS.run_heavy("devices", str(sid), "опрос пользователей", task=f"пользователи: {src.name}") as lease:   # место, затем аренда; опрос источника ведёт один исполнитель
             if lease is None:
                 return None
             return await self._poll(sid, src, cfg)
@@ -79,22 +79,21 @@ class DevicesService:
     async def _poll(self, sid: uuid.UUID, src, cfg) -> dict | None:
         self.current = src.name
         try:
-            async with RES.heavy(f"пользователи: {src.name}", 1):
-                try:
-                    return await U.poll_source(self._sm, self._sources.client(src), src, list(cfg.service_masks), retention_days=int(cfg.retention_days), res=RES)  # type: ignore[attr-defined]
-                except MemoryPressure:
-                    raise
-                except Exception as exc:  # noqa: BLE001 — KSC недоступен или нет прав: накопленное сохраняется, причина видна в интерфейсе
-                    msg = f"{type(exc).__name__}: {str(exc)[:300]}"
-                    log.warning("Опрос пользователей не удался", extra={"source": src.name, "error": msg})
-                    async with self._sm() as db:
-                        st = await db.get(DevicesState, sid)
-                        if st is None:
-                            db.add(DevicesState(source_id=sid, error=msg, error_at=utcnow()))
-                        else:
-                            st.error, st.error_at, st.requested_at = msg, utcnow(), None
-                        await db.commit()
-                    return None
+            try:
+                return await U.poll_source(self._sm, self._sources.client(src), src, list(cfg.service_masks), retention_days=int(cfg.retention_days), res=RES)  # type: ignore[attr-defined]
+            except MemoryPressure:
+                raise
+            except Exception as exc:  # noqa: BLE001 — KSC недоступен или нет прав: накопленное сохраняется, причина видна в интерфейсе
+                msg = f"{type(exc).__name__}: {str(exc)[:300]}"
+                log.warning("Опрос пользователей не удался", extra={"source": src.name, "error": msg})
+                async with self._sm() as db:
+                    st = await db.get(DevicesState, sid)
+                    if st is None:
+                        db.add(DevicesState(source_id=sid, error=msg, error_at=utcnow()))
+                    else:
+                        st.error, st.error_at, st.requested_at = msg, utcnow(), None
+                    await db.commit()
+                return None
         except MemoryPressure as exc:
             log.warning("Опрос пользователей отложен: %s", exc)
             return None

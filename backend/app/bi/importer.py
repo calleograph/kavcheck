@@ -30,6 +30,11 @@ log = logging.getLogger("app.bi")
 DEFAULT_OPTIONS = {"partial": True, "max_reject_pct": 5, "drift_pct": 20, "max_mb": 50, "max_rows": 200_000, "keep_files": 10, "keep_days": 90, "retry_minutes": 60, "retries": 3,
                    "stable_s": 10, "full_snapshot": True, "owner_drift_pct": 25}
 MAX_ERRORS = 500
+# состояния строки журнала импорта: в работе (ACTIVE) и итоговые; показываются на карточке источника и в журнале с момента постановки в очередь
+STATUS_RU = {"queued": "в очереди", "waiting": "ожидает исполнителя", "connecting": "подключение к SMB", "fetching": "получение Excel", "checking": "проверка структуры", "importing": "импорт",
+             "matching": "сопоставление с KSC", "running": "выполняется", "ok": "успешно", "partial": "частично (часть строк отклонена)", "unchanged": "изменений нет", "rejected": "отклонён",
+             "failed": "не удалось получить"}
+ACTIVE = ("queued", "waiting", "connecting", "fetching", "checking", "importing", "matching", "running")
 CHUNK = 1000
 BAD_COLUMN_PCT = 50                                                   # больше половины значений столбца не распознаны — столбцы сдвинулись или сопоставление устарело
 WARN_TEXT = {"bad_email": "Некорректная рабочая почта (значение не сохранено)", "bad_date": "Нераспознанная дата", "future_date": "Дата из будущего: сохранена как есть, как дата наблюдения не используется",
@@ -376,6 +381,12 @@ async def import_file(sm, src_id: uuid.UUID, path: Path, *, file_name: str, file
         imp.sha256 = await asyncio.to_thread(sha256_file, path)
         await db.commit()
 
+        async def stage(status: str) -> None:                              # видимый этап: «Проверка структуры», «Импорт» (строка журнала импорта и аренда задания)
+            imp.status = status
+            await db.commit()
+            if lease is not None:
+                await lease.stage(STATUS_RU.get(status, status))
+
         async def finish(status: str, message: str = "") -> BiImport:
             imp.status, imp.message, imp.finished_at, imp.ms = status, message[:2000], utcnow(), int((time.monotonic() - t0) * 1000)
             imp.warnings = (warns + list(imp.warnings or []))[:100]
@@ -388,6 +399,7 @@ async def import_file(sm, src_id: uuid.UUID, path: Path, *, file_name: str, file
             return await finish("unchanged", "Изменений нет: файл совпадает с уже импортированным")
         if prev is not None and prev.snapshot_at and snap < prev.snapshot_at and not force:
             return await finish("rejected", f"Файл старше уже импортированного снимка ({prev.snapshot_at:%d.%m.%Y %H:%M} UTC): история не перезаписывается старыми данными")
+        await stage("checking")
         try:
             p = await asyncio.to_thread(parse_file, path, prof, tz, snap, int(opt["max_rows"]))
         except X.XlsxError as exc:
@@ -410,6 +422,7 @@ async def import_file(sm, src_id: uuid.UUID, path: Path, *, file_name: str, file
             await extend(db, src, imp, snap)
             src.last_ok_at, src.last_error, src.fail_n = utcnow(), None, 0
             return await finish("unchanged", "Изменений нет: содержание совпадает с прошлым снимком (отличается только оформление или порядок строк); даты наблюдения продлены")
+        await stage("importing")
         try:
             await xact_lock(db, f"bi:{src_id}")
             if lease is not None:

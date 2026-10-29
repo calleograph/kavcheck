@@ -11,14 +11,21 @@
 * `recover_own()` — при старте worker снимаются аренды прежнего процесса этого же контейнера (имя хоста совпадает): они заведомо мертвы, ждать `ttl` не нужно.
 * `fence(db)` — внутри транзакции записи результата проверяется, что аренда всё ещё принадлежит этому выполнению; иначе `LeaseLost` и запись не выполняется: запоздавший результат старого
   выполнения не перезапишет данные нового.
-* История (`job_runs`): результат, этап, причина, версия приложения. Прежние ошибки остаются в истории и не выдаются за текущую причину отказа."""
+* История (`job_runs`): результат, этап, причина, версия приложения. Прежние ошибки остаются в истории и не выдаются за текущую причину отказа.
+* `run_heavy(kind, scope, …)` — тяжёлое задание: сначала место у ограничителя ресурсов (services/resources, своя полоса), затем аренда. Ожидание места — не выполнение:
+  ожидающее задание видно как «ожидает исполнителя» (`waiting`), аренды у него нет и продлевать нечего. Повторная постановка того же задания в этом процессе отсекается.
+* Ход выполнения: `stage()` и граница порции (`RES.breathe`) отмечают прогресс. Нет прогресса `stall_s` (по умолчанию 15 мин, `JOB_STALL_SECONDS`) — диагностическое событие
+  с этапом и длительностью; нет прогресса `stall_hard_s` (6 ч) — аренда больше не продлевается: задание считается зависшим, после истечения аренды его можно запустить заново,
+  а запоздавший результат не пройдёт `fence`."""
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import os
 import socket
+import time
 import uuid
 from datetime import timedelta
 
@@ -29,6 +36,7 @@ from ..models import JobLease, JobRun, utcnow
 
 log = logging.getLogger("app.jobs")
 KEEP_RUNS = 20
+CURRENT: contextvars.ContextVar["Lease | None"] = contextvars.ContextVar("kc_lease", default=None)        # аренда выполняемого задания (для отметки прогресса из RES.breathe)
 
 
 class LeaseLost(Exception):
@@ -49,9 +57,17 @@ class Lease:
         self.lost = False
         self.stage_text = ""
         self._done = False
+        self.progress_at = time.monotonic()
+        self.stalled = False                     # о зависании уже сообщено
+        self.frozen = False                      # аренда больше не продлевается
+
+    def touch(self) -> None:
+        self.progress_at = time.monotonic()
+        self.stalled = False
 
     async def stage(self, stage: str, progress: str | None = None) -> None:
         """Этап и ход выполнения (для интерфейса и диагностики); ошибка записи не мешает заданию."""
+        self.touch()
         self.stage_text = stage
         try:
             async with self.jobs.sm() as db:
@@ -73,6 +89,9 @@ class Lease:
             return
         self._done = True
         self.jobs.held.pop(self.run_id, None)
+        dur = int((utcnow() - self.started).total_seconds())
+        (log.info if status == "success" else log.warning)("Задание завершено", extra={"kind": self.kind, "scope": self.scope, "status": status, "duration_s": dur, "stage": self.stage_text,
+                                                                                         **({"error": error[:300]} if error else {})})
         try:
             async with self.jobs.sm() as db:
                 gone = (await db.execute(delete(JobLease).where(JobLease.kind == self.kind, JobLease.scope == self.scope, JobLease.run_id == self.run_id))).rowcount
@@ -99,13 +118,22 @@ class Jobs:
         self.version = ""
         self.owner = f"{socket.gethostname()}/{os.getpid()}/{uuid.uuid4().hex[:6]}"
         self.held: dict[uuid.UUID, Lease] = {}
+        self.waiting: dict[tuple[str, str], dict] = {}          # (вид, область) → {с какого момента, этап}: ждут места у ограничителя, аренды ещё нет
+        self.stall_s, self.stall_hard_s = 900, 21600
+        self.journal = None
         self._stop = asyncio.Event()
 
-    def configure(self, sm: async_sessionmaker[AsyncSession], *, ttl: int = 120, version: str = "") -> "Jobs":
+    def configure(self, sm: async_sessionmaker[AsyncSession], *, ttl: int = 120, version: str = "", stall_s: int = 900, stall_hard_s: int = 21600, journal=None) -> "Jobs":
         self.sm, self.ttl, self.version = sm, int(ttl), version
+        self.stall_s, self.stall_hard_s, self.journal = int(stall_s), max(int(stall_hard_s), int(stall_s) * 2), journal
         self.owner = f"{socket.gethostname()}/{os.getpid()}/{uuid.uuid4().hex[:6]}"
         self.held.clear()
+        self.waiting.clear()
         return self
+
+    def busy_here(self, kind: str, scope: str = "") -> bool:
+        """Задание уже ждёт места или выполняется в этом процессе: повторно не ставится (такт планировщика не плодит ожидающие копии)."""
+        return (kind, scope) in self.waiting or any(le.kind == kind and le.scope == scope for le in self.held.values())
 
     @property
     def host(self) -> str:
@@ -134,6 +162,7 @@ class Jobs:
         lease = Lease(self, kind, scope, run_id, now)
         lease.stage_text = stage
         self.held[run_id] = lease
+        log.info("Задание начато", extra={"kind": kind, "scope": scope, "stage": stage})
         return lease
 
     @contextlib.asynccontextmanager
@@ -143,6 +172,7 @@ class Jobs:
         if lease is None:
             yield None
             return
+        token = CURRENT.set(lease)
         try:
             yield lease
         except LeaseLost as exc:
@@ -156,14 +186,52 @@ class Jobs:
             raise
         else:
             await lease.finish("success")
+        finally:
+            CURRENT.reset(token)
+
+    @contextlib.asynccontextmanager
+    async def slot(self, kind: str, scope: str = "", *, task: str = "", weight: int = 1, lane: str = "bg", stage: str = "запуск", on_wait=None):
+        """Место у ограничителя ресурсов для задания (yield True) — до захвата аренды; False — задание уже ждёт или выполняется здесь, либо его выполняет другой исполнитель.
+        Пока место не выдано, задание числится в `waiting` («ожидает исполнителя»): аренды нет, продлевать нечего, «выполняется» не показывается."""
+        from .resources import RES  # noqa: PLC0415
+
+        key = (kind, scope)
+        if self.busy_here(kind, scope) or await self.is_live(kind, scope):
+            yield False
+            return
+        self.waiting[key] = {"since": utcnow(), "stage": stage, "lane": lane, "task": task or f"{kind} {scope}".strip()}
+
+        def waited() -> None:
+            log.info("Задание ожидает исполнителя", extra={"kind": kind, "scope": scope, "lane": lane, "busy": sorted(RES.active)})
+            if on_wait is not None:
+                on_wait()
+        try:
+            async with RES.heavy(task or f"{kind}: {scope}", weight, lane=lane, on_wait=waited):
+                self.waiting.pop(key, None)
+                yield True
+        finally:
+            self.waiting.pop(key, None)
+
+    @contextlib.asynccontextmanager
+    async def run_heavy(self, kind: str, scope: str = "", stage: str = "запуск", *, task: str = "", weight: int = 1, lane: str = "bg", on_wait=None):
+        """Тяжёлое задание: место у ограничителя (`slot`), затем аренда (`run`). lease = None — задание уже ждёт или выполняется (здесь или у другого исполнителя)."""
+        async with self.slot(kind, scope, task=task, weight=weight, lane=lane, stage=stage, on_wait=on_wait) as ok:
+            if not ok:
+                yield None
+                return
+            async with self.run(kind, scope, stage) as lease:
+                yield lease
 
     # ------------------------------------------------------------------------------------------ продление
     async def beat_once(self) -> int:
         """Продлить все аренды этого исполнителя; потерянные (перехвачены, сняты) помечаются `lost`. Возвращает число продлённых."""
         if not self.held:
             return 0
+        await self._watch()
         now = utcnow()
-        ids = list(self.held)
+        ids = [rid for rid, le in self.held.items() if not le.frozen]                 # зависшее (нет прогресса stall_hard_s) больше не продлеваем
+        if not ids:
+            return 0
         async with self.sm() as db:
             res = (await db.execute(update(JobLease).where(JobLease.owner == self.owner, JobLease.run_id.in_(ids)).values(heartbeat_at=now, lease_until=now + timedelta(seconds=self.ttl)).returning(JobLease.run_id))).all()
             await db.commit()
@@ -173,6 +241,30 @@ class Jobs:
                 self.held[rid].lost = True
                 log.warning("Аренда задания потеряна", extra={"kind": self.held[rid].kind, "scope": self.held[rid].scope})
         return len(alive)
+
+    async def _watch(self) -> None:
+        """Сторож хода выполнения: нет прогресса stall_s — диагностическое событие (один раз до следующего прогресса); stall_hard_s — аренда больше не продлевается."""
+        now = time.monotonic()
+        for le in list(self.held.values()):
+            idle = now - le.progress_at
+            if idle >= self.stall_hard_s and not le.frozen:
+                le.frozen = True
+                await self._diag(le, "job_hung", f"Задание {le.kind} ({le.scope or 'общее'}) без хода выполнения {int(idle // 60)} мин на этапе «{le.stage_text}»: аренда больше не продлевается, "
+                                 "задание будет считаться прерванным и запущено заново; запоздавший результат не запишется", "error")
+            elif idle >= self.stall_s and not le.stalled:
+                le.stalled = True
+                await self._diag(le, "job_stalled", f"Задание {le.kind} ({le.scope or 'общее'}) без хода выполнения {int(idle // 60)} мин на этапе «{le.stage_text}» "
+                                 f"(выполняется {int((utcnow() - le.started).total_seconds() // 60)} мин); занято: {', '.join(sorted(_res_active())) or '—'}", "warn")
+
+    async def _diag(self, le: "Lease", event: str, text: str, level: str) -> None:
+        log.warning(text, extra={"kind": le.kind, "scope": le.scope, "event": event})
+        with contextlib.suppress(Exception):
+            async with self.sm() as db:
+                await db.execute(update(JobLease).where(JobLease.run_id == le.run_id).values(progress=text[:300]))
+                await db.commit()
+        if self.journal is not None:
+            with contextlib.suppress(Exception):
+                await self.journal.emit("system", event, level=level, message=text[:600], data={"kind": le.kind, "scope": le.scope})
 
     async def beat_loop(self) -> None:
         every = max(3.0, self.ttl / 4)
@@ -227,3 +319,16 @@ class Jobs:
 
 
 JOBS = Jobs()
+
+
+def _res_active() -> list[str]:
+    from .resources import RES  # noqa: PLC0415
+
+    return list(RES.active)
+
+
+def touch_current() -> None:
+    """Прогресс выполняемого задания (вызывается на границе порции)."""
+    le = CURRENT.get()
+    if le is not None:
+        le.touch()

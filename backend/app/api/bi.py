@@ -26,14 +26,14 @@ from ..bi import read as R
 from ..bi import smb as S
 from ..bi import xlsx as X
 from ..bi.match import LEVEL_RU
-from ..bi.service import conn_of, next_run, src_dir
+from ..bi.service import conn_of, enqueue, next_run, src_dir
 from ..models import BiImport, BiMatch, BiSource, KscSource, utcnow
 from ..services.audit import write_audit
 
 router = APIRouter(prefix="/bi", tags=["bi"])
 SAMPLE_ROWS = 5
 CHECK_ROWS = 2000
-STATUS_RU = {"running": "выполняется", "ok": "успешно", "partial": "частично (часть строк отклонена)", "unchanged": "изменений нет", "rejected": "отклонён", "failed": "не удалось получить"}
+STATUS_RU = IM.STATUS_RU
 
 
 def pd(su: SessionUser) -> bool:
@@ -309,10 +309,11 @@ async def run(sid: uuid.UUID, body: RunIn, su: SessionUser = Depends(require_adm
     s = await _get(db, sid)
     if not s.profile:
         raise HTTPException(status_code=422, detail="Сначала проверьте структуру файла и сохраните сопоставление столбцов")
-    s.request = {"at": utcnow().isoformat(), "by": su.display_name, "force": body.force}
+    imp_id = await enqueue(db, s.id, trigger="manual", by=su.display_name)          # строка журнала «в очереди» — сразу, до начала обработки
+    s.request = {"at": utcnow().isoformat(), "by": su.display_name, "force": body.force, "imp_id": str(imp_id)}
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="bi.import.request", target_type="bi_source", target_id=str(s.id), details={"force": body.force})
     await db.commit()
-    return {"queued": True}
+    return {"queued": True, "import_id": str(imp_id)}
 
 
 @router.post("/sources/{sid}/upload", status_code=202)
@@ -325,10 +326,11 @@ async def upload(sid: uuid.UUID, request: Request, force: bool = False, su: Sess
     name = f"upload-{uuid.uuid4().hex}.xlsx"
     size = await _save_body(request, base / name, int(IM.options(s)["max_mb"]) * 1024 * 1024)
     orig = Path(unquote(request.headers.get("x-file-name", "")) or "upload.xlsx").name[:200]
-    s.request = {"at": utcnow().isoformat(), "by": su.display_name, "force": force, "upload": name, "name": orig}
+    imp_id = await enqueue(db, s.id, trigger="upload", by=su.display_name)
+    s.request = {"at": utcnow().isoformat(), "by": su.display_name, "force": force, "upload": name, "name": orig, "imp_id": str(imp_id)}
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="bi.import.upload", target_type="bi_source", target_id=str(s.id), details={"file": orig, "size": size, "force": force})
     await db.commit()
-    return {"queued": True}
+    return {"queued": True, "import_id": str(imp_id)}
 
 
 @router.get("/sources/{sid}/imports")

@@ -186,10 +186,14 @@ class ZoneCache:
         await self.run_job(jid)
         return True
 
-    async def _beat(self, jid: uuid.UUID) -> None:
+    async def _beat(self, jid: uuid.UUID, lease=None) -> None:
+        last = None
         while True:
             await asyncio.sleep(3)
             try:
+                if lease is not None and self._prog != last:              # этап и процент — в аренду: «Состояние системы» и сторож зависаний видят ход расчёта
+                    last = self._prog
+                    await lease.stage("расчёт данных зон", f"{last[0]} · {last[1]}%")
                 async with self.sm() as db:
                     text, pct = self._prog
                     await db.execute(update(ZcJob).where(ZcJob.id == jid).values(heartbeat_at=utcnow(), progress=text[:300], pct=max(0, min(100, pct))))
@@ -198,10 +202,16 @@ class ZoneCache:
                 pass
 
     async def run_job(self, jid: uuid.UUID) -> None:
+        # место у ограничителя — до захвата: пока его нет, задание остаётся «в очереди», аренды нет
+        async with JOBS.slot("zjob", str(jid), task="расчёт данных зон") as ok:
+            if ok:
+                await self._run_job(jid)
+
+    async def _run_job(self, jid: uuid.UUID) -> None:
         async with self.sm() as db:
             now = utcnow()
             claimed = (await db.execute(update(ZcJob).where(ZcJob.id == jid, ZcJob.status == "queued")          # атомарный захват: два worker не возьмут одно задание
-                                        .values(status="running", started_at=now, heartbeat_at=now, attempts=ZcJob.attempts + 1, error=None, progress="ожидание ресурсов", pct=0))).rowcount
+                                        .values(status="running", started_at=now, heartbeat_at=now, attempts=ZcJob.attempts + 1, error=None, progress="запуск", pct=0))).rowcount
             if claimed != 1:
                 await db.rollback()
                 return
@@ -214,16 +224,15 @@ class ZoneCache:
         if lease is None:                                          # аренда занята: задание ведёт другой исполнитель
             return
         self.current = str(jid)
-        self._prog = ("ожидание ресурсов", 0)
+        self._prog = ("запуск", 0)
         t0 = time.monotonic()
-        beat = asyncio.create_task(self._beat(jid))
+        beat = asyncio.create_task(self._beat(jid, lease))
         status, error, delay = "done", None, 0
         try:
-            async with self.res.heavy(f"расчёт зон ({kind})", 1):
-                self._prog = ("запуск", 1)
-                errors = await self._execute(kind, zone_id, zc)
-                if errors:
-                    error = "; ".join(errors)[:1500]
+            self._prog = ("запуск", 1)
+            errors = await self._execute(kind, zone_id, zc)
+            if errors:
+                error = "; ".join(errors)[:1500]
         except MemoryPressure as exc:
             status, error, delay = "queued", f"Недостаточно памяти, расчёт отложен: {exc}", 600
             log.warning("Расчёт зон отложен из-за нехватки памяти", extra={"job": str(jid), "error": str(exc)})
