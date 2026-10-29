@@ -29,7 +29,11 @@ FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 DATE_FIELDS = ("account_created", "observed_at", "manual_at", "owned_from", "owned_to")
 TEXT_FIELDS = ("person_name", "email", "department", "device_name", "device_uid", "os", "av_other")
-GENERIC_NAMES = ("личный пк", "личный компьютер", "личный ноутбук", "личное устройство", "домашний пк", "нет", "н/д", "n/a", "na", "none", "unknown", "-", "—", "?")
+GENERIC_NAMES = ("личный пк", "личный компьютер", "личный ноутбук", "личное устройство", "домашний пк")
+# «нет значения» в текстовых столбцах: ОС «Нет» — ОС неизвестна, компьютер «Нет» — у сотрудника нет устройства (строка не отклоняется и устройство не создаётся)
+NULLS = {"нет", "н/д", "n/a", "na", "none", "null", "unknown", "-", "—", "?", "отсутствует", "нет данных", "не указано", "не указан"}
+_LIST = re.compile(r"[,;\r\n]+")
+MAX_LIST = 50
 FUTURE_SLACK = timedelta(days=1)
 OLD = datetime(1990, 1, 1, tzinfo=timezone.utc)
 TRUE = {"да", "yes", "true", "1", "+", "y", "д", "истина", "есть", "используется", "использует", "x", "✓"}
@@ -99,6 +103,11 @@ def text(v: object) -> str:
     return _SPACE.sub(" ", str(v)).strip()[:MAX_TEXT]
 
 
+def items(v: object) -> list[str]:
+    """Ячейка как список значений: в выгрузке «строка на сотрудника» компьютеры перечисляются через запятую («WS-1, WS-2»)."""
+    return [t for t in (text(x) for x in _LIST.split(v)[:MAX_LIST]) if t] if isinstance(v, str) else [t] if (t := text(v)) else []
+
+
 def boolish(v: object) -> bool | None:
     if isinstance(v, bool):
         return v
@@ -110,7 +119,7 @@ def boolish(v: object) -> bool | None:
 
 def parse_date(v: object, tz: ZoneInfo) -> tuple[datetime | None, bool]:
     """(дата UTC, распознана ли). Дата без пояса — в часовом поясе источника; число — серийная дата Excel."""
-    if v is None or (isinstance(v, str) and not v.strip()):
+    if v is None or (isinstance(v, str) and (not v.strip() or v.strip().lower() in NULLS)):
         return None, True
     d = None
     if isinstance(v, datetime):
@@ -169,13 +178,14 @@ def _iso(d: datetime | None) -> str | None:
     return d.isoformat(timespec="seconds") if d else None
 
 
-def parse_row(values: dict[str, object], prof: dict, tz: ZoneInfo, snapshot_at: datetime) -> tuple[dict | None, str, list[dict]]:
-    """Строка → (нормализованная запись | None, причина отклонения, предупреждения [{code, field}]). Пустая строка — (None, "", [])."""
+def parse_row(values: dict[str, object], prof: dict, tz: ZoneInfo, snapshot_at: datetime) -> tuple[list[dict], str, list[dict]]:
+    """Строка → (нормализованные записи, причина отклонения, предупреждения [{code, field}]). Пустая строка — ([], "", []).
+    Несколько компьютеров в ячейке — по записи на каждый; ОС и дополнительные столбцы со списком той же длины раскладываются по позиции, иначе значение общее."""
     if all(v is None or (isinstance(v, str) and not v.strip()) for v in values.values()):
-        return None, "", []
+        return [], "", []
     cols = prof["columns"]
     get = lambda f: values.get(cols[f]) if f in cols else None  # noqa: E731
-    r: dict = {f: text(get(f)) for f in TEXT_FIELDS}
+    r: dict = {f: "" if (t := text(get(f))).lower() in NULLS else t for f in TEXT_FIELDS}
     warns: list[dict] = []
     if r["email"] and not EMAIL.match(r["email"]):
         warns.append({"code": "bad_email", "field": "email"})
@@ -201,30 +211,53 @@ def parse_row(values: dict[str, object], prof: dict, tz: ZoneInfo, snapshot_at: 
             continue
         if d and d > snapshot_at + FUTURE_SLACK:
             flags.append(f"future:{f}")
-            warns.append({"code": "future_date", "field": f, "value": d.date().isoformat()})
+            warns.append({"code": "future_date", "field": f, "value": f"{d.astimezone(tz):%d.%m.%Y}"})
         elif d and d < OLD:
             flags.append(f"old:{f}")
-            warns.append({"code": "old_date", "field": f, "value": d.date().isoformat()})
+            warns.append({"code": "old_date", "field": f, "value": f"{d.astimezone(tz):%d.%m.%Y}"})
         r[f] = _iso(d)
     if prof.get("extra", True):
         used = set(cols.values()) | set(prof.get("origin", []))
         r["extra"] = {h: text(v) for h, v in list(values.items()) if h not in used and text(v)}
         if len(r["extra"]) > MAX_EXTRA:
             r["extra"] = dict(list(r["extra"].items())[:MAX_EXTRA])
-    if not r["device_name"] and not r["device_uid"]:
-        return None, "нет имени компьютера и идентификатора устройства", warns
     pk = person_key(r["person_name"], r["email"])
-    r["generic"] = not r["device_uid"] and is_generic(r["device_name"], prof.get("generic_names", list(GENERIC_NAMES)))
-    if r["generic"] and not pk:
-        return None, "условное имя устройства без сотрудника: запись не с чем связать", warns
-    r["short"] = short_name(r["device_name"]) if r["device_name"] else ""
-    r["dkey"] = ("u:" + r["device_uid"].lower()) if r["device_uid"] else ("g:" + pk + ":" + r["device_name"].lower()) if r["generic"] else ("n:" + r["short"])
-    r["pkey"] = pk
-    r["flags"] = flags
-    body = {k: v for k, v in r.items() if k not in ("flags",)}
-    r["rhash"] = hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
-    r["rkey"] = hashlib.sha1(f"{r['dkey']}|{pk}".encode()).hexdigest()
-    return r, "", warns
+    if r["device_uid"]:
+        names = [r["device_name"]]
+    else:
+        uniq: dict[str, str] = {}
+        for n in items(get("device_name")):
+            if n.lower() not in NULLS:
+                uniq.setdefault(short_name(n), n)                         # «WS-1, ws-1.example.local» — одно устройство
+        names = list(uniq.values())
+        if not names:
+            if pk and text(get("device_name")):                          # только «Нет» и подобные метки
+                return [], "", [*warns, {"code": "no_device", "field": "device_name"}]
+            return [], "нет имени компьютера и идентификатора устройства", warns
+    generic_names = prof.get("generic_names", list(GENERIC_NAMES))
+    split = {h: items(v) for h, v in [("\0os", get("os")), *(r.get("extra") or {}).items()]} if len(names) > 1 else {}
+    out = []
+    for i, name in enumerate(names):
+        x = dict(r, device_name=name)
+        if split:
+            if len(split["\0os"]) == len(names):
+                x["os"] = "" if split["\0os"][i].lower() in NULLS else split["\0os"][i]
+            if "extra" in r:
+                x["extra"] = {h: (split[h][i] if len(split[h]) == len(names) else v) for h, v in r["extra"].items()}
+        x["generic"] = not x["device_uid"] and is_generic(name, generic_names)
+        if x["generic"] and not pk:
+            continue
+        x["short"] = short_name(name) if name else ""
+        x["dkey"] = ("u:" + x["device_uid"].lower()) if x["device_uid"] else ("g:" + pk + ":" + name.lower()) if x["generic"] else ("n:" + x["short"])
+        x["pkey"] = pk
+        body = dict(x)
+        x["flags"] = flags
+        x["rhash"] = hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+        x["rkey"] = hashlib.sha1(f"{x['dkey']}|{pk}".encode()).hexdigest()
+        out.append(x)
+    if not out:
+        return [], "условное имя устройства без сотрудника: запись не с чем связать", warns
+    return out, "", warns
 
 
 def trusted(r: dict, f: str) -> datetime | None:

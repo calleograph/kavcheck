@@ -49,7 +49,7 @@ async def require_people(su: SessionUser = Depends(require_user)) -> SessionUser
 class OptionsIn(BaseModel):
     partial: bool = True
     max_reject_pct: int = Field(5, ge=0, le=100)
-    drift_pct: int = Field(50, ge=1, le=1000)
+    drift_pct: int = Field(20, ge=1, le=1000)
     max_mb: int = Field(50, ge=1, le=500)
     max_rows: int = Field(200_000, ge=100, le=2_000_000)
     keep_files: int = Field(10, ge=0, le=1000)
@@ -58,6 +58,7 @@ class OptionsIn(BaseModel):
     retries: int = Field(3, ge=0, le=20)
     stable_s: int = Field(10, ge=0, le=300)
     full_snapshot: bool = True
+    owner_drift_pct: int = Field(25, ge=1, le=100)
 
 
 class SourceIn(BaseModel):
@@ -238,11 +239,11 @@ def _preview(path: Path, prof: dict | None, tz, now: datetime) -> dict:
                 check["rows"] -= 1
                 check["truncated"] = True
                 break
-            rec, why, ws_ = PR.parse_row(vals, p, tz, now)
+            recs, why, ws_ = PR.parse_row(vals, p, tz, now)
             for w in ws_:
                 k = f"{w['code']}:{p['columns'].get(w['field'], w['field'])}"
                 check["warnings"][k] = check["warnings"].get(k, 0) + 1
-            if rec is not None:
+            if recs:
                 check["ok"] += 1
             elif why:
                 if len(check["rejected"]) < 20:

@@ -319,7 +319,7 @@ export interface BiImport { id: string; started_at: string; finished_at: string 
   rows_gone: number; rows_empty: number; devices_n: number; persons_n: number; ms: number | null; stored: boolean; warnings_n: number; errors_n: number;
   warnings?: { code: string; n: number; text: string }[]; errors?: { row: number; reason: string }[]; headers?: string[] }
 export interface BiProfile { sheet: string; header_row: number; columns: Record<string, string>; origin: string[]; generic_names: string[]; extra?: boolean }
-export interface BiOptions { partial: boolean; max_reject_pct: number; drift_pct: number; max_mb: number; max_rows: number; keep_files: number; keep_days: number; retry_minutes: number; retries: number; stable_s: number; full_snapshot: boolean }
+export interface BiOptions { partial: boolean; max_reject_pct: number; drift_pct: number; max_mb: number; max_rows: number; keep_files: number; keep_days: number; retry_minutes: number; retries: number; stable_s: number; full_snapshot: boolean; owner_drift_pct: number }
 export interface BiSourceInfo { id: string; name: string; kind: string; is_active: boolean; smb_host: string; smb_port: number; smb_share: string; smb_path: string; username: string; password_set: boolean; smb_encrypt: boolean;
   file_mode: "fixed" | "auto"; file_name: string; schedule_time: string; timezone: string; profile: Partial<BiProfile>; options: BiOptions; next_run_at: string | null; queued: boolean; last_try_at: string | null;
   last_ok_at: string | null; last_error: string | null; fail_n: number; matched_at: string | null; last: BiImport | null; published: BiImport | null }

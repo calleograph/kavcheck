@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import os
+import shutil
 import tempfile
 
 import pytest
@@ -55,6 +56,7 @@ async def app():
         async with admin.connect() as c:
             await c.exec_driver_sql(f'DROP DATABASE IF EXISTS "{pg_name}" WITH (FORCE)')
         await admin.dispose()
+    shutil.rmtree(tmp, ignore_errors=True)                             # база SQLite и файлы теста (в том числе разобранной настоящей выгрузки) не остаются в /tmp
 
 
 @pytest_asyncio.fixture

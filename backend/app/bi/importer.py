@@ -27,12 +27,15 @@ from . import profile as PR
 from . import xlsx as X
 
 log = logging.getLogger("app.bi")
-DEFAULT_OPTIONS = {"partial": True, "max_reject_pct": 5, "drift_pct": 50, "max_mb": 50, "max_rows": 200_000, "keep_files": 10, "keep_days": 90, "retry_minutes": 60, "retries": 3,
-                   "stable_s": 10, "full_snapshot": True}
+DEFAULT_OPTIONS = {"partial": True, "max_reject_pct": 5, "drift_pct": 20, "max_mb": 50, "max_rows": 200_000, "keep_files": 10, "keep_days": 90, "retry_minutes": 60, "retries": 3,
+                   "stable_s": 10, "full_snapshot": True, "owner_drift_pct": 25}
 MAX_ERRORS = 500
 CHUNK = 1000
+BAD_COLUMN_PCT = 50                                                   # больше половины значений столбца не распознаны — столбцы сдвинулись или сопоставление устарело
 WARN_TEXT = {"bad_email": "Некорректная рабочая почта (значение не сохранено)", "bad_date": "Нераспознанная дата", "future_date": "Дата из будущего: сохранена как есть, как дата наблюдения не используется",
-             "old_date": "Дата раньше 1990 года: сохранена как есть, как дата наблюдения не используется"}
+             "old_date": "Дата раньше 1990 года: сохранена как есть, как дата наблюдения не используется",
+             "no_device": "Сотрудник указан без устройства («Нет» и т. п.): строка учтена, устройство не создаётся"}
+CONFIRM = "Если изменение ожидаемо, запустите импорт с подтверждением «Принять и импортировать»"
 
 
 def options(src: BiSource) -> dict:
@@ -64,6 +67,8 @@ class Parsed:
     errors: list[dict] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)
     content_hash: str = ""
+    bad: dict = field(default_factory=dict)                            # поле → (нераспознано, заполнено)
+    cols: dict = field(default_factory=dict)
 
 
 def parse_file(path: Path, prof: dict, tz: ZoneInfo, snapshot_at: datetime, max_rows: int) -> Parsed:
@@ -77,10 +82,12 @@ def parse_file(path: Path, prof: dict, tz: ZoneInfo, snapshot_at: datetime, max_
         req = [h for h in PR.required_headers(prof) if h in miss]
         if req:
             raise X.XlsxError(f"Нет обязательных столбцов: {', '.join('«' + h + '»' for h in req)}. Структура файла изменилась — исправьте выгрузку или профиль сопоставления")
-        p = Parsed(headers=hdr)
+        p = Parsed(headers=hdr, cols={f: prof["columns"].get(f, f) for f in PR.FIELDS})
         wc: Counter = Counter()
-        wex: dict = {}
-        dup_same = dup_diff = 0
+        wex: dict = defaultdict(set)
+        filled: Counter = Counter()
+        checked = [(f, h) for f, h in prof["columns"].items() if f == "email" or f in PR.DATE_FIELDS]
+        dup_same = dup_diff = split_rows = split_devs = 0
         owners: dict[str, set] = defaultdict(set)
         for n, vals in X.rows(ws, hn, hdr):
             p.read += 1
@@ -88,12 +95,15 @@ def parse_file(path: Path, prof: dict, tz: ZoneInfo, snapshot_at: datetime, max_
                 raise X.XlsxError(f"В файле больше {max_rows} строк: увеличьте предел в настройках источника или проверьте выгрузку")
             for h in miss:
                 vals.setdefault(h, None)
-            rec, why, warns = PR.parse_row(vals, prof, tz, snapshot_at)
+            recs, why, warns = PR.parse_row(vals, prof, tz, snapshot_at)
             for w in warns:
                 key = (w["code"], w["field"])
                 wc[key] += 1
-                wex.setdefault(key, w.get("value"))
-            if rec is None:
+                if len(wex[key]) < 2:
+                    wex[key].add(w.get("value"))
+            for f, h in checked:
+                filled[f] += bool(PR.text(vals.get(h)))
+            if not recs:
                 if why:
                     p.rejected += 1
                     if len(p.errors) < MAX_ERRORS:
@@ -101,21 +111,33 @@ def parse_file(path: Path, prof: dict, tz: ZoneInfo, snapshot_at: datetime, max_
                 else:
                     p.empty += 1
                 continue
-            rec["row"] = n
-            have = p.recs.get(rec["rkey"])
-            if have is not None:
-                dup_same += have["rhash"] == rec["rhash"]
-                dup_diff += have["rhash"] != rec["rhash"]
-                continue
-            p.recs[rec["rkey"]] = rec
-            if rec["pkey"] and not rec["generic"]:
-                owners[rec["dkey"]].add(rec["pkey"])
+            if len(recs) > 1:
+                split_rows, split_devs = split_rows + 1, split_devs + len(recs)
+            for rec in recs:
+                rec["row"] = n
+                have = p.recs.get(rec["rkey"])
+                if have is not None:
+                    dup_same += have["rhash"] == rec["rhash"]
+                    dup_diff += have["rhash"] != rec["rhash"]
+                    continue
+                p.recs[rec["rkey"]] = rec
+                if rec["pkey"] and not rec["generic"]:
+                    owners[rec["dkey"]].add(rec["pkey"])
     finally:
         wb.close()
-    col = {f: prof["columns"].get(f, f) for f in PR.FIELDS}
+    col = p.cols
+    p.bad = {f: (wc[("bad_email" if f == "email" else "bad_date", f)], filled[f]) for f, _h in checked}
+    opt_miss = [h for h in miss if h not in PR.required_headers(prof)]
+    if opt_miss:
+        p.warnings.append({"code": "missing", "n": len(opt_miss), "text": f"Столбцы профиля не найдены в файле: {', '.join('«' + h + '»' for h in opt_miss[:8])} — их значения считаются пустыми"})
     for (code, f), n in sorted(wc.items()):
-        ex = f" (например, {wex[(code, f)]})" if wex.get((code, f)) else ""
-        p.warnings.append({"code": code, "n": n, "text": f"{WARN_TEXT[code]} — столбец «{col.get(f, f)}»: {n} строк{ex}"})
+        vals = [v for v in wex[(code, f)] if v]
+        ex = (f" (во всех строках одно значение {vals[0]} — похоже на условную отметку «нет даты»)" if len(vals) == 1 and n > 1 and code in ("future_date", "old_date")
+              else f" (например, {vals[0]})" if vals else "")
+        p.warnings.append({"code": code, "n": n, "text": f"{WARN_TEXT[code]} — столбец «{col.get(f, f)}», строк: {n}{ex}"})
+    if split_rows:
+        p.warnings.append({"code": "split", "n": split_rows, "text": f"Несколько компьютеров в одной ячейке — строк: {split_rows}, разобрано отдельных устройств: {split_devs} "
+                                                                     "(ОС и другие столбцы со списком той же длины — по позиции)"})
     if dup_same:
         p.warnings.append({"code": "dup", "n": dup_same, "text": f"Повторяющиеся строки (учтены один раз): {dup_same}"})
     if dup_diff:
@@ -140,12 +162,36 @@ def verdict(p: Parsed, opt: dict, prev: BiImport | None, force: bool) -> str:
         return f"Отклонено строк: {p.rejected}; частичный импорт выключен — снимок не опубликован"
     if p.rejected and p.rejected * 100 > opt["max_reject_pct"] * total:
         return f"Отклонено строк: {p.rejected} из {total} — больше допустимых {opt['max_reject_pct']}%; снимок не опубликован"
-    if prev is not None and prev.rows_valid >= 20 and not force:
+    if force:
+        return ""
+    for f, (bad, filled) in p.bad.items():
+        if filled >= 20 and bad * 100 > BAD_COLUMN_PCT * filled:
+            what = "не похожи на почту" if f == "email" else "не распознаны как даты"
+            return f"Столбец «{p.cols[f]}»: {bad} из {filled} значений {what} — вероятно, столбцы в выгрузке сдвинулись или сопоставление устарело; снимок не опубликован. {CONFIRM}"
+    gen = sum(1 for r in p.recs.values() if r["generic"])
+    if len(p.recs) >= 20 and gen * 100 > BAD_COLUMN_PCT * len(p.recs):
+        return f"Условных имён устройств {gen} из {len(p.recs)} — вероятно, в столбце «{p.cols['device_name']}» не те данные; снимок не опубликован. {CONFIRM}"
+    if prev is not None and prev.rows_valid >= 20:
         d = abs(len(p.recs) - prev.rows_valid) * 100 / prev.rows_valid
         if d > opt["drift_pct"]:
-            return (f"Число записей изменилось слишком сильно: {prev.rows_valid} → {len(p.recs)} ({d:.0f}%, порог {opt['drift_pct']}%). Если изменение ожидаемо, запустите импорт "
-                    "с подтверждением «Принять изменение объёма»")
+            return f"Число записей изменилось слишком сильно: {prev.rows_valid} → {len(p.recs)} ({d:.0f}%, порог {opt['drift_pct']}%). {CONFIRM}"
     return ""
+
+
+async def owner_drift(db: AsyncSession, sid: uuid.UUID, p: Parsed) -> tuple[int, int]:
+    """(устройств со сменившимся составом владельцев, устройств с владельцами и в прошлом, и в новом снимке). Массовая смена — признак сдвига столбцов:
+    история принадлежности только дополняется, поэтому такой снимок не публикуется без подтверждения."""
+    now: dict[str, set] = defaultdict(set)
+    for r in p.recs.values():
+        if r["pkey"] and not r["generic"]:
+            now[r["dkey"]].add(r["pkey"])
+    before: dict[str, set] = defaultdict(set)
+    q = select(BiDevice.dkey, BiPerson.pkey).join(BiOwner, BiOwner.device_id == BiDevice.id).join(BiPerson, BiPerson.id == BiOwner.person_id) \
+        .where(BiOwner.source_id == sid, BiOwner.present.is_(True), BiDevice.present.is_(True), BiDevice.generic.is_(False))
+    for d, pk in (await db.execute(q)).all():
+        before[d].add(pk)
+    common = before.keys() & now.keys()
+    return sum(before[k] != now[k] for k in common), len(common)
 
 
 def structure_diff(prev: list[str], cur: list[str]) -> str:
@@ -350,6 +396,11 @@ async def import_file(sm, src_id: uuid.UUID, path: Path, *, file_name: str, file
         sd = structure_diff(prev.headers if prev else [], p.headers)
         imp.warnings = ([{"code": "structure", "n": 1, "text": sd}] if sd else []) + p.warnings
         why = verdict(p, opt, prev, force)
+        if not why and prev is not None and not force:
+            changed, common = await owner_drift(db, src_id, p)
+            if common >= 20 and changed * 100 > opt["owner_drift_pct"] * common:
+                why = (f"Владелец сменился у {changed} из {common} устройств ({changed * 100 / common:.0f}%, порог {opt['owner_drift_pct']}%) — похоже на сдвиг столбцов в выгрузке; "
+                       f"история принадлежности не изменена. {CONFIRM}")
         if why:
             return await finish("rejected", why)
         if prev is not None and prev.content_hash == p.content_hash and not force:

@@ -28,7 +28,7 @@ BASE = [row("Иванов Иван Иванович", "i.ivanov@example.local", 
         row("Петрова Анна Сергеевна", "a.petrova@example.local", "Бухгалтерия", "Личный ПК", personal="Да", os="macOS", seen="01.01.2037")]
 
 
-def xlsx(path: Path, rows, headers=HDR, sheet="Table 1", bold=False):
+def xlsx(path: Path, rows, headers=HDR, sheet="Table 1", bold=False, table=False):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = sheet
@@ -38,6 +38,12 @@ def xlsx(path: Path, rows, headers=HDR, sheet="Table 1", bold=False):
             c.font = openpyxl.styles.Font(bold=True)
     for r in rows:
         ws.append(r)
+    if table:                                                            # как в реальной выгрузке: лист оформлен «таблицей Excel», даты — ячейки-даты
+        ws.add_table(openpyxl.worksheet.table.Table(displayName="Table1", ref=f"A1:{openpyxl.utils.get_column_letter(len(headers))}{len(rows) + 1}"))
+        for r in ws.iter_rows(min_row=2):
+            for c in r:
+                if isinstance(c.value, datetime):
+                    c.number_format = "dd.MM.yyyy"
     wb.save(path)
     return path
 
@@ -76,16 +82,17 @@ def test_profile_suggest_maps_sample_columns():
 def test_row_normalization_dates_generic_and_families():
     p = PR.validate_profile(PR.suggest(HDR))
     tz = IM.ZoneInfo("Europe/Moscow")
-    r, why, warns = PR.parse_row(dict(zip(HDR, BASE[5])), p, tz, T0)
+    (r,), why, warns = PR.parse_row(dict(zip(HDR, BASE[5])), p, tz, T0)
     assert r["generic"] and r["dkey"].startswith("g:e:a.petrova@example.local:") and r["personal"] is True
     assert "future:observed_at" in r["flags"] and PR.trusted(r, "observed_at") is None and r["observed_at"].startswith("2036-12-31T21")    # дата сохранена как есть (в UTC), не подменена
     assert any(w["code"] == "future_date" for w in warns)
-    r2, *_ = PR.parse_row(dict(zip(HDR, BASE[0])), p, tz, T0)
+    (r2,), *_ = PR.parse_row(dict(zip(HDR, BASE[0])), p, tz, T0)
     assert r2["dkey"] == "n:ws-001" and r2["origin"] == ["Из базы касперского"] and r2["extra"] == {"Процессор": "Intel Core i5"} and PR.trusted(r2, "observed_at") is not None
     assert PR.os_family("Astra Linux 1.7") == "linux" and PR.os_family("macOS 14") == "mac" and PR.os_family("Windows 10 Pro") == "windows"
     assert PR.parse_row(dict(zip(HDR, ["Без компьютера", "x@example.local", "", "", "", "", "", "", "", "", "", "", "", ""])), p, tz, T0)[1].startswith("нет имени")
     assert PR.parse_row(dict(zip(HDR, ["", "", "", "", "", "", "", "Личный ПК", "", "", "", "", "", ""])), p, tz, T0)[1].startswith("условное имя")
-    assert PR.parse_row(dict.fromkeys(HDR), p, tz, T0) == (None, "", [])
+    assert PR.parse_row(dict.fromkeys(HDR), p, tz, T0) == ([], "", [])
+    assert PR.parse_date("Нет", tz) == (None, True) and PR.parse_date("—", tz) == (None, True)            # метка «нет даты» — пустое значение, не ошибка столбца
     assert PR.short_name("WS-001.example.local") == "ws-001" and PR.short_name("EXAMPLE\\WS-9") == "ws-9" and PR.short_name("192.0.2.7") == "192.0.2.7"
 
 
@@ -203,3 +210,66 @@ async def test_device_uid_tracks_rename(app, tmp_path):
     async with app.state.session_maker() as db:
         d = (await db.execute(select(BiDevice).where(BiDevice.source_id == sid))).scalar_one()
         assert d.name == "WS-NEW-01" and d.names[0]["name"] == "WS-001" and "ws-001" in d.search
+
+
+def people(n, shift=0, **kw):
+    return [row(f"Сотрудник {(i + shift) % n:03d}", f"u{(i + shift) % n:03d}@example.local", "Отдел", f"WS-{i:03d}", **kw) for i in range(n)]
+
+
+async def test_real_export_shape_lists_placeholders_and_sentinel_dates(app, tmp_path):
+    """Особенности реальной выгрузки «строка на сотрудника»: несколько компьютеров через запятую с ОС и процессорами в том же порядке, «Нет» вместо
+    компьютера и ОС, одна и та же дата 2037 года вместо пустой, почта заглавными, неразрывные пробелы."""
+    sentinel = datetime(2037, 2, 6)
+    rows = [row("Орлов Илья ", "I.Orlov@Example.local", "Отдел", "WS-010, WS-011", os="Microsoft Windows 11 (Сборка 26200), Macos 15.6.1", cpu="Intel i5, Apple M2",
+                seen=datetime(2026, 9, 15)),
+            row("Ершова Ольга", "o.ershova@example.local", "Отдел", "WS-012, ws-012.example.local", seen=sentinel, kav="Нет"),
+            row("Лебедев Кирилл", "k.lebedev@example.local", "Отдел", "WS-020; WS-021\nWS-022", os="Windows 11, Windows 10", seen=sentinel, kav="Нет"),
+            row("Носов Пётр", "p.nosov@example.local", "Отдел", "Нет", os="Нет", cpu="Нет", seen=sentinel, kav="Нет"),
+            row("Титова Вера", "v.titova@example.local", "Отдел", "WS-030\xa0", os="Macos\xa012.7.6", manual=sentinel, hand="Да")]
+    (a, b), why, _w = PR.parse_row(dict(zip(HDR, rows[0])), PR.validate_profile(PR.suggest(HDR)), IM.ZoneInfo("Europe/Moscow"), T0)
+    assert (a["device_name"], a["os"], a["extra"]["Процессор"]) == ("WS-010", "Microsoft Windows 11 (Сборка 26200)", "Intel i5")
+    assert (b["device_name"], PR.os_family(b["os"]), b["extra"]["Процессор"]) == ("WS-011", "mac", "Apple M2") and a["pkey"] == b["pkey"] == "e:i.orlov@example.local"
+    sid = await source(app)
+    imp = await run(app, sid, xlsx(tmp_path / "real.xlsx", rows, table=True))
+    assert imp.status == "ok" and imp.rows_rejected == 0, imp.message
+    codes = {w["code"]: w for w in imp.warnings}
+    assert codes["no_device"]["n"] == 1 and codes["split"]["n"] == 2 and "отдельных устройств: 5" in codes["split"]["text"]
+    assert "06.02.2037" in codes["future_date"]["text"] and "условную отметку" in codes["future_date"]["text"]
+    async with app.state.session_maker() as db:
+        devs = {d.name: d for d in (await db.execute(select(BiDevice).where(BiDevice.source_id == sid))).scalars()}
+        assert set(devs) == {"WS-010", "WS-011", "WS-012", "WS-020", "WS-021", "WS-022", "WS-030"}   # «Нет» — не устройство; FQDN того же ПК — не второе устройство
+        assert devs["WS-020"].os == "Windows 11, Windows 10" and devs["WS-020"].os_family == "windows"   # списки разной длины — значение общее, не угадывается
+        assert devs["WS-030"].os == "Macos 12.7.6" and not any(d.generic for d in devs.values())
+        assert {p.email for p in (await db.execute(select(BiPerson).where(BiPerson.source_id == sid))).scalars()} >= {"i.orlov@example.local"}
+        fut = (await db.execute(select(BiOwner).join(BiDevice, BiDevice.id == BiOwner.device_id).where(BiDevice.name == "WS-012"))).scalar_one()
+        assert fut.src_seen_at is None                                         # условная дата 2037 года не стала датой наблюдения
+    again = await run(app, sid, xlsx(tmp_path / "real2.xlsx", list(reversed(rows)), table=True), at=T0 + timedelta(days=1))
+    assert again.status == "unchanged"                                         # разбиение списков устойчиво: повтор не плодит версий
+
+
+async def test_shifted_or_garbled_columns_do_not_touch_history(app, tmp_path):
+    """Кривые выгрузки с прежним числом строк: сдвиг столбцов, массовая «смена владельцев», ФИО в столбце компьютеров. История только дополняется,
+    поэтому такие снимки не публикуются без подтверждения, а мелкие реальные изменения проходят."""
+    sid = await source(app)
+    assert (await run(app, sid, xlsx(tmp_path / "0.xlsx", people(30)))).status == "ok"
+    before = await owners(app, sid)
+    day = iter(range(1, 100))
+    shifted = [[r[1], r[0], *r[2:]] for r in people(30)]                          # ФИО и почта поменялись местами
+    r1 = await run(app, sid, xlsx(tmp_path / "1.xlsx", shifted), at=T0 + timedelta(days=next(day)))
+    assert r1.status == "rejected" and "не похожи на почту" in r1.message and "подтвержден" in r1.message
+    dates = [[*r[:10], "Отдел", *r[11:]] for r in people(30)]
+    r2 = await run(app, sid, xlsx(tmp_path / "2.xlsx", dates), at=T0 + timedelta(days=next(day)))
+    assert r2.status == "rejected" and "не распознаны как даты" in r2.message
+    rotated = people(30, shift=1)                                                 # каждый компьютер «перешёл» к соседу: столбцы съехали на строку
+    r3 = await run(app, sid, xlsx(tmp_path / "3.xlsx", rotated), at=T0 + timedelta(days=next(day)))
+    assert r3.status == "rejected" and "Владелец сменился у 30 из 30" in r3.message
+    names = [[*r[:7], r[0], *r[8:]] for r in people(30)]
+    r4 = await run(app, sid, xlsx(tmp_path / "4.xlsx", names), at=T0 + timedelta(days=next(day)))
+    assert r4.status == "rejected" and "Условных имён устройств 30 из 30" in r4.message
+    assert await owners(app, sid) == before                                       # ни один отказ не дописал историю
+    small = people(30)
+    small[0], small[1] = row("Новиков Ян", "y.novikov@example.local", "Отдел", "WS-000"), row("Сотрудник 000", "u000@example.local", "Отдел", "WS-001")
+    ok = await run(app, sid, xlsx(tmp_path / "5.xlsx", small), at=T0 + timedelta(days=next(day)))
+    assert ok.status == "ok", ok.message                                          # 2 из 30 — обычная смена
+    forced = await run(app, sid, xlsx(tmp_path / "6.xlsx", rotated), at=T0 + timedelta(days=next(day)), force=True)
+    assert forced.status == "ok"                                                  # ожидаемая массовая смена — по подтверждению администратора
