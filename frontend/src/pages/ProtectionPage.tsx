@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api, type ProblemKey, type ProtHost, type ProtSummary } from "../api";
+import { api, type BiOwnerBrief, type ProblemKey, type ProtHost, type ProtSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched, OnlineBadge } from "../components/Common";
 import { FilterBar } from "../components/FilterBar";
@@ -24,6 +24,13 @@ export function ProblemBadges({ problems }: { problems: ProblemKey[] }) {
 }
 
 /** Раздел «Состояние защиты»: где защиты нет или она не работает, какие версии KES и Агента развёрнуты, что говорит статус KSC. */
+/** Владелец по BI под именем компьютера: текущий, иначе последний известный с пометкой. */
+function OwnerSub({ o }: { o?: BiOwnerBrief | null }) {
+  if (!o) return null;
+  return <span className="owner-sub" title={`${o.state_ru}${o.level === "auto" ? " · сопоставление предполагаемое" : ""}`}>{o.multi ? "владельцы: несколько" : o.name}{o.department && <span className="muted"> · {o.department}</span>}
+    {o.email && <> · <a href={`mailto:${o.email}`}>{o.email}</a></>}{o.state !== "current" && <span className="muted"> ({o.state_ru.toLowerCase()})</span>}</span>;
+}
+
 export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
   const navigate = useNavigate();
@@ -160,7 +167,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                   <tr className={`clickable ${sel.has(h.host_id) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("a, input, button")) navigate(`/hosts/${h.host_id}`); }}>
                     <td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td>
                     <ExpandCell id={`p${h.host_id}`} open={ex.has(h.host_id)} onToggle={() => ex.toggle(h.host_id)} label={h.name} />
-                    <td><Link to={`/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span>{h.zone && <span className="sub zone-sub" title="Зона ответственности">{h.zone}</span>}</td>
+                    <td><Link to={`/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span>{h.zone && <span className="sub zone-sub" title="Зона ответственности">{h.zone}</span>}<OwnerSub o={h.owner} /></td>
                     <td className="nowrap"><OnlineBadge online={h.online} seen={h.last_visible} />{h.online === false && h.last_info_update && <span className="sub">сведения от {fmtDate(h.last_info_update)}</span>}</td>
                     <td>{h.av ? <>{shortProduct(h.av.product)}<span className="sub mono">{h.av.build}</span></> : <span className="bad-text">нет</span>}{h.agent_build && <span className="sub nowrap">Агент <span className="mono">{h.agent_build}</span></span>}</td>
                     <td className="small hide-sm">{h.av ? (h.problems.includes("rtp_off") ? <span className="bad-text">{h.av.state_label && h.av.state_label !== "запущен" ? `продукт ${h.av.state_label}` : h.rtp_label || "не работает"}</span> : h.rtp_label || h.av.state_label || "—") : "—"}</td>

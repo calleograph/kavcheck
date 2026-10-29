@@ -7,11 +7,16 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, exists, func, or_, select, tuple_, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import DeviceUser, EolHostStat, ZcHost, ZcHostZone, ZcSource
+from ..models import DeviceUser, EolHostStat, ZcHost, ZcHostZone, ZcSource, Zone
 from ..netsearch import parse
 from ..search import any_of, column_like, local_like
 
 WEEK = timedelta(days=7)
+
+
+async def zone_names(db: AsyncSession) -> dict[str, str]:
+    """Идентификатор зоны → название: в подготовленных данных компьютера хранятся идентификаторы зон."""
+    return {str(i): n for i, n in (await db.execute(select(Zone.id, Zone.name))).all()}
 
 
 def seen_week(cut: datetime):
@@ -94,6 +99,7 @@ async def list_devices(db: AsyncSession, sids: list[uuid.UUID], src_names: dict,
         for r in (await db.execute(select(S.host_id, S.n, S.n_crit, S.w).where(S.source_id == sid, S.host_id.in_(ids)))).all():
             stat[(sid, r.host_id)] = (int(r.n), int(r.n_crit), int(r.w))
     items = []
+    zn = await zone_names(db) if rows else {}
     for r in rows:
         us = users.get((r.source_id, r.host_id), [])
         d = r.data or {}
@@ -102,7 +108,7 @@ async def list_devices(db: AsyncSession, sids: list[uuid.UUID], src_names: dict,
         week = [u for u in us if u.kind == "user" and seen_week_py(u, cut)]
         n, nc, w = stat.get((r.source_id, r.host_id), (0, 0, 0))
         items.append({"source_id": str(r.source_id), "source": src_names.get(r.source_id, ""), "host_id": int(r.host_id), "name": r.name, "ip": d.get("ip", ""), "os": r.os or "", "group": d.get("group", ""),
-                      "zones": d.get("zones") or [], "last_connected": r.last_connected, "active": r.active, "online": r.online, "eol": n, "eol_crit": nc, "eol_level": {3: "eol", 2: "extended", 1: "upcoming"}.get(w, ""),
+                      "zones": [zn.get(str(z), str(z)) for z in d.get("zones") or []], "last_connected": r.last_connected, "active": r.active, "online": r.online, "eol": n, "eol_crit": nc, "eol_level": {3: "eol", 2: "extended", 1: "upcoming"}.get(w, ""),
                       "current": [user_out(u) for u in cur], "last_user": user_out(last) if last else None, "week": [user_out(u) for u in week], "week_n": len(week),
                       "history": [user_out(u) for u in us if u not in cur][:history_limit]})
     return {"total": total, "items": items}

@@ -175,8 +175,12 @@ async def overview_hosts(request: Request, metric: str = Query(..., max_length=2
                          sort: str = Query("name", pattern=r"^(name|ip|os|group|last_connected)$"), desc: bool = False, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
                          su: SessionUser = Depends(require_user), srcs: list[KscSource] = Depends(source_scope), db: AsyncSession = Depends(get_db)):
     """Устройства показателя главной для боковой панели: те же предикаты, что и в числах (серверная сортировка, поиск и страницы)."""
+    from ..bi.read import attach_owners  # noqa: PLC0415
+
     if metric in DB_METRICS:
-        return await _db_hosts(db, srcs, metric, days, q, sort, desc, offset, limit)
+        out = await _db_hosts(db, srcs, metric, days, q, sort, desc, offset, limit)
+        await attach_owners(db, out["items"], pd=su.role in ("analyst", "admin"))
+        return out
     if metric not in C.METRICS:
         raise HTTPException(status_code=422, detail="Неизвестный показатель")
     scope, _skipped = _scope(srcs)
@@ -192,6 +196,7 @@ async def overview_hosts(request: Request, metric: str = Query(..., max_length=2
     items.sort(key=C.sort_key(sort), reverse=desc)
     page = [{"host_id": r["host_id"], "name": r["name"], "ip": r["ip"], "os": r["os"], "group": r["group"], "last_connected": r["last_connected"], "days_since_connection": r["days_since_connection"],
              "online": r.get("online"), "source_id": r["source_id"], "source": r["source"]} for r in items[offset:offset + limit]]
+    await attach_owners(db, page, pd=su.role in ("analyst", "admin"))                  # владелец по BI: к кому обращаться (например, по «Защита не работает»)
     return {"items": page, "total": len(items), "offset": offset, "limit": limit, "title": C.METRICS[metric][0]}
 
 

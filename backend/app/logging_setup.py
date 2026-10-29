@@ -61,7 +61,7 @@ def configure_logging(level: str = "INFO", fmt: str = "json") -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level.upper())
-    for noisy in ("uvicorn.access", "ldap3"):
+    for noisy in ("uvicorn.access", "ldap3", "smbprotocol", "smbclient", "spnego"):        # SMB: каждое сообщение протокола — INFO; в журнал — только предупреждения и ошибки
         logging.getLogger(noisy).setLevel(logging.WARNING)
     for name in ("uvicorn", "uvicorn.error"):
         logging.getLogger(name).handlers.clear()

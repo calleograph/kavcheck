@@ -52,9 +52,10 @@ function cell(c: QuickCol, v: string | number | null | undefined) {
   return c.type === "mono" ? <span className="mono small nowrap">{v}</span> : <>{v}</>;
 }
 
-export type QuickScopeOpts = { hunt?: boolean; levels?: boolean; period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean };
+export type QuickScopeOpts = { bi?: boolean; hunt?: boolean; levels?: boolean; period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean };
 const EXT_STATUSES: [string, string][] = [["confirmed", "Подтверждено источником"], ["potential", "Потенциально затронуто"], ["clarify", "Требуется уточнение"], ["insufficient", "Данных недостаточно"], ["fixed", "Исправлено (показать отдельно)"]];
 const EOL_STATUSES: [string, string][] = [["eol", "Стандартная поддержка закончилась (EOL)"], ["extended", "Только расширенная (платная) поддержка"], ["upcoming", "Окончание поддержки приближается"], ["undetermined", "ОС: не удалось определить EOL (причина указана)"]];
+export const BI_VIEWS: [string, string][] = [["owners", "Устройства и владельцы"], ["history", "История принадлежности устройств"], ["unknown", "Неопределённые владельцы"], ["discrepancies", "Расхождения BI и KSC"], ["problems", "Проблемы защиты и контактные лица"]];
 const SECTIONS: [string, string][] = [["software", "Установленное ПО"], ["vulns", "Уязвимости"], ["protection", "Состояние защиты"]];
 const FORMATS: [string, string][] = [["xlsx", "Excel (XLSX)"], ["csv", "CSV"], ["pdf", "PDF"], ["html", "HTML для руководства"]];
 const PREVIEW_SHOWN = 60;
@@ -98,7 +99,7 @@ function AffectedHosts({ rows, total, expected, link, onClose }: { rows: Record<
   );
 }
 
-const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_hunt"];
+const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_hunt", "quick_bi"];
 // выбор строк и фильтры страницы в шаблон не попадают: они берутся с той страницы, откуда открыт конструктор
 const CONTEXT_KEYS = ["host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "zone", "group_contains", "threat", "product", "build", "problem"];
 
@@ -206,6 +207,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
             const cur = (params.statuses as string[] | undefined) ?? ["confirmed", "probable"];
             return <label key={k} className="check"><input type="checkbox" checked={cur.includes(k)} disabled={cur.length === 1 && cur.includes(k)} onChange={(e) => setExtra({ ...extra, statuses: e.target.checked ? [...cur, k] : cur.filter((x) => x !== k) })} />{l}</label>; })}
           <label className="check"><input type="checkbox" checked={!!params.coverage} onChange={(e) => setExtra({ ...extra, coverage: e.target.checked })} />Добавить журнал охвата (все проверенные адреса, включая не затронутые)</label></fieldset>}
+        {options.bi && <label className="field">Вид отчёта<select value={String(params.view ?? "owners")} onChange={(e) => setExtra({ ...extra, view: e.target.value })}>
+          {BI_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>}
         {options.levels && <SeverityLevels value={(params.levels as string[] | undefined) ?? ["critical"]} onChange={(v) => setExtra({ ...extra, levels: v })} />}
         {doc && (<>
           <div className="qr-hero">

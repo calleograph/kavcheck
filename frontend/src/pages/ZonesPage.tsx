@@ -6,6 +6,7 @@ import { api, type ApiError, type HostState, type ProblemKey, type ZoneDash, typ
 import { NoSource, type Ctx } from "../App";
 import { Charts } from "./zoneCharts";
 import { OnlineBadge } from "../components/Common";
+import { OwnerBlock } from "../components/OwnerBlock";
 import { DataStamp, FreshnessNotes, RefreshButton } from "../components/ZoneBits";
 import { Modal } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
@@ -286,6 +287,7 @@ function HostDrawer({ ctx, zid, sid, hid, onClose, onTriage, refreshKey }: { ctx
         </div>
         <p className="small">{h.summary}.</p>
         {h.protection.length > 0 && <div className="card flush"><div className="card-head"><h3>Проблемы защиты</h3></div><ul className="rows">{h.protection.map((p) => <li key={p.key}><div className="r-main"><b>{p.title}</b><span className="muted small"> — {p.detail}</span></div></li>)}</ul></div>}
+        <OwnerBlock sid={sid} hid={hid} activityDays={ctx.me.activity_days} />
         <p className="muted small">Защитный продукт: {h.av.product ? `${h.av.product} ${h.av.build ?? ""}, ${h.av.state ?? ""}` : "не найден"}; базы: {fmtDate(h.av.bases)}; полная проверка: {fmtDate(h.av.last_full_scan)}; статус KSC: {h.av.ksc_status ?? "—"}.
           {" "}<Link to={`/vulnerabilities/hosts/${h.host_id}`}>Страница компьютера в разделе «Уязвимости»</Link></p>
         <Tabs label="Обнаружения" value={tab} onChange={setTab} items={[{ id: "ksc", label: "Подтверждены KSC", count: h.rows.ksc.current.length }, { id: "ext", label: "Потенциальные (внешние базы)", count: h.rows.ext.current.length }, { id: "done", label: "Обработанные", count: done.length }]} />

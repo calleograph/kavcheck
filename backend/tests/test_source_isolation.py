@@ -23,10 +23,11 @@ def test_every_table_with_per_host_data_is_scoped_by_source():
         cols = {c.name for c in t.columns}
         if t.name in external or not ({"host_id", "product_id", "install_id", "host"} & cols):
             continue
-        assert "source_id" in cols, f"{t.name}: данные по компьютерам без источника"
+        src = "source_id" if "source_id" in cols else "ksc_source_id"           # bi_matches: компьютер KSC рядом с источником BI — столбец назван явно
+        assert src in cols, f"{t.name}: данные по компьютерам без источника"
         pk = {c.name for c in t.primary_key.columns}
         uniques = {frozenset(c.name for c in i.columns) for i in t.indexes if i.unique}
-        assert "source_id" in pk or any("source_id" in u for u in uniques) or "id" in pk, f"{t.name}: ключ не содержит источник"
+        assert src in pk or any(src in u for u in uniques) or "id" in pk, f"{t.name}: ключ не содержит источник"
 
 
 async def test_same_host_ids_names_and_products_in_two_sources_stay_separate(app):

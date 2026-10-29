@@ -137,6 +137,24 @@ async def test_devices_api_search_users_zone_and_all_sources(client, app):
     assert (await client.post("/api/v1/devices/poll", headers=h)).status_code == 403
 
 
+async def test_devices_show_zone_names_not_ids(client, app):
+    """В подготовленных данных хранятся идентификаторы зон: список, карточка и отчёт показывают названия."""
+    import uuid as _uuid  # noqa: PLC0415
+
+    from app.models import Zone  # noqa: PLC0415
+
+    await login(client, "admin", "Admin-Passw0rd-123")
+    a = await _src(app, "KSC-Z")
+    zid = _uuid.uuid4()
+    async with app.state.session_maker() as db:
+        db.add(Zone(id=zid, name="Серверная инфраструктура"))
+        await db.commit()
+    await _zone_data(app, a, [(6, "srv-1", 101, "Linux", True, str(zid))])
+    h = {"X-Source-Id": str(a.id)}
+    assert (await client.get("/api/v1/devices", headers=h)).json()["items"][0]["zones"] == ["Серверная инфраструктура"]
+    assert (await client.get(f"/api/v1/devices/{a.id}/6", headers=h)).json()["zones"] == ["Серверная инфраструктура"]
+
+
 async def test_devices_report_follows_page_filters_with_full_user_lists(client, app):
     """«Сформировать отчёт» на странице устройств: условия страницы (поиск, зона, пользователь, EOL) и полные списки пользователей без сокращений; краткий вариант — показатели и сводная таблица."""
     await login(client, "admin", "Admin-Passw0rd-123")

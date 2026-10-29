@@ -1373,3 +1373,173 @@ class OvalCve(Base):
     cve: Mapped[str] = mapped_column(String(40), primary_key=True)
     feed: Mapped[str] = mapped_column(String(60), primary_key=True)
     def_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+
+
+# ------------------------------------------------------------------------------------------------ BI-выгрузки: владельцы устройств и история принадлежности
+class BiSource(Base):
+    """BI-система: регулярная Excel-выгрузка «сотрудник × устройство» на SMB (только чтение). Данные разных подключений не смешиваются: каждая запись ниже принадлежит одному источнику."""
+    __tablename__ = "bi_sources"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="excel_smb")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    smb_host: Mapped[str] = mapped_column(String(253), nullable=False, default="")
+    smb_port: Mapped[int] = mapped_column(Integer, nullable=False, default=445)
+    smb_share: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    smb_path: Mapped[str] = mapped_column(String(500), nullable=False, default="")             # папка внутри общего ресурса
+    username: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    password_enc: Mapped[str | None] = mapped_column(Text)
+    smb_encrypt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)            # требовать шифрование SMB 3.x
+    file_mode: Mapped[str] = mapped_column(String(8), nullable=False, default="fixed")          # fixed — одно имя; auto — новейший подходящий по маске
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")             # имя файла или маска
+    schedule_time: Mapped[str] = mapped_column(String(5), nullable=False, default="06:00")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")             # часовой пояс расписания и дат без пояса в выгрузке
+    profile: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)               # сопоставление столбцов: sheet, columns {поле: заголовок}, origin [заголовки], generic_names
+    options: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)               # проверки, частичный импорт, хранение исходных файлов, повторы
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    next_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    request: Mapped[dict | None] = mapped_column(JSONType)                                     # запуск по требованию: {at, by, force, upload, match}
+    last_try_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_ok_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                           # последнее успешное получение (в том числе «изменений нет»)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    last_import_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)                              # последний опубликованный снимок: его данные видят страницы
+    fail_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    match_stamp: Mapped[str] = mapped_column(String(600), nullable=False, default="")           # снимок и поколения данных KSC, по которым выполнено сопоставление
+    matched_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class BiImport(Base):
+    """Получение файла: что прочитано, сколько записей новых, изменённых, без изменений и отклонённых, чем закончилось."""
+    __tablename__ = "bi_imports"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("bi_sources.id", ondelete="CASCADE"), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    trigger: Mapped[str] = mapped_column(String(10), nullable=False, default="schedule")       # schedule | manual | upload
+    by: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    file_size: Mapped[int | None] = mapped_column(BigInteger)
+    file_mtime: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    snapshot_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                          # дата снимка (изменение файла): дата наблюдения для истории
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")          # содержание без оформления и порядка строк
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="running")        # running | ok | partial | unchanged | rejected | failed
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    rows_read: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_valid: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_new: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_same: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_rejected: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_gone: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rows_empty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    devices_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    persons_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    headers: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    errors: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)               # отклонённые строки: [{row, field, reason}] (ограниченно)
+    warnings: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)             # [{code, text, n}]
+    ms: Mapped[int | None] = mapped_column(Integer)
+    stored: Mapped[str] = mapped_column(String(300), nullable=False, default="")                # копия исходного файла (пусто — удалена по сроку хранения)
+    __table_args__ = (Index("ix_bi_imports_src", "source_id", "started_at"),)
+
+
+class BiPerson(Base):
+    """Сотрудник по данным одного BI-источника: ключ — рабочая почта, без неё — ФИО."""
+    __tablename__ = "bi_persons"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("bi_sources.id", ondelete="CASCADE"), nullable=False)
+    pkey: Mapped[str] = mapped_column(String(330), nullable=False)
+    full_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    department: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    account_created: Mapped[datetime | None] = mapped_column(UTCDateTime)                      # дата создания учётной записи (не дата начала владения устройством)
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    last_import_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    present: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)               # есть в последнем опубликованном снимке
+    search: Mapped[str] = mapped_column(String(1000), nullable=False, default="")              # ФИО, почта, подразделение (строчные)
+    __table_args__ = (Index("ux_bi_persons_key", "source_id", "pkey", unique=True),)
+
+
+class BiDevice(Base):
+    """Устройство по данным BI. Ключ — устойчивый идентификатор, если источник его передаёт; иначе — короткое имя. Условные имена («Личный ПК») — отдельное устройство на сотрудника."""
+    __tablename__ = "bi_devices"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("bi_sources.id", ondelete="CASCADE"), nullable=False)
+    dkey: Mapped[str] = mapped_column(String(700), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    short: Mapped[str] = mapped_column(String(300), nullable=False, default="")                # короткое имя в нижнем регистре (сопоставление с KSC)
+    names: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)                # прежние имена: [{name, first, last}]
+    generic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)              # условное имя: с KSC по имени не сопоставляется
+    os: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    os_family: Mapped[str] = mapped_column(String(8), nullable=False, default="")              # windows | linux | mac | ""
+    personal: Mapped[bool | None] = mapped_column(Boolean)
+    av: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)                   # сведения BI об антивирусе: {uses, other, origin, raw}
+    owners_now: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                # сотрудников за устройством в последнем снимке
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    last_import_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    present: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    search: Mapped[str] = mapped_column(String(1500), nullable=False, default="")              # текущее и прежние имена (строчные)
+    __table_args__ = (Index("ux_bi_devices_key", "source_id", "dkey", unique=True), Index("ix_bi_devices_short", "source_id", "short"))
+
+
+class BiOwner(Base):
+    """Соответствие «устройство × сотрудник» по снимкам BI. first/last_seen — даты выгрузок, в которых связь наблюдалась (не даты передачи устройства);
+    owned_from/owned_to — только если источник сам передаёт период владения."""
+    __tablename__ = "bi_owners"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("bi_sources.id", ondelete="CASCADE"), nullable=False)
+    device_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("bi_devices.id", ondelete="CASCADE"), nullable=False)
+    person_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("bi_persons.id", ondelete="CASCADE"), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    first_import_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    last_import_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    present: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    seen_n: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    src_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                          # последняя достоверная дата наблюдения из самой выгрузки (даты из будущего не берутся)
+    owned_from: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    owned_to: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    confidence: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")      # high | medium | low
+    basis: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    __table_args__ = (Index("ux_bi_owners_pair", "device_id", "person_id", unique=True), Index("ix_bi_owners_person", "person_id"), Index("ix_bi_owners_src", "source_id", "present"))
+
+
+class BiRecord(Base):
+    """Нормализованная запись выгрузки. Без изменений запись не копируется: продлевается last_import_id; изменилась — новая версия (прежняя остаётся в истории)."""
+    __tablename__ = "bi_records"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("bi_sources.id", ondelete="CASCADE"), nullable=False)
+    rkey: Mapped[str] = mapped_column(String(40), nullable=False)                               # устройство × сотрудник
+    rhash: Mapped[str] = mapped_column(String(40), nullable=False)
+    device_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    person_id: Mapped[int | None] = mapped_column(BigInteger)
+    first_import_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    last_import_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    row_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                      # номер строки в файле, где версия появилась
+    attrs: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    flags: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    __table_args__ = (Index("ix_bi_records_key", "source_id", "rkey", "last_import_id"), Index("ix_bi_records_dev", "device_id"))
+
+
+class BiMatch(Base):
+    """Сопоставление устройства BI с компьютером KSC: auto — предполагаемое (имя и подтверждающие признаки), confirmed/rejected — решение администратора;
+    candidate/ambiguous/conflict — не сопоставлено (только имя, несколько компьютеров, противоречие)."""
+    __tablename__ = "bi_matches"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    device_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("bi_devices.id", ondelete="CASCADE"), nullable=False)
+    bi_source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("bi_sources.id", ondelete="CASCADE"), nullable=False)
+    ksc_source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), nullable=False)
+    host_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    host_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    level: Mapped[str] = mapped_column(String(10), nullable=False)
+    signals: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)              # основание: какие признаки совпали или противоречат
+    issues: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)               # расхождения BI и KSC: [{code, text}]
+    decided_by: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    __table_args__ = (Index("ux_bi_matches_pair", "device_id", "ksc_source_id", "host_id", unique=True), Index("ix_bi_matches_host", "ksc_source_id", "host_id"), Index("ix_bi_matches_src", "bi_source_id", "level"))

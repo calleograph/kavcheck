@@ -184,11 +184,11 @@ class Runner:
             general = await self._svc.get(db, "general")
             org = (await self._svc.get(db, "organization")).model_dump()
             hw = await self._svc.get(db, "hardware")
-        if src is None and job.kind not in ("quick_pentest", "quick_hunt"):                    # результаты Pentest не принадлежат источнику KSC
+        if src is None and job.kind not in ("quick_pentest", "quick_hunt", "quick_bi"):                    # результаты Pentest не принадлежат источнику KSC
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
         if src is None:
-            src = KscSource(id=uuid.uuid4(), name="Pentest")                  # только имя для шапки отчёта; в базу не записывается
+            src = KscSource(id=uuid.uuid4(), name="BI" if job.kind == "quick_bi" else "Pentest")                  # только имя для шапки отчёта; в базу не записывается
             client = None
         else:
             client = SourceClient(conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), concurrency=self._cfg.ksc_concurrency, name=src.name)

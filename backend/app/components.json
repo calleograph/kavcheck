@@ -1,6 +1,6 @@
 {
- "reviewed_for": "0.14.0",
- "reviewed_at": "2026-10-28",
+ "reviewed_for": "0.15.0",
+ "reviewed_at": "2026-10-29",
  "note": "Реестр проверяется при подготовке каждого выпуска (docs/RELEASE.md): verified — версия, проверенная в выпуске; decision — решение разработчика.",
  "components": [
   {
@@ -373,6 +373,40 @@
    "source": "pypi:openpyxl",
    "verified": "3.1.5",
    "release_notes": "https://pypi.org/project/openpyxl/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_defusedxml",
+   "title": "defusedxml",
+   "group": "Backend (Python)",
+   "purpose": "Защищённый разбор XML в XLSX (BI-выгрузки): без внешних сущностей и XML-бомб",
+   "installed": "py:defusedxml",
+   "source": "pypi:defusedxml",
+   "verified": "0.7.1",
+   "release_notes": "https://pypi.org/project/defusedxml/#history",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_smbprotocol",
+   "title": "smbprotocol",
+   "group": "Backend (Python)",
+   "purpose": "Чтение BI-выгрузок с SMB 2/3 (только чтение, шифрование SMB 3.x)",
+   "installed": "py:smbprotocol",
+   "source": "pypi:smbprotocol",
+   "verified": "1.17.0",
+   "release_notes": "https://pypi.org/project/smbprotocol/#history",
    "compat": "Диапазон версий — backend/requirements.txt",
    "limits": "",
    "decision": {

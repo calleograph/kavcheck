@@ -44,7 +44,7 @@ export interface HostHardware { supported: boolean; linux: boolean; problems: Hw
   hw: { known: boolean; line: string; virtual?: boolean; cores?: number | null; threads?: number | null; sockets?: number | null; ram_mb?: number | null; disk_total_gb?: number | null; disk_free_gb?: number | null; disks_logical_only?: boolean;
     cpus?: { name: string; manuf: string; mhz: number | null; cores: number | null; threads: number | null }[]; ram_modules?: { name: string; mb: number | null; mhz: number | null }[]; disks?: HwDisk[]; logical?: HwDisk[];
     nics?: { name: string; mac: string; speed_mbit: number | null }[]; board?: { board: string; manuf: string; bios_manuf: string; bios_version: string; bios_date: string | null } | null; other?: { type: string; name: string }[] } }
-export interface ProtHost { hw?: { problems: HwProblem[]; cores?: number | null; ram_mb?: number | null } | null; zone?: string; host_id: number; name: string; fqdn: string; ip: string; os: string; platform: string; group: string; last_connected: string | null; days_since_connection: number | null; activity: string; last_full_scan: string | null; online: boolean | null; last_visible: string | null; last_info_update: string | null;
+export interface ProtHost { owner?: BiOwnerBrief | null; hw?: { problems: HwProblem[]; cores?: number | null; ram_mb?: number | null } | null; zone?: string; host_id: number; name: string; fqdn: string; ip: string; os: string; platform: string; group: string; last_connected: string | null; days_since_connection: number | null; activity: string; last_full_scan: string | null; online: boolean | null; last_visible: string | null; last_info_update: string | null;
   av: { code: string; product: string; build: string; state: number | null; state_label: string; bases: string | null; has_rtp: boolean } | null; agent_build: string; rtp_state: number | null; rtp_label: string; ksc_status: string | null; uncured: number; problems: ProblemKey[] }
 export interface ProtVersions { code: string; product: string; hosts: number; latest: string; on_latest: number; versions: { build: string; hosts: number }[] }
 export interface ProtSummary { hosts: number; hidden_hosts: number; offline_hosts: number; online_only: boolean; online_data: boolean; activity_days: number; bases_days: number; scan_days: number; ok: number; protected: number; problems: { key: ProblemKey; title: string; hint: string; hosts: number }[];
@@ -56,7 +56,7 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt";
+export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi";
 
 export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "offline" | "unknown" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
@@ -198,7 +198,7 @@ export interface UpdatesOverview { installed: { version: string; commit: string;
   system: { update_mode: string | null; registry: string | null; allow_build: boolean | null; npm_mirror: boolean | null; pip_mirror: boolean | null; helper_unit: string | null }; remote: { checked_at: number; ok: boolean; error: string; current_version: string; latest_version: string; latest_tag: string; behind: boolean; notes: string; published_at: string; age_s: number } | null; history: { at: number; action: string; result: string; from_version: string; to_version: string; by: string; stage?: string }[]; backups: { name: string; size: number; at: number }[]; can_act: boolean; reasons: string[]; commands: Record<string, string>;
   preflight: { checked_at: number; age_s: number; target: string; ok: boolean; items: { key: string; status: "ok" | "warn" | "fail"; message: string }[] } | null;
   report: { started_at?: number; finished_at: number; result: "ok" | "failed" | "recovered"; stage: string; from_version: string; to_version: string; advice: string; reason_code?: string; mode?: string; actions: string[] } | null }
-export type SettingsValues = Record<string, string | number | boolean | null>;
+export type SettingsValues = Record<string, string | number | boolean | null | string[]>;
 export interface TotpStatus { available: boolean; policy: string; enabled: boolean; required: boolean; backup_left: number; enabled_at: string | null }
 export interface LdapConn { id: string; name: string; enabled: boolean; is_primary: boolean; protocol: "ldaps" | "starttls"; host: string; port: number; url: string; ldap_version: number; timeout_s: number; base_dn: string; domain_dns: string; netbios: string; bind_dn: string; bind_password_set: boolean; login_attribute: string; display_name_attribute: string; email_attribute: string; user_filter: string; nested_groups: boolean; position: number; last_check_at: string | null; last_check_ok: boolean | null; created_at: string; updated_at: string | null }
 export interface CaCert { id: string; label: string; subject: string; issuer: string; serial: string; sha256: string; not_before: string; not_after: string; is_ca: boolean; self_signed: boolean; type: string; expired: boolean; expires_soon: boolean; added_by: string | null; created_at: string }
@@ -272,7 +272,7 @@ let csrf = "";
 let sourceId: string | null = null;
 let allSources = false;
 /** Разделы, которые умеют работать со всеми источниками сразу (заголовок X-Source-Id: all); остальные получают выбранный источник. */
-const ALL_OK = /^\/(eol|devices|quick\/preview|reports|overview|licenses)(\/|\?|$)/;
+const ALL_OK = /^\/(eol|devices|quick\/preview|reports|overview|licenses|bi\/ksc-users)(\/|\?|$)/;
 let onUnauthorized: (() => void) | null = null;
 export const setCsrf = (t: string) => { csrf = t; };
 export const setSourceId = (id: string | null) => { sourceId = id; };
@@ -312,6 +312,44 @@ async function rawPost<T>(path: string, data: ArrayBuffer): Promise<T> {
   }
   return r.json() as Promise<T>;
 }
+
+// ------------------------------------------------------------------------------------------------ BI-выгрузки: владельцы устройств
+export interface BiImport { id: string; started_at: string; finished_at: string | null; trigger: string; by: string; file_name: string; file_size: number | null; file_mtime: string | null; snapshot_at: string | null; sha256: string;
+  status: "running" | "ok" | "partial" | "unchanged" | "rejected" | "failed"; status_ru: string; message: string; rows_read: number; rows_valid: number; rows_new: number; rows_changed: number; rows_same: number; rows_rejected: number;
+  rows_gone: number; rows_empty: number; devices_n: number; persons_n: number; ms: number | null; stored: boolean; warnings_n: number; errors_n: number;
+  warnings?: { code: string; n: number; text: string }[]; errors?: { row: number; reason: string }[]; headers?: string[] }
+export interface BiProfile { sheet: string; header_row: number; columns: Record<string, string>; origin: string[]; generic_names: string[]; extra?: boolean }
+export interface BiOptions { partial: boolean; max_reject_pct: number; drift_pct: number; max_mb: number; max_rows: number; keep_files: number; keep_days: number; retry_minutes: number; retries: number; stable_s: number; full_snapshot: boolean }
+export interface BiSourceInfo { id: string; name: string; kind: string; is_active: boolean; smb_host: string; smb_port: number; smb_share: string; smb_path: string; username: string; password_set: boolean; smb_encrypt: boolean;
+  file_mode: "fixed" | "auto"; file_name: string; schedule_time: string; timezone: string; profile: Partial<BiProfile>; options: BiOptions; next_run_at: string | null; queued: boolean; last_try_at: string | null;
+  last_ok_at: string | null; last_error: string | null; fail_n: number; matched_at: string | null; last: BiImport | null; published: BiImport | null }
+export interface BiPreview { sheets: string[]; sheet: string; header_row: number; headers: string[]; samples: Record<string, string>[]; suggested: BiProfile; missing: string[]; archive_warnings: string[]; fields: Record<string, string>;
+  check: { rows: number; ok: number; empty: number; rejected: { row: number; reason: string }[]; warnings: Record<string, number>; truncated?: boolean; profile_error?: string }; origin: { kind: string; name: string; mtime?: string; size?: number } }
+export interface BiPerson { id: number; name: string; email: string; department: string; present: boolean; first_seen_at: string; last_seen_at: string; source_id: string }
+export type BiState = "current" | "past" | "unknown";
+export interface BiImportRef { id: string; file: string; at: string | null }
+export interface BiKscHost { source_id: string; host_id: number; name: string; os: string; ip: string; last_connected: string | null; online: boolean | null; active: boolean; has_av: boolean; av_product: string; problems: string[];
+  protection_ru: string; ksc_user: string; ksc_user_at: string | null; zones: string[] }
+export interface BiMatchRow { id: number; ksc_source_id: string; ksc_source: string; host_id: number; host_name: string; level: string; level_ru: string; signals: string[]; issues: { code: string; text: string }[];
+  decided_by: string; decided_at: string | null; note: string; ksc?: BiKscHost | null }
+export interface BiOwnerRow { person: BiPerson; state: BiState; state_ru: string; note: string; first_seen_at: string; last_seen_at: string; seen_n: number; src_seen_at: string | null; owned_from: string | null; owned_to: string | null;
+  confidence: string; confidence_ru: string; basis: string; first_import: BiImportRef | null; last_import: BiImportRef | null }
+export interface BiDeviceCard { id: number; source_id: string; source: string; name: string; names: { name: string; until: string }[]; generic: boolean; os: string; os_family: string; personal: boolean | null;
+  av: { uses?: boolean | null; other?: string; origin?: string[] }; present: boolean; first_seen_at: string; last_seen_at: string; snapshot_at: string | null; owner: BiOwnerRow | null; owners: BiOwnerRow[];
+  versions: { first_seen_at: string; last_seen_at: string; row: number; first_import: BiImportRef | null; last_import: BiImportRef | null; attrs: Record<string, unknown>; flags: string[] }[];
+  matches: BiMatchRow[]; issues: { code: string; text: string }[]; ksc_state: "linked" | "candidates" | "none"; ksc_state_ru: string }
+export interface BiHostBlock { devices: BiDeviceCard[]; candidates: { device_id: number; name: string; source: string; level: string; level_ru: string; signals: string[] }[]; note: string; bi_sources: number; can_people: boolean; can_decide: boolean }
+export interface BiPersonRow extends BiPerson { source: string; devices: Record<BiState, string[]> }
+export interface BiPersonCard extends BiPerson { source: string; account_created: string | null; note: string;
+  devices: Record<BiState, { device_id: number; name: string; os: string; personal: boolean | null; generic: boolean; first_seen_at: string; last_seen_at: string; state: BiState; state_ru: string; confidence_ru: string; others_now: number;
+    ksc: { ksc_source_id: string; ksc_source: string; host_id: number; host_name: string; level: string; level_ru: string }[] }[]> }
+export interface BiDeviceRow { id: number; source_id: string; source: string; name: string; os: string; os_family: string; personal: boolean | null; generic: boolean; present: boolean; last_seen_at: string; av: BiDeviceCard["av"];
+  owners: (BiPerson & { confidence: string })[]; previous: (BiPerson & { state: BiState; last_seen_at: string })[]; previous_n: number;
+  ksc: { ksc_source_id: string; ksc_source: string; host_id: number; host_name: string; level: string; level_ru: string }[]; ksc_state: "linked" | "candidates" | "none"; issues: string[] }
+export interface BiMatchItem extends BiMatchRow { device_id: number; device: string; device_os: string; bi_source: string }
+export interface KscUserRow { login: string; domain: string; hosts: number; host_names: string[]; last_session_at: string | null; now: boolean; bi_person: { id: number; name: string; department: string } | null }
+export type BiPage<T, X = object> = { items: T[]; total: number } & X & Record<string, unknown>;
+export interface BiOwnerBrief { name: string; email: string; department: string; state: BiState; state_ru: string; level: string; multi: boolean; seen_at: string }
 
 export const api = {
   login: (login: string, password: string, domain = "") => req<Me | { totp_required: true; challenge: string }>("POST", "/auth/login", { login, password, domain }),
@@ -440,6 +478,35 @@ export const api = {
     unmatched: (q = "") => req<{ items: { catalog_key: string; name: string; publisher: string; hosts: number; source: string }[]; ambiguous: { catalog_key: string; name: string; publisher: string; hosts: number; reason: string; source: string }[] }>("GET", `/eol/unmatched${qs({ q })}`),
     recalc: () => req<{ queued: number }>("POST", "/eol/recalc"),
     host: (sid: string, hid: number) => req<{ items: EolFinding[] }>("GET", `/eol/hosts/${sid}/${hid}`),
+  },
+  bi: {
+    summary: () => req<{ items: { id: string; name: string; snapshot_at: string | null; last_ok_at: string | null; error: boolean }[]; can_people: boolean; can_pd: boolean }>("GET", "/bi/summary"),
+    sources: () => req<{ items: BiSourceInfo[]; fields: Record<string, string>; defaults: BiOptions; generic_names: string[] }>("GET", "/bi/sources"),
+    create: (b: object) => req<BiSourceInfo>("POST", "/bi/sources", b),
+    update: (id: string, b: object) => req<BiSourceInfo>("PUT", `/bi/sources/${id}`, b),
+    remove: (id: string) => req<void>("DELETE", `/bi/sources/${id}`),
+    test: (id: string) => req<DiagResult & { files?: { name: string; size: number; mtime: string }[] }>("POST", `/bi/sources/${id}/test`),
+    preview: async (id: string, file: File | null, profile?: Partial<BiProfile>) => {
+      const r = await fetch(`/api/v1/bi/sources/${id}/preview${qs({ profile: profile ? JSON.stringify(profile) : undefined })}`, { method: "POST", headers: { "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream", ...(file ? { "X-File-Name": encodeURIComponent(file.name) } : {}) }, body: file ?? undefined, credentials: "same-origin" });
+      if (!r.ok) { let m = `Ошибка ${r.status}`; try { const d = await r.json(); if (typeof d.detail === "string") m = d.detail; } catch { /* текст по умолчанию */ } throw new ApiError(r.status, m); }
+      return r.json() as Promise<BiPreview>;
+    },
+    upload: async (id: string, file: File, force = false) => {
+      const r = await fetch(`/api/v1/bi/sources/${id}/upload${qs({ force: force || undefined })}`, { method: "POST", headers: { "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) }, body: file, credentials: "same-origin" });
+      if (!r.ok) { let m = `Ошибка ${r.status}`; try { const d = await r.json(); if (typeof d.detail === "string") m = d.detail; } catch { /* текст по умолчанию */ } throw new ApiError(r.status, m); }
+      return r.json() as Promise<{ queued: boolean }>;
+    },
+    run: (id: string, force = false) => req<{ queued: boolean }>("POST", `/bi/sources/${id}/run`, { force }),
+    imports: (id: string) => req<{ items: BiImport[] }>("GET", `/bi/sources/${id}/imports`),
+    importOne: (iid: string) => req<BiImport>("GET", `/bi/imports/${iid}`),
+    people: (p: Record<string, string | number | boolean | undefined | null>) => req<BiPage<BiPersonRow>>("GET", `/bi/people${qs(p)}`),
+    person: (id: number) => req<BiPersonCard>("GET", `/bi/people/${id}`),
+    devices: (p: Record<string, string | number | boolean | undefined | null>) => req<BiPage<BiDeviceRow>>("GET", `/bi/devices${qs(p)}`),
+    device: (id: number) => req<BiDeviceCard>("GET", `/bi/devices/${id}`),
+    host: (sid: string, hid: number) => req<BiHostBlock>("GET", `/bi/host/${sid}/${hid}`),
+    matches: (p: Record<string, string | number | boolean | undefined | null>) => req<BiPage<BiMatchItem, { counts: Record<string, number> }>>("GET", `/bi/matches${qs(p)}`),
+    decide: (b: { device_id: number; ksc_source_id: string; host_id: number; decision: "confirm" | "reject" | "reset"; note?: string }) => req<{ ok: boolean; level: string; level_ru: string }>("POST", "/bi/matches/decide", b),
+    kscUsers: (p: Record<string, string | number | boolean | undefined | null>) => req<BiPage<KscUserRow, { note: string }>>("GET", `/bi/ksc-users${qs(p)}`),
   },
   devices: {
     list: (p: Record<string, string | number | boolean | undefined | null>) => req<DevicesPage>("GET", `/devices${qs(p)}`),

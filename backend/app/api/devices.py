@@ -95,8 +95,9 @@ async def card(source_id: str, host_id: int, su: SessionUser = Depends(require_u
     us = (await db.execute(select(DeviceUser).where(DeviceUser.source_id == sid, DeviceUser.host_id == host_id).order_by(DeviceUser.last_session_at.desc().nulls_last(), DeviceUser.login))).scalars().all()
     vis = [u for u in us if show_service or u.kind == "user"]
     d = row.data or {}
+    zn = await R.zone_names(db)
     return {"source_id": str(sid), "source": next((s.name for s in srcs if s.id == sid), ""), "host_id": host_id, "name": row.name, "ip": d.get("ip", ""), "os": row.os, "group": d.get("group", ""),
-            "zones": d.get("zones") or [], "last_connected": row.last_connected, "active": row.active, "online": row.online,
+            "zones": [zn.get(str(z), str(z)) for z in d.get("zones") or []], "last_connected": row.last_connected, "active": row.active, "online": row.online,
             "current": [R.user_out(u) for u in vis if u.session_now], "last_user": next((R.user_out(u) for u in vis if u.last_session_at), None),
             "week": [R.user_out(u) for u in vis if u.kind == "user" and R.seen_week_py(u, cut)], "history": [R.user_out(u) for u in vis if not u.session_now][:200],
             "hidden_service": sum(1 for u in us if u.kind != "user") if not show_service else 0, "eol": await EOLR.host_items(db, sid, host_id), "limits": LIMITS}

@@ -27,6 +27,7 @@ from .overview.snapshots import SnapshotService
 from .services.resources import RES
 from .services.retention import Retention
 from .services.components import Checker
+from .bi.service import BiService
 
 log = logging.getLogger("app.worker")
 
@@ -62,6 +63,7 @@ async def main() -> None:
     snapshots = SnapshotService(sm, sources, svc, journal)
     retention = Retention(sm, settings, svc)
     comp_check = Checker(sm, svc)
+    bi = BiService(sm, settings, svc, journal)
     try:
         if await eol.recover():
             log.warning("EOL: прерванные расчёты сброшены, будут запущены заново")
@@ -75,9 +77,9 @@ async def main() -> None:
 
     def pulse() -> dict:
         return {"version": settings.app_version, "commit": settings.app_git_commit, "reports_running": len(runner._tasks),  # noqa: SLF001
-                "catalog_building": len(catalog._tasks), "vdb_running": len(vdb._running), "zonecache_job": zcache.current, "eol_job": eol.current, "devices_job": devices.current, "resources": RES.snapshot()}  # noqa: SLF001
+                "catalog_building": len(catalog._tasks), "vdb_running": len(vdb._running), "zonecache_job": zcache.current, "eol_job": eol.current, "devices_job": devices.current, "bi_job": bi.current, "resources": RES.snapshot()}  # noqa: SLF001
 
-    tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"), asyncio.create_task(mailer.loop(), name="mail"), asyncio.create_task(zcache.loop(), name="zonecache"), asyncio.create_task(eol.loop(), name="eol"), asyncio.create_task(devices.loop(), name="devices"), asyncio.create_task(licenses.loop(), name="licenses"), asyncio.create_task(snapshots.loop(), name="ov-snapshots"), asyncio.create_task(retention.loop(), name="log-retention"), asyncio.create_task(comp_check.loop(), name="components"),
+    tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"), asyncio.create_task(mailer.loop(), name="mail"), asyncio.create_task(zcache.loop(), name="zonecache"), asyncio.create_task(eol.loop(), name="eol"), asyncio.create_task(devices.loop(), name="devices"), asyncio.create_task(licenses.loop(), name="licenses"), asyncio.create_task(snapshots.loop(), name="ov-snapshots"), asyncio.create_task(retention.loop(), name="log-retention"), asyncio.create_task(comp_check.loop(), name="components"), asyncio.create_task(bi.loop(), name="bi"),
              asyncio.create_task(jh.flush_loop(sm), name="journal-flush"), asyncio.create_task(JOBS.beat_loop(), name="job-leases"), asyncio.create_task(heartbeat_loop(sm, "worker", pulse), name="heartbeat")]
     log.info("Воркер отчётов и каталога запущен", extra={"version": settings.app_version})
     await stop.wait()
@@ -89,6 +91,7 @@ async def main() -> None:
     snapshots.stop()
     retention.stop()
     comp_check.stop()
+    bi.stop()
     for task in tasks:
         task.cancel()
     for task in tasks:

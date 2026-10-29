@@ -8,6 +8,7 @@ import { ActivityBadge, Fetched, OnlineBadge } from "../components/Common";
 import { ListFoot, VirtualRows, staticList, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { FilterBar, ReportButton } from "../components/FilterBar";
+import { OwnerBlock } from "../components/OwnerBlock";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { maskMatcher } from "../mask";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
@@ -149,6 +150,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
         <div className="card">
           <h2>Сведения</h2>
           <dl className="kv pairs">{facts.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
+          {ctx.current && <OwnerBlock sid={ctx.current.id} hid={h.host_id} activityDays={ctx.me.activity_days} />}
         </div>
         <div className="stack">
           {st && st.reasons.length > 0 && (

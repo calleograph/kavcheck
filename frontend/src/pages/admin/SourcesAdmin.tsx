@@ -1,18 +1,31 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, type ApiError, type DiagResult, type SourceFull } from "../../api";
 import type { Ctx } from "../../App";
 import { SecretInput, StageList, secretToSend } from "../../components/Common";
 import { ConfirmDialog, Modal } from "../../components/Dialogs";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
-import { Empty, SkelRows } from "../../components/ui";
+import { Empty, Segmented, SkelRows } from "../../components/ui";
+import BiSourcesAdmin from "./BiSourcesAdmin";
 import { fmt } from "../../util";
 
 interface Form { id?: string; name: string; host: string; port: number; database: string; auth_type: string; username: string; password: string; password_set: boolean; tls_mode: string; trust_server_cert: boolean; connect_timeout_s: number; query_timeout_s: number; is_active: boolean }
 const empty: Form = { name: "", host: "", port: 1433, database: "KAV", auth_type: "sql", username: "", password: "", password_set: false, tls_mode: "require", trust_server_cert: true, connect_timeout_s: 10, query_timeout_s: 60, is_active: true };
 
-/** Источники данных: подключения к базам Серверов администрирования KSC (только чтение), проверка подключения с диагностикой. */
+/** Источники данных: Серверы администрирования KSC и BI-системы (Excel через SMB) — оба только на чтение. */
 export default function SourcesAdmin({ ctx }: { ctx: Ctx }) {
+  const [sp, setSp] = useSearchParams();
+  const kind = sp.get("kind") === "bi" ? "bi" : "ksc";
+  return (<>
+    <div className="mb"><Segmented label="Тип источника" value={kind} onChange={(v) => setSp((p) => { if (v === "bi") p.set("kind", "bi"); else p.delete("kind"); return p; })}
+      options={[["ksc", "Kaspersky Security Center"], ["bi", "BI-системы — Excel через SMB"]]} /></div>
+    {kind === "bi" ? <BiSourcesAdmin /> : <KscSources ctx={ctx} />}
+  </>);
+}
+
+/** Подключения к базам Серверов администрирования KSC (только чтение), проверка подключения с диагностикой. */
+function KscSources({ ctx }: { ctx: Ctx }) {
   const [items, setItems] = useState<SourceFull[] | null>(null);
   const [form, setForm] = useState<Form | null>(null);
   const [error, setError] = useState(""); const [busy, setBusy] = useState(false);

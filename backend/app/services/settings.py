@@ -303,7 +303,12 @@ class LogsSettings(_Group):
         return v
 
 
-GROUPS: dict[str, type[_Group]] = {"pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
+class BiSettings(_Group):
+    """BI-выгрузки (Excel через SMB): общие ограничения для всех BI-источников."""
+    allowed_hosts: list[str] = Field(default_factory=list, max_length=100)   # разрешённые SMB-серверы: имя (маска со звёздочкой) или сеть CIDR; пусто — любой, кроме петлевых и link-local
+
+
+GROUPS: dict[str, type[_Group]] = {"bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
                                    "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings}
 
 

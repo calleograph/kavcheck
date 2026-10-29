@@ -12,6 +12,8 @@ argon2-cffi>=23.1,<26
 httpx>=0.27,<1
 pymssql>=2.3.1,<3
 openpyxl>=3.1,<4
+defusedxml>=0.7.1,<1
+smbprotocol>=1.15,<2
 segno>=1.6,<2
 reportlab>=4.2,<6
 tzdata

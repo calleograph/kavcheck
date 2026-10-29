@@ -11,7 +11,11 @@ import { ListFoot, useInfinite, useKept } from "../components/Infinite";
 import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { ZoneField } from "../components/ZoneBits";
-import { Empty, PageHead, Segmented, SkelRows, SortTh } from "../components/ui";
+import { OwnerBlock } from "../components/OwnerBlock";
+import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
+import BiPeople from "./people/BiPeople";
+import KscUsers from "./people/KscUsers";
+import Matches from "./people/Matches";
 import { fmt, fmtDate, num, plural } from "../util";
 
 const who = (u: DevUser) => (u.resolved ? (u.domain ? `${u.domain}\\${u.login}` : u.login) : "учётная запись не сопоставлена в KSC");
@@ -23,8 +27,38 @@ function UserChip({ u }: { u: DevUser }) {
     {who(u)}{KIND[u.kind] ? <i> ({KIND[u.kind]})</i> : null}</span>;
 }
 
-/** Раздел «Устройства и пользователи»: единая таблица устройств с пользователями, зонами и EOL; поиск по имени, IP (адрес, сеть CIDR, диапазон, маска) и логину. */
+type Tab = "devices" | "ksc" | "bi" | "match";
+
+/** Раздел «Устройства и пользователи»: устройства KSC, пользователи KSC, сотрудники и устройства BI с историей принадлежности, сопоставление BI и KSC. */
 export default function DevicesPage({ ctx }: { ctx: Ctx }) {
+  const [sp, setSp] = useSearchParams();
+  const [bi, setBi] = useState<Awaited<ReturnType<typeof api.bi.summary>> | null>(null);
+  useEffect(() => { api.bi.summary().then(setBi).catch(() => setBi(null)); }, []);
+  if (!ctx.current) return <NoSource ctx={ctx} />;
+  const people = !!bi?.can_people && bi.items.length > 0;
+  const raw = (sp.get("tab") ?? (sp.get("person") || sp.get("bidev") ? "bi" : "devices")) as Tab;
+  const tab: Tab = (raw === "bi" || raw === "match") && !people ? "devices" : (["devices", "ksc", "bi", "match"] as Tab[]).includes(raw) ? raw : "devices";
+  const go = (t: Tab) => setSp((p) => { p.set("tab", t); ["person", "bidev"].forEach((k) => p.delete(k)); return p; });
+  const card = sp.get("card");
+  return (
+    <section>
+      <PageHead title="Устройства и пользователи" lede="Устройства KSC с пользователями, зонами и EOL; пользователи KSC; сотрудники и владельцы устройств по BI-выгрузкам с историей принадлежности." />
+      <Tabs label="Разделы" value={tab} onChange={go} items={[{ id: "devices", label: "Устройства" }, { id: "ksc", label: "Пользователи KSC" },
+        ...(people ? [{ id: "bi" as Tab, label: "Пользователи BI" }, { id: "match" as Tab, label: "Сопоставление BI и KSC" }] : [])]} />
+      <div className="mt-sm">
+        {tab === "devices" && <DeviceList ctx={ctx} />}
+        {tab === "ksc" && <KscUsers ctx={ctx} />}
+        {tab === "bi" && bi && <BiPeople ctx={ctx} summary={bi} />}
+        {tab === "match" && <Matches ctx={ctx} />}
+      </div>
+      {tab !== "devices" && card && <CardModal id={card} service={false} onClose={() => setSp((p) => { p.delete("card"); return p; })} ctx={ctx} />}
+      {bi && !people && bi.can_people && <p className="muted small mt-sm">BI-выгрузки не подключены: владельцев устройств и историю принадлежности можно получать из корпоративной Excel-выгрузки{ctx.me.user.is_admin ? <> (<Link to="/admin?tab=sources&kind=bi">Администрирование → Источники данных → BI-системы</Link>)</> : ""}.</p>}
+    </section>
+  );
+}
+
+/** Устройства KSC: единая таблица устройств с пользователями, зонами и EOL; поиск по имени, IP (адрес, сеть CIDR, диапазон, маска) и логину. */
+function DeviceList({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
   const [q, setQ] = useKept("dev.q", ""); const [applied, setApplied] = useState(q);
   const [zone, setZone] = useKept("dev.zone", ""); const [eol, setEol] = useKept("dev.eol", ""); const [osq, setOsq] = useKept("dev.os", ""); const [uq, setUq] = useKept("dev.user", "");
@@ -35,7 +69,6 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
   useEffect(() => { if (ctx.current) api.devices.status().then(setStatus).catch(() => setStatus(null)); }, [ctx.current, ctx.all]);
   const list = useInfinite<DeviceRow>(`dev:${ctx.current?.id}:${ctx.all}`, [applied, zone, eol, osq, uq, srcId, all, service, sort, desc],
     (offset, limit) => api.devices.list({ q: applied, zone, eol, os: osq, user: uq, source_id: ctx.all ? srcId : "", all_hosts: all || undefined, show_service: service || undefined, sort, desc, offset, limit }), 50);
-  if (!ctx.current) return <NoSource ctx={ctx} />;
   const extra = list.extra as { limits?: string; not_ready?: string[] } | null;
   const multi = ctx.all;
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } };
@@ -44,8 +77,7 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
   const bad = status?.items.filter((s) => !s.supported || s.error) ?? [];
   const canPoll = ctx.me.user.role !== "viewer";
   return (
-    <section>
-      <PageHead title="Устройства и пользователи" lede="Все устройства с пользователями, зонами ответственности и признаком EOL в одной таблице. Пользователи накапливаются по наблюдениям: KSC не хранит даты входа." />
+    <>
       {(extra?.not_ready?.length ?? 0) > 0 && <div className="alert info"><Icon name="info" /><div className="alert-body">Данные зон ещё не рассчитаны для: {extra!.not_ready!.join(", ")}. Устройства появятся после первого расчёта (Администрирование → Расчёт данных зон).</div></div>}
       {bad.map((s) => <div key={s.source_id} className="alert warn"><Icon name="alert" /><div className="alert-body">Источник «{s.source}»: {!s.supported ? "в базе KSC нет таблиц пользователей — столбцы пользователей пусты." : `опрос пользователей не удался (${s.error}). Показаны данные последнего успешного опроса${s.polled_at ? ` от ${fmt(s.polled_at)}` : ""}.`}</div></div>)}
       <FilterBar search={{ value: q, onChange: setQ, placeholder: "Имя, логин или IP: srv-*, ivanov, 192.0.2.0/24, 10.1.2.5-40, 10.1.*", label: "Поиск устройств" }}
@@ -104,7 +136,7 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
         sourceIds={ctx.all ? ctx.sources.map((s) => s.id) : []} activityDays={ctx.me.activity_days} canReport={canPoll} onClose={() => setReport(false)} />}
       {card && <CardModal id={card} service={service} onClose={() => setSp((p) => { p.delete("card"); return p; })} ctx={ctx} />}
       {toast}
-    </section>
+    </>
   );
 }
 
@@ -129,6 +161,7 @@ function CardModal({ id, service, onClose, ctx }: { id: string; service: boolean
           <div><dt>За 7 суток ({d.week.length})</dt><dd>{d.week.length ? d.week.map((u, i) => <span key={i} className="block"><UserChip u={u} /></span>) : "—"}</dd></div>
           <div><dt>Входили ранее ({d.history.length})</dt><dd>{d.history.length ? <CompactList items={d.history} max={8} render={(u) => <UserChip u={u} />} /> : "—"}</dd></div>
         </dl>
+        <OwnerBlock sid={d.source_id} hid={d.host_id} activityDays={ctx.me.activity_days} />
         {d.hidden_service > 0 && <p className="muted small">Скрыто служебных и системных учётных записей: {d.hidden_service}.</p>}
         <p className="muted small">{d.limits}</p>
         <h3 className="h3">Программы и ОС без поддержки производителя</h3>
