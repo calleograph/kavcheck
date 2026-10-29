@@ -1,7 +1,7 @@
 {
   "name": "kavcheck-frontend",
   "private": true,
-  "version": "0.17.0",
+  "version": "0.18.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,10 +10,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@tanstack/react-virtual": "3.14.10",
+    "@tanstack/react-virtual": "3.14.23",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-router-dom": "^7.6.0"
+    "react-router-dom": "^7.18.5"
   },
   "devDependencies": {
     "@types/node": "^24",

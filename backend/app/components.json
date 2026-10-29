@@ -1,6 +1,6 @@
 {
- "reviewed_for": "0.17.0",
- "reviewed_at": "2026-10-29",
+ "reviewed_for": "0.18.0",
+ "reviewed_at": "2026-10-30",
  "note": "Реестр проверяется при подготовке каждого выпуска (docs/RELEASE.md): verified — версия, проверенная в выпуске; decision — решение разработчика.",
  "components": [
   {
@@ -490,7 +490,7 @@
    "purpose": "Маршрутизация",
    "installed": "static",
    "source": "npm:react-router-dom",
-   "verified": "7.18.4",
+   "verified": "7.18.5",
    "release_notes": "https://www.npmjs.com/package/react-router-dom?activeTab=versions",
    "compat": "Версии зафиксированы в frontend/package-lock.json",
    "limits": "",
@@ -507,7 +507,7 @@
    "purpose": "Виртуальные списки",
    "installed": "static",
    "source": "npm:@tanstack/react-virtual",
-   "verified": "3.14.10",
+   "verified": "3.14.23",
    "release_notes": "https://www.npmjs.com/package/@tanstack/react-virtual?activeTab=versions",
    "compat": "Версии зафиксированы в frontend/package-lock.json",
    "limits": "",
