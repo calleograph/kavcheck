@@ -56,11 +56,11 @@ def test_sql_text_is_masked():
 
 def test_report_masks_secrets_and_external_identifiers():
     state = {"version": "0.18.0", "commit": "abc", "built_at": "", "level": "warn", "thresholds": {}, "host": None, "disk": None, "dirs": None, "helper": {},
-             "problems": [{"level": "warn", "area": "KSC «Головной офис»", "text": "ошибка подключения к ksc01.corp.example.ru (192.0.2.10): password=Secret123", "tab": "sources"}],
+             "problems": [{"level": "warn", "area": "KSC «Головной офис»", "text": "ошибка подключения к ksc01.corp.example.local (192.0.2.10): password=Secret123", "tab": "sources"}],
              "services": [], "jobs": {"items": [], "history": [], "by_kind": [], "counts": {"total": 0, "waiting": 0, "running": 0, "stalled": 0, "done_24h": 0, "failed_24h": 0}},
              "pg": {"ok": True, "long": [], "locks": [], "tables": {"items": [], "indexes": []}, "dsn": "postgresql://kc:pw@db/kc"},
              "sources": {"ksc": [{"name": "Головной офис", "check_ok": True, "check_at": None, "sync": {"at": None, "status": None}, "catalog": {"at": None}}],
-                         "bi": [{"name": "BI кадры", "last_ok_at": None, "last_try_at": None, "last_error": "\\\\fs01.corp.example.ru\\share нет доступа для ivan.petrov@corp.example.ru"}],
+                         "bi": [{"name": "BI кадры", "last_ok_at": None, "last_try_at": None, "last_error": "\\\\fs01.corp.example.local\\share нет доступа для ivan.petrov@corp.example.local"}],
                          "pentest": {"alive": True, "nmap": "7.95", "nse_scripts": 600, "nuclei": {"version": "", "templates": ""}, "queued": 0, "running": 0}},
              "journal": {"errors_24h": 0, "warn_24h": 0, "recent": []}, "components": {"items": []}}
     inner = TR.build(state, external=False)
@@ -68,7 +68,7 @@ def test_report_masks_secrets_and_external_identifiers():
     assert "Secret123" not in txt and ":pw@" not in txt and "Головной офис" in txt         # секреты — всегда, названия — только во внешнем режиме
     ext = TR.build(state, external=True)
     t2 = json.dumps(ext, ensure_ascii=False) + TR.to_text(ext) + TR.to_html(ext)
-    for leak in ("Secret123", "192.0.2.10", "Головной офис", "BI кадры", "ivan.petrov", "fs01", "ksc01.corp"):
+    for leak in ("Secret123", "192.0.2.10", "Головной офис", "BI кадры", "ivan.petrov", "fs01", "ksc01"):
         assert leak not in t2, leak
     assert "ip-1" in t2 and "источник-1" in t2
 

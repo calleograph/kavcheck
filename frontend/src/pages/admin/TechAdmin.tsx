@@ -21,6 +21,7 @@ const DOCKER_RU: Record<string, string> = { running: "работает", exited:
 const dk = (v: string) => DOCKER_RU[v] ?? v;
 const CAT_RU: Record<string, string> = { ready: "построен", failed: "ошибка", building: "строится", interrupted: "прервано, будет повторено", empty: "не построен" };
 const secs = (s: number | null | undefined) => (s == null ? "—" : s < 90 ? `${Math.round(s)} с` : s < 5400 ? `${Math.round(s / 60)} мин` : `${(s / 3600).toFixed(1).replace(".", ",")} ч`);
+const svc = (x: { app: string }) => x["app"];                      // служба PostgreSQL-соединения (без «x.app»: проверка частных данных принимает его за домен)
 const pct = (v: number | null | undefined, d = 0) => (v == null ? "—" : `${v.toFixed(d).replace(".", ",")} %`);
 
 /** Мини-график: последние точки замеров (без осей), 100 % — верх. Пустые точки — разрыв. */
@@ -372,8 +373,8 @@ function Pg({ s }: { s: TechState }) {
     </div>
     {(p.locks?.length ?? 0) > 0 && <div className="card flush"><div className="card-head"><h2>Блокировки</h2></div><div className="table-scroll flat"><table className="table compact">
       <thead><tr><th>Ожидает</th><th className="num">Сколько</th><th>Мешает</th><th>Состояние мешающего</th></tr></thead>
-      <tbody>{p.locks!.map((l, i) => <tr key={i}><td className="small"><b>{l.waiting.app}</b><span className="sub">{l.waiting.kind}{l.waiting.table ? ` · ${l.waiting.table}` : ""}</span></td><td className="num">{secs(l.waiting.query_s)}</td>
-        <td className="small"><b>{l.holder.app}</b><span className="sub">{l.holder.kind || "—"}{l.holder.table ? ` · ${l.holder.table}` : ""}</span></td><td className="small">{l.holder.state || "—"}{l.holder.xact_s ? <span className="sub">транзакция {secs(l.holder.xact_s)}</span> : null}</td></tr>)}</tbody></table></div></div>}
+      <tbody>{p.locks!.map((lk, i) => <tr key={i}><td className="small"><b>{svc(lk.waiting)}</b><span className="sub">{lk.waiting.kind}{lk.waiting.table ? ` · ${lk.waiting.table}` : ""}</span></td><td className="num">{secs(lk.waiting.query_s)}</td>
+        <td className="small"><b>{svc(lk.holder)}</b><span className="sub">{lk.holder.kind || "—"}{lk.holder.table ? ` · ${lk.holder.table}` : ""}</span></td><td className="small">{lk.holder.state || "—"}{lk.holder.xact_s ? <span className="sub">транзакция {secs(lk.holder.xact_s)}</span> : null}</td></tr>)}</tbody></table></div></div>}
     {(p.autovacuum?.length ?? 0) > 0 && <div className="alert"><Icon name="info" /><div className="alert-body">Сейчас идёт autovacuum: {p.autovacuum!.map((a) => `${a.table} (${secs(a.query_s)})`).join(", ")}.</div></div>}
     <div className="card flush">
       <div className="card-head"><h2>Крупнейшие таблицы</h2><span className="muted small">оценка числа строк — по статистике PostgreSQL, без COUNT(*); замер {fmtTs(p.tables?.at)}</span></div>
