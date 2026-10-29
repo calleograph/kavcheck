@@ -4,6 +4,8 @@ import { api, type ApiError, type SettingsValues } from "../../api";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
 import { Segmented, SkelRows } from "../../components/ui";
+import { ThemePicker } from "../../components/ThemePicker";
+import { isTheme } from "../../theme";
 
 function Group({ group, title, intro, children }: { group: string; title: string; intro: string; children: (v: SettingsValues, set: (k: string, val: string | number | boolean) => void) => ReactNode }) {
   const [v, setV] = useState<SettingsValues | null>(null);
@@ -48,6 +50,9 @@ export default function GeneralAdmin() {
             <div className="field"><span>Хранение журналов</span><Link className="link-btn" to="/admin?tab=logs">Администрирование → Журналы и хранение</Link><span className="help">Сроки, объём, архивы и квота журналов задаются там</span></div>
           </div>
         </>); }}
+      </Group>
+      <Group group="appearance" title="Внешний вид" intro="Тема оформления по умолчанию для всех пользователей, в том числе на странице входа. Пользователь может выбрать свою тему в меню профиля → «Внешний вид»: личный выбор важнее и этой настройкой не перезаписывается.">
+        {(v, set) => <ThemePicker label="Тема по умолчанию" value={isTheme(v.default_theme) ? v.default_theme : "night"} onChange={(id) => set("default_theme", id ?? "night")} />}
       </Group>
       <Group group="reports" title="Ограничения отчётов" intro="Защита производственных SQL Server: предел строк одного отчёта и учёт только компьютеров (записи кластеров и подчинённых серверов компьютерами не считаются).">
         {(v, set) => (<>

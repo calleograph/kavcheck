@@ -97,7 +97,8 @@ async def create(db: AsyncSession, app, *, title: str, crits: list[dict], logic:
     checks = [x["id"] for c in crits for x in c.get("checks", [])] if (net and ready and settings.nuclei_enabled) else []
     nse = _nse_for(crits) if net else []
     try:
-        opts = S.check_options(settings, "custom", spec or "80", "off", 2, False, plan if (net or plan.total) else _ksc_plan(plan), confirm_scope, confirm_large, scan=None, engine_ready=ready)
+        opts = S.check_options(settings, "custom", spec or "80", "off", 2, False, plan if (net or plan.total) else _ksc_plan(plan), confirm_scope or not net, confirm_large or not net,     # без сети адреса не сканируются — подтверждение не нужно
+                                 scan=None, engine_ready=ready)
     except S.JobError as exc:
         raise HuntError(str(exc)) from None
     opts["scan"] = {"preset": "hunt", "nse": bool(nse), "nse_groups": [], "nse_only": nse, "nuclei": bool(checks), "cats": [], "active": False, "only_checks": sorted(set(checks))}

@@ -65,7 +65,7 @@ class LicenseService:
             except Exception as exc:  # noqa: BLE001 — недоступный KSC или нет прав: прежние записи остаются, причина видна администратору
                 if type(exc).__name__ == "LeaseLost":
                     raise
-                msg = f"{type(exc).__name__}: {str(exc)[:300]}"
+                msg = exc.message if hasattr(exc, "message") and isinstance(exc.message, str) else f"внутренняя ошибка ({type(exc).__name__}): {str(exc)[:300]}"   # KscError — уже понятный текст
                 log.warning("Чтение лицензий не удалось", extra={"source": src.name, "error": msg})
                 async with self._sm() as db:
                     st = await db.get(LicenseState, sid)

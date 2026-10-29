@@ -68,7 +68,7 @@ export default function EventsPage({ ctx }: { ctx: Ctx }) {
           <span className="tr-legend">{BAR.map(([g, l]) => <span key={g}><i className={`sw tr-${g}`} aria-hidden />{l}</span>)}</span>{s && <Fetched at={s.fetched_at} />}</div>
         {!s ? <span className="skel skel-chart" /> : (
           <>
-            <div className="trend" role="img" aria-label={`Динамика событий ${per}: обнаружений ${s.totals.detections}, не вылечено ${s.totals.notcured}, атак ${s.totals.attacks}${peak ? `; наибольшее число — ${bucketLabel(peak.at, s.unit)}` : ""}`}>
+            <div className="ev-trend" role="img" aria-label={`Динамика событий ${per}: обнаружений ${s.totals.detections}, не вылечено ${s.totals.notcured}, атак ${s.totals.attacks}${peak ? `; наибольшее число — ${bucketLabel(peak.at, s.unit)}` : ""}`}>
               {s.trend.map((b) => {
                 const t = b.detections + b.notcured + b.attacks;
                 return (

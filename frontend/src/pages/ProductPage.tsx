@@ -12,7 +12,7 @@ import { ReportButton } from "../components/FilterBar";
 import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { ProductVulns } from "../components/VdbBits";
-import { Empty, HiddenNote, PageHead, SkelRows, Spectrum } from "../components/ui";
+import { Empty, HiddenNote, PageHead, SkelRows, Spectrum, BackLink } from "../components/ui";
 import { fmtDate, num } from "../util";
 import { CatalogStateLine } from "./CatalogPage";
 
@@ -40,7 +40,7 @@ export default function ProductPage({ ctx }: { ctx: Ctx }) {
   const [toast, show] = useToast();
   useEffect(() => { if (!ctx.current) return; api.catalog.product(key, all).then((r) => { setP(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)); }, [ctx.current, key, all, tick]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
-  const back = <Link className="back-link" to="/software"><Icon name="arrowL" size={15} />Программы</Link>;
+  const back = <BackLink to="/software" label="Программы" />;
   if (err) return <section><PageHead title="Продукт" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div></section>;
   if (!p) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="card"><SkelRows rows={5} cols={4} /></div></section>;
   const canEdit = ctx.me.user.role !== "viewer";

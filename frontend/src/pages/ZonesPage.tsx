@@ -53,7 +53,8 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
   const navigate = useNavigate();
   const [data, setData] = useState<ZoneOverview | null>(null); const [err, setErr] = useState("");
   const [q, setQ] = useKept("zones.q", ""); const [state, setState] = useKept("zones.state", ""); const [sort, setSort] = useKept("zones.sort", "risk"); const [desc, setDesc] = useKept("zones.desc", true);
-  const [force, setForce] = useState(0);
+  const [force, setForce] = useState(0); const [report, setReport] = useState(false);
+  const zoneIds = (data?.items ?? []).filter((z) => z.enabled !== false).map((z) => z.id).slice(0, 100);
   const calc = !!data?.freshness.job && data.freshness.job.status !== "done";
   useEffect(() => { if (!calc) return; const t = window.setInterval(() => setForce((x) => x + 1), 4000); return () => window.clearInterval(t); }, [calc]);        // пока идёт расчёт, список обновляется сам
   useEffect(() => {
@@ -67,7 +68,10 @@ function ZoneList({ ctx }: { ctx: Ctx }) {
       primary={<Segmented label="Состояние" value={state} onChange={setState} options={[["", "Все"], ["critical", "Критические"], ["vulns", "Уязвимости"], ["protection", "Защита"], ["ok", "Без проблем"]]} />}
       chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(state ? [{ id: "st", label: `Состояние: ${{ critical: "критические", vulns: "уязвимости", protection: "защита", ok: "без проблем" }[state] ?? state}`, onRemove: () => setState("") }] : [])]}
       onReset={() => { setQ(""); setState(""); }} count={data ? { n: data.items.length, noun: ["зона", "зоны", "зон"], hint: <> · <DataStamp fr={data.freshness} /></> } : undefined}
+      report={ctx.me.user.role !== "viewer" ? { onClick: () => setReport(true), disabled: !zoneIds.length, title: "Отчёт по всем показанным зонам: сводка по каждой и проблемные компьютеры" } : null}
       extra={ctx.me.user.is_admin ? <Link className="btn ghost mini" to="/admin?tab=zcache" title="Расписание и состояние расчёта данных зон"><Icon name="clock" size={15} /><span>Расчёт данных</span></Link> : undefined} />
+    {report && <QuickReportPanel kind="quick_zone" title={`Отчёт по зонам (${zoneIds.length})`} lede="Зоны, показанные в списке по текущим условиям: сводка, проблемные компьютеры, затем подробности" options={{ zone: true }}
+      activityDays={data?.activity_days ?? ctx.me.activity_days} canReport params={{ zone_ids: zoneIds, categories: DEFAULT_ZONE_CATS, level: "technical", include_inactive: false, hosts: [] }} onClose={() => setReport(false)} />}
     <FreshnessNotes fr={data?.freshness} canRefresh={false} />
     {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
     {data && data.totals.conflicts > 0 && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Компьютеров, подходящих нескольким зонам: <b>{num(data.totals.conflicts)}</b>. Они показаны в каждой зоне.{" "}

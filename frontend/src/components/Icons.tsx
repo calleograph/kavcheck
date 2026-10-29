@@ -72,9 +72,9 @@ export function Mark({ size = 26 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden focusable="false">
       <rect width="32" height="32" rx="8" fill="var(--chrome-3, #242e3a)" />
-      <rect x="7" y="8.5" width="18" height="3.4" rx="1.7" fill="#6ccbe6" />
-      <rect x="7" y="14.3" width="12.5" height="3.4" rx="1.7" fill="#3fa9c8" />
-      <rect x="7" y="20.1" width="7" height="3.4" rx="1.7" fill="#c0e1e9" />
+      <rect x="7" y="8.5" width="18" height="3.4" rx="1.7" fill="var(--mark-a, #6ccbe6)" />
+      <rect x="7" y="14.3" width="12.5" height="3.4" rx="1.7" fill="var(--mark-b, #3fa9c8)" />
+      <rect x="7" y="20.1" width="7" height="3.4" rx="1.7" fill="var(--mark-c, #c0e1e9)" />
     </svg>
   );
 }

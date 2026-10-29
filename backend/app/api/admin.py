@@ -19,6 +19,7 @@ from ..search import any_of
 from ..models import AuditLog, EventLog, GroupingRule, KscSource, ReportJob, User, utcnow
 from ..services import local_admin as la
 from ..services.audit import write_audit
+from ..services.logq import audit_stmt, journal_stmt
 from ..services.settings import GROUPS, SettingsError
 from ..services.sources import source_out
 from .schemas import RuleIn, SourceIn, UserIn, UserPatch
@@ -99,9 +100,14 @@ async def delete_user(user_id: uuid.UUID, su: SessionUser = Depends(require_admi
 async def sources(su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     from ..services.sources import find_overlaps  # noqa: PLC0415
 
+    from ..models import ZcSource  # noqa: PLC0415
+
     rows = (await db.execute(select(KscSource).order_by(KscSource.position, KscSource.name))).scalars().all()
     ov = find_overlaps(list(rows))
-    return {"items": [{**source_out(s, full=True), "overlaps": ov.get(str(s.id), [])} for s in rows]}
+    # фоновое чтение данных (расчёт зон): «проверен» в карточке — только ручная проверка, а ошибку ночного чтения администратор должен видеть здесь же
+    zc = {z.source_id: z for z in (await db.execute(select(ZcSource).where(ZcSource.source_id.in_([s.id for s in rows])))).scalars()}
+    sync = lambda z: None if z is None else {"status": z.status, "built_at": z.built_at, "finished_at": z.finished_at, "error": z.error or None}  # ошибка последней попытки (прежние данные при этом остаются)  # noqa: E731
+    return {"items": [{**source_out(s, full=True), "overlaps": ov.get(str(s.id), []), "sync": sync(zc.get(s.id))} for s in rows]}
 
 
 def _apply_source(src: KscSource, body: SourceIn, svc) -> None:
@@ -295,15 +301,7 @@ async def catalog_rebuild(source_id: uuid.UUID, su: SessionUser = Depends(requir
 @router.get("/audit")
 async def audit(q: str = Query("", max_length=200), action: str = Query("", max_length=80), since: datetime | None = None, until: datetime | None = None,
                 offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    stmt = select(AuditLog)
-    if any_of(q, AuditLog.actor, AuditLog.action, AuditLog.target_id) is not None:
-        stmt = stmt.where(any_of(q, AuditLog.actor, AuditLog.action, AuditLog.target_id))
-    if action:
-        stmt = stmt.where(AuditLog.action.like(f"{action}%"))
-    if since:
-        stmt = stmt.where(AuditLog.at >= since)
-    if until:
-        stmt = stmt.where(AuditLog.at <= until)
+    stmt = audit_stmt(q, action, since, until)
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (await db.execute(stmt.order_by(AuditLog.id.desc()).offset(offset).limit(limit))).scalars().all()
     return {"total": total, "items": [{"id": r.id, "at": r.at, "actor": r.actor, "action": r.action, "target_type": r.target_type, "target_id": r.target_id, "source_id": str(r.source_id) if r.source_id else None,
@@ -315,23 +313,7 @@ async def journal(q: str = Query("", max_length=200), level: str = Query("", pat
                   since: datetime | None = None, until: datetime | None = None,
                   offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     """Журнал событий с фильтрами: период (готовый или произвольный since/until), уровень, компонент (category), текст."""
-    stmt = select(EventLog)
-    if any_of(q, EventLog.message, EventLog.user, EventLog.event, EventLog.source) is not None:
-        stmt = stmt.where(any_of(q, EventLog.message, EventLog.user, EventLog.event, EventLog.source))
-    if level == "warn":
-        stmt = stmt.where(EventLog.level.in_(("warn", "error")))
-    elif level:
-        stmt = stmt.where(EventLog.level == level)
-    if category:
-        stmt = stmt.where(EventLog.category == category)
-    span = {"1h": 1, "24h": 24, "7d": 24 * 7, "30d": 24 * 30}.get(range_)
-    if since or until:
-        if since:
-            stmt = stmt.where(EventLog.at >= since)
-        if until:
-            stmt = stmt.where(EventLog.at <= until)
-    elif span:
-        stmt = stmt.where(EventLog.at >= utcnow() - timedelta(hours=span))
+    stmt = journal_stmt(q, level, category, range_, since, until)
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (await db.execute(stmt.order_by(EventLog.id.desc()).offset(offset).limit(limit))).scalars().all()
     errors24 = (await db.execute(select(func.count()).select_from(EventLog).where(EventLog.level == "error", EventLog.at >= utcnow() - timedelta(hours=24)))).scalar_one()
@@ -340,12 +322,13 @@ async def journal(q: str = Query("", max_length=200), level: str = Query("", pat
 
 
 @router.get("/journal/export.csv")
-async def journal_export(range_: str = Query("24h", alias="range"), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def journal_export(q: str = Query("", max_length=200), level: str = Query("", pattern=r"^(|debug|info|warn|error)$"), category: str = Query("", max_length=24),
+                         range_: str = Query("24h", alias="range"), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """CSV с теми же условиями, что таблица журнала (раньше — только период)."""
     import csv  # noqa: PLC0415
     import io  # noqa: PLC0415
 
-    span = {"1h": 1, "24h": 24, "7d": 24 * 7, "30d": 24 * 30}.get(range_, 24)
-    rows = (await db.execute(select(EventLog).where(EventLog.at >= utcnow() - timedelta(hours=span)).order_by(EventLog.id.desc()).limit(100_000))).scalars().all()
+    rows = (await db.execute(journal_stmt(q, level, category, range_ if range_ in ("1h", "24h", "7d", "30d") else "24h").order_by(EventLog.id.desc()).limit(100_000))).scalars().all()
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
     w.writerow(["Время (UTC)", "Уровень", "Категория", "Событие", "Пользователь", "Источник", "Сообщение", "Длительность, мс", "IP"])

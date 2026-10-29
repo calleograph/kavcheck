@@ -1,3 +1,4 @@
+import { AdminReportButton } from "../../components/QuickReport";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, type ApiError, type OvLicenseGroup, type OvLicenses, type SourceRef } from "../../api";
 import { ConfirmDialog, Modal } from "../../components/Dialogs";
@@ -29,6 +30,7 @@ export default function LicensesAdmin({ sources }: { sources: SourceRef[] }) {
       {toast}
       <div className="card">
         <div className="card-head"><h2>Лицензии Kaspersky</h2><div className="spacer" />
+          <AdminReportButton view="licenses" title="лицензии" />
           <button className="btn" onClick={refresh}><Icon name="refresh" />Прочитать из KSC заново</button>
           <button className="btn primary" onClick={() => setAdd(true)}><Icon name="plus" />Внести вручную</button></div>
         <p className="muted small">Данные читает фоновая служба раз в 6 часов. Лицензионные ключи не хранятся: один и тот же ключ на нескольких KSC узнаётся по отпечатку и считается один раз. Если KSC не отдаёт сведения или определяет их неверно, внесите лимит, использование и срок вручную — запись будет подписана «вручную» и не заменится чтением. Лицензии, которые используются совместно, можно объединить в общий пул.</p>

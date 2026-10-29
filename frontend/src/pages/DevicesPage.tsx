@@ -11,7 +11,7 @@ import { ListFoot, useInfinite, useKept } from "../components/Infinite";
 import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { ZoneField } from "../components/ZoneBits";
-import { OwnerBlock } from "../components/OwnerBlock";
+import { OwnerBlock, OwnerSub } from "../components/OwnerBlock";
 import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import BiPeople from "./people/BiPeople";
 import KscUsers from "./people/KscUsers";
@@ -105,15 +105,15 @@ function DeviceList({ ctx }: { ctx: Ctx }) {
         {list.initial ? <SkelRows cols={7} /> : (
           <table className="table">
             <thead><tr><SortTh k="name" label="Устройство" sort={sort} desc={desc} onSort={onSort} /><SortTh k="ip" label="IP-адрес" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="os" label="ОС" sort={sort} desc={desc} onSort={onSort} className="hide-md" />
-              <th className="hide-md">Группа и зона</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} /><th>Пользователи</th><th className="num hide-sm" title="Пользователи, замеченные в сеансе за 7 суток или появившиеся в списках после начала наблюдений">За 7 сут</th>
+              <th className="hide-md">Группа и зона</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><th className="users-col">Пользователи</th><th className="num hide-sm" title="Пользователи, замеченные в сеансе за 7 суток или появившиеся в списках после начала наблюдений">За 7 сут</th>
               <SortTh k="eol" label="EOL (крит.)" sort={sort} desc={desc} onSort={onSort} className="num" />{multi && <th className="hide-sm">Источник</th>}</tr></thead>
             <tbody>
               {list.items.map((d) => (
                 <tr key={`${d.source_id}:${d.host_id}`} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button")) setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; }); }}>
-                  <td><button type="button" className="link-btn strong-link" onClick={() => setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; })}>{d.name}</button>{!d.active && <span className="badge">не активно</span>}</td>
+                  <td><button type="button" className="link-btn strong-link nowrap" onClick={() => setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; })}>{d.name}</button>{!d.active && <span className="badge">не активно</span>}<OwnerSub o={d.owner} /></td>
                   <td className="mono small nowrap hide-sm">{d.ip || "—"}</td><td className="small hide-md">{d.os || "—"}</td>
                   <td className="small hide-md">{d.group || "—"}<span className="sub"><CompactList items={d.zones} label="зоны" /></span></td>
-                  <td className="nowrap small">{fmt(d.last_connected)}</td>
+                  <td className="nowrap small hide-sm">{fmt(d.last_connected)}</td>
                   <td className="small users-cell">
                     {d.current.length > 0 && <span className="block"><span className="muted">сейчас: </span><CompactList items={d.current} label="вошедшие сейчас" render={(u) => <UserChip u={u} />} /></span>}
                     {d.current.length === 0 && d.last_user && <span className="block"><span className="muted">последний замеченный: </span><UserChip u={d.last_user} />{d.last_user.last_session_at && <span className="sub small">наблюдение {fmt(d.last_user.last_session_at)}</span>}</span>}

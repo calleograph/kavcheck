@@ -117,8 +117,12 @@ def write_pdf(path: Path, doc: dict) -> None:
             return out + [Paragraph("Нет данных.", base)]
         weights = []
         for c in cols:
-            sample = [len(str(r.get(c["key"]) or "")) for r in data[:40]]
-            weights.append(min(40, max(7, len(c["title"]) * 0.95, (sum(sample) / max(1, len(sample))) * 1.0, max(sample or [0]) * 0.35)))
+            sample = [len(_t(r.get(c["key"]), c["type"])) for r in data[:60]]
+            avg, mx = (sum(sample) / max(1, len(sample))), max(sample or [0])
+            w = max(6, avg * 1.1, mx * 0.45, min(len(c["title"]), 16) * 0.7)          # ширина — по значениям; заголовок переносится по словам
+            if c["type"] in ("mono", "date", "num"):
+                w = max(w, min(mx, 24) * 1.05)                                        # IP, версии, даты и числа не переносятся внутри значения
+            weights.append(min(42, w))
         k = avail / sum(weights)
         cells = [[Paragraph(_t(c["title"], cap=80), th) for c in cols]]
         for r in data:

@@ -30,6 +30,10 @@ DISCLAIMER = "Отсутствие совпадения при сетевом с
 async def build_hunt(client: SourceClient | None, p: dict, ctx: Ctx) -> dict:
     if ctx.sm is None:
         raise KscError("params", "Отчёт недоступен: нет доступа к локальной базе")
+    if p.get("view") == "jobs":
+        from .quick_pentest import jobs_doc  # noqa: PLC0415
+
+        return await jobs_doc(p, ctx, hunt=True)
     try:
         job_id = uuid.UUID(str(p.get("job_id")))
     except ValueError:

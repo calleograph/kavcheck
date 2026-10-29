@@ -11,7 +11,7 @@ import { FilterBar, ReportButton } from "../components/FilterBar";
 import { OwnerBlock } from "../components/OwnerBlock";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { maskMatcher } from "../mask";
-import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
+import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint, BackLink } from "../components/ui";
 import { EventList, type EvFilter } from "./EventsPage";
 import { ProblemBadges } from "./ProtectionPage";
 import { fmt, fmtDate, num } from "../util";
@@ -124,7 +124,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   const [filter, setFilter] = useState("");
   useEffect(() => { if (!ctx.current || !hostId) return; api.hosts.one(Number(hostId)).then((r) => { setD(r); setErr(""); }).catch((e) => setErr((e as ApiError).message)); }, [ctx.current, hostId]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
-  const back = <Link className="back-link" to="/hosts"><Icon name="arrowL" size={15} />Компьютеры</Link>;
+  const back = <BackLink to="/hosts" label="Компьютеры" />;
   if (err) return <section><PageHead title="Компьютер" back={back} />
     {/не найден/i.test(err) ? <div className="card"><Empty icon="monitor" title="Компьютер не найден" action={<Link className="btn" to="/hosts">К списку компьютеров</Link>}>Он удалён из KSC или относится к другому источнику — проверьте источник в верхней панели.</Empty></div>
       : <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}</section>;

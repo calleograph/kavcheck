@@ -140,6 +140,8 @@ class CatalogScheduler:
             return None
         if st.requested_at and st.requested_at > (st.started_at or st.built_at):
             return "запрошено пользователем"
+        if st.error and st.started_at and now - st.started_at < RETRY_FAILED:
+            return None                                             # обновление готового каталога не удалось: следующая попытка через RETRY_FAILED, а не каждые 30 с
         if st.activity_days != activity_days:
             return "изменён порог активности"
         if st.overrides_rev != rev:
@@ -170,7 +172,7 @@ class CatalogScheduler:
         if lease is None:
             return
         started = time.perf_counter()
-        status, error = "success", None
+        status, error, name = "success", None, ""
         try:
             async with self._sm() as db:
                 src = await db.get(KscSource, source_id)
@@ -226,7 +228,7 @@ class CatalogScheduler:
                     st.started_at = utcnow()          # не повторять сразу: следующая попытка — по расписанию
                     st.error = f"Последнее обновление не удалось: {msg}"
                 await db.commit()
-            await self._journal.emit("catalog", "catalog_failed", level="error", message=f"Каталог не построен: {msg}", data={"source_id": str(source_id)})
+            await self._journal.emit("catalog", "catalog_failed", level="error", source=name or None, message=f"Каталог не построен: {msg}", data={"source_id": str(source_id)})
         finally:
             await lease.finish(status, error)
 

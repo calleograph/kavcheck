@@ -248,6 +248,25 @@ async def test_overview_api_counts_periods_and_trend(client, app, monkeypatch):
     assert len(rows) == 1 and rows[0].data["a30"] == 6                                # срез дня для графика динамики записан один раз в сутки
 
 
+async def test_repeated_overview_reuses_snapshot_and_summary(client, app, monkeypatch):
+    """Повторное открытие главной на тех же записях защиты не пересчитывает срез дня и сводку (на 20 тыс. компьютеров это секунды на каждый запрос)."""
+    await _setup(client, app, monkeypatch)
+    from app.overview import snapshots as SN
+    calls = {"payload": 0, "summarize": 0}
+
+    def count(name, f):
+        def w(*a, **k):
+            calls[name] += 1
+            return f(*a, **k)
+        return w
+    monkeypatch.setattr(SN, "payload", count("payload", SN.payload))
+    monkeypatch.setattr(C, "summarize", count("summarize", C.summarize))
+    first = (await client.get("/api/v1/overview", params={"days": 30})).json()
+    after_first = dict(calls)
+    again = (await client.get("/api/v1/overview", params={"days": 30})).json()
+    assert after_first["payload"] == 1 and calls == after_first and first["totals"] == again["totals"]
+
+
 async def test_overview_hosts_panel_matches_counts_and_paginates(client, app, monkeypatch):
     await _setup(client, app, monkeypatch)
     r = (await client.get("/api/v1/overview/hosts", params={"metric": "active", "days": 30, "limit": 3, "sort": "name"})).json()

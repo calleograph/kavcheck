@@ -1,3 +1,4 @@
+import { AdminReportButton } from "../../components/QuickReport";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { api, type AdminUser, type ApiError } from "../../api";
 import type { Ctx } from "../../App";
@@ -87,6 +88,7 @@ export default function UsersAdmin({ ctx }: { ctx: Ctx }) {
     <>
       <div className="toolbar">
         <div className="input-icon grow"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя или логин" aria-label="Поиск пользователя" /><MaskHint /></div>
+        <AdminReportButton view="users" title="пользователи" params={{ q }} />
         <button className="btn primary" onClick={() => { setErr(""); setEdit({ isNew: true, username: "", display_name: "", role: "viewer", is_active: true, all_sources: true, source_ids: [], must_change_password: true }); }}><Icon name="plus" />Локальный пользователь</button>
         <p className="note">Доменные пользователи появляются после первого входа; их роль и источники задают правила групп в разделе LDAPS. Права ролей и политика второго фактора — ниже.</p>
       </div>

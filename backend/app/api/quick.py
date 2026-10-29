@@ -27,7 +27,7 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_admin)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
@@ -48,7 +48,7 @@ async def maybe_source(request: Request, su: SessionUser = Depends(require_user)
 
 @router.post("/preview")
 async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depends(require_user), src: KscSource | None = Depends(maybe_source), db: AsyncSession = Depends(get_db)):
-    if src is None and body.kind not in ("quick_pentest", "quick_hunt", "quick_bi"):
+    if src is None and body.kind not in quick.NO_KSC:
         raise HTTPException(status_code=409, detail={"code": "no_source", "message": "Источник KSC не выбран."})
     if body.kind == "version_audit":
         try:
@@ -83,6 +83,8 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         try:
             params = QUICK_PARAMS[body.kind].model_validate(body.params).model_dump()
             ids = [uuid.UUID(x) for x in body.source_ids] or [src.id]
+            if body.kind == "quick_devices":
+                params["pd"] = su.role in ("analyst", "admin")             # сотрудник по BI — не для роли «Просмотр» (как на странице)
         except (ValidationError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)[:300]) from None
         for sid in ids:
@@ -101,6 +103,21 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
             raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
         general = await request.app.state.settings_svc.get(db, "general")
         ctx = quick.Ctx(source_name="BI", activity_days=int(general.activity_days), sm=request.app.state.session_maker)
+        try:
+            doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
+        except KscError as exc:
+            raise HTTPException(status_code=422, detail=exc.message) from None
+        return _answer(doc, ctx.now)
+    if body.kind == "quick_admin":                     # таблицы администрирования: только администратор, внутренняя база
+        if not su.is_admin:
+            raise HTTPException(status_code=403, detail="Отчёты администрирования доступны администратору")
+        try:
+            params = QUICK_PARAMS[body.kind].model_validate(body.params).model_dump()
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
+        general = await request.app.state.settings_svc.get(db, "general")
+        rcfg = await request.app.state.settings_svc.get(db, "reports")
+        ctx = quick.Ctx(source_name="KAV Checker", activity_days=int(general.activity_days), sm=request.app.state.session_maker, settings=request.app.state.settings, max_rows=rcfg.max_rows)
         try:
             doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
         except KscError as exc:

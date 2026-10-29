@@ -199,7 +199,7 @@ async def test_ksc_only_mode_enriches_with_zone_user_and_data_age(client, app, m
         return ksc_rows(), {"fetched_at": utcnow() - timedelta(days=2)}
     monkeypatch.setattr(K, "inventory", inv)
     await login(client, "admin", "Admin-Passw0rd-123")
-    j = await create(client, mode="ksc", scope={"kind": "sources", "sources": [str(sid)]})
+    j = await create(client, mode="ksc", scope={"kind": "sources", "sources": [str(sid)]}, confirm_scope=False)      # без сети адреса не сканируются — подтверждение не требуется
     assert j["status"] == "done" and j["findings_n"] == 1 and j["stage"] == "report"                         # сети нет: задание завершено сразу
     r = (await client.get(f"/api/v1/hunt/jobs/{j['id']}/results")).json()["items"][0]
     assert (r["host_name"], r["zone"], r["user"], r["user_kind"], r["basis"], r["status"], r["version"], r["ip"]) == ("srv-web-01", "Веб-сервисы", "ivanov", "последний замеченный", "ksc", "probable", "8.1.12", "192.0.2.10")
@@ -371,3 +371,21 @@ async def test_report_all_formats_and_empty_result(client, app, fake):  # noqa: 
     h2 = (await client.get(f"/api/v1/reports/{empty}/download/html")).text
     assert "затронутых компьютеров не найдено" in h2
     assert (await client.post("/api/v1/quick/preview", json={"kind": "quick_hunt", "params": {"job_id": str(uuid.uuid4())}, "source_ids": []})).status_code == 422
+
+
+async def test_product_criterion_searches_catalog_registry_names(app):
+    """«OpenSSL» в каталоге — это и записи реестра libssl3, libssl1.1: поиск KSC идёт по ним во всех источниках (иначе подсказка обещает компьютеры, а поиск их не находит)."""
+    from app.hunt import criteria as HC
+    from app.models import CatalogProduct, KscSource
+
+    async with app.state.session_maker() as db:
+        a, b = KscSource(name="A", host="a.example.local", database="K", username="u", password_enc="x"), KscSource(name="B", host="b.example.local", database="K", username="u", password_enc="x")
+        db.add_all([a, b])
+        await db.flush()
+        db.add_all([CatalogProduct(source_id=a.id, key="openssl", name="OpenSSL", names=[["libssl3", 5], ["libssl1.1", 2]]),
+                    CatalogProduct(source_id=b.id, key="openssl", name="OpenSSL", names=[["openssl", 1], ["libssl3", 9]])])
+        await db.commit()
+        picked = await HC.resolve_product(db, {"source_id": a.id, "product_key": "openssl"})
+        typed = await HC.resolve_product(db, {"name": "openssl"})
+    assert {"OpenSSL", "libssl3", "libssl1.1", "openssl"} <= set(picked["catalog"])
+    assert {"libssl3", "openssl"} <= set(typed["catalog"])                                       # название без выбора из списка — тоже через каталог

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -43,6 +44,25 @@ def _sanitize(exc: BaseException) -> str:
     return text[:300]
 
 
+# ошибки FreeTDS → понятная причина и следующее действие; исходный текст остаётся в скобках для администратора
+_CAUSES = (
+    (("timed out", "20003"), "сервер {where} не ответил за {t} с: проверьте, что SQL Server запущен, порт открыт и сетевой экран пропускает подключение"),
+    (("Name or service not known", "Unknown host", "nodename nor servname"), "имя сервера {host} не найдено в DNS: проверьте адрес в настройках источника"),
+    (("Connection refused",), "сервер {where} отклонил подключение: SQL Server не слушает этот порт"),
+    (("4060", "Cannot open database"), "база «{db}» недоступна этой учётной записи: проверьте имя базы и права на чтение"),
+    (("SSL", "TLS", "certificate"), "не удалось согласовать шифрование TLS с {where}: проверьте режим шифрования в настройках источника"),
+    (("Unable to connect", "20009", "unavailable or does not exist"), "не удалось установить соединение с {where}: сервер не найден или порт закрыт"),
+)
+
+
+def explain(msg: str, p: ConnParams) -> str:
+    raw = " ".join(re.sub(r"\\n|\(\d+, b'|'\)|b'", " ", msg).split())[:200]       # «(20002, b'DB-Lib …\\n…')» → читаемый текст
+    for keys, text in _CAUSES:
+        if any(k in msg for k in keys):
+            return text.format(where=f"{p.host}:{p.port}", host=p.host, db=p.database, t=p.connect_timeout_s) + f" (техническая причина: {raw})"
+    return msg
+
+
 def connect(p: ConnParams):
     import pymssql  # noqa: PLC0415
 
@@ -60,7 +80,7 @@ def connect(p: ConnParams):
     except pymssql.OperationalError as exc:
         msg = _sanitize(exc)
         code = "auth" if "Login failed" in msg or "18456" in msg else "connect"
-        raise KscError(code, "Вход на SQL Server отклонён: проверьте имя пользователя и пароль" if code == "auth" else f"SQL Server недоступен: {msg}") from None
+        raise KscError(code, "Вход на SQL Server отклонён: проверьте имя пользователя и пароль" if code == "auth" else f"SQL Server недоступен: {explain(msg, p)}") from None
     except Exception as exc:  # noqa: BLE001
         raise KscError("connect", f"Не удалось подключиться: {type(exc).__name__}: {_sanitize(exc)}") from None
     cur = conn.cursor()

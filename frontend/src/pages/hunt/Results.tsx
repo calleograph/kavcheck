@@ -54,8 +54,8 @@ export default function Results({ jobId, canReport, admin, activityDays, current
         {job.error && <div className="alert error"><Icon name="alert" /><div className="alert-body">{job.error}</div></div>}
         {job.status === "partial" && <div className="alert warn"><Icon name="alert" /><div className="alert-body"><b>Задание завершено частично</b>: не удалось проверить адресов — {num(job.errors_n)}, неполных проверок — {num(job.incomplete_n)}. Результаты по остальным компьютерам сохранены.
           {job.diag?.reasons?.length > 0 && <ul className="pt-reasons">{job.diag.reasons.map((r, i) => <li key={i}>{r.text}</li>)}</ul>}</div></div>}
-        <ul className="hunt-crit">{job.hunt.criteria.map((c) => <li key={c.key}><b>{c.title}</b><span className="sub small">{c.condition}</span>{c.warnings.slice(0, 2).map((w) => <span key={w} className="sub small muted">{w}</span>)}</li>)}</ul>
-        <p className="muted small">Проверено адресов: {num(job.hosts_done)} из {num(job.targets_n)}{job.hunt.ports.length ? ` · TCP-порты: ${job.hunt.ports.join(", ")}` : ""}. Отсутствие совпадения при сетевой проверке не доказывает отсутствие программы: продукт может не раскрывать версию или не иметь открытого порта.</p>
+        <ul className="hunt-crit">{job.hunt.criteria.map((c) => <li key={c.key}><b>{c.title}</b><span className="sub small">{c.condition}</span>{c.warnings.filter((w) => job.hunt.mode !== "ksc" || !/сетев/.test(w)).slice(0, 2).map((w) => <span key={w} className="sub small muted">{w}</span>)}</li>)}</ul>
+        {job.hunt.mode === "ksc" ? <p className="muted small">Только сведения KSC о программах, без сетевой проверки: устройства без Агента администрирования или с устаревшей инвентаризацией сюда не попадают.</p> : <p className="muted small">Проверено адресов: {num(job.hosts_done)} из {num(job.targets_n)}{job.hunt.ports.length ? ` · TCP-порты: ${job.hunt.ports.join(", ")}` : ""}. Отсутствие совпадения при сетевой проверке не доказывает отсутствие программы: продукт может не раскрывать версию или не иметь открытого порта.</p>}
       </section>
       <RunConsole job={job} admin={admin} />
       {cmp && <section className="card"><h2>Сравнение с предыдущей проверкой</h2>
@@ -77,12 +77,12 @@ export default function Results({ jobId, canReport, admin, activityDays, current
           <table className="table compact hunt-table"><thead><tr>{COLS.filter(([k]) => cols.has(k)).map(([k, l]) => (k === "basis" ? <th key={k}>{l}</th> : <SortTh key={k} k={k} label={l} sort={sort} desc={desc} onSort={sortBy} />))}</tr></thead>
             <tbody>{list.items.map((r) => (
               <tr key={r.id} className="clickable" tabIndex={0} onClick={() => setOpen(r)} onKeyDown={(e) => { if (e.key === "Enter") setOpen(r); }}>
-                {cols.has("host") && <td><b>{r.host_name || <span className="muted">{r.ip ? "нет в KSC" : "—"}</span>}</b>{r.ambiguous && <span className="badge" title="Адрес совпал с несколькими устройствами KSC">неоднозначно</span>}</td>}
+                {cols.has("host") && <td><b className="nowrap">{r.host_name || <span className="muted">{r.ip ? "нет в KSC" : "—"}</span>}</b>{r.ambiguous && <span className="badge" title="Адрес совпал с несколькими устройствами KSC">неоднозначно</span>}</td>}
                 {cols.has("user") && <td className={r.user === "Не определён" ? "muted" : ""}>{r.user}</td>}
                 {cols.has("zone") && <td className={r.zone === "Не назначена" ? "muted" : ""}>{r.zone}</td>}
                 {cols.has("ip") && <td className="mono small nowrap">{r.ip}{r.port ? `:${r.port}` : ""}</td>}
                 {cols.has("product") && <td>{r.product || "—"}{r.vuln_key && job.hunt.criteria.length > 1 && <span className="sub mono small">{r.vuln_key}</span>}</td>}
-                {cols.has("version") && <td className="mono small">{r.version || "не определена"}{r.diff && <span className="badge warn" title="Версии в KSC и по сети различаются">различие</span>}</td>}
+                {cols.has("version") && <td className="mono small"><span className="nowrap">{r.version || "не определена"}</span>{r.diff && <span className="badge warn" title="Версии в KSC и по сети различаются">различие</span>}</td>}
                 {cols.has("status") && <td><span className={`badge ${ST_TONE[r.status]}`}>{r.status_ru}</span></td>}
                 {cols.has("basis") && <td className="small">{r.basis_ru}<span className="sub">{r.evidence_short}</span></td>}</tr>))}
               {!list.items.length && !list.loading && <tr><td colSpan={cols.size}><Empty icon="checkCircle" title={running ? "Ожидаем результаты…" : "Совпадений нет"}>{running ? "Совпадения появляются по мере проверки." : "По выбранным критериям и фильтрам затронутых компьютеров не найдено. Это не доказывает отсутствие программы."}</Empty></td></tr>}

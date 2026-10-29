@@ -1,3 +1,4 @@
+import { AdminReportButton } from "../../components/QuickReport";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type ApiError, type BiImport, type BiOptions, type BiPreview, type BiProfile, type BiSourceInfo, type DiagResult } from "../../api";
 import { SecretInput, StageList, secretToSend } from "../../components/Common";
@@ -219,6 +220,7 @@ function ImportLog({ src, onClose }: { src: BiSourceInfo; onClose: () => void })
   useEffect(() => { api.bi.imports(src.id).then((r) => setItems(r.items)).catch((e) => setErr((e as ApiError).message)); }, [src.id]);
   return (
     <Modal side wide title={`Журнал импортов: ${src.name}`} onClose={onClose} lede="Каждое получение файла: контрольная сумма, счётчики, предупреждения и отклонённые строки">
+      {items && items.length > 0 && <div className="toolbar"><div className="spacer" /><AdminReportButton view="bi_imports" title={`журнал импортов «${src.name}»`} params={{ source_id: src.id }} className="btn mini" /></div>}
       {err && <div className="alert error"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       {!items && !err && <SkelRows rows={5} cols={5} />}
       {items && !items.length && <Empty icon="journal" title="Импортов ещё не было">Запустите импорт или загрузите файл.</Empty>}

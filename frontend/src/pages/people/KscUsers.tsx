@@ -6,6 +6,7 @@ import { FilterBar } from "../../components/FilterBar";
 import { Icon } from "../../components/Icons";
 import { ListFoot, useInfinite, useKept } from "../../components/Infinite";
 import { personLink } from "../../components/OwnerBlock";
+import { QuickReportPanel } from "../../components/QuickReport";
 import { Empty, SkelRows } from "../../components/ui";
 import { fmt, num } from "../../util";
 
@@ -15,11 +16,16 @@ export default function KscUsers({ ctx }: { ctx: Ctx }) {
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 350); return () => window.clearTimeout(t); }, [q]);
   const list = useInfinite<KscUserRow>(`ku:${ctx.current?.id}:${ctx.all}`, [applied, all], (offset, limit) => api.bi.kscUsers({ q: applied, all_os: all || undefined, offset, limit }), 50);
   const note = (list.extra as { note?: string } | null)?.note;
+  const [report, setReport] = useState(false);
+  const canReport = ctx.me.user.role !== "viewer";
   return (<>
     <FilterBar search={{ value: q, onChange: setQ, placeholder: "Логин, домен или имя компьютера", label: "Поиск пользователей KSC" }}
       more={<label className="check"><input type="checkbox" className="switch" checked={all} onChange={(e) => setAll(e.target.checked)} />Учитывать все ОС (не только Windows)</label>}
       moreActive={all ? 1 : 0} chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(all ? [{ id: "all", label: "Все ОС", onRemove: () => setAll(false) }] : [])]}
-      onReset={() => { setQ(""); setAll(false); }} count={{ n: list.initial ? null : list.total, noun: ["учётная запись", "учётные записи", "учётных записей"] }} onRefresh={() => list.reload()} refreshing={list.refreshing} />
+      onReset={() => { setQ(""); setAll(false); }} count={{ n: list.initial ? null : list.total, noun: ["учётная запись", "учётные записи", "учётных записей"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
+      report={canReport ? { onClick: () => setReport(true), disabled: list.initial || !list.total } : null} />
+    {report && <QuickReportPanel kind="quick_devices" title="Отчёт: пользователи KSC" lede="Все учётные записи по условиям страницы, с полными списками компьютеров" options={{ scope: false }}
+      params={{ view: "users", q: applied || undefined, all_os: all || undefined }} sourceIds={ctx.all ? ctx.sources.map((s) => s.id) : []} activityDays={ctx.me.activity_days} canReport onClose={() => setReport(false)} />}
     {note && <p className="muted small fbar-note">{note}</p>}
     {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
     <div className="table-scroll">

@@ -59,6 +59,8 @@ class MeOut(BaseModel):
     totp_enabled: bool = False
     second_factor: str | None = None
     secure_cookie: bool = False
+    theme: str | None = None                                            # личный выбор; None — действует default_theme
+    default_theme: str = "night"
 
 
 class SourceIn(BaseModel):
@@ -326,6 +328,9 @@ class QuickDevices(Params):
     include_inactive: bool = False
     show_service: bool = False
     source_id: str = Field(default="", max_length=40)
+    view: Literal["devices", "users"] = "devices"                       # users — вкладка «Пользователи KSC»
+    all_os: bool = False
+    pd: bool = True                                                     # сотрудник по BI в отчёте; для роли «Просмотр» сервер выставляет False
 
 
 class QuickBi(Params):
@@ -340,9 +345,25 @@ class QuickBi(Params):
     device_id: int | None = None
 
 
+class QuickAdmin(Params):
+    """Таблицы администрирования: вид и фильтры страницы (журнал событий — текст, уровень, компонент, период; журнал действий — текст, действие, период; компоненты — статус; импорт BI — источник)."""
+    view: str = Field(default="journal", pattern=r"^(licenses|journal|audit|users|components|bi_imports)$")
+    q: str = Field(default="", max_length=200)
+    level: str = Field(default="", pattern=r"^(|debug|info|warn|error)$")
+    category: str = Field(default="", max_length=24)
+    range: str = Field(default="", pattern=r"^(|1h|24h|7d|30d)$")
+    action: str = Field(default="", max_length=80)
+    status: str = Field(default="", max_length=24)
+    source_id: str = Field(default="", max_length=40)
+    since: str = Field(default="", max_length=40)                       # произвольный период журнала событий (ISO 8601)
+    until: str = Field(default="", max_length=40)
+
+
 class QuickHunt(Params):
     """Целевой поиск (CVE Hunt): задание, статусы (по умолчанию подтверждено и вероятно), поиск и зона; coverage — добавить журнал охвата."""
     job_id: str = Field(default="", max_length=40)
+    view: Literal["results", "jobs"] = "results"                        # jobs — история заданий
+    status: str = Field(default="", max_length=120)
     statuses: list[str] = Field(default_factory=lambda: ["confirmed", "probable"], max_length=3)
     q: str = Field(default="", max_length=200)
     zone: str = Field(default="", max_length=120)
@@ -355,8 +376,10 @@ class QuickHunt(Params):
 
 
 class QuickPentest(Params):
-    """Результаты Pentest: задание и условия страницы результатов (выбранные адреса, поиск, адрес, порт, сервис, опасность, уверенность, CVE)."""
+    """Результаты Pentest: задание и условия страницы результатов (выбранные адреса, поиск, адрес, порт, сервис, опасность, уверенность, CVE); view=jobs — список заданий."""
     job_id: str = Field(default="", max_length=40)
+    view: Literal["results", "jobs"] = "results"
+    status: str = Field(default="", max_length=120)
     ips: list[str] = Field(default_factory=list, max_length=2000)
     q: str = Field(default="", max_length=200)
     ip: str = Field(default="", max_length=200)
@@ -385,11 +408,11 @@ class QuickOverview(Params):
     source_id: str = Field(default="", max_length=40)
 
 
-QUICK_PARAMS = {"quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
+QUICK_PARAMS = {"quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
 
 
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_admin)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
@@ -421,7 +444,7 @@ class OverrideIn(BaseModel):
 
 class TemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_admin)$")
     params: dict
     shared: bool = True
 

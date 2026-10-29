@@ -302,3 +302,15 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
     </Modal>
   );
 }
+
+/** «Сформировать отчёт» для таблиц администрирования: вид quick_admin с условиями текущей вкладки (журналы, пользователи, лицензии, компоненты, импорт BI). */
+export function AdminReportButton({ view, params = {}, title, className = "btn" }: { view: string; params?: Record<string, unknown>; title: string; className?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className={className} onClick={() => setOpen(true)}><Icon name="file" size={15} />Сформировать отчёт</button>
+      {open && <QuickReportPanel kind="quick_admin" title={`Отчёт: ${title}`} lede="Отчёт строится по условиям этой страницы, по всем подходящим записям" options={{ scope: false }}
+        params={{ view, ...params }} activityDays={0} canReport onClose={() => setOpen(false)} />}
+    </>
+  );
+}

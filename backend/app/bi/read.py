@@ -331,7 +331,7 @@ async def match_list(db: AsyncSession, *, level: str = "", q: str = "", source_i
     return {"total": total, "items": items, "counts": counts}
 
 
-async def ksc_users(db: AsyncSession, sids: list[uuid.UUID], *, q: str = "", all_os: bool = False, offset: int = 0, limit: int = 50) -> dict:
+async def ksc_users(db: AsyncSession, sids: list[uuid.UUID], *, q: str = "", all_os: bool = False, offset: int = 0, limit: int = 50, names_max: int | None = 3) -> dict:
     """Пользователи KSC: учётные записи из списков вошедших (накопленные наблюдения), с числом компьютеров. По умолчанию — только Windows-компьютеры:
     для Linux KSC обычно не передаёт пользователей, фиктивные записи не создаются."""
     U, H = DeviceUser, ZcHost
@@ -351,7 +351,7 @@ async def ksc_users(db: AsyncSession, sids: list[uuid.UUID], *, q: str = "", all
         logins = [r.login for r in rows]
         hq = (select(func.lower(U.login), H.name).select_from(j).where(*w, func.lower(U.login).in_(logins)).order_by(U.last_session_at.desc().nulls_last()))
         for login, hn in (await db.execute(hq)).all():
-            if len(names[login]) < 3 and hn not in names[login]:
+            if (names_max is None or len(names[login]) < names_max) and hn not in names[login]:          # отчёт — полный список компьютеров
                 names[login].append(hn)
     bi_by = {}
     if rows:

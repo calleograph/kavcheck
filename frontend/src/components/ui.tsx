@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { num, plural } from "../util";
 import { Icon, type IconName } from "./Icons";
 
@@ -195,5 +196,27 @@ export function MaskHint() {
         <p className="muted small">Без звёздочки ищется часть строки. Работает во всех полях поиска и фильтрах.</p>
       </div>}
     </span>
+  );
+}
+
+/** «Назад» в карточке: к месту, откуда пришли (главная, панель, поиск — с фильтрами и открытой панелью); открытая по внешней ссылке карточка ведёт к списку раздела. */
+export function BackLink({ to, label }: { to: string; label: string }) {
+  const nav = useNavigate();
+  const inApp = useLocation().key !== "default";
+  return <Link className="back-link" to={to} title={inApp ? "Вернуться туда, откуда открыта карточка" : undefined}
+    onClick={(e) => { if (inApp && e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); nav(-1); } }}><Icon name="arrowL" size={15} />{inApp ? "Назад" : label}</Link>;
+}
+
+/** Выбор нескольких значений метками-флажками (вместо select multiple: выбор без Ctrl, видны все варианты, удобно пальцем). */
+export function MultiCheck({ label, options, value, onChange }: { label: string; options: { id: string; name: string }[]; value: string[]; onChange: (v: string[]) => void }) {
+  const all = options.length > 1 && options.every((o) => value.includes(o.id));
+  return (
+    <fieldset className="mchk"><legend>{label}</legend>
+      <div className="mchk-list">
+        {options.length > 1 && <button type="button" className="link-btn small" onClick={() => onChange(all ? [] : options.map((o) => o.id))}>{all ? "снять все" : "все"}</button>}
+        {options.map((o) => <label key={o.id} className={`mchk-i ${value.includes(o.id) ? "on" : ""}`}>
+          <input type="checkbox" checked={value.includes(o.id)} onChange={(e) => onChange(e.target.checked ? [...value, o.id] : value.filter((x) => x !== o.id))} />{o.name}</label>)}
+      </div>
+    </fieldset>
   );
 }

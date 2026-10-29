@@ -27,6 +27,36 @@ def who(u: dict) -> str:
     return name + (" (служебная)" if u.get("kind") == "service" else " (системная)" if u.get("kind") == "system" else "")
 
 
+UCOLS = [col("login", "Учётная запись"), col("domain", "Домен"), col("hosts", "Компьютеров", "num"), col("host_names", "Компьютеры"), col("last_session_at", "Последний сеанс (UTC)", "date"),
+         col("now", "В сеансе сейчас"), col("bi", "Сотрудник по BI")]
+
+
+async def _users(sids: list, names: dict, p: dict, ctx: Ctx) -> dict:
+    from ..bi.read import ksc_users  # noqa: PLC0415
+
+    rows: list[dict] = []
+    async with ctx.sm() as db:
+        while True:
+            page = await ksc_users(db, sids, q=p.get("q") or "", all_os=bool(p.get("all_os")), offset=len(rows), limit=PAGE, names_max=None)
+            rows += [{"login": u["login"], "domain": u["domain"] or "", "hosts": u["hosts"], "host_names": "; ".join(u["host_names"]), "last_session_at": u["last_session_at"], "now": "да" if u["now"] else "",
+                      "bi": (f"{u['bi_person']['name']} ({u['bi_person']['department']})" if u["bi_person"]["department"] else u["bi_person"]["name"]) if u["bi_person"] and p.get("pd", True) else ""}
+                     for u in page["items"]]
+            ctx.progress(f"учётных записей: {len(rows)}")
+            if len(rows) > ctx.max_rows:
+                raise KscError("too_many_rows", f"Учётных записей больше предела отчёта ({ctx.max_rows}): сузьте условия")
+            if len(page["items"]) < PAGE:
+                break
+    cols = UCOLS if p.get("pd", True) else UCOLS[:-1]
+    cond = [{"label": "Источники", "text": ", ".join(names.get(s, "?") for s in sids)}, {"label": "Компьютеры", "text": "все ОС" if p.get("all_os") else "только Windows"}]
+    if p.get("q"):
+        cond.append({"label": "Поиск", "text": f"«{p['q']}»"})
+    return {"title": "Пользователи KSC", "subtitle": "Учётные записи из списков вошедших KSC и компьютеры, на которых они работали", "conditions": cond, "severity": None,
+            "metrics": [metric("users", "Учётных записей", len(rows)), metric("now", "В сеансе сейчас", sum(1 for r in rows if r["now"])),
+                        *([metric("bi", "Сопоставлено с сотрудником BI", sum(1 for r in rows if r["bi"]), "по почте сотрудника")] if p.get("pd", True) else [])],
+            "notes": [page.get("note") or "", "KSC не хранит даты входа: «последний сеанс» — по наблюдениям KAV Checker. Списки компьютеров полные, без сокращений «+N»."],
+            "tables": [{"id": "devices", "title": "Учётные записи", "columns": cols, "rows": rows}]}
+
+
 async def build_devices(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     if ctx.sm is None or not (ctx.source_ids or ctx.source_id):
         raise KscError("params", "Отчёт по устройствам недоступен: нет доступа к локальной базе")
@@ -37,6 +67,10 @@ async def build_devices(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         except ValueError:
             raise KscError("params", "Неверный источник") from None
         sids = [one] if one in sids else sids
+    if p.get("view") == "users":
+        async with ctx.sm() as db:
+            names = {s.id: s.name for s in (await db.execute(select(KscSource).where(KscSource.id.in_(sids)))).scalars()}
+        return await _users(sids, names, p, ctx)
     rows: list[dict] = []
     async with ctx.sm() as db:
         names = {s.id: s.name for s in (await db.execute(select(KscSource).where(KscSource.id.in_(sids)))).scalars()}

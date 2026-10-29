@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type ApiError, type HuntCriterion, type HuntPreview, type HuntProductIn, type HuntScopeIn } from "../../api";
 import { Icon } from "../../components/Icons";
-import { Segmented } from "../../components/ui";
+import { MultiCheck, Segmented } from "../../components/ui";
 import { num } from "../../util";
 
 export type Prefill = { cves: string[]; product?: Partial<HuntProductIn> };
@@ -68,8 +68,11 @@ export default function Wizard({ prefill, onCreated }: { prefill: Prefill; onCre
           {(sug || typedCve) && (
             <ul id="hunt-sug" className="hunt-sug" role="listbox">
               {typedCve && !sug?.cves.some((c) => c.id === typedCve) && <li role="option"><button type="button" onClick={() => addCve(typedCve)}><b className="mono">{typedCve}</b> <span className="muted">добавить</span></button></li>}
-              {sug?.cves.map((c) => <li role="option" key={c.id}><button type="button" onClick={() => addCve(c.id)}><b className="mono">{c.id}</b>{c.exploited && <span className="badge err">эксплуатируется</span>} <span className="muted">{c.title}</span></button></li>)}
-              {sug?.products.map((p) => <li role="option" key={`${p.source_id}:${p.product_key}:${p.name}`}><button type="button" onClick={() => addProduct(p)}><Icon name="package" size={14} /> <b>{p.name}</b> <span className="muted">{p.hosts != null ? `компьютеров в KSC: ${num(p.hosts)}` : "известный продукт"}</span></button></li>)}
+              {(() => {      // название продукта — сначала продукты KSC, идентификатор CVE — сначала уязвимости
+                const cvesEl = (sug?.cves.length ?? 0) > 0 && <><li className="hunt-sug-h" role="presentation">Уязвимости</li>{sug?.cves.map((c) => <li role="option" key={c.id}><button type="button" onClick={() => addCve(c.id)}><b className="mono">{c.id}</b>{c.exploited && <span className="badge err">эксплуатируется</span>} <span className="muted">{c.title}</span></button></li>)}</>;
+                const prodEl = (sug?.products.length ?? 0) > 0 && <><li className="hunt-sug-h" role="presentation">Продукты в KSC</li>{sug?.products.map((p) => <li role="option" key={`${p.source_id}:${p.product_key}:${p.name}`}><button type="button" onClick={() => addProduct(p)}><Icon name="package" size={14} /> <b>{p.name}</b> <span className="muted">{p.hosts != null ? `компьютеров в KSC: ${num(p.hosts)}` : "известный продукт"}</span></button></li>)}</>;
+                return /^\s*(cve|bdu)/i.test(q) ? <>{cvesEl}{prodEl}</> : <>{prodEl}{cvesEl}</>;
+              })()}
               {sug && !sug.cves.length && !sug.products.length && !typedCve && <li className="muted small pad">Ничего не найдено: введите полный идентификатор CVE.</li>}
             </ul>)}
         </div>
@@ -103,8 +106,8 @@ export default function Wizard({ prefill, onCreated }: { prefill: Prefill; onCre
         <div className="cols mt">
           <label>Область<select value={scope.kind} onChange={(e) => setScope({ ...scope, kind: e.target.value as HuntScopeIn["kind"] })}>
             <option value="sources">Источники KSC (активные компьютеры)</option><option value="all">Вся инфраструктура (сети администратора и KSC)</option><option value="zones">Зоны ответственности</option><option value="groups">Группы компьютеров</option><option value="custom">Свои адреса и сети</option></select></label>
-          {(scope.kind === "sources" || scope.kind === "all") && <label>Источники KSC<select multiple size={Math.min(4, Math.max(2, opts.sources.length))} value={scope.sources} onChange={(e) => setScope({ ...scope, sources: [...e.target.selectedOptions].map((o) => o.value) })}>{opts.sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
-          {scope.kind === "zones" && <label>Зоны<select multiple size={4} value={scope.zones} onChange={(e) => setScope({ ...scope, zones: [...e.target.selectedOptions].map((o) => o.value), sources: scope.sources.length ? scope.sources : opts.sources.map((s) => s.id) })}>{opts.zones.map((z) => <option key={z.id} value={z.id}>{z.name}</option>)}</select></label>}
+          {(scope.kind === "sources" || scope.kind === "all") && <MultiCheck label="Источники KSC" options={opts.sources} value={scope.sources} onChange={(v) => setScope({ ...scope, sources: v })} />}
+          {scope.kind === "zones" && <MultiCheck label="Зоны" options={opts.zones} value={scope.zones} onChange={(v) => setScope({ ...scope, zones: v, sources: scope.sources.length ? scope.sources : opts.sources.map((s) => s.id) })} />}
           {scope.kind === "groups" && <label>Группа содержит<input value={scope.group} onChange={(e) => setScope({ ...scope, group: e.target.value, sources: scope.sources.length ? scope.sources : opts.sources.map((s) => s.id) })} placeholder="Серверы" /></label>}
           {scope.kind !== "custom" && <label>Активные за, суток<input type="number" min={1} max={3650} value={scope.active_days ?? 30} onChange={(e) => setScope({ ...scope, active_days: Number(e.target.value) })} /></label>}
         </div>
@@ -123,9 +126,9 @@ export default function Wizard({ prefill, onCreated }: { prefill: Prefill; onCre
         {pv?.rejected.length ? <ul className="pt-rej">{pv.rejected.slice(0, 5).map((r, i) => <li key={i}><span className="mono">{r.input}</span> — {r.reason}</li>)}</ul> : null}
         {noPorts && <div className="alert warn"><Icon name="alert" /><div className="alert-body">Для сетевой проверки нужен хотя бы один порт: добавьте его вручную.</div></div>}
         <label className="field">Название задания<input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} placeholder={cves[0] ? `Поиск ${cves[0]}` : "Целевой поиск"} /></label>
-        <label className="check"><input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} />Подтверждаю, что проверка этих адресов разрешена</label>
-        {large && <label className="check"><input type="checkbox" checked={big} onChange={(e) => setBig(e.target.checked)} />Подтверждаю запуск на большом числе адресов ({num(pv!.targets)})</label>}
-        <div className="form-actions"><button className="btn primary" disabled={busy || !crits.length || !confirm || (large && !big) || !!noPorts || !pv?.targets && mode !== "ksc"} onClick={() => void run()} aria-busy={busy}>
+        {mode !== "ksc" && <label className="check"><input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} />Подтверждаю, что проверка этих адресов разрешена</label>}
+        {large && mode !== "ksc" && <label className="check"><input type="checkbox" checked={big} onChange={(e) => setBig(e.target.checked)} />Подтверждаю запуск на большом числе адресов ({num(pv!.targets)})</label>}
+        <div className="form-actions"><button className="btn primary" disabled={busy || !crits.length || (!confirm && mode !== "ksc") || (large && !big && mode !== "ksc") || !!noPorts || !pv?.targets && mode !== "ksc"} onClick={() => void run()} aria-busy={busy}>
           <Icon name="target" size={16} /><span>{mode === "ksc" ? "Найти по данным KSC" : "Просканировать инфраструктуру"}</span></button></div>
       </section>
     </div>

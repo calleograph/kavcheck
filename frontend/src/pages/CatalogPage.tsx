@@ -135,9 +135,9 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
                 {canEdit && <th className="check"><span className="sr-only">Выбор</span></th>}
                 <SortTh k="name" label="Программа" sort={sort} desc={desc} onSort={onSort} />
                 <SortTh k="publisher" label="Производитель" sort={sort} desc={desc} onSort={onSort} className="hide-sm" />
-                <th className="hide-sm">Ветки</th>
+                <th className="hide-sm col-branches">Ветки</th>
                 <SortTh k="versions" label="Версий" sort={sort} desc={desc} onSort={onSort} className="num" />
-                <th className="hide-sm">Новейшая · старейшая</th>
+                <th className="hide-sm">Новейшая<span className="sub">старейшая</span></th>
                 <SortTh k="hosts" label="Компьютеров" sort={sort} desc={desc} onSort={onSort} className="num" />
                 <th className="hide-sm" title="Известные уязвимости по внешним базам (NVD, CISA KEV, OSV, БДУ) для установленных версий; подтверждённые KSC — в разделе «Уязвимости»">Уязвимости</th>
                 <th><span className="sr-only">Действия</span></th></tr></thead>
@@ -160,10 +160,10 @@ export function CatalogView({ ctx }: { ctx: Ctx }) {
                       <td className="small hide-sm">{self ? "" : p.publisher || <span className="muted">—</span>}</td>
                       <td className="hide-sm">{!self && <span className="branch-chips"><CompactList items={p.branches} max={5} sep=" " label="ветки" render={(b) => <span className="bchip" title={`${num(b.hosts)} комп.`}>{b.branch || "?"}</span>} /></span>}</td>
                       <td className="num">{self ? "" : num(p.versions_count)}</td>
-                      <td className="mono small nowrap hide-sm">{self ? "" : <>{p.latest_version}{p.oldest_version && p.oldest_version !== p.latest_version ? <span className="muted"> · {p.oldest_version}</span> : null}</>}</td>
+                      <td className="mono small hide-sm">{self ? "" : <><span className="nowrap">{p.latest_version}</span>{p.oldest_version && p.oldest_version !== p.latest_version ? <span className="sub muted nowrap">{p.oldest_version}</span> : null}</>}</td>
                       <td className="num">{self ? "" : <button type="button" className="count-btn" onClick={() => openHosts(p)} title="Показать компьютеры">{num(p.hosts)}</button>}{!self && all && p.hidden_hosts > 0 && <span className="sub">{num(p.hidden_hosts)} неакт.</span>}</td>
                       <td className="hide-sm">{!self && <VdbCountBadge c={vcounts[p.key]} productKey={p.key} />}</td>
-                      <td className="actions">{canEdit && !self && <Link className="btn mini ghost row-act" to={`/reports?product=${encodeURIComponent(p.key)}&name=${encodeURIComponent(p.name)}${p.latest_version ? `&latest=${encodeURIComponent(p.latest_version)}` : ""}`} title={`Найти устаревшие версии: ${p.name}`}><Icon name="target" size={15} />Проверить</Link>}</td>
+                      <td className="actions">{canEdit && !self && <Link className="btn mini ghost row-act" to={`/reports?product=${encodeURIComponent(p.key)}&name=${encodeURIComponent(p.name)}${p.latest_version ? `&latest=${encodeURIComponent(p.latest_version)}` : ""}`} title={`Найти устаревшие версии: ${p.name}`} aria-label={`Найти устаревшие версии: ${p.name}`}><Icon name="target" size={15} /><span className="hide-xl-down">Проверить</span></Link>}</td>
                     </tr>);
                 }} />
                 {!list.items.length && !list.loading && state?.status === "ready" && <tr><td colSpan={9}><Empty icon="search" title="Ничего не найдено">Измените запрос или включите служебные компоненты и показ всех устройств.</Empty></td></tr>}

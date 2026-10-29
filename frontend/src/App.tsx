@@ -2,7 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, setAllSources, setCsrf, setSourceId, setUnauthorizedHandler, type Me, type SourceRef } from "./api";
 import { Icon, Mark, type IconName } from "./components/Icons";
-import { Empty, Segmented } from "./components/ui";
+import { Empty } from "./components/ui";
 import { GlobalSearch } from "./components/GlobalSearch";
 import LoginPage from "./pages/LoginPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
@@ -27,6 +27,8 @@ import { fmt, versionLabel } from "./util";
 const AdminPage = lazy(() => import("./pages/AdminPage"));
 const EolPage = lazy(() => import("./pages/EolPage"));
 const DevicesPage = lazy(() => import("./pages/DevicesPage"));
+const AppearancePage = lazy(() => import("./pages/AppearancePage"));
+import { DEFAULT_THEME, THEMES, chooseTheme, isTheme, syncTheme, type ThemeId } from "./theme";
 
 export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; /** выбрано «Все источники» (разделы, которые это умеют, показывают данные всех доступных источников) */ all: boolean; reloadSources: () => Promise<void>; /** переключить источник или «Все источники» (id = "all") */ setScope: (id: string) => void }
 
@@ -55,9 +57,6 @@ export const ADMIN_TABS: { id: string; label: string }[] = [
   { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "zcache", label: "Расчёт данных зон" }, { id: "eolcfg", label: "EOL и пользователи" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "pentest", label: "Pentest" }, { id: "ptchecks", label: "Pentest: шаблоны и проверки" }, { id: "updates", label: "Обновления" }, { id: "components", label: "Компоненты" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" }, { id: "logs", label: "Журналы и хранение" },
 ];
 
-type Theme = "system" | "light" | "dark";
-const readTheme = (): Theme => { try { const t = localStorage.getItem("kc:theme"); return t === "light" || t === "dark" ? t : "system"; } catch { return "system"; } };
-const applyTheme = (t: Theme) => { try { localStorage.setItem("kc:theme", t); } catch { /* не запомнится */ } if (t === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t); };
 
 /** Закрытие всплывающего элемента по щелчку снаружи и Escape (фокус возвращается на кнопку). */
 function usePopover() {
@@ -74,9 +73,9 @@ function usePopover() {
   return { open, setOpen, root, btn };
 }
 
-function UserMenu({ me, version, onLogout }: { me: Me; version: string; onLogout: () => void }) {
+function UserMenu({ me, version, onLogout, onTheme }: { me: Me; version: string; onLogout: () => void; onTheme: (id: ThemeId | null) => void }) {
   const { open, setOpen, root, btn } = usePopover();
-  const [theme, setTheme] = useState<Theme>(readTheme);
+  const cur = isTheme(me.theme) ? me.theme : isTheme(me.default_theme) ? me.default_theme : DEFAULT_THEME;
   const navigate = useNavigate();
   const roles: Record<string, string> = { admin: "Администратор", analyst: "Аналитик", viewer: "Просмотр" };
   return (
@@ -88,9 +87,10 @@ function UserMenu({ me, version, onLogout }: { me: Me; version: string; onLogout
         <div className="dd-who"><b>{me.user.display_name}</b><span>{roles[me.user.role]}, {me.user.local ? "локальная учётная запись" : "учётная запись каталога"}</span></div>
         <div className="dd-sep" />
         <div className="dd-row"><span>Тема</span>
-          <Segmented label="Тема оформления" value={theme} onChange={(t) => { setTheme(t); applyTheme(t); }}
-            options={[["system", <Icon key="s" name="system" size={15} />, "Как в системе"], ["light", <Icon key="l" name="sun" size={15} />, "Светлая"], ["dark", <Icon key="d" name="moon" size={15} />, "Тёмная"]]} />
+          <div className="theme-swatches" role="group" aria-label="Тема оформления">{THEMES.map((t) => <button key={t.id} type="button" className="theme-swatch" tabIndex={open ? 0 : -1} aria-pressed={cur === t.id}
+            title={t.name} aria-label={t.name} style={{ background: `linear-gradient(135deg, ${t.preview.bg} 0 55%, ${t.preview.accent} 55% 100%)` }} onClick={() => onTheme(t.id)} />)}</div>
         </div>
+        <button className="dd-item" role="menuitem" tabIndex={open ? 0 : -1} onClick={() => { setOpen(false); navigate("/appearance"); }}><Icon name="sliders" />Внешний вид</button>
         <button className="dd-item" role="menuitem" tabIndex={open ? 0 : -1} onClick={() => { setOpen(false); navigate("/security"); }}><Icon name="key" />Безопасность входа</button>
         <div className="dd-sep" />
         <button className="dd-item danger" role="menuitem" tabIndex={open ? 0 : -1} onClick={onLogout}><Icon name="logout" />Выйти</button>
@@ -168,7 +168,7 @@ function NavIndicator({ deps }: { deps: unknown[] }) {
   return <span ref={self} className={`nav-indicator ${pos ? "on" : ""}`} style={pos ? { transform: `translateY(${pos.y}px)`, height: pos.h } : undefined} aria-hidden />;
 }
 
-function Shell({ me, version, onLogout, children, sources, current, onPick, all, onAll }: { me: Me; version: string; onLogout: () => void; children: ReactNode; sources: SourceRef[]; current: SourceRef | null; onPick: (id: string) => void; all: boolean; onAll: (on: boolean) => void }) {
+function Shell({ me, version, onLogout, onTheme, children, sources, current, onPick, all, onAll }: { me: Me; version: string; onLogout: () => void; onTheme: (id: ThemeId | null) => void; children: ReactNode; sources: SourceRef[]; current: SourceRef | null; onPick: (id: string) => void; all: boolean; onAll: (on: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const { pathname, search } = useLocation();
   useEffect(() => setOpen(false), [pathname, search]);
@@ -211,7 +211,7 @@ function Shell({ me, version, onLogout, children, sources, current, onPick, all,
           <SourceSwitcher sources={sources} current={current} onPick={onPick} isAdmin={me.user.is_admin} all={all} onAll={onAll} />
           <GlobalSearch sourceId={current?.id ?? null} />
           <div className="spacer" />
-          <UserMenu me={me} version={version} onLogout={onLogout} />
+          <UserMenu me={me} version={version} onLogout={onLogout} onTheme={onTheme} />
         </header>
         <main id="main" tabIndex={-1}>
           {all && sources.length > 1 && !scopeAware(pathname) && !inAdmin && (
@@ -253,6 +253,8 @@ export default function App() {
   }, [pathname, me]);
 
   const onLogin = useCallback((m: Me) => { setCsrf(m.csrf_token); setMe(m); navigate("/"); }, [navigate]);
+  useEffect(() => { if (me) syncTheme(me); }, [me]);
+  const onTheme = (id: ThemeId | null) => { setMe((m) => (m ? { ...m, theme: id } : m)); void chooseTheme(id, me?.default_theme ?? DEFAULT_THEME).catch(() => undefined); };
   const logout = async () => { await api.logout().catch(() => undefined); setCsrf(""); setMe(null); navigate("/"); };
   const pick = async (id: string) => { try { await api.selectSource(id); setCurrentId(id); setSourceId(id); } catch { /* ошибка покажется на странице */ } };
 
@@ -265,7 +267,7 @@ export default function App() {
   const setScope = (id: string) => { if (id === "all") onAll(true); else { onAll(false); void pick(id); } };
   const ctx: Ctx = { me, sources, current, all: allOn, reloadSources, setScope };
   return (
-    <Shell me={me} version={version} onLogout={logout} sources={sources} current={current} onPick={pick} all={allOn} onAll={onAll}>
+    <Shell me={me} version={version} onLogout={logout} onTheme={onTheme} sources={sources} current={current} onPick={pick} all={allOn} onAll={onAll}>
       <Suspense fallback={<div className="center"><span className="spin" role="status" aria-label="Загрузка" /></div>}>
         <Routes>
           <Route path="/" element={<DashboardPage key={`${currentId}:${allOn}`} ctx={ctx} />} />
@@ -287,6 +289,7 @@ export default function App() {
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />
           <Route path="/reports/:jobId" element={<ReportsPage ctx={ctx} />} />
           <Route path="/security" element={<SecurityPage me={me} onLogout={logout} />} />
+          <Route path="/appearance" element={<AppearancePage me={me} onTheme={onTheme} />} />
           <Route path="/password" element={<Navigate to="/security" replace />} />
           <Route path="/admin" element={me.user.is_admin ? <AdminPage ctx={ctx} version={version} /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Empty icon="target" title="Страница не найдена" action={<Link className="btn" to="/">На главную</Link>}>Проверьте адрес или вернитесь на главную.</Empty>} />

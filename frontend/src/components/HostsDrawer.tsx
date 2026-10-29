@@ -8,6 +8,7 @@ import { Icon } from "./Icons";
 import { ListFoot, VirtualRows, useInfinite, type Chunk } from "./Infinite";
 import { Empty, MaskHint, SkelRows, SortTh } from "./ui";
 import { fmt, num, plural } from "../util";
+import { OwnerSub } from "./OwnerBlock";
 
 export interface DrawerHost { host_id: number; name: string; ip: string; os: string; group: string; last_connected: string | null; days_since_connection?: number | null;
   online?: boolean | null; last_visible?: string | null; versions?: { app_name: string; app_version: string }[]; app_name?: string; app_version?: string;
@@ -56,7 +57,7 @@ export function HostsDrawer({ title, lede, listKey, deps, fetchPage, onClose, ac
           <tbody>
             <VirtualRows list={list} colSpan={cols} estimate={44} scrollEl={scroll} row={(h) => (
               <tr><td><Link to={cardLink(h)} className="strong-link">{h.name}</Link><span className="sub mono nowrap">{h.ip || "—"}</span>
-                {h.owner && <span className="owner-sub" title={h.owner.state_ru}>{h.owner.multi ? "владельцы: несколько" : h.owner.name}{h.owner.department && <span className="muted"> · {h.owner.department}</span>}{h.owner.state !== "current" && <span className="muted"> ({h.owner.state_ru.toLowerCase()})</span>}</span>}</td>
+                <OwnerSub o={h.owner} /></td>
                 {hasState && <td>{h.online !== undefined ? <OnlineBadge online={h.online} seen={h.last_visible ?? null} /> : <span className="muted small">{h.active === false ? "давно не подключался" : h.active ? "активен" : "—"}</span>}</td>}
                 {withVersions && <td className="mono small">{vers(h).map((v, i) => <span key={i} className="block" title={v.app_name}>{v.app_version}</span>)}</td>}
                 <td className="small hide-sm">{h.os || "—"}</td><td className="small hide-sm">{[h.group, ...(h.zones ?? [])].filter(Boolean).join(" · ") || "—"}</td>

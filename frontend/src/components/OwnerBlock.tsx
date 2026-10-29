@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type ApiError, type BiDeviceCard, type BiHostBlock, type BiOwnerRow } from "../api";
+import { api, type ApiError, type BiDeviceCard, type BiHostBlock, type BiOwnerBrief, type BiOwnerRow } from "../api";
 import { ReportButton } from "./FilterBar";
 import { Icon } from "./Icons";
 import { QuickReportPanel } from "./QuickReport";
@@ -108,4 +108,11 @@ export function OwnerBlock({ sid, hid, activityDays }: { sid: string; hid: numbe
         params={{ view: "history", device_id: report }} activityDays={activityDays} canReport={b.can_people} onClose={() => setReport(null)} />}
     </section>
   );
+}
+
+/** Владелец по BI под именем компьютера: текущий, иначе последний известный с пометкой. */
+export function OwnerSub({ o }: { o?: BiOwnerBrief | null }) {
+  if (!o) return null;
+  return <span className="owner-sub" title={`${o.state_ru}${o.level === "auto" ? " · сопоставление предполагаемое" : ""}`}>{o.multi ? "владельцы: несколько" : o.name}{o.department && <span className="muted"> · {o.department}</span>}
+    {o.email && <> · <a href={`mailto:${o.email}`}>{o.email}</a></>}{o.state !== "current" && <span className="muted"> ({o.state_ru.toLowerCase()})</span>}</span>;
 }

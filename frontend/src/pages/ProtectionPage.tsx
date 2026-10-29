@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api, type BiOwnerBrief, type ProblemKey, type ProtHost, type ProtSummary } from "../api";
+import { api, type ProblemKey, type ProtHost, type ProtSummary } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched, OnlineBadge } from "../components/Common";
 import { FilterBar } from "../components/FilterBar";
@@ -11,6 +11,7 @@ import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum } from "../components/ui";
 import { fmt, fmtDate, num, plural } from "../util";
 import { ZoneSelect } from "../components/ZoneBits";
+import { OwnerSub } from "../components/OwnerBlock";
 
 export const PROBLEM_TONE: Record<ProblemKey, "err" | "warn"> = { no_av: "err", rtp_off: "err", infected: "err", license: "err", bases_old: "warn", scan_old: "warn", reboot: "warn", hw_cpu: "warn", hw_ram: "warn" };
 export const PROBLEM_SHORT: Record<ProblemKey, string> = { no_av: "нет антивируса", rtp_off: "защита не работает", infected: "невылеченные объекты", bases_old: "старые базы", license: "лицензия истекла", scan_old: "нет полной проверки", reboot: "нужна перезагрузка", hw_cpu: "мало ядер CPU", hw_ram: "мало ОЗУ" };
@@ -24,12 +25,6 @@ export function ProblemBadges({ problems }: { problems: ProblemKey[] }) {
 }
 
 /** Раздел «Состояние защиты»: где защиты нет или она не работает, какие версии KES и Агента развёрнуты, что говорит статус KSC. */
-/** Владелец по BI под именем компьютера: текущий, иначе последний известный с пометкой. */
-function OwnerSub({ o }: { o?: BiOwnerBrief | null }) {
-  if (!o) return null;
-  return <span className="owner-sub" title={`${o.state_ru}${o.level === "auto" ? " · сопоставление предполагаемое" : ""}`}>{o.multi ? "владельцы: несколько" : o.name}{o.department && <span className="muted"> · {o.department}</span>}
-    {o.email && <> · <a href={`mailto:${o.email}`}>{o.email}</a></>}{o.state !== "current" && <span className="muted"> ({o.state_ru.toLowerCase()})</span>}</span>;
-}
 
 export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();

@@ -220,7 +220,7 @@ async def test_local_login_when_directory_down(client, app, monkeypatch):
 
 
 async def test_login_options(client, app):
-    assert (await client.get("/api/v1/auth/login-options")).json() == {"domains": []}
+    assert (await client.get("/api/v1/auth/login-options")).json() == {"domains": [], "default_theme": "night"}
     async with app.state.session_maker() as db:
         for i, name in enumerate(("Домен A", "Домен B")):
             db.add(LdapConnection(id=uuid.uuid4(), name=name, enabled=True, is_primary=i == 0, protocol="ldaps", host=f"dc{i}.example.local", port=636, ldap_version=3,

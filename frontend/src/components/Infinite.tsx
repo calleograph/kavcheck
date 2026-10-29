@@ -1,5 +1,6 @@
 import { cloneElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type RefObject } from "react";
 import { useVirtualizer, useWindowVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
+import { useLocation } from "react-router-dom";
 import type { ApiError } from "../api";
 import { num } from "../util";
 
@@ -172,6 +173,11 @@ export function useKept<T>(key: string, initial: T): [T, (v: T | ((p: T) => T)) 
     return n;
   }), [key]);
   return [v, set];
+}
+
+/** Открытая боковая панель привязана к записи истории: «Назад» из карточки возвращает к ней, а переход из меню открывает страницу без панели. */
+export function usePanel<T>(name: string): [T | null, (v: T | null) => void] {
+  return useKept<T | null>(`panel:${name}:${useLocation().key}`, null);
 }
 
 /** Уже загруженный массив в том же интерфейсе, что и бесконечный список: для виртуализации строк, пришедших одним ответом. */

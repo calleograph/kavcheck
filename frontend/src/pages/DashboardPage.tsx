@@ -6,7 +6,7 @@ import { HBars, Trend } from "../components/Charts";
 import { ReportButton } from "../components/FilterBar";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { Icon } from "../components/Icons";
-import type { Chunk } from "../components/Infinite";
+import { usePanel, type Chunk } from "../components/Infinite";
 import { QuickReportPanel } from "../components/QuickReport";
 import { PageHead, Segmented, Spectrum } from "../components/ui";
 import { fmt, fmtDate, num } from "../util";
@@ -50,7 +50,7 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
   const [d, setD] = useState<Overview | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [panel, setPanel] = useState<{ metric: OvMetric; title: string } | null>(null);
+  const [panel, setPanel] = usePanel<{ metric: OvMetric; title: string }>("overview");
   const [report, setReport] = useState<{ metric?: OvMetric } | null>(null);
   const [recent, setRecent] = useState<Job[]>([]);
   const canReport = ctx.me.user.role !== "viewer";

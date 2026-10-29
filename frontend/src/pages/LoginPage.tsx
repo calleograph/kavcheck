@@ -1,3 +1,4 @@
+import { rememberDefault } from "../theme";
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api, ApiError, type Me } from "../api";
 import { Icon, Mark } from "../components/Icons";
@@ -19,7 +20,7 @@ export default function LoginPage({ onLogin }: { onLogin: (m: Me) => void }) {
   const [domains, setDomains] = useState<{ id: string; name: string }[]>([]);
   const [domain, setDomain] = useState("");
   const domainRef = useRef<HTMLSelectElement>(null);
-  useEffect(() => { api.loginOptions().then((r) => setDomains(r.domains)).catch(() => undefined); }, []);
+  useEffect(() => { api.loginOptions().then((r) => { setDomains(r.domains); if (r.default_theme) rememberDefault(r.default_theme); }).catch(() => undefined); }, []);      // вход — в теме системы, если в браузере нет личного выбора
   const fail = (err: unknown) => { const ae = err as ApiError; setError(ae.status === 429 && ae.retryAfter ? `Слишком много неудачных попыток. Повторите через ${Math.max(1, Math.ceil(ae.retryAfter / 60))} мин.` : ae.message); };
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setBusy(true); setError("");

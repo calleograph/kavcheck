@@ -51,18 +51,15 @@ async def _records(request: Request, db: AsyncSession, src: KscSource, refresh: 
 
 
 # ------------------------------------------------------------------------------------------------ безопасность (из подготовленных данных)
-async def _security(db: AsyncSession, sids: list[uuid.UUID], days: int, eol_cfg) -> dict:
+async def _security(db: AsyncSession, sids: list[uuid.UUID], days: int, eol_cfg, cache=None) -> dict:
     gens = {sid: int(g) for sid, g, st in (await db.execute(select(ZcSource.source_id, ZcSource.gen, ZcSource.status).where(ZcSource.source_id.in_(sids), ZcSource.gen > 0))).all()}
     out: dict = {"vulns": None, "hosts_crit": None, "ext_crit_hosts": None, "eol": None}
     if gens:
-        cond = or_(*[and_(ZcHost.source_id == s, ZcHost.gen == g) for s, g in gens.items()])
-        act = and_(ZcHost.days_since.is_not(None), ZcHost.days_since <= days)
-        out["hosts_crit"] = int((await db.execute(select(func.count()).select_from(ZcHost).where(cond, act, ZcHost.k_crit > 0))).scalar_one())
-        out["ext_crit_hosts"] = int((await db.execute(select(func.count()).select_from(ZcHost).where(cond, act, ZcHost.e_crit > 0))).scalar_one())
-        dc = or_(*[and_(ZcDetection.source_id == s, ZcDetection.gen == g) for s, g in gens.items()])
-        j = ZcDetection.__table__.join(ZcHost.__table__, and_(ZcHost.source_id == ZcDetection.source_id, ZcHost.gen == ZcDetection.gen, ZcHost.host_id == ZcDetection.host_id))
-        out["vulns"] = int((await db.execute(select(func.count(func.distinct(ZcDetection.vuln_key))).select_from(j).where(dc, ZcDetection.origin == "ksc", ZcDetection.severity == 3,
-                                                                                                                               ZcDetection.bucket == "current", act))).scalar_one())
+        async def zc() -> dict:
+            return await _zc_security(db, gens, days)
+        # подготовленные данные поколения не меняются: счётчики (секунды на больших источниках) считаются один раз на поколение и период
+        key = ("overview-zc", tuple(sorted((str(s), g) for s, g in gens.items())), days)
+        out.update((await cache.get(key, 6 * 3600, zc))[0] if cache is not None else await zc())
         out["snapshot_missing"] = len(sids) - len(gens)
     if eol_cfg is not None and not eol_cfg.include_in_analytics:
         out["eol"] = {"excluded": True}
@@ -73,6 +70,20 @@ async def _security(db: AsyncSession, sids: list[uuid.UUID], days: int, eol_cfg)
             got = {k: (int(n), int(h)) for k, n, h in (await db.execute(q)).all()}
             out["eol"] = {"os_items": got.get("os", (0, 0))[0], "os_devices": got.get("os", (0, 0))[1], "app_items": got.get("app", (0, 0))[0], "app_devices": got.get("app", (0, 0))[1],
                           "not_ready": len(sids) - int(ready)}
+    return out
+
+
+async def _zc_security(db: AsyncSession, gens: dict, days: int) -> dict:
+    out: dict = {}
+    if gens:
+        cond = or_(*[and_(ZcHost.source_id == s, ZcHost.gen == g) for s, g in gens.items()])
+        act = and_(ZcHost.days_since.is_not(None), ZcHost.days_since <= days)
+        out["hosts_crit"] = int((await db.execute(select(func.count()).select_from(ZcHost).where(cond, act, ZcHost.k_crit > 0))).scalar_one())
+        out["ext_crit_hosts"] = int((await db.execute(select(func.count()).select_from(ZcHost).where(cond, act, ZcHost.e_crit > 0))).scalar_one())
+        dc = or_(*[and_(ZcDetection.source_id == s, ZcDetection.gen == g) for s, g in gens.items()])
+        j = ZcDetection.__table__.join(ZcHost.__table__, and_(ZcHost.source_id == ZcDetection.source_id, ZcHost.gen == ZcDetection.gen, ZcHost.host_id == ZcDetection.host_id))
+        out["vulns"] = int((await db.execute(select(func.count(func.distinct(ZcDetection.vuln_key))).select_from(j).where(dc, ZcDetection.origin == "ksc", ZcDetection.severity == 3,
+                                                                                                                               ZcDetection.bucket == "current", act))).scalar_one())
     return out
 
 
@@ -105,7 +116,10 @@ async def overview(request: Request, days: int = Query(30, ge=1, le=365), refres
     for s, (recs, at, err) in zip(scope, results):
         row = {"id": str(s.id), "name": s.name, "error": err, "synced_at": at, "ksc_version": (s.last_check or {}).get("ksc_version"), "last_check_ok": s.last_check_ok}
         if recs is not None:
-            sm = C.summarize(recs, days, now)
+            async def summary(recs=recs) -> dict:
+                return C.summarize(recs, days, now)
+            sm = (await request.app.state.cache.get((str(s.id), "overview-sum", at.timestamp(), days), request.app.state.settings.cache_ttl_seconds, summary))[0]   # те же записи защиты — та же сводка
+            daily.append((s.id, recs, at))
             row.update({k: sm[k] for k in C.METRICS})
             ok_ids.append(s.id)
             for k in C.METRICS:
@@ -116,7 +130,6 @@ async def overview(request: Request, days: int = Query(30, ge=1, le=365), refres
                         periods[p["days"]][k] += p[k]
             extra["agent_installed"] += sm["agent_installed"]
             extra["av_any"] += sm["av_any"]
-            daily.append((s.id, recs))
         rows.append(row)
     for s in srcs:
         if str(s.id) in skipped:
@@ -125,10 +138,13 @@ async def overview(request: Request, days: int = Query(30, ge=1, le=365), refres
     for r in rows:
         r["license"] = lic["by_source"].get(r["id"])
     eol_cfg = await request.app.state.settings_svc.get(db, "eol")
-    sec = await _security(db, [s.id for s in scope], days, eol_cfg)
+    sec = await _security(db, [s.id for s in scope], days, eol_cfg, request.app.state.cache)
     key = f"a{days}" if days in C.PERIODS else "a30"
     trend = await _trend(db, [s.id for s in scope if s.id in ok_ids], key) if ok_ids else {"points": [], "since": None}
-    for sid, recs in daily:                                    # сегодняшний срез — после чтения динамики
+    for sid, recs, at in daily:                                # сегодняшний срез — после чтения динамики; по тем же записям защиты повторно не считается
+        taken = (await db.execute(select(OverviewDaily.taken_at).where(OverviewDaily.source_id == sid, OverviewDaily.day == date.today()))).scalar_one_or_none()
+        if taken is not None and (taken if taken.tzinfo else taken.replace(tzinfo=timezone.utc)) >= at:
+            continue
         try:
             await SN.store(db, sid, SN.payload(recs, now))
         except IntegrityError:

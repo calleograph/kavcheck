@@ -1,3 +1,4 @@
+import { AdminReportButton } from "../../components/QuickReport";
 import { useCallback, useEffect, useState } from "react";
 import { api, type ApiError, type CompRow, type CompStatus, type CompTable } from "../../api";
 import { Modal } from "../../components/Dialogs";
@@ -30,7 +31,8 @@ export default function ComponentsAdmin() {
         </div>
         <p className="muted small mt">Проверка доступных версий: {d.checked_at ? fmt(d.checked_at) : "ещё не выполнялась"} (в фоне, раз в сутки; страница внешние сервисы не опрашивает). Реестр рассмотрен для выпуска {d.reviewed_for} ({fmtDate(d.reviewed_at)}).{" "}
           <button type="button" className="link-btn" disabled={d.requested} onClick={async () => { try { await api.admin.checkComponents(); show("Проверка запрошена"); void load(); } catch (e) { setErr((e as ApiError).message); } }}>{d.requested ? "Проверка выполняется…" : "Проверить сейчас"}</button></p>
-        <div className="toolbar"><select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Статус" className="w-auto"><option value="">Все статусы</option>{(Object.keys(d.counts) as CompStatus[]).filter((k) => d.counts[k] > 0).map((k) => <option key={k} value={k}>{d.items.find((r) => r.status === k)?.status_ru}</option>)}</select></div>
+        <div className="toolbar"><select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Статус" className="w-auto"><option value="">Все статусы</option>{(Object.keys(d.counts) as CompStatus[]).filter((k) => d.counts[k] > 0).map((k) => <option key={k} value={k}>{d.items.find((r) => r.status === k)?.status_ru}</option>)}</select>
+          <div className="spacer" /><AdminReportButton view="components" title="компоненты" params={{ status: filter }} /></div>
         {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       </section>
       {groups.map((g) => (

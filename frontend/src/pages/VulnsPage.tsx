@@ -10,11 +10,11 @@ import { CountButton, FilterBar } from "../components/FilterBar";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel, type QuickScopeOpts } from "../components/QuickReport";
 import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
-import { ListFoot, VirtualRows, useInfinite, useKept, useStaticList, type Chunk } from "../components/Infinite";
+import { ListFoot, VirtualRows, useInfinite, useKept, usePanel, useStaticList, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { useToast } from "../components/Toast";
 import { maskMatcher } from "../mask";
-import { Empty, HiddenNote, PageHead, Segmented, SevCounts, SkelRows, SortTh, Tabs, MaskHint } from "../components/ui";
+import { Empty, HiddenNote, PageHead, Segmented, SevCounts, SkelRows, SortTh, Tabs, MaskHint, BackLink } from "../components/ui";
 import { fmt, fmtDate, num } from "../util";
 import { itemSummary } from "./AuditBuilder";
 
@@ -39,7 +39,6 @@ export default function VulnsPage({ ctx }: { ctx: Ctx }) {
       <PageHead title="Уязвимости" lede="Уязвимости программ, найденные Kaspersky Security Center: какие компьютеры и программы требуют внимания в первую очередь. Проверки версий — ваши собственные условия — показаны отдельно." />
       {eolOn && <div className="toolbar"><Segmented<"all" | "cve" | "eol"> label="Тип записей" value={type} onChange={setType} options={[["all", "Все"], ["cve", "CVE"], ["eol", `EOL${eolN ? ` · ${eolN}` : ""}`]]} />
         <span className="muted small">EOL — окончание поддержки программы или ОС; это отдельный тип проблем, он не входит в число CVE.</span></div>}
-      {kind === "all" && <p className="vdb-eol-line"><Icon name="clock" size={15} /><span>EOL: программ и ОС без поддержки производителя — <b>{eolN}</b>.</span> <button type="button" className="link-btn" onClick={() => setType("eol")}>Показать список EOL</button></p>}
       {kind === "eol" && <div className="vdb-eol"><h3 className="h3">EOL: программы и ОС без поддержки производителя{eol ? ` (${eolN})` : ""}</h3><EolList limit={100} sourceId={ctx.current.id} /></div>}
       {kind !== "eol" && <>
       <Tabs label="Вид" value={tab} onChange={(t) => setSp((p) => { p.set("tab", t); return p; })}
@@ -166,7 +165,7 @@ function ListView({ ctx }: { ctx: Ctx }) {
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } };
   const ids = list.items.map((v) => v.descr_id);
   const reportFor = (list_: number[], title: string): Report => ({ kind: "quick_vulns", title, options: { scope: true, severity: false, patchable: true }, params: { descr_ids: list_, include_inactive: all } });
-  const [busy, setBusy] = useState(false); const [note, setNote] = useState(""); const [panel, setPanel] = useState<VulnDescr | null>(null);
+  const [busy, setBusy] = useState(false); const [note, setNote] = useState(""); const [panel, setPanel] = usePanel<VulnDescr>("vuln");
   /** Отметка есть — отчёт по ней; иначе по всем найденным по условиям страницы: идентификаторы собираются порциями на сервере (не больше 5 000 уязвимостей в одном отчёте). */
   const reportAll = async () => {
     setNote("");
@@ -224,7 +223,7 @@ function ListView({ ctx }: { ctx: Ctx }) {
                   <td className="small hide-sm"><CompactList items={v.products} label="программы" /></td>
                   <td className="num"><CountButton n={v.hosts} onClick={() => setPanel(v)} label="Показать компьютеры с этой уязвимостью" /></td><td className="num hide-sm">{num(v.total)}</td>
                   <td className="hide-sm">{v.patchable ? <span className="badge ok">доступно</span> : <span className="muted small">нет</span>}</td>
-                  <td className="actions">{canReport && <button type="button" className="btn mini ghost row-act" onClick={() => setReport(reportFor([v.descr_id], `Отчёт по уязвимости ${v.cve[0] ?? v.kla_id}`))}><Icon name="file" size={15} />Отчёт по этой уязвимости</button>}</td>
+                  <td className="actions">{canReport && <button type="button" className="btn mini ghost row-act" title="Отчёт по этой уязвимости: затронутые компьютеры" onClick={() => setReport(reportFor([v.descr_id], `Отчёт по уязвимости ${v.cve[0] ?? v.kla_id}`))}><Icon name="file" size={15} />Отчёт</button>}</td>
                 </tr>
                 <ExpandedRow id={`v${v.descr_id}`} open={ex.has(v.descr_id)} colSpan={9}>
                   <XGrid>
@@ -263,7 +262,7 @@ function ProductsView({ ctx }: { ctx: Ctx }) {
     (offset, limit) => api.vulns.products({ ...applied, severity, all_hosts: all, sort, desc, offset, limit }) as unknown as Promise<Chunk<VulnProduct>>);
   const extra = list.extra as { fetched_at?: string; unsupported?: string[] } | null;
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(k !== "name"); } };
-  const sel = useRowSel<string>(); const [report, setReport] = useState<Report | null>(null); const [panel, setPanel] = useState<VulnProduct | null>(null);
+  const sel = useRowSel<string>(); const [report, setReport] = useState<Report | null>(null); const [panel, setPanel] = usePanel<VulnProduct>("vuln-product");
   const canReport = ctx.me.user.role !== "viewer";
   const pk = (p: VulnProduct) => (p.product_id ? `id:${p.product_id}` : `name:${p.name}`);
   const reportFor = (keys: string[], title: string): Report => ({ kind: "quick_vulns", title, options: { scope: true, severity: true, patchable: true },
@@ -357,7 +356,7 @@ export function VulnHostPage({ ctx }: { ctx: Ctx }) {
   const [err, setErr] = useState(""); const [report, setReport] = useState(false);
   useEffect(() => { if (ctx.current && hostId) api.vulns.host(Number(hostId)).then(setD).catch((e) => setErr((e as ApiError).message)); }, [ctx.current, hostId]);
   if (!ctx.current) return <NoSource ctx={ctx} />;
-  const back = <Link className="back-link" to="/vulnerabilities"><Icon name="arrowL" size={15} />Уязвимости</Link>;
+  const back = <BackLink to="/vulnerabilities" label="Уязвимости" />;
   if (err) return <section><PageHead title="Компьютер" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div></section>;
   if (!d) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="card"><SkelRows rows={5} cols={5} /></div></section>;
   if (d.unsupported) return <section><PageHead title="Компьютер" back={back} /><Unsupported missing={d.unsupported} /></section>;

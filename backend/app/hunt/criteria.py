@@ -119,6 +119,21 @@ async def resolve_cve(db: AsyncSession, cve: str) -> dict:
             "checks": checks, "warnings": warns, "known": bool(v), "severity": v.sev_rank if v else 0, "score": v.score if v else None, "exploited": bool(v and v.exploited)}
 
 
+async def registry_names(db: AsyncSession, *, key: str = "", name: str = "") -> list[str]:
+    """Названия записей реестра KSC, которые каталог объединил в продукт (во всех источниках): «OpenSSL» — это и libssl3, libssl1.1, openssl.
+    Поиск в KSC идёт по ним; иначе подсказка («компьютеров в KSC: N») и результат расходятся."""
+    from sqlalchemy import func  # noqa: PLC0415
+
+    cond = CatalogProduct.key == key if key else func.lower(CatalogProduct.name) == name.lower()
+    out: list[str] = []
+    for names in (await db.execute(select(CatalogProduct.names).where(cond))).scalars():
+        for n in names or []:
+            raw = n[0] if isinstance(n, (list, tuple)) else n
+            if raw and raw not in out:
+                out.append(str(raw))
+    return out[:60]
+
+
 async def resolve_product(db: AsyncSession, spec: dict) -> dict:
     """Продукт из каталога программ (источник + ключ) либо по названию; условие по версии — как в запросе. Нормализация продуктов — каталог KAV Checker, а не отдельная база."""
     name = (spec.get("name") or "").strip()
@@ -133,6 +148,9 @@ async def resolve_product(db: AsyncSession, spec: dict) -> dict:
                "versions": [v.strip() for v in spec.get("versions", []) if str(v).strip()][:50], "v_min": (spec.get("v_min") or "").strip(), "v_max": (spec.get("v_max") or "").strip(), "below": (spec.get("below") or "").strip(),
                "above": (spec.get("above") or "").strip(), "only_vulnerable": bool(spec.get("only_vulnerable")), "only_eol": bool(spec.get("only_eol")), "ranges": [], "checks": [], "warnings": [],
                "catalog": [cat.name] if cat is not None else (KB.KB[kb_key]["catalog"] if kb_key else ([name] if name else []))}
+    for raw in (await registry_names(db, key=cat.key if cat is not None else "", name="" if cat is not None else name)) if (cat is not None or name) else []:
+        if raw not in c["catalog"]:
+            c["catalog"].append(raw)
     if mode == "exact" and not c["versions"] or mode == "range" and not (c["v_min"] or c["v_max"]) or mode == "below" and not c["below"] or mode == "above" and not c["above"]:
         raise ValueError(f"Для условия «{mode}» не указана версия")
     if not (name or kb_key):

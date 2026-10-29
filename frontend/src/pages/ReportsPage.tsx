@@ -7,7 +7,7 @@ import { ListFoot, VirtualRows, useInfinite, type Chunk } from "../components/In
 import { ConfirmDialog } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
 import { useToast } from "../components/Toast";
-import { Empty, PageHead, SkelRows, SortTh, Spectrum, MaskHint } from "../components/ui";
+import { Empty, PageHead, SkelRows, SortTh, Spectrum, MaskHint, BackLink } from "../components/ui";
 import { fmt, num } from "../util";
 import { QuickReportPanel } from "../components/QuickReport";
 import { ZonePicker } from "../components/ZoneBits";
@@ -95,7 +95,7 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
   const quick = async (params: ReportParams, title: string) => { try { const j = await api.reports.create("hosts", title, params); navigate(`/reports/${j.id}`, { state: { toast: `Отчёт «${title}» поставлен в очередь` } }); } catch (e) { show((e as ApiError).message, "error"); } };
   return (
     <section>
-      <PageHead title="Отчёты" lede="Программа и версия, ниже которой она устарела, — компьютеры сразу и отчёт XLSX. Сохранённые проверки запускаются одним щелчком.">
+      <PageHead title="Отчёты" lede="Проверка устаревших версий программ, сохранённые проверки и все сформированные отчёты. Отчёт по данным любого раздела формируется прямо в нём — кнопкой «Сформировать отчёт» с условиями страницы.">
         {(editing || initial) && <button className="btn ghost" onClick={newCheck}><Icon name="plus" />Новая проверка</button>}
       </PageHead>
       {legacy && (
@@ -201,7 +201,7 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
   const done = j?.status === "done";
   const rows = useInfinite<Record<string, unknown>>(`job:${jobId}`, [jobId, done, applied, source, program, sort, desc],
     (offset, limit) => (done ? api.reports.rows(jobId, { offset, limit, q: applied, source, program, sort, desc }) as unknown as Promise<Chunk<Record<string, unknown>>> : Promise.resolve({ items: [], total: 0 })), 200);
-  const back = <Link className="back-link" to="/reports"><Icon name="arrowL" size={15} />Отчёты</Link>;
+  const back = <BackLink to="/reports" label="Отчёты" />;
   if (err) return <section><PageHead title="Отчёт" back={back} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>{toast}</section>;
   if (!j) return <section><PageHead title={<span className="skel skel-title" />} back={back} /><div className="table-scroll"><SkelRows /></div>{toast}</section>;
   const [l, c] = JOB_STATUS[j.status] ?? [j.status, ""];

@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type DiagResult, type SourceFull } from "../../api";
 import type { Ctx } from "../../App";
 import { SecretInput, StageList, secretToSend } from "../../components/Common";
@@ -67,6 +67,10 @@ function KscSources({ ctx }: { ctx: Ctx }) {
           </div>
           {!!s.overlaps?.length && <div className="alert warn"><Icon name="alert" /><div className="alert-body">{s.overlaps.map((o) => <p key={o.other_id}><b>{o.level === "exact" ? "Повторное подключение" : "Возможно, тот же KSC"}:</b> «{o.other}» — {o.reason}. Данные обоих подключений попадают в «Все источники» и в общую статистику дважды. Данные не удаляются автоматически: оставьте одно подключение (отключите или удалите лишнее) либо убедитесь, что это разные серверы.</p>)}</div></div>}
           <div className="addr">{s.username} → {s.host}:{s.port} / {s.database}</div>
+          {s.sync && s.sync.status !== "empty" && <p className={`src-sync ${s.sync.error ? "bad" : ""}`}>
+            <Icon name={s.sync.error ? "alert" : "clock"} size={15} />
+            <span>Фоновое чтение данных: {s.sync.built_at ? `последние данные от ${fmt(s.sync.built_at)}` : "данных ещё нет"}{s.sync.status === "building" ? " · идёт расчёт" : ""}
+              {s.sync.error && <> · последняя попытка {fmt(s.sync.finished_at)} не удалась: {s.sync.error}{s.sync.built_at ? " (показываются прежние данные)" : ""}. <Link to="/admin?tab=zcache">Расчёт данных зон</Link></>}</span></p>}
           <div className="muted small">{s.auth_type === "windows" ? "Windows (NTLM)" : "SQL Server"}, TLS: {({ require: "обязательно", request: "по возможности", off: "выключено" } as Record<string, string>)[s.tls_mode]}, тайм-аут запроса {s.query_timeout_s} с, пароль {s.password_set ? "задан" : "не задан"}</div>
           {feats.length > 0 && <ul className="feat-list" aria-label="Доступные функции">{feats.map((f) => <li key={f.title} className={f.ok ? "" : "no"} title={f.ok ? "объекты найдены" : `нет объектов: ${f.missing.join(", ")}`}><Icon name={f.ok ? "check" : "close"} size={14} />{f.title}</li>)}</ul>}
           {r && <StageList result={r} />}

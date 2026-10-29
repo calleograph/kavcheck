@@ -83,3 +83,31 @@ async def test_user_source_remembered(client, app):
     me = await login(client, "admin", "Admin-Passw0rd-123")
     assert me["current_source_id"] == s2["id"]           # следующий вход открывает последний выбранный источник
     _ = KscSource
+
+
+async def test_failed_refresh_of_ready_catalog_waits_before_retry(app):
+    """Обновление уже построенного каталога не удалось (KSC недоступен): повтор — через RETRY_FAILED, а не каждые 30 с (журнал не засоряется); запрос пользователя — сразу."""
+    from datetime import timedelta
+
+    from app.services import catalog as CS
+
+    sch = CS.CatalogScheduler(app.state.session_maker, app.state.settings, app.state.settings_svc, None)
+    async with app.state.session_maker() as db:
+        src = KscSource(name="KSC-R", host="ksc.example.local", database="KAV", username="u", password_enc="x")
+        db.add(src)
+        await db.commit()
+        now = utcnow()
+        db.add(CatalogState(source_id=src.id, status="ready", built_at=now - timedelta(days=3), started_at=now - timedelta(seconds=30),
+                            error="Последнее обновление не удалось: SQL Server недоступен", activity_days=30))
+        await db.commit()
+        _ov, rev = await CS.load_overrides(db)
+        st = await db.get(CatalogState, src.id)
+        st.overrides_rev = rev
+        await db.commit()
+        assert await sch.due(db, src, 30, rev) is None                                # каталог старше MAX_AGE, но попытка была только что
+        st.started_at = now - CS.RETRY_FAILED - timedelta(minutes=1)
+        await db.commit()
+        assert await sch.due(db, src, 30, rev) == "плановое обновление"
+        st.started_at, st.requested_at = now, now + timedelta(seconds=1)
+        await db.commit()
+        assert await sch.due(db, src, 30, rev) == "запрошено пользователем"

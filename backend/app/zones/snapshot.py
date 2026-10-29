@@ -297,7 +297,8 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
                 try:
                     HW.attach(recs, await HW.load_for(client, linux) if linux else {}, hwcfg)
                 except Exception as exc:  # noqa: BLE001
-                    notes_hw = f"Оборудование не прочитано: {type(exc).__name__}"
+                    why = exc.message if isinstance(exc, KscError) else "ошибка чтения данных KSC"
+                    notes_hw = f"Оборудование Linux-серверов не прочитано ({why}): проверки ядер CPU и ОЗУ для этого расчёта не выполнены"
                     if notes_hw not in notes:
                         notes.append(notes_hw)
             rows_h, rows_z = [], []

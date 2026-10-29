@@ -308,7 +308,15 @@ class BiSettings(_Group):
     allowed_hosts: list[str] = Field(default_factory=list, max_length=100)   # разрешённые SMB-серверы: имя (маска со звёздочкой) или сеть CIDR; пусто — любой, кроме петлевых и link-local
 
 
-GROUPS: dict[str, type[_Group]] = {"bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
+THEMES = ("night", "glass", "grove", "aurora")                        # «Тёмный профессиональный» (по умолчанию), «Современный и лёгкий», «Корпоративный минимализм», «Современный градиентный»
+
+
+class AppearanceSettings(_Group):
+    """Внешний вид: тема по умолчанию для всех, кто не выбрал свою (личный выбор в профиле важнее)."""
+    default_theme: Literal["night", "glass", "grove", "aurora"] = "night"
+
+
+GROUPS: dict[str, type[_Group]] = {"appearance": AppearanceSettings, "bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
                                    "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings}
 
 

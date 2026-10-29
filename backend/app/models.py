@@ -63,6 +63,7 @@ class User(Base):
     totp_secret_enc: Mapped[str | None] = mapped_column(Text)            # секрет TOTP, зашифрован APP_MASTER_KEY (AAD — пользователь)
     totp_last_step: Mapped[int | None] = mapped_column(BigInteger)       # последний принятый шаг: повтор перехваченного кода отклоняется
     totp_enabled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    theme: Mapped[str | None] = mapped_column(String(16))               # выбранная тема оформления; None — тема по умолчанию системы (выбор не перезаписывается обновлениями)
 
 
 class Session(Base):
@@ -860,7 +861,9 @@ class ZcDetection(Base):
     tstatus: Mapped[str] = mapped_column(String(16), nullable=False, default="")                # эффективное решение: review | confirmed | … | "" (решения нет)
     flags: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                      # 1 — в каталоге CISA KEV, 2 — подтверждено источником (внешние базы)
     row: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
-    __table_args__ = (Index("ix_zc_det_host", "source_id", "gen", "host_id"), Index("ix_zc_det_vuln", "source_id", "gen", "vuln_key"))
+    __table_args__ = (Index("ix_zc_det_host", "source_id", "gen", "host_id"), Index("ix_zc_det_vuln", "source_id", "gen", "vuln_key"),
+                      Index("ix_zc_det_crit", "source_id", "gen", "host_id", postgresql_include=["vuln_key"],          # «Критические уязвимости» главной: по индексу, без чтения всех обнаружений
+                            postgresql_where=text("origin = 'ksc' AND severity = 3 AND bucket = 'current'")))
 
 
 class ZcDashboard(Base):

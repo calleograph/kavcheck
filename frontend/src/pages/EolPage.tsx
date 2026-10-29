@@ -5,7 +5,7 @@ import { NoSource, type Ctx } from "../App";
 import { Modal } from "../components/Dialogs";
 import { EOL_STATUS_TEXT, EolBadge, EolDates, EolSev } from "../components/EolBits";
 import { Icon } from "../components/Icons";
-import { ListFoot, useInfinite, useKept, type Chunk } from "../components/Infinite";
+import { ListFoot, useInfinite, useKept, usePanel, type Chunk } from "../components/Infinite";
 import { CountButton, FilterBar, type FilterChip } from "../components/FilterBar";
 import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
@@ -56,7 +56,7 @@ export default function EolPage({ ctx }: { ctx: Ctx }) {
         <div className="meter"><span className="l">База endoflife.date</span><span className="v">{sum ? num(sum.base.products) : "…"}</span><span className="t">продуктов{sum?.base.last_ok_at ? `, обновлена ${fmt(sum.base.last_ok_at)}` : ""}</span></div>
       </div>
       <Tabs label="Вид" value={tab} onChange={(t) => setSp((p) => { p.set("tab", t); p.delete("p"); return p; })}
-        items={[{ id: "infra", label: "EOL в инфраструктуре", count: sum ? f!.eol + f!.extended + f!.upcoming || undefined : undefined }, { id: "products", label: "Все продукты" }, { id: "mappings", label: "Соответствия", count: sum?.ambiguous || undefined }]} />
+        items={[{ id: "infra", label: "EOL в инфраструктуре", count: sum ? f!.eol + f!.extended + f!.upcoming + (sum.os_undetermined?.items ?? 0) || undefined : undefined }, { id: "products", label: "Все продукты" }, { id: "mappings", label: "Соответствия", count: sum?.ambiguous || undefined }]} />
       {tab === "infra" && <InfraView ctx={ctx} sum={sum} zone={zone} setZone={setZone} onRecalc={() => setRev((r) => r + 1)} />}
       {tab === "products" && <ProductsView ctx={ctx} />}
       {tab === "mappings" && <MappingsView ctx={ctx} onChanged={() => setRev((r) => r + 1)} />}
@@ -74,7 +74,7 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
   const [sev, setSev] = useKept("eol.sev", ""); const [pub, setPub] = useKept("eol.pub", ""); const [prod, setProd] = useKept("eol.prod", "");
   const [srcId, setSrcId] = useKept("eol.src", ""); const [all, setAll] = useKept("eol.all", false);
   const [sort, setSort] = useKept("eol.sort", "severity"); const [desc, setDesc] = useKept("eol.desc", true);
-  const [panel, setPanel] = useState<EolFinding | null>(null); const [toast, show] = useToast(); const ex = useExpanded<string>();
+  const [panel, setPanel] = usePanel<EolFinding>("eol"); const [toast, show] = useToast(); const ex = useExpanded<string>();
   const [sp, setSp] = useSearchParams();
   const [report, setReport] = useState<{ title: string; params: Record<string, unknown> } | null>(null);
   useEffect(() => {                                                    // переход из сводки («показать» у ОС с неопределённым EOL) задаёт тип и состояние
@@ -145,7 +145,7 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
                   <tr className={panel && keyOf(panel) === k ? "sel" : ""}>
                     <ExpandCell id={`e${k}`} open={ex.has(k)} onToggle={() => ex.toggle(k)} label={f.title} />
                     <td><EolSev f={f} />{!f.confirmed && f.status !== "undetermined" && <span className="sub small" title={f.condition}>не подтверждено</span>}</td>
-                    <td><strong>{f.title}</strong>{f.kind === "app" && <span className="sub mono small">{f.version}</span>}{f.publisher && <span className="sub small">{f.publisher}</span>}<span className="sub small">{f.kind_ru}</span></td>
+                    <td><strong>{f.title}</strong>{f.kind === "app" && <span className="sub mono small">{f.version}</span>}<span className="sub small">{[f.publisher, f.kind_ru.toLowerCase()].filter(Boolean).join(" · ")}</span></td>
                     <td className="hide-sm">{f.eol_product ? <><a href={`https://endoflife.date/${f.eol_product}`} target="_blank" rel="noopener noreferrer">{f.eol_label}</a>{f.eol_release && <span className="sub mono small">ветка {f.eol_release}</span>}</> : <span className="muted">нет в базе</span>}
                       {f.confidence !== "high" && f.status !== "undetermined" && <span className="sub small muted">{f.confidence_ru}</span>}</td>
                     <td><EolBadge s={f.status} /><EolDates f={f} />{f.condition && f.status !== "eol" && <span className="sub small">{f.condition}</span>}</td>
