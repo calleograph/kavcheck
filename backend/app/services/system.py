@@ -78,21 +78,29 @@ def install_journal_handler(service: str) -> JournalHandler:
     return h
 
 
+HEARTBEAT_S = 15
+
+
 async def heartbeat_loop(sm: async_sessionmaker[AsyncSession], name: str, data_fn) -> None:
+    """Пульс службы раз в 15 с: её сведения (`data_fn`) и показатели её контейнера (`probe`: CPU, память, лимиты, процессы, история около часа) — чтение /proc и cgroup, без внешних программ."""
+    from ..tech.probe import Sampler  # noqa: PLC0415
+
     started = utcnow()
+    sampler = Sampler()
     while True:
         try:
+            sampler.sample()
             async with sm() as db:
                 row = await db.get(ServiceHeartbeat, name)
                 if row is None:
                     row = ServiceHeartbeat(name=name)
                     db.add(row)
-                row.at, row.started_at, row.data = utcnow(), started, data_fn()
+                row.at, row.started_at, row.data = utcnow(), started, {**data_fn(), "probe": sampler.snapshot()}
                 await db.commit()
             Path(f"/tmp/{name}.alive").touch()                       # для healthcheck контейнера: пульс записан в базу, значит цикл событий жив
         except Exception:  # noqa: BLE001
             logging.getLogger("app.system").debug("Пульс службы не записан", extra={"_journal": True})
-        await asyncio.sleep(30)
+        await asyncio.sleep(HEARTBEAT_S)
 
 
 def resources(data_dir: str) -> dict:

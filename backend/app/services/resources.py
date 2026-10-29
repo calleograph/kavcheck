@@ -97,8 +97,9 @@ class Resources:
     pause_ms: int = 0
     _sem: asyncio.Condition | None = None
     used: dict[str, int] = field(default_factory=lambda: {"bg": 0, "bi": 0, "interactive": 0})
-    queue: list = field(default_factory=list)         # ожидающие места: [токен, полоса, вес, название, с какого момента] — порядок постановки
+    queue: list = field(default_factory=list)         # ожидающие места: [токен, полоса, вес, название, с какого момента, причина ожидания] — порядок постановки
     active: dict[str, float] = field(default_factory=dict)
+    lane_of: dict[str, str] = field(default_factory=dict)       # выполняющаяся задача → её полоса (кто занимает места, которых ждут)
     peak_mb: float = 0.0
     deferred: int = 0
     requested: int = 1
@@ -161,12 +162,19 @@ class Resources:
         token = object()
         notified = False
         async with cond:
-            self.queue.append([token, lane, weight, name, time.time()])
+            entry = [token, lane, weight, name, time.time(), ""]
+            self.queue.append(entry)
             try:
                 while True:
                     first = next(q for q in self.queue if q[1] == lane)
-                    if first[0] is token and self.used[lane] + weight <= cap and (rss_mb() <= self.limits.soft_mb or not self.active):   # первая задача идёт всегда: иначе при высоком фоне ничто не стартует
+                    mem = rss_mb()
+                    if first[0] is token and self.used[lane] + weight <= cap and (mem <= self.limits.soft_mb or not self.active):   # первая задача идёт всегда: иначе при высоком фоне ничто не стартует
                         break
+                    # причина ожидания — из того же условия, которым планировщик решает (для «Технического состояния»; не догадка по загрузке CPU)
+                    busy = [n for n, ln in self.lane_of.items() if ln == lane]
+                    entry[5] = (f"в очереди после «{first[3]}»" if first[0] is not token else
+                                f"все места очереди заняты ({self.used[lane]} из {cap}): " + ", ".join(f"«{n}»" for n in busy) if self.used[lane] + weight > cap else
+                                f"память worker {mem:.0f} МБ выше мягкого предела {self.limits.soft_mb:.0f} МБ, выполняются: " + ", ".join(f"«{n}»" for n in self.active))
                     if wait_s and time.monotonic() - t0 > wait_s:
                         raise TimeoutError(f"нет свободных ресурсов для «{name}»")
                     if not notified and on_wait is not None:
@@ -180,6 +188,7 @@ class Resources:
                 cond.notify_all()                                            # следующий в очереди проверяет своё место
             self.used[lane] += weight
             self.active[name] = time.monotonic()
+            self.lane_of[name] = lane
         waited = time.monotonic() - t0
         if waited > 30:
             log.info("Место для задачи получено после ожидания", extra={"task": name, "lane": lane, "waited_s": round(waited)})
@@ -189,6 +198,7 @@ class Resources:
             async with cond:
                 self.used[lane] -= weight
                 self.active.pop(name, None)
+                self.lane_of.pop(name, None)
                 cond.notify_all()
             trim()
 
@@ -196,7 +206,8 @@ class Resources:
         now = time.time()
         return {"rss_mb": int(rss_mb()), "peak_mb": int(self.peak_mb), "soft_mb": int(self.limits.soft_mb), "hard_mb": int(self.limits.hard_mb), "slots": self.slots, "slots_requested": self.requested,
                 "cpus": round(cpu_count(), 1), "used": sum(self.used.values()), "lanes": {k: {"used": v, "cap": self.cap(k)} for k, v in self.used.items()}, "interactive_slots": self.islots,
-                "active": sorted(self.active), "waiting": [{"task": q[3], "lane": q[1], "wait_s": int(now - q[4])} for q in self.queue], "deferred": self.deferred}
+                "active": sorted(self.active), "running": [{"task": n, "lane": self.lane_of.get(n, ""), "for_s": int(time.monotonic() - t)} for n, t in self.active.items()],
+                "waiting": [{"task": q[3], "lane": q[1], "wait_s": int(now - q[4]), "reason": q[5]} for q in self.queue], "deferred": self.deferred}
 
 
 RES = Resources()

@@ -402,6 +402,8 @@ class JobLease(Base):
     stage: Mapped[str] = mapped_column(String(160), nullable=False, default="")
     progress: Mapped[str | None] = mapped_column(String(300))
     app_version: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    progress_at: Mapped[datetime | None] = mapped_column(UTCDateTime)          # последний полезный ход выполнения (порция, этап, запрос к KSC) — продление аренды его не меняет
+    queued_at: Mapped[datetime | None] = mapped_column(UTCDateTime)            # постановка в очередь ограничителя (до захвата аренды); пусто — задание без очереди
 
 
 class JobRun(Base):
@@ -419,6 +421,7 @@ class JobRun(Base):
     stage: Mapped[str] = mapped_column(String(160), nullable=False, default="")
     error: Mapped[str | None] = mapped_column(Text)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+    waited_ms: Mapped[int | None] = mapped_column(Integer)                     # ожидание места у ограничителя до начала
     __table_args__ = (Index("ix_job_runs_scope", "kind", "scope", "finished_at"),)
 
 

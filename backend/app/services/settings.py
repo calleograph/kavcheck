@@ -316,7 +316,25 @@ class AppearanceSettings(_Group):
     default_theme: Literal["night", "glass", "grove", "aurora"] = "night"
 
 
-GROUPS: dict[str, type[_Group]] = {"appearance": AppearanceSettings, "bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
+class TechSettings(_Group):
+    """Пороги предупреждений раздела «Техническое состояние» (только показ: уведомлений и автоматических действий нет)."""
+    cpu_pct: int = Field(default=85, ge=10, le=100)                  # загрузка процессора сервера, %
+    core_pct: int = Field(default=90, ge=10, le=400)                 # контейнер службы, % одного ядра (100 — одно ядро занято полностью)
+    cpu_minutes: int = Field(default=10, ge=1, le=1440)              # высокая нагрузка дольше — предупреждение
+    mem_free_pct: int = Field(default=10, ge=1, le=90)               # доступная память сервера ниже, %
+    container_mem_pct: int = Field(default=90, ge=10, le=100)        # память контейнера от его лимита выше, %
+    disk_free_pct: int = Field(default=10, ge=1, le=90)              # свободно на диске данных ниже, %
+    disk_free_gb: int = Field(default=5, ge=1, le=10_000)            # … или меньше, ГБ
+    job_wait_minutes: int = Field(default=15, ge=1, le=1440)         # задание ждёт исполнителя дольше
+    no_progress_minutes: int = Field(default=15, ge=1, le=1440)      # задание без хода выполнения дольше (пульс аренды при этом может быть живым)
+    ksc_stale_hours: int = Field(default=26, ge=1, le=720)           # данные источника KSC (расчёт зон) старше
+    bi_stale_hours: int = Field(default=30, ge=1, le=720)            # нет успешного импорта BI дольше (для источников с расписанием)
+    sql_long_seconds: int = Field(default=60, ge=5, le=86_400)       # запрос PostgreSQL выполняется дольше
+    errors_24h: int = Field(default=50, ge=1, le=100_000)            # ошибок в журнале событий за сутки больше
+    heartbeat_seconds: int = Field(default=90, ge=30, le=3600)       # нет пульса службы дольше — «не отвечает»
+
+
+GROUPS: dict[str, type[_Group]] = {"tech": TechSettings, "appearance": AppearanceSettings, "bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
                                    "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings}
 
 

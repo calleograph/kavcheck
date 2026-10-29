@@ -12,7 +12,7 @@ import CatalogAdmin from "./admin/CatalogAdmin";
 import VdbAdmin from "./admin/VdbAdmin";
 import UpdatesAdmin from "./admin/UpdatesAdmin";
 import { AuditAdmin, JournalAdmin } from "./admin/JournalAdmin";
-import SystemAdmin from "./admin/SystemAdmin";
+import TechAdmin from "./admin/TechAdmin";
 import ZonesAdmin from "./admin/ZonesAdmin";
 import MailAdmin from "./admin/MailAdmin";
 import OrgAdmin from "./admin/OrgAdmin";
@@ -22,7 +22,7 @@ import LogsAdmin from "./admin/LogsAdmin";
 import ComponentsAdmin from "./admin/ComponentsAdmin";
 
 const LEDE: Record<string, string> = {
-  system: "Работают ли сервисы KAV Checker и доступны ли источники KSC.",
+  system: "Исправна ли сама система: сервер, контейнеры, фоновые задания и очереди, PostgreSQL, источники KSC и BI, Pentest, версии компонентов и ошибки — что происходит внутри и где искать причину.",
   sources: "Подключения только на чтение: базы Серверов администрирования KSC (учётная запись с ролью db_datareader) и BI-выгрузки сотрудников и устройств (Excel через SMB).",
   users: "Учётные записи, роли и доступ к источникам KSC.",
   ldap: "Вход доменных пользователей: подключения LDAPS, доверенные сертификаты, правила доступа по группам Active Directory.",
@@ -51,7 +51,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
   return (
     <section>
       <PageHead title={label} lede={LEDE[tab]} />
-      {tab === "system" && <SystemAdmin onOpen={go} />}
+      {tab === "system" && <TechAdmin onOpen={go} />}
       {tab === "sources" && <SourcesAdmin ctx={ctx} />}
       {tab === "licenses" && <LicensesAdmin sources={ctx.sources} />}
       {tab === "pentest" && <PentestAdmin />}

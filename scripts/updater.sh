@@ -6,7 +6,7 @@
 # Контейнер backend не имеет доступа к Docker и git хоста. Веб-интерфейс кладёт запрос в $DATA_ROOT/updater/request.txt (простые строки key=value),
 # помощник выполняет ТОЛЬКО фиксированный набор: check | preflight | update [target=vX.Y.Z] | rollback | backup | restore [target=имя копии]. Произвольные команды выполнить нельзя.
 # Файлы обмена: request.txt (из веб-интерфейса), status.json, remote.json, backups.json, update.log (последнее обновление/откат/восстановление; предыдущее —
-# update.prev.log), backup.log, history.ndjson, preflight.json, report.json, system.json (образы проекта, место на дисках, размер резервных копий — раз в 5 минут).
+# update.prev.log), backup.log, history.ndjson, preflight.json, report.json, system.json (образы проекта, место на дисках, размер резервных копий — раз в 5 минут), containers.json (контейнеры установки — раз в минуту), dirs.json (размеры каталогов данных — раз в 15 минут).
 # Надёжность: служба systemd с Restart=always без предела перезапусков; при старте обрабатывается прерванное обновление (scripts/recover.sh); зависшее действие
 # (общий тайм-аут UPD_TIMEOUT_TOTAL или нет вывода UPD_STALL_TOTAL) останавливается вместе с дочерними процессами, затем выполняется восстановление; после обновления
 # помощник сам перезапускается на новом коде, а файл службы обновляется (sync-unit).
@@ -71,6 +71,46 @@ do_system() { # сведения о сервере для раздела «Со�
     "$(du -sb "$bdir" 2>/dev/null | cut -f1 || echo null)" "$(df -PB1 "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /)" 2>/dev/null | awk 'NR==2{print $4}')" \
     "$(df -PB1 "$DATA_ROOT" 2>/dev/null | awk 'NR==2{print $4}')" "$(update_mode)" "$(jesc "$(registry_repo)")" "false" "$([ -n "${NPM_REGISTRY:-}" ] && echo true || echo false)" \
     "$([ -n "${PIP_INDEX_URL:-}" ] && echo true || echo false)" "$(if have_systemd; then unit_verify >/dev/null 2>&1 && echo ok || echo incomplete; else echo none; fi)" | atomic "$CH/system.json"
+}
+do_containers() { # контейнеры этой установки для «Технического состояния»: состояние Docker, проверка здоровья, перезапуски, OOM, лимиты, CPU, память, процессы — раз в минуту, только чтение
+  local all run
+  all="$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --filter "label=com.docker.compose.oneoff=False" 2>/dev/null | tr '\n' ' ')"
+  run="$(docker ps -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --filter "label=com.docker.compose.oneoff=False" 2>/dev/null | tr '\n' ' ')"
+  # shellcheck disable=SC2086
+  { [ -n "$all" ] && docker inspect $all 2>/dev/null || echo "[]"; echo "@@STATS@@"; [ -n "$run" ] && timeout 30 docker stats --no-stream --format '{{json .}}' $run 2>/dev/null; } | python3 -c '
+import json, re, sys, time
+raw = sys.stdin.read(); ins, _, st = raw.partition("@@STATS@@")
+U = {"b": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12, "kib": 1024, "mib": 1024**2, "gib": 1024**3, "tib": 1024**4}
+def size(v):
+    m = re.match(r"\s*([\d.]+)\s*([a-zA-Z]*)", v or "")
+    return int(float(m.group(1)) * U.get(m.group(2).lower() or "b", 1)) if m else None
+stats = {}
+for line in st.splitlines():
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    mu = (d.get("MemUsage") or "").partition("/")[0]; br, _, bw = (d.get("BlockIO") or "").partition("/")
+    stats[d.get("ID", "")[:12]] = {"cpu_pct": float((d.get("CPUPerc") or "0").rstrip("%") or 0), "mem": size(mu), "pids": int(d.get("PIDs") or 0) if str(d.get("PIDs") or "0").isdigit() else None,
+                                   "block_read": size(br), "block_write": size(bw)}
+items = []
+for c in json.loads(ins or "[]"):
+    s, h, lab = c.get("State") or {}, c.get("HostConfig") or {}, (c.get("Config") or {}).get("Labels") or {}
+    hl = (s.get("Health") or {}).get("Log") or []
+    items.append({"name": c.get("Name", "").lstrip("/"), "hostname": (c.get("Config") or {}).get("Hostname", ""), "service": lab.get("com.docker.compose.service", ""), "image": (c.get("Config") or {}).get("Image", ""),
+                  "version": lab.get("org.opencontainers.image.version", ""), "state": s.get("Status", ""), "health": (s.get("Health") or {}).get("Status", ""),
+                  "health_out": (hl[-1].get("Output") or "")[-200:] if hl else "", "health_failing": (s.get("Health") or {}).get("FailingStreak", 0),
+                  "started_at": s.get("StartedAt"), "finished_at": s.get("FinishedAt"), "restarts": c.get("RestartCount", 0), "oom_killed": bool(s.get("OOMKilled")), "exit_code": s.get("ExitCode"),
+                  "error": (s.get("Error") or "")[:300], "mem_limit": h.get("Memory") or None, "cpu_limit": (h.get("NanoCpus") or 0) / 1e9 or None, "pids_limit": h.get("PidsLimit") or None,
+                  **(stats.get((c.get("Id") or "")[:12]) or {})})
+print(json.dumps({"checked_at": int(time.time()), "items": items}, ensure_ascii=False))' | atomic "$CH/containers.json"
+}
+do_dirs() { # размеры каталогов данных (раз в 15 минут: du обходит файлы): база, отчёты, BI, резервные копии, импорт Pentest, журналы помощника
+  local d out="" b
+  for d in postgres reports bi backups pentest-import updater state; do
+    [ -d "$DATA_ROOT/$d" ] || continue; b="$(timeout 120 du -sb "$DATA_ROOT/$d" 2>/dev/null | cut -f1)"; out="${out:+$out,}\"$d\":${b:-null}"
+  done
+  printf '{"checked_at":%s,"dirs":{%s},"total":%s,"free":%s}\n' "$(date +%s)" "$out" "$(df -PB1 "$DATA_ROOT" 2>/dev/null | awk 'NR==2{print $2}')" "$(df -PB1 "$DATA_ROOT" 2>/dev/null | awk 'NR==2{print $4}')" | atomic "$CH/dirs.json"
 }
 # run_action СОСТОЯНИЕ ФАЙЛ_ЖУРНАЛА СКРИПТ АРГУМЕНТЫ… — запуск скрипта в собственной группе процессов с наблюдением: ход этапов из строк «[N/M] …», пульс, общий тайм-аут
 # и отсутствие вывода. Зависшее действие останавливается целиком (TERM, затем KILL), после чего scripts/recover.sh проверяет состояние и возвращает рабочую версию.
@@ -187,11 +227,13 @@ cmd_run() {
     timeout 1200 "$REPO_ROOT/scripts/recover.sh" --env "$ENV_FILE" >>"$CH/update.log" 2>&1 9>&-
   fi
   STATE=idle; ACTION=""; STEP_NAME=""; write_status; backups_json 2>/dev/null || true
-  local last_check=0 last_system=0 now self; self="$(sha256sum "$REPO_ROOT/scripts/updater.sh" 2>/dev/null | cut -d' ' -f1)"
+  local last_check=0 last_system=0 last_cont=0 last_dirs=0 now self; self="$(sha256sum "$REPO_ROOT/scripts/updater.sh" 2>/dev/null | cut -d' ' -f1)"
   while :; do
     now="$(date +%s)"
     if [ -f "$CH/request.txt" ]; then dispatch; elif [ $((now - last_check)) -ge "$CHECK_EVERY" ]; then do_check || true; last_check="$now"
-    elif [ $((now - last_system)) -ge 300 ]; then do_system || true; do_doctor >/dev/null 2>&1 || true; last_system="$now"; write_status; else write_status; fi
+    elif [ $((now - last_system)) -ge 300 ]; then do_system || true; do_doctor >/dev/null 2>&1 || true; last_system="$now"; write_status
+    elif [ $((now - last_cont)) -ge 60 ]; then do_containers || true; last_cont="$now"; write_status
+    elif [ $((now - last_dirs)) -ge 900 ]; then do_dirs || true; last_dirs="$now"; write_status; else write_status; fi
     # после обновления на диске новая версия помощника: перезапускаемся на ней в паузе между действиями
     if [ "$STATE" = idle ] && [ ! -f "$CH/request.txt" ] && [ "$(sha256sum "$REPO_ROOT/scripts/updater.sh" 2>/dev/null | cut -d' ' -f1)" != "$self" ]; then
       info "Файл помощника изменился (обновление) — перезапуск на новой версии"; kill "$HB_PID" 2>/dev/null; exec 9>&-; exec "$REPO_ROOT/scripts/updater.sh" run --env "$ENV_FILE"
@@ -304,6 +346,7 @@ case "$CMD" in
   selftest) cmd_selftest ;;
   check) do_check && ok "Проверка выполнена: $CH/remote.json" || { warn "Проверка не удалась (нет доступа к GitHub?)"; exit 1; } ;;
   system) do_system && cat "$CH/system.json" ;;
+  containers) do_containers && do_dirs && cat "$CH/containers.json" "$CH/dirs.json" ;;
   preflight) preflight "" ;;
   status) cat "$CH/status.json" 2>/dev/null || die "Помощник не запускался" ;;
   print-unit) unit_text ;;

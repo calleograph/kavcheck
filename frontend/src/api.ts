@@ -270,6 +270,45 @@ export type DevicesPage = { total: number; items: DeviceRow[]; all_sources: bool
 export interface DevicesStatus { enabled: boolean; interval_minutes: number; hide_service: boolean; limits: string; items: { source_id: string; source: string; supported: boolean; polled_at: string | null; first_poll_at: string | null; rows_seen: number; error: string | null; queued: boolean }[] }
 export interface DeviceCard { source_id: string; source: string; host_id: number; name: string; ip: string; os: string; group: string; zones: string[]; last_connected: string | null; active: boolean; online: boolean | null; current: DevUser[]; last_user: DevUser | null; week: DevUser[]; history: DevUser[]; hidden_service: number; eol: EolFinding[]; limits: string }
 
+/** «Техническое состояние» (GET /admin/tech): сводка из готовых замеров; у каждого блока — время измерения. */
+export type TechLevel = "ok" | "warn" | "bad" | "unknown";
+export interface TechProblem { level: TechLevel; area: string; text: string; tab: string }
+export interface TechProc { pid: number; name: string; cpu_pct: number | null; threads: number; rss: number }
+export interface TechRes { cpu_pct: number | null; mem: number | null; mem_limit: number | null; mem_peak: number | null; cpu_limit: number | null; pids: number | null; threads: number | null;
+  oom_kill: number | null; high_since: number | null; io_pressure: number | null; top: TechProc[]; hist: [number, number | null, number | null, number | null][]; at: number | null; source: string }
+export interface TechContainer { name: string; service: string; image: string; version: string; state: string; health: string; health_out: string; health_failing: number; started_at: string | null;
+  finished_at: string | null; restarts: number; oom_killed: boolean; exit_code: number | null; error: string; mem_limit: number | null; cpu_limit: number | null; pids_limit: number | null;
+  cpu_pct?: number; mem?: number | null; pids?: number | null; block_read?: number | null; block_write?: number | null }
+export interface TechService { key: string; title: string; purpose: string; level: TechLevel; text: string; func: { level: TechLevel; text: string }; heartbeat_age_s: number | null; started_at: string | null;
+  version: string | null; host: string | null; container: TechContainer | null; res: TechRes; data: Record<string, unknown> }
+export interface TechJob { id: string; kind: string; kind_ru: string; group: string; scope: string; state: "waiting" | "captured" | "running" | "expired"; state_ru: string; stage: string; progress: string | null;
+  queued_at: string | null; started_at: string | null; duration_s?: number | null; wait_s: number | null; progress_age_s?: number | null; heartbeat_age_s?: number | null; executor: string; owner?: string;
+  app_version?: string; lane: string; reason: string; stalled?: boolean; res?: { cpu_pct: number | null; mem: number | null; note: string } | null }
+export interface TechRun { id: number; kind: string; kind_ru: string; group: string; scope: string; status: string; status_ru: string; started_at: string; finished_at: string | null; duration_s: number | null; wait_s: number | null; stage: string; error: string }
+export interface TechKind { kind: string; kind_ru: string; group: string; n: number; failed: number; avg_s: number | null; max_s: number | null; wait_avg_s: number | null; wait_max_s: number | null }
+export interface TechPgProc { pid: number; app: string; state: string; wait: string; query_s: number; xact_s: number | null; kind: string; table: string; sql: string }
+export interface TechTable { table: string; rows_est: number; total: number; heap: number; indexes: number; dead: number; dead_pct: number; last_vacuum: string | null; last_analyze: string | null; seq_scan: number; idx_scan: number }
+export interface TechPg { ok: boolean; error?: string; unsupported?: boolean; version?: string; ping_ms?: number; max_connections?: number; connections?: number; by_state?: Record<string, number>; by_app?: Record<string, number>;
+  active?: number; long?: TechPgProc[]; waiting?: number; locks?: { waiting: { pid: number; app: string; kind: string; table: string; query_s: number }; holder: { pid: number; app: string; state: string; kind: string; table: string; query_s: number | null; xact_s: number | null } }[];
+  long_xact?: TechPgProc[]; autovacuum?: { table: string; query_s: number }[]; stats?: { cache_hit_pct: number | null; temp_files: number; temp_bytes: number; deadlocks: number; commits: number; rollbacks: number; size: number; blks_read: number } | null;
+  at: number; tables: { items: TechTable[]; indexes: { index: string; table: string; size: number; scans: number }[]; at: number } }
+export interface TechKsc { id: string; name: string; active: boolean; check_at: string | null; check_ok: boolean | null; check_error: string | null; ksc_version: string | null;
+  sync: { at: string | null; status: string | null; error: string | null; duration_ms: number | null; hosts: number | null; progress: string | null }; catalog: { at: string | null; status: string | null; error: string | null; duration_ms: number | null };
+  eol: { at: string | null; error: string | null }; devices: { at: string | null; error: string | null }; stale: boolean; current: string[] }
+export interface TechBi { id: string; name: string; kind: string; active: boolean; smb: string | null; last_try_at: string | null; last_ok_at: string | null; last_error: string | null; fail_n: number; next_run_at: string | null;
+  last: { status: string; status_ru: string; message: string; finished_at: string | null; rows: number; devices: number; persons: number; ms: number | null } | null; now: string | null }
+export interface TechState { at: number; cached_at: number; version: string; commit: string; built_at: string; level: TechLevel; problems: TechProblem[]; thresholds: Record<string, number>;
+  host: { at: number; cpus: number; cpu_pct: number | null; load: number[] | null; mem_total: number | null; mem_available: number | null; swap_total: number | null; swap_free: number | null; io_pressure: number | null; mem_pressure: number | null; hist: [number, number | null][] } | null;
+  disk: { total: number; used: number; free: number; path: string } | null; dirs: { checked_at: number; dirs: Record<string, number | null>; total: number | null; free: number | null } | null;
+  helper: { available: boolean; age_s: number | null }; services: TechService[];
+  jobs: { items: TechJob[]; history: TechRun[]; by_kind: TechKind[]; groups: Record<string, string>; worker_pulse_age_s: number | null; running_slots: { task: string; lane: string; for_s: number }[];
+    slots: { slots?: number; slots_requested?: number; cpus?: number; lanes?: Record<string, { used: number; cap: number }>; rss_mb?: number; peak_mb?: number; soft_mb?: number; hard_mb?: number };
+    counts: { total: number; waiting: number; running: number; stalled: number; expired: number; done_24h: number; failed_24h: number; oldest_wait_s: number | null; wait_avg_s: number | null; wait_max_s: number | null } };
+  pg: TechPg; sources: { ksc: TechKsc[]; bi: TechBi[]; pentest: { installed: boolean; alive: boolean; heartbeat_age_s: number | null; nmap: string | null; net_raw: boolean | null; nse_scripts: number | null;
+    nuclei: { version: string; templates: string; templates_n: number; templates_at: string | null; status: string; message: string }; queued: number; running: number; failed_24h: number } };
+  journal: { errors_24h: number; warn_24h: number; last_error: { at: string; category: string; message: string | null; source: string | null } | null; recent: { at: string; level: string; category: string; event: string; source: string | null; message: string | null }[] };
+  components: { counts: Record<string, number>; checked_at: string | null; reviewed_for: string } }
+
 let csrf = "";
 let sourceId: string | null = null;
 let allSources = false;
@@ -661,6 +700,9 @@ export const api = {
     journalExportUrl: (range: string) => `/api/v1/admin/journal/export.csv${qs({ range })}`,
     journalPurge: () => req<{ deleted: number }>("POST", "/admin/journal/purge"),
     system: () => req<SystemStatus>("GET", "/admin/system"),
+    tech: () => req<TechState>("GET", "/admin/tech"),
+    techRefresh: () => req<TechState>("POST", "/admin/tech/refresh"),
+    techReportUrl: (format: "html" | "txt" | "json", external: boolean) => `/api/v1/admin/tech/report${qs({ format, external: external || undefined })}`,
     updates: () => req<UpdatesOverview>("GET", "/admin/updates"),
     updatesCheck: () => req<{ request_id: string }>("POST", "/admin/updates/check"),
     updatesRun: (target = "", build = false) => req<{ request_id: string }>("POST", "/admin/updates/run", { confirm: true, target, ...(build ? { mode: "build", confirm_build: true } : {}) }),

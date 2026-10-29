@@ -58,6 +58,8 @@ class Lease:
         self.stage_text = ""
         self._done = False
         self.progress_at = time.monotonic()
+        self.progress_saved = self.progress_at   # последнее записанное в базу значение (job_leases.progress_at)
+        self.queued_at = None                    # постановка в очередь ограничителя
         self.stalled = False                     # о зависании уже сообщено
         self.frozen = False                      # аренда больше не продлевается
 
@@ -71,7 +73,9 @@ class Lease:
         self.stage_text = stage
         try:
             async with self.jobs.sm() as db:
-                await db.execute(update(JobLease).where(JobLease.kind == self.kind, JobLease.scope == self.scope, JobLease.run_id == self.run_id).values(stage=stage[:160], progress=(progress or None) and progress[:300]))
+                await db.execute(update(JobLease).where(JobLease.kind == self.kind, JobLease.scope == self.scope, JobLease.run_id == self.run_id)
+                                 .values(stage=stage[:160], progress=(progress or None) and progress[:300], progress_at=utcnow()))
+                self.progress_saved = self.progress_at
                 await db.commit()
         except Exception:  # noqa: BLE001
             log.debug("Не записан этап задания", exc_info=True)
@@ -97,7 +101,8 @@ class Lease:
                 gone = (await db.execute(delete(JobLease).where(JobLease.kind == self.kind, JobLease.scope == self.scope, JobLease.run_id == self.run_id))).rowcount
                 now = utcnow()
                 db.add(JobRun(kind=self.kind, scope=self.scope, run_id=self.run_id, owner=self.jobs.owner, app_version=self.jobs.version, started_at=self.started, finished_at=now,
-                              status=status if gone else "lost", stage=self.stage_text[:160], error=(error or None) and error[:2000], duration_ms=int((now - self.started).total_seconds() * 1000)))
+                              status=status if gone else "lost", stage=self.stage_text[:160], error=(error or None) and error[:2000], duration_ms=int((now - self.started).total_seconds() * 1000),
+                              waited_ms=int((self.started - self.queued_at).total_seconds() * 1000) if self.queued_at else None))
                 await db.flush()
                 await _prune(db, self.kind, self.scope)
                 await db.commit()
@@ -119,6 +124,7 @@ class Jobs:
         self.owner = f"{socket.gethostname()}/{os.getpid()}/{uuid.uuid4().hex[:6]}"
         self.held: dict[uuid.UUID, Lease] = {}
         self.waiting: dict[tuple[str, str], dict] = {}          # (вид, область) → {с какого момента, этап}: ждут места у ограничителя, аренды ещё нет
+        self.queued: dict[tuple[str, str], object] = {}         # место получено, аренда ещё не захвачена: с какого момента задание ждало (для queued_at и waited_ms)
         self.stall_s, self.stall_hard_s = 900, 21600
         self.journal = None
         self._stop = asyncio.Event()
@@ -129,6 +135,7 @@ class Jobs:
         self.owner = f"{socket.gethostname()}/{os.getpid()}/{uuid.uuid4().hex[:6]}"
         self.held.clear()
         self.waiting.clear()
+        self.queued.clear()
         return self
 
     def busy_here(self, kind: str, scope: str = "") -> bool:
@@ -144,6 +151,7 @@ class Jobs:
         """Захватить задание или None, если его уже выполняет живой исполнитель. Истёкшая аренда перехватывается, прежний заход помечается «прервано»."""
         now = utcnow()
         run_id = uuid.uuid4()
+        queued = self.queued.pop((kind, scope), None)
         async with self.sm() as db:
             dead = (await db.execute(delete(JobLease).where(JobLease.kind == kind, JobLease.scope == scope, JobLease.lease_until < now)
                                      .returning(JobLease.run_id, JobLease.owner, JobLease.started_at, JobLease.stage, JobLease.app_version))).all()
@@ -151,7 +159,7 @@ class Jobs:
                 db.add(JobRun(kind=kind, scope=scope, run_id=old[0], owner=old[1], app_version=old[4], started_at=old[2], finished_at=now, status="interrupted", stage=old[3],
                               error="Исполнитель завершился или завис: аренда не продлевалась", duration_ms=int((now - old[2]).total_seconds() * 1000)))
             ins = _insert(db)(JobLease.__table__).values(kind=kind, scope=scope, run_id=run_id, owner=self.owner, started_at=now, heartbeat_at=now, lease_until=now + timedelta(seconds=self.ttl),
-                                                         stage=stage, progress=None, app_version=self.version).on_conflict_do_nothing(index_elements=["kind", "scope"])
+                                                         stage=stage, progress=None, app_version=self.version, progress_at=now, queued_at=queued).on_conflict_do_nothing(index_elements=["kind", "scope"])
             got = (await db.execute(ins)).rowcount
             if dead:
                 await db.flush()
@@ -161,6 +169,7 @@ class Jobs:
             return None
         lease = Lease(self, kind, scope, run_id, now)
         lease.stage_text = stage
+        lease.queued_at = queued
         self.held[run_id] = lease
         log.info("Задание начато", extra={"kind": kind, "scope": scope, "stage": stage})
         return lease
@@ -207,10 +216,11 @@ class Jobs:
                 on_wait()
         try:
             async with RES.heavy(task or f"{kind}: {scope}", weight, lane=lane, on_wait=waited):
-                self.waiting.pop(key, None)
+                self.queued[key] = self.waiting.pop(key)["since"]
                 yield True
         finally:
             self.waiting.pop(key, None)
+            self.queued.pop(key, None)
 
     @contextlib.asynccontextmanager
     async def run_heavy(self, kind: str, scope: str = "", stage: str = "запуск", *, task: str = "", weight: int = 1, lane: str = "bg", on_wait=None):
@@ -234,6 +244,12 @@ class Jobs:
             return 0
         async with self.sm() as db:
             res = (await db.execute(update(JobLease).where(JobLease.owner == self.owner, JobLease.run_id.in_(ids)).values(heartbeat_at=now, lease_until=now + timedelta(seconds=self.ttl)).returning(JobLease.run_id))).all()
+            mono, wall = time.monotonic(), utcnow()
+            for rid in ids:                                                          # ход выполнения — отдельно от продления: живой пульс не выдаётся за работу
+                le = self.held.get(rid)
+                if le is not None and le.progress_at != le.progress_saved:
+                    await db.execute(update(JobLease).where(JobLease.run_id == rid).values(progress_at=wall - timedelta(seconds=mono - le.progress_at)))
+                    le.progress_saved = le.progress_at
             await db.commit()
         alive = {r[0] for r in res}
         for rid in ids:
@@ -266,11 +282,30 @@ class Jobs:
             with contextlib.suppress(Exception):
                 await self.journal.emit("system", event, level=level, message=text[:600], data={"kind": le.kind, "scope": le.scope})
 
+    async def reap(self, grace_s: int = 600) -> int:
+        """Снять аренды, просроченные дольше `grace_s`: их исполнитель исчез (контейнер пересоздан с другим именем хоста, процесс убит), а то же задание
+        ещё не запускалось и не перехватило аренду. Заход записывается в историю как прерванный — «выполняется» не висит часами."""
+        now = utcnow()
+        async with self.sm() as db:
+            dead = (await db.execute(delete(JobLease).where(JobLease.lease_until < now - timedelta(seconds=grace_s))
+                                     .returning(JobLease.kind, JobLease.scope, JobLease.run_id, JobLease.owner, JobLease.started_at, JobLease.stage, JobLease.app_version))).all()
+            for k, sc, rid, ow, st, stg, ver in dead:
+                db.add(JobRun(kind=k, scope=sc, run_id=rid, owner=ow, app_version=ver, started_at=st, finished_at=now, status="interrupted", stage=stg,
+                              error="Исполнитель исчез: аренда не продлевалась и снята", duration_ms=int((now - st).total_seconds() * 1000)))
+            await db.commit()
+        for k, sc, *_ in dead:
+            log.warning("Снята брошенная аренда задания", extra={"kind": k, "scope": sc})
+        return len(dead)
+
     async def beat_loop(self) -> None:
         every = max(3.0, self.ttl / 4)
+        last_reap = 0.0
         while not self._stop.is_set():
             try:
                 await self.beat_once()
+                if time.monotonic() - last_reap > 300:
+                    last_reap = time.monotonic()
+                    await self.reap(max(600, self.ttl * 3))
             except Exception:  # noqa: BLE001 — база недоступна: аренда может истечь, запись результата тогда не пройдёт проверку fence
                 log.warning("Не удалось продлить аренды заданий", exc_info=True)
             with contextlib.suppress(asyncio.TimeoutError):
@@ -312,6 +347,10 @@ class Jobs:
         async with self.sm() as db:
             return int((await db.execute(select(func.count()).select_from(JobRun).where(JobRun.kind == kind, JobRun.scope == scope, JobRun.finished_at >= since,
                                                                                           JobRun.status.in_(("error", "interrupted", "lost"))))).scalar_one())
+
+    def waiting_list(self) -> list[dict]:
+        """Для пульса службы: задания, ожидающие места у ограничителя (аренды у них нет)."""
+        return [{"kind": k, "scope": sc, "task": w["task"], "lane": w["lane"], "since": w["since"].isoformat(), "stage": w["stage"]} for (k, sc), w in self.waiting.items()]
 
     async def all_leases(self) -> list[JobLease]:
         async with self.sm() as db:

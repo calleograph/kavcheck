@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from starlette.datastructures import MutableHeaders
 
-from .api import admin, admin_ldap, bi as bi_api, admin_updates, auth, auth_totp, catalog, dashboard, devices as devices_api, eol as eol_api, events, health, hosts, logs as logs_api, hunt as hunt_api, components as components_api, overview, pentest as pentest_api, protection, quick, reports, software, vdb as vdb_api, vulns, zones as zones_api
+from .api import admin, admin_ldap, bi as bi_api, admin_updates, auth, auth_totp, catalog, dashboard, devices as devices_api, eol as eol_api, events, health, hosts, logs as logs_api, hunt as hunt_api, components as components_api, overview, pentest as pentest_api, protection, quick, reports, software, tech as tech_api, vdb as vdb_api, vulns, zones as zones_api
 from .auth.deps import client_ip
 from .search import MaskError
 from .auth.service import AuthService
@@ -143,6 +143,9 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         if start_workers:
             tasks.append(asyncio.create_task(housekeeping(), name="housekeeping"))
             tasks.append(asyncio.create_task(jh.flush_loop(session_maker), name="journal-flush"))
+            from .services.system import heartbeat_loop  # noqa: PLC0415
+
+            tasks.append(asyncio.create_task(heartbeat_loop(session_maker, "backend", lambda: {"version": settings.app_version, "commit": settings.app_git_commit}), name="heartbeat"))
         if run_reports:
             tasks.append(asyncio.create_task(app.state.runner.loop(), name="reports"))
         log.info("Приложение запущено", extra={"version": settings.app_version, "commit": settings.app_git_commit})
@@ -185,7 +188,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
     prefix = "/api/v1"
-    for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, overview.router, overview.lic_router, pentest_api.router, admin.router, logs_api.router, components_api.router, hunt_api.router, bi_api.router,
+    for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, overview.router, overview.lic_router, pentest_api.router, admin.router, tech_api.router, logs_api.router, components_api.router, hunt_api.router, bi_api.router,
               admin_updates.router, vdb_api.router, eol_api.router, devices_api.router, zones_api.router, zones_api.admin_router, zones_api.mail_router, zones_api.triage_router, health.router):
         app.include_router(r, prefix=prefix)
     return app

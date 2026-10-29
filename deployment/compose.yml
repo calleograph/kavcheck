@@ -124,7 +124,7 @@ services:
     volumes:
       - ${DATA_ROOT}/reports:/data/reports
       - ${DATA_ROOT}/bi:/data/bi
-    healthcheck:                                  # пульс пишется раз в 30 секунд (app/services/system.py): нет пульса больше трёх минут — служба зависла
+    healthcheck:                                  # пульс пишется раз в 15 секунд (app/services/system.py): нет пульса больше трёх минут — служба зависла
       test: ["CMD-SHELL", "test -n \"$$(find /tmp/worker.alive -mmin -3 2>/dev/null)\""]
       interval: 30s
       timeout: 5s
