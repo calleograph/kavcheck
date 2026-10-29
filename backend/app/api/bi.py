@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
+from typing import Literal
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
@@ -25,11 +27,13 @@ from ..bi import profile as PR
 from ..bi import read as R
 from ..bi import smb as S
 from ..bi import xlsx as X
+from ..bi import match as M
 from ..bi.match import LEVEL_RU
 from ..bi.service import conn_of, enqueue, next_run, src_dir
-from ..models import BiImport, BiMatch, BiSource, KscSource, utcnow
+from ..models import BiDevice, BiImport, BiMatch, BiSource, KscSource, utcnow
 from ..services.audit import write_audit
 
+log = logging.getLogger("app.bi")
 router = APIRouter(prefix="/bi", tags=["bi"])
 SAMPLE_ROWS = 5
 CHECK_ROWS = 2000
@@ -59,6 +63,7 @@ class OptionsIn(BaseModel):
     stable_s: int = Field(10, ge=0, le=300)
     full_snapshot: bool = True
     owner_drift_pct: int = Field(25, ge=1, le=100)
+    auto_exact: bool = False                                              # автоматически подтверждать однозначные точные совпадения имён (по умолчанию — нет)
 
 
 class SourceIn(BaseModel):
@@ -368,7 +373,9 @@ async def decide(body: DecideIn, su: SessionUser = Depends(require_admin), db: A
     m = (await db.execute(select(BiMatch).where(BiMatch.device_id == body.device_id, BiMatch.ksc_source_id == body.ksc_source_id, BiMatch.host_id == body.host_id))).scalars().first()
     before = m.level if m else ""
     if body.decision == "reset":
-        if m is not None and m.level in ("confirmed", "rejected"):
+        if m is not None and m.level == "confirmed" and m.decided_by == M.RULE:
+            m.level, m.decided_by, m.decided_at, m.note, m.updated_at = "manual", su.display_name[:300], utcnow(), "автоподтверждение отменено администратором", utcnow()   # правило больше не подтвердит эту пару
+        elif m is not None and m.level in M.MANUAL:
             await db.delete(m)
     else:
         if body.decision == "confirm":                      # подтверждено одно соответствие: прочие подтверждения этого устройства снимаются
@@ -392,9 +399,138 @@ async def decide(body: DecideIn, su: SessionUser = Depends(require_admin), db: A
 
 
 @router.get("/matches")
-async def matches(level: str = Query("", pattern=r"^(|auto|confirmed|candidate|ambiguous|conflict|rejected)$"), q: str = Query("", max_length=200), source_id: uuid.UUID | None = None,
+async def matches(level: str = Query("", pattern="^(" + "|".join(R.MATCH_FILTERS) + ")$"), q: str = Query("", max_length=200), source_id: uuid.UUID | None = None,
                   offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_people), db: AsyncSession = Depends(get_db)):
     return await R.match_list(db, level=level, q=q, source_id=source_id, offset=offset, limit=limit, can_source=su.can_use_source)
+
+
+class BulkIn(BaseModel):
+    action: Literal["confirm", "reject", "reset"]
+    scope: Literal["exact", "ids"]                                        # exact — все однозначные точные совпадения (по фильтру, на сервере); ids — отмеченные строки
+    ids: list[int] = Field(default_factory=list, max_length=5000)
+    source_id: uuid.UUID | None = None
+    note: str = Field(default="", max_length=300)
+    preview: bool = True
+
+
+BULK_SKIP_RU = {"already": "уже в этом состоянии", "taken": "компьютер уже сопоставлен с другим устройством", "several": "для устройства отмечено несколько компьютеров",
+                "not_manual": "нет решения, которое можно отменить", "not_exact": "уже не однозначное точное совпадение"}
+
+
+async def _bulk_plan(db: AsyncSession, body: BulkIn, su: SessionUser) -> tuple[list[BiMatch], dict]:
+    """Какие строки изменит массовая операция и какие пропустит (с причиной). Только на сервере — браузер не загружает все записи."""
+    w = R.match_where("exact", body.source_id) if body.scope == "exact" else [BiMatch.id.in_(body.ids or [-1])]
+    rows = [m for m in (await db.execute(select(BiMatch).where(*w).order_by(BiMatch.id))).scalars() if su.can_use_source(m.ksc_source_id)]
+    skipped: dict = {}
+    keep: list[BiMatch] = []
+    per_dev: dict = {}
+    for m in rows:
+        per_dev.setdefault(m.device_id, []).append(m)
+    taken = {(k, h): d for k, h, d in (await db.execute(select(BiMatch.ksc_source_id, BiMatch.host_id, BiMatch.device_id).where(BiMatch.level == "confirmed"))).all()}
+    for m in rows:
+        why = ""
+        if body.action == "confirm":
+            if m.level == "confirmed":
+                why = "already"
+            elif len(per_dev[m.device_id]) > 1:
+                why = "several"
+            elif taken.get((m.ksc_source_id, m.host_id), m.device_id) != m.device_id:
+                why = "taken"
+        elif body.action == "reject" and m.level == "rejected":
+            why = "already"
+        elif body.action == "reset" and m.level not in M.MANUAL:
+            why = "not_manual"
+        if why:
+            skipped[why] = skipped.get(why, 0) + 1
+        else:
+            keep.append(m)
+    return keep, skipped
+
+
+@router.post("/matches/bulk")
+async def bulk(body: BulkIn, request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Массовое решение по сопоставлениям: preview=true — что именно изменится (точное число, примеры, пропуски с причиной); preview=false — выполнение в фоне
+    (порциями, под блокировкой сопоставления источника; повторный запуск не создаёт дублей). Ход и итог — GET /bi/matches/bulk/{op}."""
+    keep, skipped = await _bulk_plan(db, body, su)
+    bi, ksc = await R._src_names(db)                                    # noqa: SLF001
+    devs = {d.id: d for d in (await db.execute(select(BiDevice).where(BiDevice.id.in_([m.device_id for m in keep[:30]] or [-1])))).scalars()} if keep else {}
+    by_bi, by_ksc = {}, {}
+    for m in keep:
+        b = bi[m.bi_source_id].name if m.bi_source_id in bi else ""
+        by_bi[b] = by_bi.get(b, 0) + 1
+        by_ksc[ksc.get(m.ksc_source_id, "")] = by_ksc.get(ksc.get(m.ksc_source_id, ""), 0) + 1
+    plan = {"action": body.action, "n": len(keep), "skipped": [{"reason": k, "text": BULK_SKIP_RU[k], "n": v} for k, v in skipped.items()], "by_bi_source": by_bi, "by_ksc_source": by_ksc,
+            "sample": [{"device": devs[m.device_id].name if m.device_id in devs else "", "host_name": m.host_name, "bi_source": bi[m.bi_source_id].name if m.bi_source_id in bi else "",
+                        "ksc_source": ksc.get(m.ksc_source_id, ""), "level_ru": M.LEVEL_RU.get(m.level, m.level), "name_ru": M.NAME_RU.get(m.name_match, "")} for m in keep[:30]]}
+    if body.preview or not keep:
+        return plan
+    ops = request.app.state.__dict__.setdefault("bi_ops", {})
+    if any(o["status"] == "running" for o in ops.values()):
+        raise HTTPException(status_code=409, detail="Уже выполняется другая массовая операция с сопоставлениями — дождитесь её завершения")
+    op = uuid.uuid4().hex[:12]
+    ops[op] = {"id": op, "status": "running", "action": body.action, "total": len(keep), "done": 0, "changed": 0, "skipped": plan["skipped"], "by": su.display_name, "started_at": utcnow(), "error": None}
+    for k in [k for k, o in ops.items() if o["status"] != "running"][:-20]:
+        ops.pop(k, None)
+    t = asyncio.get_running_loop().create_task(_bulk_run(request.app, ops[op], [m.id for m in keep], body, su))
+    request.app.state.__dict__.setdefault("bi_op_tasks", set()).add(t)
+    t.add_done_callback(request.app.state.bi_op_tasks.discard)
+    return {**plan, "op": op}
+
+
+async def _bulk_run(app, op: dict, ids: list[int], body: BulkIn, su: SessionUser) -> None:
+    from ..db import xact_lock  # noqa: PLC0415
+
+    sm, now = app.state.session_maker, utcnow()
+    level = {"confirm": "confirmed", "reject": "rejected"}.get(body.action)
+    note = body.note or {"confirm": "массовое подтверждение", "reject": "массовое отклонение", "reset": ""}[body.action]
+    try:
+        srcs: set = set()
+        for i in range(0, len(ids), 200):
+            async with sm() as db:
+                part = (await db.execute(select(BiMatch).where(BiMatch.id.in_(ids[i:i + 200])))).scalars().all()
+                for b in sorted({m.bi_source_id for m in part}, key=str):
+                    await xact_lock(db, f"bi-match:{b}")                 # одновременная операция второго администратора или пересчёт сопоставления — по очереди
+                taken = {(k, h): d for k, h, d in (await db.execute(select(BiMatch.ksc_source_id, BiMatch.host_id, BiMatch.device_id).where(BiMatch.level == "confirmed"))).all()}
+                for m in (await db.execute(select(BiMatch).where(BiMatch.id.in_(ids[i:i + 200])))).scalars():     # перечитано под блокировкой: идемпотентно
+                    if body.action == "reset":
+                        if m.level == "confirmed" and m.decided_by == M.RULE:
+                            m.level, m.decided_by, m.decided_at, m.note, m.updated_at = "manual", su.display_name[:300], now, "автоподтверждение отменено администратором", now
+                        elif m.level in M.MANUAL:
+                            await db.delete(m)
+                        else:
+                            continue
+                    elif m.level == level or (level == "confirmed" and taken.get((m.ksc_source_id, m.host_id), m.device_id) != m.device_id):
+                        continue
+                    else:
+                        if level == "confirmed":
+                            await db.execute(delete(BiMatch).where(BiMatch.device_id == m.device_id, BiMatch.level == "confirmed", BiMatch.id != m.id))
+                            taken[(m.ksc_source_id, m.host_id)] = m.device_id
+                        m.level, m.decided_by, m.decided_at, m.note, m.updated_at = level, su.display_name[:300], now, note[:500], now
+                    op["changed"] += 1
+                    srcs.add(m.bi_source_id)
+                for s_ in srcs:
+                    src = await db.get(BiSource, s_)
+                    if src is not None:
+                        src.match_stamp = ""                             # пересчёт сопоставления на ближайшем такте: прочие кандидаты подтверждённых устройств уходят
+                await db.commit()
+            op["done"] = min(len(ids), i + 200)
+        async with sm() as db:
+            write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action=f"bi.match.bulk_{body.action}", target_type="bi_match", target_id=body.scope,
+                        details={"selected": len(ids), "changed": op["changed"], "scope": body.scope, "source": str(body.source_id) if body.source_id else None})
+            await db.commit()
+        op["status"] = "done"
+    except Exception as exc:  # noqa: BLE001 — сделанное порциями сохранено; повтор безопасен
+        log.exception("Массовая операция с сопоставлениями BI не удалась")
+        op["status"], op["error"] = "failed", f"{type(exc).__name__}: {str(exc)[:200]}"
+    op["finished_at"] = utcnow()
+
+
+@router.get("/matches/bulk/{op}")
+async def bulk_status(op: str, request: Request, su: SessionUser = Depends(require_admin)):
+    got = getattr(request.app.state, "bi_ops", {}).get(op)
+    if got is None:
+        raise HTTPException(status_code=404, detail="Операция не найдена")
+    return got
 
 
 # ------------------------------------------------------------------------------------------------ сотрудники и устройства BI

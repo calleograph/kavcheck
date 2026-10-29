@@ -1530,7 +1530,7 @@ class BiRecord(Base):
 
 class BiMatch(Base):
     """Сопоставление устройства BI с компьютером KSC: auto — предполагаемое (имя и подтверждающие признаки), confirmed/rejected — решение администратора;
-    candidate/ambiguous/conflict — не сопоставлено (только имя, несколько компьютеров, противоречие)."""
+    candidate/ambiguous/conflict — не сопоставлено (только имя, несколько компьютеров, противоречие); manual — автоматическое подтверждение отменено, решает администратор."""
     __tablename__ = "bi_matches"
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     device_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("bi_devices.id", ondelete="CASCADE"), nullable=False)
@@ -1545,4 +1545,7 @@ class BiMatch(Base):
     decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    # совпадение имени: exact — полное имя совпадает (регистр и пробелы не учитываются) и пара однозначна (можно подтверждать массово); exact_dup — совпадает, но есть
+    # конкуренты (несколько компьютеров или устройств BI с этим именем, подтверждено другое соответствие); short — совпадает короткое имя, а полное различается (имя ↔ FQDN)
+    name_match: Mapped[str] = mapped_column(String(10), nullable=False, default="", server_default="")
     __table_args__ = (Index("ux_bi_matches_pair", "device_id", "ksc_source_id", "host_id", unique=True), Index("ix_bi_matches_host", "ksc_source_id", "host_id"), Index("ix_bi_matches_src", "bi_source_id", "level"))

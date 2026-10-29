@@ -4,6 +4,7 @@ import { api, type ApiError, type HuntHistoryRow, type Job } from "../api";
 import type { Ctx } from "../App";
 import { Icon } from "../components/Icons";
 import { QuickReportPanel } from "../components/QuickReport";
+import { ListFoot, useInfinite, type Chunk } from "../components/Infinite";
 import { PageHead, Tabs, Empty, SkelRows } from "../components/ui";
 import { fmt, num } from "../util";
 import { JOB_STATUS } from "./DashboardPage";
@@ -37,20 +38,22 @@ export default function HuntPage({ ctx }: { ctx: Ctx }) {
 }
 
 function History({ go }: { go: (t: string, e?: Record<string, string>) => void }) {
-  const [items, setItems] = useState<HuntHistoryRow[] | null>(null); const [err, setErr] = useState(""); const [report, setReport] = useState(false);
-  useEffect(() => { api.hunt.jobs({ limit: 100 }).then((r) => setItems(r.items)).catch((e) => setErr((e as ApiError).message)); }, []);
-  if (err) return <div className="alert error"><div className="alert-body">{err}</div></div>;
+  const [report, setReport] = useState(false);
+  const list = useInfinite<HuntHistoryRow>("hunt:history", [], (offset, limit) => api.hunt.jobs({ offset, limit }) as unknown as Promise<Chunk<HuntHistoryRow>>, 50);
+  const items = list.initial ? null : list.items;
+  if (list.error && list.initial) return <div className="alert error"><div className="alert-body">{list.error}</div></div>;
   if (!items) return <SkelRows rows={4} cols={5} />;
   if (!items.length) return <Empty icon="history" title="Целевых проверок пока не было" action={<button className="btn primary" onClick={() => go("new")}>Новое задание</button>}>Здесь сохраняются критерии, область, результаты, журнал и отчёты каждой проверки; любую можно повторить.</Empty>;
   return (<>
-    <div className="toolbar"><span className="muted small">{num(items.length)} {items.length === 1 ? "задание" : "заданий"}</span><div className="spacer" />
+    <div className="toolbar"><span className="muted small">{num(list.total)} {list.total === 1 ? "задание" : "заданий"}</span><div className="spacer" />
       <button type="button" className="btn mini" onClick={() => setReport(true)}><Icon name="file" size={15} />Сформировать отчёт</button></div>
     {report && <QuickReportPanel kind="quick_hunt" title="Отчёт: история целевого поиска" lede="Все задания CVE Hunt: итог, находки, ошибки" options={{ scope: false }} params={{ view: "jobs" }} activityDays={0} canReport onClose={() => setReport(false)} />}
     <div className="table-scroll"><table className="table"><thead><tr><th>Задание</th><th>Критерии</th><th>Режим</th><th className="num">Подтверждено</th><th className="num">Вероятно</th><th className="num">Требует проверки</th><th>Состояние</th></tr></thead>
       <tbody>{items.map((j) => (
-        <tr key={j.id}><td><button type="button" className="link-btn strong-link" onClick={() => go("results", { job: j.id })}>{j.title}</button><span className="sub small">{j.created_by} · {fmt(j.created_at)}{j.base_job_id ? " · повтор" : ""}</span></td>
+        <tr key={j.id} className="row-in"><td><button type="button" className="link-btn strong-link" onClick={() => go("results", { job: j.id })}>{j.title}</button><span className="sub small">{j.created_by} · {fmt(j.created_at)}{j.base_job_id ? " · повтор" : ""}</span></td>
           <td className="small">{j.criteria.map((c) => c.title.slice(0, 60)).join("; ")}</td><td className="small">{j.mode === "ksc" ? "KSC" : j.mode === "network" ? "Сеть" : "KSC + сеть"}</td>
           <td className="num">{num(j.counts.confirmed ?? 0)}</td><td className="num">{num(j.counts.probable ?? 0)}</td><td className="num">{num(j.counts.needs_check ?? 0)}</td><td><span className={`badge ${STATUS_TONE[j.status]}`}>{j.status_ru}</span></td></tr>))}</tbody></table></div>
+    <ListFoot list={list} />
   </>);
 }
 

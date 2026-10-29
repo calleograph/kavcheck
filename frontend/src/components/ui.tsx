@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { num, plural } from "../util";
 import { Icon, type IconName } from "./Icons";
@@ -52,11 +52,21 @@ function useGlide(dep: unknown) {
     const measure = () => {
       const el = box.current?.querySelector<HTMLElement>("[data-on='true']");
       setPos(el ? { x: el.offsetLeft, w: el.offsetWidth } : null);
+      edges();
+    };
+    // не поместившиеся варианты: затухание у края, где они скрыты (полоса прокрутки у .seg спрятана); выбранный вариант — в видимой части
+    const edges = () => {
+      const b = box.current;
+      if (!b) return;
+      b.dataset.more = `${b.scrollLeft > 2 ? "l" : ""}${b.scrollLeft + b.clientWidth < b.scrollWidth - 2 ? "r" : ""}`;
     };
     measure();
+    const on = box.current?.querySelector<HTMLElement>("[data-on='true']");
+    if (box.current && on && on.offsetLeft + on.offsetWidth > box.current.scrollLeft + box.current.clientWidth) box.current.scrollLeft = on.offsetLeft + on.offsetWidth - box.current.clientWidth + 24;   // только по горизонтали: страницу не прокручивать
     const ro = new ResizeObserver(measure);
-    if (box.current) ro.observe(box.current);
-    return () => ro.disconnect();
+    if (box.current) { ro.observe(box.current); box.current.addEventListener("scroll", edges, { passive: true }); }
+    const b = box.current;
+    return () => { ro.disconnect(); b?.removeEventListener("scroll", edges); };
   }, [dep]);
   return { box, pos };
 }
@@ -218,5 +228,35 @@ export function MultiCheck({ label, options, value, onChange }: { label: string;
           <input type="checkbox" checked={value.includes(o.id)} onChange={(e) => onChange(e.target.checked ? [...value, o.id] : value.filter((x) => x !== o.id))} />{o.name}</label>)}
       </div>
     </fieldset>
+  );
+}
+
+const reduceMotion = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+/** «Наверх»: появляется после глубокой прокрутки (страница или своя прокрутка панели — target), плавно возвращает в начало (без анимации при «уменьшить движение»);
+ *  затем несколько секунд предлагает вернуться к прежнему месту. Не перекрывает панель выбора внизу; Home в списке работает как обычно. */
+export function ToTop({ target, after = 900 }: { target?: RefObject<HTMLElement | null>; after?: number }) {
+  const [y, setY] = useState(0);
+  const [back, setBack] = useState<number | null>(null);
+  useEffect(() => {
+    const el: HTMLElement | Window = target?.current ?? window;
+    const get = () => (target?.current ? target.current.scrollTop : window.scrollY);
+    let raf = 0;
+    const on = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => setY(get())); };
+    el.addEventListener("scroll", on, { passive: true });
+    on();
+    return () => { el.removeEventListener("scroll", on); cancelAnimationFrame(raf); };
+  }, [target]);
+  useEffect(() => { if (back == null) return; const t = window.setTimeout(() => setBack(null), 8000); return () => window.clearTimeout(t); }, [back]);
+  // «К прежнему месту» исчезает, если пользователь сам ушёл вниз — но не пока идёт плавная прокрутка наверх
+  const arrived = useRef(false);
+  useEffect(() => { if (back == null) arrived.current = false; else if (y < after) arrived.current = true; else if (arrived.current) setBack(null); }, [y, back, after]);
+  const go = (top: number) => (target?.current ?? window).scrollTo({ top, behavior: reduceMotion() ? "auto" : "smooth" });
+  if (y < after && back == null) return null;
+  return (
+    <div className={`to-top ${target ? "in-box" : ""}`}>
+      {y >= after ? <button type="button" className="to-top-btn" aria-label="Наверх, к началу списка" title="Наверх" onClick={() => { setBack(y); go(0); }}><Icon name="chevronU" size={18} /></button>
+        : back != null && <button type="button" className="to-top-back" onClick={() => { go(back); setBack(null); }}><Icon name="chevronD" size={15} />К прежнему месту</button>}
+    </div>
   );
 }

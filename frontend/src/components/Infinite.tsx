@@ -45,15 +45,24 @@ export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset:
   const extraRef = useRef(extra);
   extraRef.current = extra;
 
+  const inflight = useRef<number | null>(null);                        // смещение запрошенной порции: быстрая прокрутка не шлёт один и тот же запрос дважды
   const load = useCallback((offset: number, reset: boolean) => {
+    if (!reset && inflight.current === offset) return;
     const id = ++req.current;
+    inflight.current = reset ? null : offset;
     setLoading(true); setError(""); if (reset) setRefreshing(true);
     fetcher.current(offset, pageSize).then((r) => {
       if (id !== req.current) return;
       const { items: got, total: t, ...rest } = r;
-      setItems((cur) => (reset ? got : [...cur, ...got])); setTotal(t); setExtra(rest); setInitial(false);
+      setItems((cur) => {
+        if (reset) return got;
+        const seen = new Set(cur.map(rowKey));                           // порция пересеклась с уже загруженной (данные изменились между запросами) — без повторов строк
+        return [...cur, ...got.filter((x) => { const k = rowKey(x); return k === undefined || !seen.has(k); })];
+      });
+      // пустая порция при «всего» больше загруженного (число устарело) — список закончен: не грузить бесконечно
+      setTotal(!reset && !got.length ? offset : t); setExtra(rest); setInitial(false);
     }).catch((e) => { if (id === req.current) { setError((e as ApiError).message); setInitial(false); } })
-      .finally(() => { if (id === req.current) { setLoading(false); setRefreshing(false); } });
+      .finally(() => { if (id === req.current) { setLoading(false); setRefreshing(false); inflight.current = null; } });
   }, [pageSize]);
 
   // для каких фильтров строки уже есть: при возврате к списку — из памяти; повторный вызов эффекта (StrictMode) не перезагружает
@@ -150,20 +159,45 @@ export function VirtualRows<T>({ list, colSpan, row, estimate = 44, scrollEl, gr
   );
 }
 
-/** Под списком: сколько показано из скольких, подгрузка, ошибка. Вместо постраничной навигации. */
+/** Под списком: сколько показано из скольких, автоматическая подгрузка следующей порции при подходе к концу, ошибка с повтором, конец списка.
+ *  Подгрузка — здесь (а не только в VirtualRows): любой список с ListFoot догружается при прокрутке, сколько бы в нём ни было записей. */
 export function ListFoot<T>({ list, scrollEl }: { list: Infinite<T>; scrollEl?: RefObject<HTMLElement | null> }) {
+  const sentinel = useRef<HTMLDivElement>(null);
+  const more = useRef(list.loadMore);
+  more.current = list.loadMore;
+  const want = !list.initial && !list.done && !list.error;
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || !want) return;
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) more.current(); }, { root: scrollEl?.current ?? null, rootMargin: "800px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [want, list.items.length, scrollEl]);
   if (list.initial && !list.error) return null;
   return (
-    <div className="list-foot" role="status">
-      {list.error ? <><span className="bad-text">{list.error}</span><button type="button" className="link-btn" onClick={list.loadMore}>Повторить</button></>
-        : list.loading && list.items.length ? <><span className="spin sm" aria-hidden />Загрузка… {num(list.items.length)} из {num(list.total)}</>
-          : list.total ? <>{list.done ? `Всего: ${num(list.total)}` : `Показано ${num(list.items.length)} из ${num(list.total)}`}
-            {list.items.length > 60 && <button type="button" className="link-btn" onClick={() => (scrollEl?.current ?? window).scrollTo({ top: 0, behavior: "smooth" })}>Наверх</button>}</> : null}
+    <div className="list-foot" role="status" aria-live="polite">
+      <div ref={sentinel} className="list-sentinel" aria-hidden />
+      {list.error ? <><span className="bad-text">Следующая порция не загружена: {list.error}</span><button type="button" className="btn mini" onClick={list.loadMore}>Повторить</button></>
+        : list.loading && list.items.length ? <><span className="dots" aria-hidden><i /><i /><i /></span>Загрузка… {num(list.items.length)} из {num(list.total)}</>
+          : list.total ? <>{list.done ? (list.total > 50 ? `Это все записи: ${num(list.total)}` : `Всего: ${num(list.total)}`) : `Показано ${num(list.items.length)} из ${num(list.total)}`}
+            {!list.done && <button type="button" className="link-btn" onClick={list.loadMore}>Загрузить ещё</button>}</> : null}
     </div>
   );
 }
 
+/** Ключ строки для защиты от повторов: id, key или пара источник+компьютер; без ключа строка не сверяется. */
+function rowKey(x: unknown): string | undefined {
+  const o = x as Record<string, unknown> | null;
+  if (!o || typeof o !== "object") return undefined;
+  if (o.id !== undefined) return String(o.id);
+  if (o.key !== undefined) return String(o.key);
+  if (o.host_id !== undefined) return `${o.source_id ?? ""}:${o.host_id}`;
+  return undefined;
+}
+
 const kept = new Map<string, unknown>();
+/** Задать сохранённое состояние другой вкладки до перехода к ней (отбор, вид). */
+export const keep = (key: string, v: unknown) => { kept.set(key, v); };
 /** useState, значение которого живёт весь сеанс: фильтры и сортировка списка сохраняются при уходе в карточку и возврате. */
 export function useKept<T>(key: string, initial: T): [T, (v: T | ((p: T) => T)) => void] {
   const [v, setV] = useState<T>(() => (kept.has(key) ? (kept.get(key) as T) : initial));

@@ -4,6 +4,7 @@ import { SecretInput, secretToSend } from "../../components/Common";
 import { ConfirmDialog, Modal } from "../../components/Dialogs";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
+import { ListFoot, useInfinite, type Chunk } from "../../components/Infinite";
 import { Empty, Segmented, SkelRows, Tabs } from "../../components/ui";
 import { fmt, num } from "../../util";
 import { DEFAULT_ZONE_CATS, ZONE_CATEGORIES } from "../zoneCats";
@@ -176,9 +177,13 @@ function ScheduleEditor({ s, zones, sources, onClose, onSaved }: { s: Schedule |
 // ------------------------------------------------------------------------------------------------ история
 function History() {
   const [status, setStatus] = useState(""); const [q, setQ] = useState("");
-  const [data, setData] = useState<{ items: OutboxRow[]; total: number; counts: Record<string, number> } | null>(null); const [err, setErr] = useState(""); const [tick, setTick] = useState(0);
+
   const [toast, show] = useToast();
-  useEffect(() => { let live = true; const t = window.setTimeout(() => { api.admin.mail.outbox({ status, q, limit: 100 }).then((r) => live && setData(r)).catch((e) => live && setErr((e as ApiError).message)); }, 200); return () => { live = false; window.clearTimeout(t); }; }, [status, q, tick]);
+  const [err, setErr] = useState(""); const [tick, setTick] = useState(0);
+  const [aq, setAq] = useState(q);
+  useEffect(() => { const t = window.setTimeout(() => setAq(q), 250); return () => window.clearTimeout(t); }, [q]);
+  const list = useInfinite<OutboxRow>("mail:outbox", [status, aq, tick], (offset, limit) => api.admin.mail.outbox({ status, q: aq, offset, limit }) as unknown as Promise<Chunk<OutboxRow>>, 50);
+  const data = list.initial ? null : { items: list.items, total: list.total, counts: (list.extra?.counts ?? {}) as Record<string, number> };
   useEffect(() => { if (!data?.items.some((r) => r.status === "queued" || r.status === "sending")) return; const t = window.setInterval(() => setTick((x) => x + 1), 5000); return () => window.clearInterval(t); }, [data]);
   const retry = async (r: OutboxRow) => { try { await api.admin.mail.retry(r.id); show("Отправка поставлена в очередь повторно"); setTick(tick + 1); } catch (e) { setErr((e as ApiError).message); } };
   const c = data?.counts ?? {};
@@ -189,12 +194,13 @@ function History() {
     <div className="table-scroll">{!data ? <SkelRows cols={6} /> : !data.items.length ? <Empty icon="mail" title="Отправок пока не было">Здесь появятся плановые и ручные отправки: когда сформирован отчёт, кому направлен и принял ли его сервер почты.</Empty> : (
       <table className="table compact"><thead><tr><th>Сформировано</th><th>Зона и период</th><th>Кому</th><th>Статус</th><th>Попыток</th><th /></tr></thead>
         <tbody>{data.items.map((r) => (
-          <tr key={r.id}><td className="nowrap small">{fmt(r.created_at)}{r.kind === "manual" && <span className="sub">вручную</span>}</td>
+          <tr key={r.id} className="row-in"><td className="nowrap small">{fmt(r.created_at)}{r.kind === "manual" && <span className="sub">вручную</span>}</td>
             <td>{r.zone_name || "—"}<span className="sub">{r.period_key.startsWith("manual") ? "вне расписания" : r.period_key}{r.stats?.problem_hosts !== undefined ? ` · проблемных: ${num(r.stats.problem_hosts)} из ${num(r.stats.total)}` : ""}</span></td>
             <td className="small">{r.to.join(", ") || "—"}{r.cc.length > 0 && <span className="sub">копия: {r.cc.join(", ")}</span>}{r.refused.length > 0 && <span className="sub warn-text">отклонены сервером: {r.refused.map((x) => x.address).join(", ")}</span>}</td>
             <td><span className={`badge ${STATUS[r.status][1]}`}>{STATUS[r.status][0]}</span>{r.status === "accepted" && <span className="sub">{fmt(r.sent_at)}</span>}{r.status === "queued" && r.next_attempt_at && <span className="sub">следующая попытка {fmt(r.next_attempt_at)}</span>}
               {r.last_error && <span className="sub bad-text" title={r.last_error}>{r.last_error.slice(0, 140)}</span>}</td>
             <td className="num">{r.attempts}</td><td>{(r.status === "failed" || r.status === "skipped") && <button className="btn mini" onClick={() => retry(r)}>Повторить</button>}</td></tr>))}</tbody></table>)}</div>
+    <ListFoot list={list} />
     <p className="muted small">«Принято сервером» означает, что почтовый сервер принял письмо к отправке; это не подтверждает доставку и прочтение адресатом. Записи хранятся 180 суток.</p>
     {toast}
   </>);

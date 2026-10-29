@@ -6,7 +6,7 @@ import { Modal } from "./Dialogs";
 import { ReportButton } from "./FilterBar";
 import { Icon } from "./Icons";
 import { ListFoot, VirtualRows, useInfinite, type Chunk } from "./Infinite";
-import { Empty, MaskHint, SkelRows, SortTh } from "./ui";
+import { Empty, MaskHint, SkelRows, SortTh, ToTop } from "./ui";
 import { fmt, num, plural } from "../util";
 import { OwnerSub } from "./OwnerBlock";
 
@@ -66,6 +66,7 @@ export function HostsDrawer({ title, lede, listKey, deps, fetchPage, onClose, ac
           </tbody>
         </table>)}
       <ListFoot list={list} scrollEl={scroll} />
+      <ToTop target={scroll} after={700} />
       {foot}
     </Modal>
   );

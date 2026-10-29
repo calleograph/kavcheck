@@ -10,7 +10,7 @@ import { fmt, fmtDate, num } from "../../util";
 
 interface Form { id?: string; name: string; is_active: boolean; smb_host: string; smb_port: number; smb_share: string; smb_path: string; username: string; password: string; password_set: boolean; smb_encrypt: boolean;
   file_mode: "fixed" | "auto"; file_name: string; schedule_time: string; timezone: string; options: BiOptions; profile: Partial<BiProfile> }
-const DEF_OPT: BiOptions = { partial: true, max_reject_pct: 5, drift_pct: 20, max_mb: 50, max_rows: 200000, keep_files: 10, keep_days: 90, retry_minutes: 60, retries: 3, stable_s: 10, full_snapshot: true, owner_drift_pct: 25 };
+const DEF_OPT: BiOptions = { partial: true, max_reject_pct: 5, drift_pct: 20, max_mb: 50, max_rows: 200000, keep_files: 10, keep_days: 90, retry_minutes: 60, retries: 3, stable_s: 10, full_snapshot: true, owner_drift_pct: 25, auto_exact: false };
 const empty = (): Form => ({ name: "", is_active: true, smb_host: "", smb_port: 445, smb_share: "", smb_path: "", username: "", password: "", password_set: false, smb_encrypt: true, file_mode: "fixed", file_name: "computers.xlsx",
   schedule_time: "06:00", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", options: { ...DEF_OPT }, profile: {} });
 const ST_CLS: Record<string, string> = { ok: "ok", unchanged: "ok", partial: "warn", rejected: "err", failed: "err", running: "accent", queued: "", waiting: "warn", connecting: "accent", fetching: "accent",
@@ -149,6 +149,7 @@ function SourceForm({ form: f, storage, set, setOpt, busy, error, onSave, onClos
             <div className="cols">{numIn("stable_s", "Ожидание стабильности файла, с", 0, 300, "Размер и время изменения не должны меняться")}{numIn("max_mb", "Наибольший размер файла, МБ", 1, 500)}</div>
             <div className="cols">{numIn("max_rows", "Наибольшее число строк", 100, 2000000)}{numIn("owner_drift_pct", "Порог смены владельцев, %", 1, 100, "Доля устройств, у которых сменился владелец; больше — импорт отклоняется до подтверждения (защита истории от сдвига столбцов)")}</div>
             <label className="check"><input type="checkbox" className="switch" checked={o.full_snapshot} onChange={(e) => setOpt("full_snapshot", e.target.checked)} /><span className="check-body">Выгрузка полная<span className="help">Отсутствие устройства в снимке означает, что BI его больше не показывает (связь — «текущий статус неизвестен»). Выключите для выгрузок изменений</span></span></label>
+            <label className="check"><input type="checkbox" className="switch" checked={o.auto_exact} onChange={(e) => setOpt("auto_exact", e.target.checked)} /><span className="check-body">Автоматически подтверждать однозначные точные совпадения имён устройств<span className="help">Только если имя единственное среди устройств BI и компьютеров всех источников KSC, нет противоречий и другого подтверждённого соответствия, имя не условное. Основание — «подтверждено автоматически по правилу точного совпадения имени»; решение можно отменить. По умолчанию выключено</span></span></label>
           </div>
         </details>
         <details className="disclosure" open={storage}>

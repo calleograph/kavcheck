@@ -101,6 +101,8 @@ action_log "образы получены: ${IMAGE_REPO}-*:${IMAGE_TAG} ($UPD_MO
 env_put IMAGE_TAG "$IMAGE_TAG"; env_put IMAGE_REPO "$IMAGE_REPO"
 step "Остановка приложения и резервная копия базы и .env"
 marker_set stage stopped
+# каталог BI-выгрузок (с 0.17.0 — общий для backend и worker): без него docker создал бы каталог от root, и загрузка файла не записалась бы
+[ -d "$DATA_ROOT/bi" ] || { mkdir -p "$DATA_ROOT/bi" && { chown 10001 "$DATA_ROOT/bi" 2>/dev/null || chmod 777 "$DATA_ROOT/bi"; }; } || stop_update generic "Не удалось создать $DATA_ROOT/bi"
 dc up -d postgres >/dev/null && wait_healthy 120 postgres || stop_update generic "PostgreSQL не запустился"
 dc stop backend worker pentest >/dev/null 2>&1 || true            # после копии в базу никто не пишет: восстановление при ошибке — без потери данных
 action_log "приложение остановлено на время резервной копии и миграций"

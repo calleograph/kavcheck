@@ -7,7 +7,7 @@ import { Modal } from "../components/Dialogs";
 import { EolBadge, EolDates, EolSev } from "../components/EolBits";
 import { FilterBar } from "../components/FilterBar";
 import { Icon } from "../components/Icons";
-import { ListFoot, useInfinite, useKept } from "../components/Infinite";
+import { ListFoot, VirtualRows, useInfinite, useKept } from "../components/Infinite";
 import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { ZoneField } from "../components/ZoneBits";
@@ -108,7 +108,7 @@ function DeviceList({ ctx }: { ctx: Ctx }) {
               <th className="hide-md">Группа и зона</th><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><th className="users-col">Пользователи</th><th className="num hide-sm" title="Пользователи, замеченные в сеансе за 7 суток или появившиеся в списках после начала наблюдений">За 7 сут</th>
               <SortTh k="eol" label="EOL (крит.)" sort={sort} desc={desc} onSort={onSort} className="num" />{multi && <th className="hide-sm">Источник</th>}</tr></thead>
             <tbody>
-              {list.items.map((d) => (
+              <VirtualRows list={list} colSpan={multi ? 9 : 8} row={(d) => (
                 <tr key={`${d.source_id}:${d.host_id}`} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button")) setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; }); }}>
                   <td><button type="button" className="link-btn strong-link nowrap" onClick={() => setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; })}>{d.name}</button>{!d.active && <span className="badge">не активно</span>}<OwnerSub o={d.owner} /></td>
                   <td className="mono small nowrap hide-sm">{d.ip || "—"}</td><td className="small hide-md">{d.os || "—"}</td>
@@ -123,7 +123,7 @@ function DeviceList({ ctx }: { ctx: Ctx }) {
                   <td className="num">{d.eol ? <button type="button" className="link-btn" onClick={() => setSp((p) => { p.set("card", `${d.source_id}:${d.host_id}`); return p; })}
                     title={`критических: ${d.eol_crit}; всего проблем поддержки: ${d.eol}`}><span className={`badge ${d.eol_crit ? "err" : "warn"}`}>{num(d.eol_crit || d.eol)}</span>{d.eol_crit > 0 && d.eol > d.eol_crit && <span className="sub small muted">из {num(d.eol)}</span>}</button> : <span className="muted">0</span>}</td>
                   {multi && <td className="small hide-sm">{d.source}</td>}
-                </tr>))}
+                </tr>)} />
               {!list.items.length && !list.loading && <tr><td colSpan={9}><Empty icon="search" title="Устройства не найдены">{applied || zone || eol || osq || uq ? "Измените запрос или фильтры." : "Подготовленных данных зон ещё нет или нет активных устройств."}</Empty></td></tr>}
             </tbody>
           </table>)}

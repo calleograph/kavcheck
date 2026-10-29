@@ -314,14 +314,13 @@ function HostDrawer({ ctx, zid, sid, hid, onClose, onTriage, refreshKey }: { ctx
 function Decisions({ ctx }: { ctx: Ctx }) {
   const src = ctx.current?.id;
   const [status, setStatus] = useState(""); const [q, setQ] = useState("");
-  const [data, setData] = useState<{ items: TriageRow[]; total: number; counts: Record<string, number> } | null>(null); const [err, setErr] = useState("");
+  const [err, setErr] = useState("");
   const [hist, setHist] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (!src) return; let live = true; setErr("");
-    const t = window.setTimeout(() => { api.triage.list({ source_id: src, status, q, limit: 100 }).then((r) => live && setData(r)).catch((e) => live && setErr((e as ApiError).message)); }, 200);
-    return () => { live = false; window.clearTimeout(t); };
-  }, [src, status, q, tick]);
+  const [aq, setAq] = useState(q);
+  useEffect(() => { const t = window.setTimeout(() => setAq(q), 250); return () => window.clearTimeout(t); }, [q]);
+  const list = useInfinite<TriageRow>(`triage:${src}`, [src, status, aq, tick], (offset, limit) => (src ? api.triage.list({ source_id: src, status, q: aq, offset, limit }) as unknown as Promise<Chunk<TriageRow>> : Promise.resolve({ items: [], total: 0 })), 50);
+  const data = list.initial ? null : { items: list.items, total: list.total, counts: (list.extra?.counts ?? {}) as Record<string, number> };
   if (!src) return <NoSource ctx={ctx} />;
   const c = data?.counts ?? {};
   const revert = async (r: TriageRow) => { try { await api.triage.set({ source_id: r.source_id, vuln_key: r.vuln_key, origin: r.origin, scope: r.scope, host_id: r.host_id ?? undefined, host_name: r.host_name, zone_id: r.zone_id ?? undefined, product: r.product, version: r.version, status: "review", comment: "Возвращено на проверку" }); setTick(tick + 1); } catch (e) { setErr((e as ApiError).message); } };
@@ -340,6 +339,7 @@ function Decisions({ ctx }: { ctx: Ctx }) {
             <td className="small">{r.reason_ru}<span className="sub">{r.comment}</span></td><td className="small nowrap">{r.created_by}<span className="sub">{fmt(r.updated_at)}</span></td>
             <td className="small nowrap">{r.review_until ? fmtDate(r.review_until) : "—"}</td>
             <td className="nowrap"><button type="button" className="link-btn small" onClick={() => setHist(r.id)}>история</button>{ctx.me.user.role !== "viewer" && r.stored_status !== "review" && <> · <button type="button" className="link-btn small" onClick={() => revert(r)}>вернуть на проверку</button></>}</td></tr>))}</tbody></table>)}</div>
+    <ListFoot list={list} />
     {data && <p className="muted small mt-sm">{num(data.total)} {plural(data.total, "решение", "решения", "решений")}. Решения сохраняются при обновлении баз уязвимостей, повторной синхронизации KSC и обновлении KAV Checker. Если установленная версия или идентификатор устройства изменились, запись возвращается на проверку.</p>}
     {hist && <TriageHistory id={hist} onClose={() => setHist(null)} />}
   </>);

@@ -375,6 +375,9 @@ label.check > .switch { margin-top: 0; }
 
 /* ================================================================ сегменты и вкладки: скользящая подложка (Kinetics «Tab Pill Glide») */
 .seg { position: relative; display: inline-flex; max-width: 100%; overflow-x: auto; scrollbar-width: none; padding: 3px; gap: 2px; background: var(--sunken); border-radius: calc(var(--radius) + 2px); isolation: isolate; }
+.seg[data-more="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+.seg[data-more="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent); }
+.seg[data-more="lr"] { mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
 .seg button { position: relative; z-index: 1; border: 0; background: transparent; padding: 5px 12px; min-height: 28px; border-radius: var(--radius-sm); cursor: pointer; color: var(--muted); font-weight: 500; font-size: var(--fs-sm); transition: color var(--t); white-space: nowrap; }
 .seg button:hover { color: var(--ink); }
 .seg button[aria-pressed="true"], .seg button[aria-checked="true"] { color: var(--ink); }
@@ -1509,3 +1512,46 @@ tr.xrow:hover > td { background: var(--surface-2); }
 .hunt-sug-h { padding: 6px 10px 2px; font-size: var(--fs-xs); color: var(--muted); font-weight: 600; }
 /* кнопка в предупреждении на узком экране переносит подпись, а не выходит за край */
 .alert-body .btn { max-width: 100%; white-space: normal; text-align: left; height: auto; }
+
+/* ================================================================ «Наверх» (ToTop) */
+.to-top { position: fixed; right: 20px; bottom: 20px; z-index: var(--z-dock); display: flex; animation: to-top-in var(--t) var(--ease-out); }
+.to-top.in-box { position: sticky; bottom: 12px; justify-content: flex-end; height: 0; overflow: visible; margin-right: 8px; }
+.to-top.in-box > button { transform: translateY(-100%); }
+.to-top-btn { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--float-line); background: color-mix(in srgb, var(--float) 88%, transparent);
+  color: var(--float-ink); box-shadow: var(--sh-2); cursor: pointer; -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); transition: transform var(--t-fast) var(--ease-out), background var(--t-fast); }
+.to-top-btn:hover { transform: translateY(-2px); background: var(--float); }
+.to-top-btn:active { transform: translateY(0) scale(.96); }
+.to-top-btn:focus-visible, .to-top-back:focus-visible { outline: none; box-shadow: var(--ring), var(--sh-2); }
+.to-top-back { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid var(--float-line); background: var(--float); color: var(--float-ink);
+  font: inherit; font-size: var(--fs-sm); box-shadow: var(--sh-2); cursor: pointer; }
+.toast-host { bottom: 72px; }
+@keyframes to-top-in { from { opacity: 0; transform: translateY(8px); } }
+@media (max-width: 700px) { .to-top { right: 12px; bottom: 12px; } }
+@media print { .to-top { display: none; } }
+
+/* ================================================================ большие списки и массовые действия (0.17) */
+/* подгруженные строки появляются мягко — только в обычных списках (класс row-in); в виртуализированных строки пересоздаются при прокрутке и не анимируются */
+.table tr.row-in { animation: row-in 220ms var(--ease-out) both; }
+@keyframes row-in { from { opacity: 0; transform: translateY(3px); } }
+.table tbody td { transition: background-color var(--t-fast) var(--ease-out); }
+.table tr.sel td { background: color-mix(in srgb, var(--accent) 11%, transparent); }
+.table tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.list-sentinel { height: 1px; }
+.list-foot .btn.mini { margin-left: 6px; }
+.dots { display: inline-flex; gap: 3px; margin-right: 6px; vertical-align: middle; }
+.dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); opacity: .35; animation: dot 900ms ease-in-out infinite; }
+.dots i:nth-child(2) { animation-delay: 150ms; } .dots i:nth-child(3) { animation-delay: 300ms; }
+@keyframes dot { 40% { opacity: 1; transform: translateY(-2px); } }
+.empty { animation: fade-in 240ms ease-out both; }
+.empty .empty-ic { background: var(--accent-soft); color: var(--accent); }
+.bulk-plan, .bulk-run { display: flex; flex-direction: column; gap: 10px; }
+.bulk-n { margin: 0; font-size: var(--fs-lg); }
+.bulk-n b { font-size: var(--fs-2xl); letter-spacing: -.02em; color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.bulk-sample { max-height: 260px; overflow: auto; }
+.bulk-run .pt-prog { height: 8px; }
+.bulk-run .pt-prog i { transition: width 400ms var(--ease-out); }
+@media (prefers-reduced-motion: reduce) {
+  .table tr.row-in, .empty, .to-top { animation: fade-in 160ms ease-out both; }
+  .dots i { animation: none; opacity: .7; }
+  .to-top-btn:hover { transform: none; }
+}

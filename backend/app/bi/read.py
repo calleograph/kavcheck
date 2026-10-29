@@ -13,7 +13,7 @@ from datetime import datetime
 
 import re
 
-from sqlalchemy import String, and_, case, cast, exists, func, or_, select
+from sqlalchemy import String, and_, case, cast, exists, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ksc.protection import PROBLEMS
@@ -309,11 +309,29 @@ async def device_rows(db: AsyncSession, ds: list[BiDevice], *, pd: bool, can_sou
     return out
 
 
-async def match_list(db: AsyncSession, *, level: str = "", q: str = "", source_id=None, offset: int = 0, limit: int = 50, can_source=lambda _s: True) -> dict:
-    """Сопоставления для решения администратора: кандидаты, неоднозначные, противоречивые, а также принятые автоматически (для проверки)."""
-    w = [BiMatch.level == level] if level else [BiMatch.level.in_(("candidate", "ambiguous", "conflict"))]
+MATCH_FILTERS = {"": "требуют решения", "exact": "точные совпадения имени", "auto": "предполагаемые", "ambiguous": "неоднозначные", "unmatched": "не сопоставлены",
+                 "confirmed": "подтверждены", "rejected": "отклонены", "needs_manual": "требуется ручное решение"}
+DECIDE = ("candidate", "ambiguous", "conflict", "manual")
+
+
+def match_where(flt: str, source_id=None) -> list:
+    """Условие фильтра вкладки «Сопоставление BI и KSC» (общее для списка, счётчиков и массовых операций)."""
+    w = {"": [BiMatch.level.in_(DECIDE)], "exact": [BiMatch.name_match == "exact", BiMatch.level.in_(("auto", "candidate"))], "auto": [BiMatch.level == "auto"],
+         "ambiguous": [BiMatch.level == "ambiguous"], "unmatched": [false()], "confirmed": [BiMatch.level == "confirmed"],
+         "rejected": [BiMatch.level == "rejected"], "needs_manual": [BiMatch.level.in_(DECIDE), or_(BiMatch.name_match != "exact", BiMatch.level.in_(("ambiguous", "conflict", "manual")))]}[flt]    # без пар для массового подтверждения
     if source_id:
         w.append(BiMatch.bi_source_id == source_id)
+    return w
+
+
+async def match_list(db: AsyncSession, *, level: str = "", q: str = "", source_id=None, offset: int = 0, limit: int = 50, can_source=lambda _s: True) -> dict:
+    """Сопоставления для решения администратора и проверки. Порядок стабилен (имя устройства, id): порции бесконечной прокрутки без пропусков и повторов."""
+    from .match import NAME_RU  # noqa: PLC0415
+
+    w = match_where(level, source_id)
+    ksc_all = (await db.execute(select(KscSource.id))).scalars().all()
+    allowed = [k for k in ksc_all if can_source(k)]
+    w.append(BiMatch.ksc_source_id.in_(allowed))                       # фильтр прав — в запросе: число и порции совпадают
     if (c := any_of(q, BiMatch.host_name, BiDevice.name)) is not None:
         w.append(c)
     base = select(BiMatch, BiDevice).join(BiDevice, BiDevice.id == BiMatch.device_id).where(*w)
@@ -322,12 +340,15 @@ async def match_list(db: AsyncSession, *, level: str = "", q: str = "", source_i
     bi, ksc = await _src_names(db)
     items = []
     for m, dv in rows:
-        if not can_source(m.ksc_source_id):
-            continue
         items.append({"id": m.id, "device_id": dv.id, "device": dv.name, "device_os": dv.os, "bi_source": bi[dv.source_id].name if dv.source_id in bi else "", "ksc_source_id": str(m.ksc_source_id),
                       "ksc_source": ksc.get(m.ksc_source_id, ""), "host_id": m.host_id, "host_name": m.host_name, "level": m.level, "level_ru": LEVEL_RU[m.level], "signals": m.signals,
-                      "issues": m.issues, "decided_by": m.decided_by, "decided_at": m.decided_at, "note": m.note})
-    counts = {k: n for k, n in (await db.execute(select(BiMatch.level, func.count()).where(*([BiMatch.bi_source_id == source_id] if source_id else [])).group_by(BiMatch.level))).all()}
+                      "issues": m.issues, "decided_by": m.decided_by, "decided_at": m.decided_at, "note": m.note, "name_match": m.name_match, "name_ru": NAME_RU.get(m.name_match, "")})
+    counts = {}
+    for k in MATCH_FILTERS:
+        if k == "unmatched":                                            # устройства BI без единой пары в KSC: сопоставлять не с чем, список — во вкладке «Пользователи BI»
+            counts[k] = int((await db.execute(select(func.count()).select_from(BiDevice).where(*_device_where("", source_id, "no_ksc", "", "")))).scalar_one())
+            continue
+        counts[k] = int((await db.execute(select(func.count()).select_from(BiMatch).where(*match_where(k, source_id), BiMatch.ksc_source_id.in_(allowed)))).scalar_one())
     return {"total": total, "items": items, "counts": counts}
 
 

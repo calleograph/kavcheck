@@ -96,6 +96,7 @@ services:
     init: true
     volumes:
       - ${DATA_ROOT}/reports:/data/reports
+      - ${DATA_ROOT}/bi:/data/bi                               # BI-выгрузки: загруженный администратором файл (backend) читает worker; копии импортов хранятся здесь
       - ${DATA_ROOT}/updater:/data/updater
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=4).status == 200 else 1)"]
@@ -122,6 +123,7 @@ services:
     command: ["python", "-m", "app.worker"]
     volumes:
       - ${DATA_ROOT}/reports:/data/reports
+      - ${DATA_ROOT}/bi:/data/bi
     healthcheck:                                  # пульс пишется раз в 30 секунд (app/services/system.py): нет пульса больше трёх минут — служба зависла
       test: ["CMD-SHELL", "test -n \"$$(find /tmp/worker.alive -mmin -3 2>/dev/null)\""]
       interval: 30s

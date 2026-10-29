@@ -166,7 +166,7 @@ async def jobs(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200
         if cond is not None:
             w.append(cond)
     total = int((await db.execute(select(func.count()).select_from(PtJob).where(*w))).scalar_one())
-    rows = (await db.execute(select(PtJob).where(*w).order_by(PtJob.created_at.desc()).offset(offset).limit(limit))).scalars().all()
+    rows = (await db.execute(select(PtJob).where(*w).order_by(PtJob.created_at.desc(), PtJob.id.desc()).offset(offset).limit(limit))).scalars().all()
     counts: dict = {}
     if rows:
         for jid, st, n in (await db.execute(select(HuntHit.job_id, HuntHit.status, func.count()).where(HuntHit.job_id.in_([r.id for r in rows])).group_by(HuntHit.job_id, HuntHit.status))).all():

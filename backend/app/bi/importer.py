@@ -28,7 +28,7 @@ from . import xlsx as X
 
 log = logging.getLogger("app.bi")
 DEFAULT_OPTIONS = {"partial": True, "max_reject_pct": 5, "drift_pct": 20, "max_mb": 50, "max_rows": 200_000, "keep_files": 10, "keep_days": 90, "retry_minutes": 60, "retries": 3,
-                   "stable_s": 10, "full_snapshot": True, "owner_drift_pct": 25}
+                   "stable_s": 10, "full_snapshot": True, "owner_drift_pct": 25, "auto_exact": False}
 MAX_ERRORS = 500
 # состояния строки журнала импорта: в работе (ACTIVE) и итоговые; показываются на карточке источника и в журнале с момента постановки в очередь
 STATUS_RU = {"queued": "в очереди", "waiting": "ожидает исполнителя", "connecting": "подключение к SMB", "fetching": "получение Excel", "checking": "проверка структуры", "importing": "импорт",

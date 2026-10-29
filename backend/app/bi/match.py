@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+import re
+from collections import Counter, defaultdict
 
 from sqlalchemy import delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,9 +22,19 @@ from .profile import os_family, short_name
 
 log = logging.getLogger("app.bi")
 LINKED = ("auto", "confirmed")
-MANUAL = ("confirmed", "rejected")
+MANUAL = ("confirmed", "rejected", "manual")          # manual — автоподтверждение отменено администратором: пара больше не подтверждается правилом, решение — вручную
+RULE = "правило: точное совпадение имени"
+RULE_NOTE = "Подтверждено автоматически по правилу точного совпадения имени (однозначное имя в BI и KSC; физическая идентичность устройства этим не доказана)"
+_ZW = re.compile(r"[\s\u200b\u200c\u200d\ufeff]+")
+
+
+def norm_name(name: str) -> str:
+    """Имя для точного сравнения: без учёта регистра и технических пробелов (неразрывные, нулевой ширины, по краям). Короткое имя и FQDN — разные имена."""
+    return _ZW.sub("", name or "").lower()
 LEVEL_RU = {"confirmed": "Надёжное (подтверждено администратором)", "auto": "Предполагаемое", "candidate": "Не сопоставлено: совпадает только имя",
-            "ambiguous": "Не сопоставлено: несколько компьютеров с этим именем", "conflict": "Не сопоставлено: признаки противоречат", "rejected": "Отклонено администратором"}
+            "ambiguous": "Не сопоставлено: несколько компьютеров с этим именем", "conflict": "Не сопоставлено: признаки противоречат", "rejected": "Отклонено администратором",
+            "manual": "Требуется ручное решение: автоподтверждение отменено"}
+NAME_RU = {"exact": "Точное совпадение имени", "exact_dup": "Точное совпадение имени, но есть конкурирующие записи", "short": "Совпадает короткое имя (имя ↔ FQDN)", "": ""}
 OS_RU = {"windows": "Windows", "linux": "Linux", "mac": "macOS"}
 CHUNK = 1000
 
@@ -163,17 +174,31 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
                     logins[(s, int(hid))].add(login.lower())
         rows, n = [], defaultdict(int)
         now = utcnow()
+        bi_names = Counter(norm_name(d["name"]) for d in devs)                     # точное совпадение — только если имя единственное и среди устройств BI источника
+        taken = {(s_, int(h_)) for s_, h_, dv in (await db.execute(select(BiMatch.ksc_source_id, BiMatch.host_id, BiMatch.device_id).where(BiMatch.level == "confirmed"))).all()}
+        auto_exact = bool((src.options or {}).get("auto_exact"))
         for d in devs:
             out = cands[d["id"]]
             if d["id"] in confirmed or not out:
                 n["confirmed" if d["id"] in confirmed else "none"] += 1
                 continue
             level, sig = decide(d, out, locals_[d["id"]], lambda h: logins[(h["sid"], h["hid"])], same_name[d["id"]])
-            n[level] += 1
+            n[level] += 1                                                       # счётчики — по устройствам, а не по строкам кандидатов
             for h in out:
-                iss = issues(d, h, locals_[d["id"]], logins[(h["sid"], h["hid"])]) if level == "auto" else []
+                exact = norm_name(d["name"]) in (norm_name(h["name"]), h["fqdn"] if "." in d["name"] else "\0")
+                clean = (level in ("auto", "candidate") and len(out) == 1 and same_name[d["id"]] == 1 and bi_names[norm_name(d["name"])] == 1 and (h["sid"], h["hid"]) not in taken)
+                nm = ("exact" if clean else "exact_dup") if exact else "short"
+                iss = issues(d, h, locals_[d["id"]], logins[(h["sid"], h["hid"])]) if level == "auto" or nm == "exact" else []
+                if nm == "exact" and any(i["code"] == "os" for i in iss):
+                    nm = "exact_dup"                                        # известный признак различия (ОС) — только ручное решение
+                if nm == "exact" and auto_exact:
+                    rows.append({"device_id": d["id"], "bi_source_id": bi_source_id, "ksc_source_id": h["sid"], "host_id": h["hid"], "host_name": h["name"][:300], "level": "confirmed",
+                                 "signals": [*sig, "точное совпадение имени"], "issues": iss, "decided_by": RULE, "decided_at": now, "note": RULE_NOTE, "updated_at": now, "name_match": nm})
+                    n[level] -= 1
+                    n["auto_confirmed"] += 1
+                    continue
                 rows.append({"device_id": d["id"], "bi_source_id": bi_source_id, "ksc_source_id": h["sid"], "host_id": h["hid"], "host_name": h["name"][:300], "level": level, "signals": sig,
-                             "issues": iss, "decided_by": "", "decided_at": None, "note": "", "updated_at": now})
+                             "issues": iss, "decided_by": "", "decided_at": None, "note": "", "updated_at": now, "name_match": nm})
         dev_by_id = {d["id"]: d for d in devs}
         await xact_lock(db, f"bi-match:{bi_source_id}")
         if lease is not None:

@@ -4,7 +4,7 @@ import { api, type KscUserRow } from "../../api";
 import type { Ctx } from "../../App";
 import { FilterBar } from "../../components/FilterBar";
 import { Icon } from "../../components/Icons";
-import { ListFoot, useInfinite, useKept } from "../../components/Infinite";
+import { ListFoot, VirtualRows, useInfinite, useKept } from "../../components/Infinite";
 import { personLink } from "../../components/OwnerBlock";
 import { QuickReportPanel } from "../../components/QuickReport";
 import { Empty, SkelRows } from "../../components/ui";
@@ -33,12 +33,12 @@ export default function KscUsers({ ctx }: { ctx: Ctx }) {
         <table className="table">
           <thead><tr><th>Учётная запись</th><th className="num">Компьютеров</th><th>Компьютеры</th><th className="hide-sm">Последний сеанс (наблюдение)</th><th className="hide-md">Сотрудник по BI</th></tr></thead>
           <tbody>
-            {list.items.map((u) => <tr key={u.login}>
+            <VirtualRows list={list} colSpan={5} row={(u) => <tr key={u.login} >
               <td className="mono small">{u.domain ? `${u.domain}\\` : ""}{u.login}{u.now && <span className="badge ok">вошёл сейчас</span>}</td>
               <td className="num">{num(u.hosts)}</td>
               <td className="small">{u.host_names.join(", ")}{u.hosts > u.host_names.length && <span className="muted"> +{u.hosts - u.host_names.length}</span>}</td>
               <td className="small nowrap hide-sm">{fmt(u.last_session_at)}</td>
-              <td className="small hide-md">{u.bi_person ? <><Link to={personLink(u.bi_person.id)}>{u.bi_person.name}</Link><span className="sub">{u.bi_person.department} · по совпадению логина с почтой</span></> : <span className="muted">—</span>}</td></tr>)}
+              <td className="small hide-md">{u.bi_person ? <><Link to={personLink(u.bi_person.id)}>{u.bi_person.name}</Link><span className="sub">{u.bi_person.department} · по совпадению логина с почтой</span></> : <span className="muted">—</span>}</td></tr>} />
             {!list.items.length && !list.loading && <tr><td colSpan={5}><Empty icon="users" title="Пользователей нет">{applied ? "Измените запрос." : "KSC ещё не передал списки вошедших пользователей или опрос не выполнялся."}</Empty></td></tr>}
           </tbody>
         </table>)}

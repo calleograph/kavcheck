@@ -108,7 +108,7 @@ async def test_match_decisions_are_audited(client, app, tmp_path):
     await M.run(app.state.session_maker, uuid.UUID(sid))
     lst = (await client.get("/api/v1/bi/matches")).json()
     m = lst["items"][0]
-    assert m["level"] == "candidate" and lst["counts"]["candidate"] == 1
+    assert m["level"] == "candidate" and lst["counts"][""] == 1 and lst["counts"]["unmatched"] >= 1   # «не сопоставлены» — устройства BI без единой пары в KSC
     r = await client.post("/api/v1/bi/matches/decide", json={"device_id": m["device_id"], "ksc_source_id": str(k), "host_id": 4, "decision": "confirm", "note": "проверено по инвентарному номеру"})
     assert r.status_code == 200 and r.json()["level"] == "confirmed"
     await M.run(app.state.session_maker, uuid.UUID(sid))

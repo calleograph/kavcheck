@@ -5,7 +5,7 @@ import type { Ctx } from "../../App";
 import { Modal } from "../../components/Dialogs";
 import { FilterBar } from "../../components/FilterBar";
 import { Icon } from "../../components/Icons";
-import { ListFoot, useInfinite, useKept } from "../../components/Infinite";
+import { ListFoot, VirtualRows, useInfinite, useKept } from "../../components/Infinite";
 import { BiDeviceView, personLink } from "../../components/OwnerBlock";
 import { QuickReportPanel } from "../../components/QuickReport";
 import { Empty, Segmented, SkelRows } from "../../components/ui";
@@ -60,26 +60,26 @@ export default function BiPeople({ ctx, summary }: { ctx: Ctx; summary: Summary 
         <table className="table">
           <thead><tr><th>Сотрудник</th><th className="hide-sm">Подразделение</th><th>Устройства сейчас</th><th className="hide-sm">Прежние устройства</th><th className="hide-md">Последняя выгрузка</th></tr></thead>
           <tbody>
-            {people.items.map((p) => <tr key={p.id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button")) open("person", p.id); }}>
+            <VirtualRows list={people} colSpan={5} row={(p) => <tr key={p.id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button")) open("person", p.id); }}>
               <td><button type="button" className="link-btn strong-link" onClick={() => open("person", p.id)}>{p.name}</button><span className="sub small">{p.email}</span>{!p.present && <span className="badge">нет в последней выгрузке</span>}</td>
               <td className="small hide-sm">{p.department || "—"}</td>
               <td className="small">{p.devices.current.length ? p.devices.current.slice(0, 3).join(", ") + (p.devices.current.length > 3 ? ` +${p.devices.current.length - 3}` : "") : <span className="muted">—</span>}</td>
               <td className="small hide-sm">{[...p.devices.past, ...p.devices.unknown].slice(0, 3).join(", ") || <span className="muted">—</span>}{p.devices.past.length + p.devices.unknown.length > 3 && ` +${p.devices.past.length + p.devices.unknown.length - 3}`}</td>
-              <td className="small nowrap hide-md">{fmtDate(p.last_seen_at)}</td></tr>)}
+              <td className="small nowrap hide-md">{fmtDate(p.last_seen_at)}</td></tr>} />
             {!people.items.length && !people.loading && <tr><td colSpan={5}><Empty icon="users" title="Сотрудники не найдены">{applied || st || dept ? "Измените запрос или фильтры." : "Выгрузки ещё не импортированы."}</Empty></td></tr>}
           </tbody>
         </table>) : (
         <table className="table">
           <thead><tr><th>Устройство</th><th>Владелец</th><th className="hide-sm">Прежние</th><th className="hide-md">ОС и тип</th><th>KSC</th></tr></thead>
           <tbody>
-            {devices.items.map((d) => <tr key={d.id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button")) open("bidev", d.id); }}>
+            <VirtualRows list={devices} colSpan={5} row={(d) => <tr key={d.id} className="clickable" onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button")) open("bidev", d.id); }}>
               <td><button type="button" className="link-btn strong-link" onClick={() => open("bidev", d.id)}>{d.name}</button>{d.generic && <span className="badge outline">условное имя</span>}{!d.present && <span className="badge">нет в последней выгрузке</span>}
                 {d.issues.length > 0 && <span className="sub small warn-text" title={d.issues.join("; ")}><Icon name="alert" size={13} /> {d.issues[0]}{d.issues.length > 1 ? ` (+${d.issues.length - 1})` : ""}</span>}</td>
               <td className="small">{d.owners.length === 1 ? <><Link to={personLink(d.owners[0].id)}>{d.owners[0].name}</Link><span className="sub">{d.owners[0].department}</span></> : d.owners.length > 1 ? <span className="warn-text">несколько: {d.owners.map((o) => o.name).join(", ")}</span> : <span className="muted">не определён</span>}</td>
               <td className="small hide-sm">{d.previous.length ? d.previous.slice(0, 2).map((o) => <span key={o.id} className="block">{o.name} <span className="muted">({ST_RU[o.state]})</span></span>) : <span className="muted">—</span>}{d.previous_n > 2 && <span className="muted"> +{d.previous_n - 2}</span>}</td>
               <td className="small hide-md">{d.os || "—"}<span className="sub">{d.personal === true ? "личное" : d.personal === false ? "корпоративное" : ""}</span></td>
               <td className="small">{d.ksc_state === "linked" ? d.ksc.map((k) => <span key={`${k.ksc_source_id}:${k.host_id}`} className="block">{k.host_name}<span className="sub">{k.level_ru} · {k.ksc_source}</span></span>)
-                : d.ksc_state === "candidates" ? <span className="warn-text">требует решения<span className="sub">{d.ksc[0]?.level_ru}</span></span> : <span className="muted">не найдено в KSC</span>}</td></tr>)}
+                : d.ksc_state === "candidates" ? <span className="warn-text">требует решения<span className="sub">{d.ksc[0]?.level_ru}</span></span> : <span className="muted">не найдено в KSC</span>}</td></tr>} />
             {!devices.items.length && !devices.loading && <tr><td colSpan={5}><Empty icon="monitor" title="Устройства не найдены">{applied || flt || os || personal ? "Измените запрос или фильтры." : "Выгрузки ещё не импортированы."}</Empty></td></tr>}
           </tbody>
         </table>)}

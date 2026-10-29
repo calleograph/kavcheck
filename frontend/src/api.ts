@@ -292,7 +292,8 @@ async function req<T>(method: string, path: string, body?: unknown, opts: { raw?
   if (method !== "GET" && method !== "HEAD") headers["X-CSRF-Token"] = csrf;
   const sh = sourceHeader(path);
   if (sh) headers["X-Source-Id"] = sh;
-  const r = await fetch(`/api/v1${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin" });
+  const r = await fetch(`/api/v1${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin" })
+    .catch(() => { throw new ApiError(0, "Нет связи с сервером KAV Checker. Проверьте сеть и повторите.", "network"); });
   if (r.status === 401 && onUnauthorized && !path.startsWith("/auth/login")) onUnauthorized();
   if (!r.ok) {
     let msg = `Ошибка ${r.status}`, code = "";
@@ -321,7 +322,7 @@ export interface BiImport { id: string; started_at: string; finished_at: string 
   rows_gone: number; rows_empty: number; devices_n: number; persons_n: number; ms: number | null; stored: boolean; warnings_n: number; errors_n: number;
   warnings?: { code: string; n: number; text: string }[]; errors?: { row: number; reason: string }[]; headers?: string[] }
 export interface BiProfile { sheet: string; header_row: number; columns: Record<string, string>; origin: string[]; generic_names: string[]; extra?: boolean }
-export interface BiOptions { partial: boolean; max_reject_pct: number; drift_pct: number; max_mb: number; max_rows: number; keep_files: number; keep_days: number; retry_minutes: number; retries: number; stable_s: number; full_snapshot: boolean; owner_drift_pct: number }
+export interface BiOptions { partial: boolean; max_reject_pct: number; drift_pct: number; max_mb: number; max_rows: number; keep_files: number; keep_days: number; retry_minutes: number; retries: number; stable_s: number; full_snapshot: boolean; owner_drift_pct: number; auto_exact: boolean }
 export interface BiSourceInfo { id: string; name: string; kind: string; is_active: boolean; smb_host: string; smb_port: number; smb_share: string; smb_path: string; username: string; password_set: boolean; smb_encrypt: boolean;
   file_mode: "fixed" | "auto"; file_name: string; schedule_time: string; timezone: string; profile: Partial<BiProfile>; options: BiOptions; next_run_at: string | null; queued: boolean; last_try_at: string | null;
   last_ok_at: string | null; last_error: string | null; fail_n: number; matched_at: string | null; last: BiImport | null; published: BiImport | null }
@@ -348,7 +349,10 @@ export interface BiPersonCard extends BiPerson { source: string; account_created
 export interface BiDeviceRow { id: number; source_id: string; source: string; name: string; os: string; os_family: string; personal: boolean | null; generic: boolean; present: boolean; last_seen_at: string; av: BiDeviceCard["av"];
   owners: (BiPerson & { confidence: string })[]; previous: (BiPerson & { state: BiState; last_seen_at: string })[]; previous_n: number;
   ksc: { ksc_source_id: string; ksc_source: string; host_id: number; host_name: string; level: string; level_ru: string }[]; ksc_state: "linked" | "candidates" | "none"; issues: string[] }
-export interface BiMatchItem extends BiMatchRow { device_id: number; device: string; device_os: string; bi_source: string }
+export interface BiMatchItem extends BiMatchRow { device_id: number; device: string; device_os: string; bi_source: string; name_match: "" | "exact" | "exact_dup" | "short"; name_ru: string }
+export interface BiBulkPlan { action: "confirm" | "reject" | "reset"; n: number; skipped: { reason: string; text: string; n: number }[]; by_bi_source: Record<string, number>; by_ksc_source: Record<string, number>;
+  sample: { device: string; host_name: string; bi_source: string; ksc_source: string; level_ru: string; name_ru: string }[]; op?: string }
+export interface BiBulkOp { id: string; status: "running" | "done" | "failed"; action: string; total: number; done: number; changed: number; skipped: { reason: string; text: string; n: number }[]; error: string | null }
 export interface KscUserRow { login: string; domain: string; hosts: number; host_names: string[]; last_session_at: string | null; now: boolean; bi_person: { id: number; name: string; department: string } | null }
 export type BiPage<T, X = object> = { items: T[]; total: number } & X & Record<string, unknown>;
 export interface BiOwnerBrief { name: string; email: string; department: string; state: BiState; state_ru: string; level: string; multi: boolean; seen_at: string }
@@ -509,6 +513,8 @@ export const api = {
     host: (sid: string, hid: number) => req<BiHostBlock>("GET", `/bi/host/${sid}/${hid}`),
     matches: (p: Record<string, string | number | boolean | undefined | null>) => req<BiPage<BiMatchItem, { counts: Record<string, number> }>>("GET", `/bi/matches${qs(p)}`),
     decide: (b: { device_id: number; ksc_source_id: string; host_id: number; decision: "confirm" | "reject" | "reset"; note?: string }) => req<{ ok: boolean; level: string; level_ru: string }>("POST", "/bi/matches/decide", b),
+    bulk: (b: { action: "confirm" | "reject" | "reset"; scope: "exact" | "ids"; ids?: number[]; source_id?: string; preview: boolean }) => req<BiBulkPlan>("POST", "/bi/matches/bulk", b),
+    bulkStatus: (op: string) => req<BiBulkOp>("GET", `/bi/matches/bulk/${op}`),
     kscUsers: (p: Record<string, string | number | boolean | undefined | null>) => req<BiPage<KscUserRow, { note: string }>>("GET", `/bi/ksc-users${qs(p)}`),
   },
   devices: {

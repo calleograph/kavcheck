@@ -2,7 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, setAllSources, setCsrf, setSourceId, setUnauthorizedHandler, type Me, type SourceRef } from "./api";
 import { Icon, Mark, type IconName } from "./components/Icons";
-import { Empty } from "./components/ui";
+import { Empty, ToTop } from "./components/ui";
 import { GlobalSearch } from "./components/GlobalSearch";
 import LoginPage from "./pages/LoginPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
@@ -220,6 +220,7 @@ function Shell({ me, version, onLogout, onTheme, children, sources, current, onP
             <p className="scope-note warn" role="status"><Icon name="alert" size={15} />Источник «{sources.filter((s) => s.last_check_ok === false).map((s) => s.name).join("», «")}» недоступен или не прошёл проверку: показаны сохранённые данные, они могут быть неактуальными.</p>)}
           {children}
         </main>
+        <ToTop />
       </div>
     </div>
   );

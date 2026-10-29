@@ -14,7 +14,7 @@ t() { # t ОПИСАНИЕ КОМАНДА… — проверка
 }
 scn() { CUR="$1"; [ -z "$ONLY" ] || [[ "$1" == *"$ONLY"* ]] || return 1; printf '\n\033[1m%s\033[0m\n' "$1"; return 0; }
 mk() { # песочница: SB, W (рабочая копия), S (состояние docker), D (DATA_ROOT)
-  SB="$(mktemp -d)"; S="$SB/state"; D="$SB/data"; W="$SB/work"; M="$SB/maker"; mkdir -p "$S" "$SB/bin" "$D"/{state,updater,backups,postgres,reports}
+  SB="$(mktemp -d)"; S="$SB/state"; D="$SB/data"; W="$SB/work"; M="$SB/maker"; mkdir -p "$S" "$SB/bin" "$D"/{state,updater,backups,postgres,reports,bi}
   cp "$HERE"/fake/docker "$HERE"/fake/curl "$SB/bin/"; echo "$S" > "$SB/bin/state-dir"; git init -q --bare "$SB/origin.git"
   git init -q "$M"; ( cd "$M" && mkdir -p backend/migrations/versions deployment && cp -r "$ROOT/scripts" . && cp "$ROOT/deployment/compose.yml" deployment/ && echo 0.1.0 > VERSION \
     && echo 'revision = "r1"' > backend/migrations/versions/0001.py && git add -A && git commit -qm v1 && git tag v0.1.0 && git remote add origin "$SB/origin.git" && git push -q origin HEAD:master --tags )
