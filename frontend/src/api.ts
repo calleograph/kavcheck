@@ -309,6 +309,18 @@ export interface TechState { at: number; cached_at: number; version: string; com
   journal: { errors_24h: number; warn_24h: number; last_error: { at: string; category: string; message: string | null; source: string | null } | null; recent: { at: string; level: string; category: string; event: string; source: string | null; message: string | null }[] };
   components: { counts: Record<string, number>; checked_at: string | null; reviewed_for: string } }
 
+/** «Иерархия. Предприятие» (GET /hier/data): человек — массив [id, ФИО, почта, должность, подразделение, руководитель (индекс или -1), руководитель текстом, «по руководителю», флаги (1 сам себе, 2 в дереве, 4 верхний), причина, размер ветки]. */
+export type HierRow = [string, string, string, string, number, number, string, number, number, string, number];
+export interface HierSnap { id: string; started_at: string; finished_at: string | null; status: "running" | "ok" | "failed" | "rejected"; trigger: string; by: string; source: string; source_name: string; raw_n: number; errors_n: number;
+  message: string; warnings: string[]; kept: number | null; excluded: Record<string, number>; errors: string[] }
+export interface HierData { state: "ok" | "empty" | "failed"; can_admin: boolean; running: boolean; enabled: boolean; source: string; next_run: string | null; last_error?: string;
+  warning: { status: "failed" | "rejected" | "stale"; message: string; at: string | null; last_ok_at: string | null } | null;
+  snapshot: { id: string; at: string; raw_n: number; kept: number; excluded: number; excluded_by: Record<string, number>; source: string; source_name: string; errors_n: number } | null;
+  people: HierRow[]; depts: { name: string; hue: number; n: number }[]; heads?: number; lone?: number; warnings?: string[]; why?: Record<string, string> }
+export interface HierCheck { ok: boolean; message: string; items: { name: string; ok: boolean; sample: number; steps: { name: string; ok: boolean | null; text: string }[] }[] }
+export interface HierAdmin { settings: SettingsValues; state: { next_run: string | null; requested: boolean; retry_n: number }; snapshots: HierSnap[]; connections: { id: string; name: string; enabled: boolean; host: string }[];
+  depts: { raw: string; n: number; shown: string }[]; domains: { domain: string; n: number }[]; running: boolean; last_ok: HierSnap | null; people_n: number; stats: { raw: number; kept: number; heads: number; lone: number; cycles: number; unresolved: number } | null }
+
 let csrf = "";
 let sourceId: string | null = null;
 let allSources = false;
@@ -526,6 +538,14 @@ export const api = {
     unmatched: (q = "") => req<{ items: { catalog_key: string; name: string; publisher: string; hosts: number; source: string }[]; ambiguous: { catalog_key: string; name: string; publisher: string; hosts: number; reason: string; source: string }[] }>("GET", `/eol/unmatched${qs({ q })}`),
     recalc: () => req<{ queued: number }>("POST", "/eol/recalc"),
     host: (sid: string, hid: number) => req<{ items: EolFinding[] }>("GET", `/eol/hosts/${sid}/${hid}`),
+  },
+  hier: {
+    access: () => req<{ allowed: boolean; admin: boolean }>("GET", "/hier/access"),
+    data: () => req<HierData>("GET", "/hier/data"),
+    admin: () => req<HierAdmin>("GET", "/hier/admin"),
+    check: () => req<HierCheck>("POST", "/hier/admin/check"),
+    run: () => req<{ requested: boolean }>("POST", "/hier/admin/run"),
+    upload: (data: ArrayBuffer) => rawPost<HierSnap>("/hier/admin/upload", data),
   },
   bi: {
     summary: () => req<{ items: { id: string; name: string; snapshot_at: string | null; last_ok_at: string | null; error: boolean }[]; can_people: boolean; can_pd: boolean }>("GET", "/bi/summary"),

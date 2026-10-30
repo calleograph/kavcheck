@@ -20,12 +20,14 @@ import CacheAdmin from "./admin/CacheAdmin";
 import EolAdmin from "./admin/EolAdmin";
 import LogsAdmin from "./admin/LogsAdmin";
 import ComponentsAdmin from "./admin/ComponentsAdmin";
+import HierarchyAdmin from "./admin/HierarchyAdmin";
 
 const LEDE: Record<string, string> = {
   system: "Исправна ли сама система: сервер, контейнеры, фоновые задания и очереди, PostgreSQL, источники KSC и BI, Pentest, версии компонентов и ошибки — что происходит внутри и где искать причину.",
   sources: "Подключения только на чтение: базы Серверов администрирования KSC (учётная запись с ролью db_datareader) и BI-выгрузки сотрудников и устройств (Excel через SMB).",
   users: "Учётные записи, роли и доступ к источникам KSC.",
   ldap: "Вход доменных пользователей: подключения LDAPS, доверенные сертификаты, правила доступа по группам Active Directory.",
+  hier: "Раздел «Иерархия. Предприятие»: источник адресной книги (подключение LDAPS), расписание сбора, доступ по ролям, правила очистки и названия подразделений, история снимков.",
   general: "Какие компьютеры показывать в рабочих разделах, сроки хранения и ограничения отчётов.",
   zones: "Группы компьютеров по сетям и группам KSC с ответственными: создание, импорт из CSV, спорные компьютеры. Анализ зон — в разделе «Зоны ответственности».",
   zcache: "Ночной расчёт данных зон: расписание, ограничения ресурсов, состояние по источникам KSC, очередь заданий.",
@@ -58,6 +60,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "ptchecks" && <ChecksAdmin />}
       {tab === "users" && <UsersAdmin ctx={ctx} />}
       {tab === "ldap" && <LdapAdmin sources={ctx.sources} />}
+      {tab === "hier" && <HierarchyAdmin />}
       {tab === "general" && <GeneralAdmin />}
       {tab === "zones" && <ZonesAdmin />}
       {tab === "zcache" && <CacheAdmin />}

@@ -2,6 +2,7 @@ import type { ReactNode, SVGProps } from "react";
 
 /** Собственный набор линейных пиктограмм: сетка 24×24, штрих 1.75, скругления, цвет — currentColor. Без внешних библиотек. */
 const PATHS: Record<string, ReactNode> = {
+  sitemap: <><rect x="9" y="3.5" width="6" height="4.5" rx="1.2" /><rect x="3" y="16" width="6" height="4.5" rx="1.2" /><rect x="15" y="16" width="6" height="4.5" rx="1.2" /><path d="M12 8v4M6 16v-4h12v4" /></>,
   grid: <><rect x="4" y="4" width="7" height="7" rx="1.4" /><rect x="13" y="4" width="7" height="7" rx="1.4" /><rect x="4" y="13" width="7" height="7" rx="1.4" /><rect x="13" y="13" width="7" height="7" rx="1.4" /></>,
   mail: <><rect x="3.5" y="5.5" width="17" height="13" rx="2" /><path d="m4 7.5 8 6 8-6" /></>,
   home: <><path d="M4 10.8 12 4l8 6.8V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1Z" /></>,

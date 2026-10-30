@@ -1605,3 +1605,115 @@ tr.row-stale > td a { color: inherit; }
 .others summary::-webkit-details-marker { display: none; }
 .others ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
 .others li { padding-left: 10px; border-left: 2px solid var(--line-strong); }
+
+/* ================================================================ иерархия предприятия (0.20.0) */
+/* Цвета подразделений — по названию (оттенок задаёт сервер); светлота зависит от темы: на тёмных светлее, на светлых темнее. Остальное — токены темы. */
+/* на :root, а не на .hier: боковое окно «Кто ещё в подразделении» рисуется вне корня раздела */
+:root { --hl: 62%; --hb: 22%; --hon: #0d1318; }
+:root[data-theme="glass"], :root[data-theme="grove"] { --hl: 42%; --hb: 90%; --hon: #ffffff; }
+.hier-source { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; margin-bottom: 16px; border-radius: var(--radius-lg); background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent); }
+.hier-source > svg { flex: none; color: var(--warn-text); margin-top: 2px; }
+.hier-source .sub { display: block; color: var(--muted); font-size: var(--fs-sm); margin-top: 2px; }
+.hier-grid { display: grid; grid-template-columns: 270px minmax(0, 1fr) 350px; grid-template-areas: "left main right"; gap: 16px; align-items: start; margin-top: 16px; }
+.hier-left { grid-area: left; } .hier-main { grid-area: main; } .hier-right { grid-area: right; }
+.hier-left, .hier-right { position: sticky; top: calc(var(--top-h) + 12px); max-height: calc(100vh - var(--top-h) - 24px); overflow: auto; display: flex; flex-direction: column; gap: 16px; }
+.hier-right { display: block; }
+.hier-h { margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.hier-search { position: relative; }
+.hier-search > svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.hier-search input[type="search"] { width: 100%; padding-left: 38px; font-size: 16px; }
+.hier-search.grow { flex: 1; min-width: 0; }
+.hier-results { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.hier-empty { color: var(--muted); padding: 6px 8px; font-size: var(--fs-sm); }
+.hier-row { display: flex; gap: 10px; align-items: center; text-align: left; width: 100%; border: 0; background: transparent; border-radius: 10px; padding: 7px 8px; color: inherit; font: inherit; cursor: pointer; }
+.hier-row:hover, .hier-row:focus-visible { background: var(--surface-2); outline: none; }
+.hier-row:focus-visible { box-shadow: var(--ring); }
+.hier-row .t { min-width: 0; flex: 1; display: block; }
+.hier-row .n { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hier-row .s { display: block; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hier-row .k { font-family: var(--mono); font-size: 12px; color: var(--muted); flex: none; }
+.hier-row.direct { background: var(--accent-soft); border-radius: 12px; }
+.hier-row.me { background: var(--accent-soft); }
+.hier-row mark { background: var(--accent-soft); color: inherit; border-radius: 3px; }
+.hier-av { width: 34px; height: 34px; border-radius: 50%; flex: none; display: grid; place-items: center; font-weight: 700; font-size: 12px; background: hsl(var(--h, 200) 55% var(--hl)); color: var(--hon); }
+.hier-av.lg { width: 56px; height: 56px; font-size: 18px; }
+.hier-main { overflow: hidden; }
+.hier-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px 0; border-bottom: 1px solid var(--line); }
+.hier-tabs .tabs { border-bottom: 0; flex: 0 0 auto; }
+.hier-tools { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 0 6px; margin-left: auto; }
+.hier-hint { padding: 10px 16px; margin: 0; color: var(--muted); font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.hier-gwrap { cursor: grab; touch-action: pan-x pan-y; height: min(68vh, 720px); min-height: 420px; overflow: auto; background: radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0 / 22px 22px; }
+.hier-gwrap.drag, .hier-gwrap.drag .nd { cursor: grabbing; }
+svg.hier-g { display: block; user-select: none; -webkit-user-select: none; }
+.hier-g .lnk { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
+.hier-g .lnk.on { stroke: var(--accent); stroke-width: 2.5; }
+.hier-g .nd { cursor: pointer; outline: none; }
+.hier-g .nd rect.b { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.2; }
+.hier-g .nd:hover rect.b { stroke: var(--muted); }
+.hier-g .nd:focus-visible rect.b { stroke: var(--accent); stroke-width: 2.5; }
+.hier-g .nd.on rect.b { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.8; }
+.hier-g .nd.sel rect.b { fill: var(--accent); stroke: var(--accent); }
+.hier-g .nd.sel text { fill: var(--accent-ink) !important; }
+.hier-g .nd .strip { fill: hsl(var(--h, 200) 55% var(--hl)); }
+.hier-g .nd text { fill: var(--ink); pointer-events: none; font-family: var(--sans); }
+.hier-g .nd .t1 { font-size: 12.5px; font-weight: 700; }
+.hier-g .nd .t2 { font-size: 10.5px; fill: var(--muted); }
+.hier-g .nd .cnt { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+.hier-g .nd.grp rect.b { fill: var(--surface-2); }
+.hier-g .nd.more rect.b { stroke-dasharray: 4 3; fill: transparent; }
+.hier-g .nd .tg { cursor: pointer; }
+.hier-g .nd .tg circle { fill: var(--surface); stroke: var(--line-strong); }
+.hier-g .nd .tg text { font-size: 13px; font-weight: 700; fill: var(--muted); text-anchor: middle; pointer-events: none; }
+.hier-g .nd.sel .tg circle { fill: var(--accent-ink); }
+.hier-legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.hier-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 6px; }
+.hier-legend .lg-chain { background: var(--accent-soft); border: 1.5px solid var(--accent); }
+.hier-legend .lg-sel { background: var(--accent); }
+.hier-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; padding: 16px; }
+.hier-tile { text-align: left; border: 1px solid var(--line); background: var(--surface); color: inherit; font: inherit; border-radius: 14px; padding: 14px 14px 12px; position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+.hier-tile:hover { background: var(--surface-2); }
+.hier-tile:focus-visible { box-shadow: var(--ring); outline: none; }
+.hier-tile::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: hsl(var(--h, 200) 55% var(--hl)); }
+.hier-tile b { font-size: 14px; line-height: 1.25; padding-left: 4px; text-wrap: balance; }
+.hier-tile .num { font-family: var(--mono); font-size: 26px; font-weight: 500; padding-left: 4px; letter-spacing: -.03em; }
+.hier-tile .hd { font-size: 12px; color: var(--muted); padding-left: 4px; }
+.hier-tile .bar { height: 5px; border-radius: 3px; background: var(--surface-2); margin-left: 4px; }
+.hier-tile .bar i { display: block; height: 100%; border-radius: 3px; background: hsl(var(--h, 200) 55% var(--hl)); }
+.hier-pname { margin: 10px 0 2px; font-size: 20px; line-height: 1.2; font-weight: 800; letter-spacing: -.01em; text-wrap: balance; }
+.hier-chip { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; border-radius: 999px; padding: 3px 10px 3px 8px; font-size: 12px; font-weight: 600; background: hsl(var(--h, 200) 45% var(--hb)); color: var(--ink); }
+.hier-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: hsl(var(--h, 200) 55% var(--hl)); flex: none; }
+.hier-mail { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); word-break: break-all; }
+.hier-sec { border-top: 1px solid var(--line); padding: 14px 16px; }
+.hier-chain { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.hier-chain li { position: relative; padding-left: 22px; }
+.hier-chain li::before { content: ""; position: absolute; left: 5px; top: 0; bottom: 0; border-left: 2px solid var(--line-strong); }
+.hier-chain li:first-child::before { top: 50%; } .hier-chain li:last-child::before { bottom: 50%; }
+.hier-chain li::after { content: ""; position: absolute; left: 0; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); }
+.hier-lab { display: block; padding: 4px 8px 0; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.hier-notebox { background: var(--surface-2); border-radius: 12px; padding: 10px 12px; color: var(--muted); font-size: 13px; }
+.hier-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 14px 16px; border-top: 1px solid var(--line); }
+.hier-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.hier-stat { background: var(--surface-2); border-radius: 12px; padding: 12px; }
+.hier-stat b { display: block; font-family: var(--mono); font-size: 24px; font-weight: 500; letter-spacing: -.03em; }
+.hier-stat span { font-size: 12px; color: var(--muted); }
+.hier-kids { display: flex; flex-direction: column; margin-top: 8px; }
+.hier-note { padding: 12px 16px; font-size: var(--fs-sm); color: var(--muted); }
+.hier-note summary { cursor: pointer; color: var(--accent); }
+.hier-note p { margin: 8px 0 0; line-height: 1.5; color: var(--ink-2); }
+.hier-sheet { display: flex; flex-direction: column; gap: 10px; }
+.hier-seg { display: flex; gap: 4px; background: var(--surface-2); padding: 4px; border-radius: 12px; }
+.hier-seg button { flex: 1; border: 0; background: transparent; border-radius: 9px; padding: 7px 8px; font: inherit; font-weight: 600; font-size: 13px; color: var(--muted); cursor: pointer; }
+.hier-seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--sh-1); }
+.hier-grp { border: 1px solid var(--line); border-radius: 12px; background: var(--sunken); margin: 0; }
+.hier-grp > summary { cursor: pointer; padding: 9px 12px; font-weight: 700; list-style: none; display: flex; gap: 8px; align-items: center; }
+.hier-grp > summary::-webkit-details-marker { display: none; }
+.hier-grp > summary::before { content: "▸"; color: var(--muted); transition: transform var(--t-fast); }
+.hier-grp[open] > summary::before { transform: rotate(90deg); }
+.hier-grp > summary small { font-weight: 500; color: var(--muted); font-size: 12px; margin-left: auto; font-family: var(--mono); }
+.hier-grp > summary span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hier-grp > div { padding: 0 4px 6px; }
+/* ширина окна минус меню продукта (240 px): при менее чем 1500 px поиск уходит в строку над схемой, при менее чем 1100 px колонки встают друг под другом */
+@media (max-width: 1500px) { .hier-grid { grid-template-columns: minmax(0, 1fr) 340px; grid-template-areas: "left left" "main right"; } .hier-left { position: static; max-height: none; flex-direction: row; flex-wrap: wrap; align-items: flex-start; } .hier-left > * { flex: 1 1 320px; min-width: 0; } }
+@media (max-width: 1100px) { .hier-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "left" "main" "right"; } .hier-right { position: static; max-height: none; } }
+@media (max-width: 760px) { .hier-left { flex-direction: column; align-items: stretch; } .hier-left > * { flex-basis: auto; } .hier-gwrap { height: 62vh; min-height: 320px; } .hier-tools { width: 100%; } .hier-source { padding: 10px 12px; } }
+@media (prefers-reduced-motion: reduce) { .hier-grp > summary::before { transition: none; } }

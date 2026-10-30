@@ -8,6 +8,7 @@ import LoginPage from "./pages/LoginPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
 import SecurityPage from "./pages/SecurityPage";
 import DashboardPage from "./pages/DashboardPage";
+import HierarchyPage from "./pages/HierarchyPage";
 // разделы загружаются по первому обращению: стартовая загрузка — оболочка, вход и главная
 const PentestPage = lazy(() => import("./pages/PentestPage"));
 const HuntPage = lazy(() => import("./pages/HuntPage"));
@@ -53,7 +54,7 @@ const NAV: { to: string; label: string; icon: IconName; end?: boolean; roles?: s
   { to: "/reports", label: "Отчёты", icon: "file" },
 ];
 export const ADMIN_TABS: { id: string; label: string }[] = [
-  { id: "system", label: "Техническое состояние" }, { id: "sources", label: "Источники данных" }, { id: "licenses", label: "Лицензии" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" },
+  { id: "system", label: "Техническое состояние" }, { id: "sources", label: "Источники данных" }, { id: "licenses", label: "Лицензии" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" }, { id: "hier", label: "Иерархия предприятия" },
   { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "zcache", label: "Расчёт данных зон" }, { id: "eolcfg", label: "EOL и пользователи" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "pentest", label: "Pentest" }, { id: "ptchecks", label: "Pentest: шаблоны и проверки" }, { id: "updates", label: "Обновления" }, { id: "components", label: "Компоненты" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" }, { id: "logs", label: "Журналы и хранение" },
 ];
 
@@ -168,7 +169,7 @@ function NavIndicator({ deps }: { deps: unknown[] }) {
   return <span ref={self} className={`nav-indicator ${pos ? "on" : ""}`} style={pos ? { transform: `translateY(${pos.y}px)`, height: pos.h } : undefined} aria-hidden />;
 }
 
-function Shell({ me, version, onLogout, onTheme, children, sources, current, onPick, all, onAll }: { me: Me; version: string; onLogout: () => void; onTheme: (id: ThemeId | null) => void; children: ReactNode; sources: SourceRef[]; current: SourceRef | null; onPick: (id: string) => void; all: boolean; onAll: (on: boolean) => void }) {
+function Shell({ me, hierOk, version, onLogout, onTheme, children, sources, current, onPick, all, onAll }: { me: Me; hierOk: boolean | null; version: string; onLogout: () => void; onTheme: (id: ThemeId | null) => void; children: ReactNode; sources: SourceRef[]; current: SourceRef | null; onPick: (id: string) => void; all: boolean; onAll: (on: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const { pathname, search } = useLocation();
   useEffect(() => setOpen(false), [pathname, search]);
@@ -191,13 +192,13 @@ function Shell({ me, version, onLogout, onTheme, children, sources, current, onP
           <div className="nav-list">
             <NavIndicator deps={[pathname, search, adminOpen]} />
             <div className="nav-label">Аудит</div>
-            {NAV.filter((n) => !n.roles || n.roles.includes(me.user.role)).map((n) => <NavLink key={n.to} to={n.to === "/vdb" && vdbNew > 0 ? "/vdb?tab=mine" : n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.to === "/vdb" && vdbNew > 0 && <span className="nav-badge" title="Новых уязвимостей с высокой и критической опасностью или признаком эксплуатации, затрагивающих установленное ПО">{vdbNew}</span>}</NavLink>)}
+            {(hierOk ? [...NAV.slice(0, -1), { to: "/hierarchy", label: "Иерархия. Предприятие", icon: "sitemap" as IconName }, NAV[NAV.length - 1]] : NAV).filter((n) => !n.roles || n.roles.includes(me.user.role)).map((n) => <NavLink key={n.to} to={n.to === "/vdb" && vdbNew > 0 ? "/vdb?tab=mine" : n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.to === "/vdb" && vdbNew > 0 && <span className="nav-badge" title="Новых уязвимостей с высокой и критической опасностью или признаком эксплуатации, затрагивающих установленное ПО">{vdbNew}</span>}</NavLink>)}
             {me.user.is_admin && <>
               <button type="button" className="nav-label nav-toggle" aria-expanded={adminOpen} onClick={toggleAdmin}>Администрирование<Icon name="chevronD" size={14} /></button>
               {adminOpen && ADMIN_TABS.map((t) => {
                 const active = inAdmin && tab === t.id;
                 return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>
-                  <Icon name={({ system: "gauge", sources: "database", licenses: "key", users: "users", ldap: "key", general: "sliders", zones: "grid", zcache: "clock", eolcfg: "users", mail: "mail", org: "file", catalog: "package", vdb: "vault", pentest: "target", ptchecks: "shieldPulse", updates: "upload", components: "package", journal: "journal", audit: "history", logs: "database" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
+                  <Icon name={({ system: "gauge", sources: "database", licenses: "key", users: "users", ldap: "key", hier: "sitemap", general: "sliders", zones: "grid", zcache: "clock", eolcfg: "users", mail: "mail", org: "file", catalog: "package", vdb: "vault", pentest: "target", ptchecks: "shieldPulse", updates: "upload", components: "package", journal: "journal", audit: "history", logs: "database" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
               })}
             </>}
           </div>
@@ -236,6 +237,8 @@ export default function App() {
   const onAll = useCallback((on: boolean) => { setAll(on); try { localStorage.setItem("kc:scope-all", on ? "1" : "0"); } catch { /* не запомнится */ } }, []);
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const [hierOk, setHierOk] = useState<boolean | null>(null);   // раздел «Иерархия. Предприятие» доступен роли пользователя (решает сервер; пункт меню — только удобство)
+  useEffect(() => { if (me) api.hier.access().then((r) => setHierOk(r.allowed)).catch(() => setHierOk(false)); else setHierOk(null); }, [me?.user.id, me?.user.role, pathname]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const reloadSources = useCallback(async () => {
     try { const r = await api.mySources(); setSources(r.items); const cur = r.current && r.items.some((s) => s.id === r.current) ? r.current : (r.items[0]?.id ?? null); setCurrentId(cur); setSourceId(cur); }
@@ -268,7 +271,7 @@ export default function App() {
   const setScope = (id: string) => { if (id === "all") onAll(true); else { onAll(false); void pick(id); } };
   const ctx: Ctx = { me, sources, current, all: allOn, reloadSources, setScope };
   return (
-    <Shell me={me} version={version} onLogout={logout} onTheme={onTheme} sources={sources} current={current} onPick={pick} all={allOn} onAll={onAll}>
+    <Shell me={me} hierOk={hierOk} version={version} onLogout={logout} onTheme={onTheme} sources={sources} current={current} onPick={pick} all={allOn} onAll={onAll}>
       <Suspense fallback={<div className="center"><span className="spin" role="status" aria-label="Загрузка" /></div>}>
         <Routes>
           <Route path="/" element={<DashboardPage key={`${currentId}:${allOn}`} ctx={ctx} />} />
@@ -287,6 +290,7 @@ export default function App() {
           <Route path="/pentest" element={me.user.role === "viewer" ? <Navigate to="/" replace /> : <PentestPage ctx={ctx} />} />
           <Route path="/zones" element={<ZonesPage key={currentId} ctx={ctx} />} />
           <Route path="/zones/:zid" element={<ZonesPage key={currentId} ctx={ctx} />} />
+          <Route path="/hierarchy" element={hierOk === null ? null : hierOk ? <HierarchyPage /> : <Navigate to="/" replace />} />
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />
           <Route path="/reports/:jobId" element={<ReportsPage ctx={ctx} />} />
           <Route path="/security" element={<SecurityPage me={me} onLogout={logout} />} />

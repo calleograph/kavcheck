@@ -10,7 +10,7 @@ import { Empty, SkelRows, MaskHint } from "../../components/ui";
 import { fmt } from "../../util";
 
 const LEVEL: Record<string, [string, string]> = { debug: ["отладка", "outline"], info: ["сведения", ""], warn: ["предупреждение", "warn"], error: ["ошибка", "err"] };
-const CATEGORY: Record<string, string> = { auth: "Вход", ksc: "Источники KSC", report: "Отчёты", catalog: "Каталог программ", worker: "Фоновые задачи", admin: "Администрирование", system: "Система" };
+const CATEGORY: Record<string, string> = { auth: "Вход", ksc: "Источники KSC", report: "Отчёты", catalog: "Каталог программ", worker: "Фоновые задачи", admin: "Администрирование", system: "Система", bi: "BI-выгрузки", hier: "Иерархия предприятия" };
 const RANGES: [string, string][] = [["1h", "За час"], ["24h", "За сутки"], ["7d", "За 7 дней"], ["30d", "За 30 дней"], ["", "За всё время"]];
 
 /** Журнал событий: входы, подключения к SQL Server, формирование отчётов, ошибки. Секреты и полные SQL-строки в журнал не попадают. */

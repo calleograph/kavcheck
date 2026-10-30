@@ -1557,3 +1557,27 @@ class BiMatch(Base):
     host_last_connected: Mapped[datetime | None] = mapped_column(UTCDateTime)
     activity: Mapped[str] = mapped_column(String(8), nullable=False, default="", server_default="")
     __table_args__ = (Index("ux_bi_matches_pair", "device_id", "ksc_source_id", "host_id", unique=True), Index("ix_bi_matches_host", "ksc_source_id", "host_id"), Index("ix_bi_matches_src", "bi_source_id", "level"))
+
+
+# ------------------------------------------------------------------------------------------------ иерархия предприятия
+class HierSnapshot(Base):
+    """Снимок выгрузки адресной книги для раздела «Иерархия. Предприятие»: дата, число записей и ошибок, статус. Пользователи видят последний успешный (ok).
+    Записи (`records`) — выгрузка как собрана, по восемь полей; если содержимое совпало с предыдущим снимком, записи не дублируются (`same_as_id` — снимок, где они хранятся)."""
+    __tablename__ = "hier_snapshots"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="running")      # running | ok | failed | rejected
+    trigger: Mapped[str] = mapped_column(String(10), nullable=False, default="schedule")    # schedule | manual | upload
+    by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(10), nullable=False, default="")             # ldap | file
+    source_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    raw_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    errors_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    message: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    warnings: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    stats: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    records: Mapped[list | None] = mapped_column(JSONType)
+    same_as_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    __table_args__ = (Index("ix_hier_snapshots_status", "status", "finished_at"),)

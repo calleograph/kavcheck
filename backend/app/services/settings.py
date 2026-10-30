@@ -334,7 +334,64 @@ class TechSettings(_Group):
     heartbeat_seconds: int = Field(default=90, ge=30, le=3600)       # нет пульса службы дольше — «не отвечает»
 
 
-GROUPS: dict[str, type[_Group]] = {"tech": TechSettings, "appearance": AppearanceSettings, "bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
+class HierSettings(_Group):
+    """Раздел «Иерархия. Предприятие»: источник адресной книги, расписание сбора, доступ, правила очистки и таблица названий подразделений.
+    Подключение к каталогу — уже настроенное LDAPS (Администрирование → LDAPS); отдельных логинов и паролей раздел не хранит."""
+    enabled: bool = False                                                       # сбор по расписанию (по умолчанию выключен до настройки)
+    source: Literal["ldap", "file"] = "ldap"                                    # ldap — подключения LDAPS продукта; file — загруженный файл (проверка, работа без каталога)
+    ldap_connections: list[str] = Field(default_factory=list, max_length=20)    # id подключений LDAPS; пусто — все включённые
+    ldap_filter: str = Field(default="", max_length=500)                        # дополнительный фильтр LDAP, например (!(msExchHideFromAddressLists=TRUE)); пусто — без него
+    schedule_time: str = Field(default="02:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    timezone: str = Field(default="UTC", max_length=64)
+    keep_days: int = Field(default=90, ge=7, le=3650)                           # срок хранения снимков
+    drop_threshold_pct: int = Field(default=10, ge=0, le=90)                    # записей меньше, чем в прошлом снимке, на столько процентов — снимок не публикуется (0 — не проверять)
+    roles: list[Literal["viewer", "analyst", "admin"]] = Field(default_factory=lambda: ["analyst", "admin"], max_length=3)   # администратор имеет доступ всегда
+    internal_domains: list[str] = Field(default_factory=list, max_length=50)    # внутренние домены адресов; пусто — внешние адреса не исключаются
+    drop_empty: bool = True                                                     # пустые карточки: нет должности, подразделения и руководителя
+    drop_underscore: bool = True                                                # имя начинается с «_»
+    drop_service: bool = True                                                   # служебные записи
+    service_words: list[str] = Field(default_factory=lambda: ["служебная", "тестовая", "учётная запись", "робот"], max_length=50)
+    service_prefixes: list[str] = Field(default_factory=lambda: ["support", "test", "svc", "noreply", "info", "admin"], max_length=50)
+    name_lookup: bool = True                                                    # руководитель указан только текстом — искать по ФИО (при единственном совпадении)
+    dept_map: dict[str, str] = Field(default_factory=dict, max_length=1000)     # «как написано в почте» → «как показывать»
+
+    @field_validator("timezone")
+    @classmethod
+    def _tz(cls, v: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # noqa: PLC0415
+
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            raise ValueError(f"неизвестный часовой пояс «{v}» (пример: Europe/Moscow)") from None
+        return v
+
+    @field_validator("internal_domains", "service_words", "service_prefixes")
+    @classmethod
+    def _lists(cls, v: list[str]) -> list[str]:
+        out = []
+        for x in v:
+            x = str(x).strip().lower().lstrip("@")
+            if x and x not in out:
+                if len(x) > 120:
+                    raise ValueError("значение слишком длинное")
+                out.append(x)
+        return out
+
+    @field_validator("dept_map")
+    @classmethod
+    def _map(cls, v: dict[str, str]) -> dict[str, str]:
+        out = {}
+        for k, x in v.items():
+            k, x = str(k).strip(), str(x).strip()
+            if k and x:
+                if len(k) > 200 or len(x) > 200:
+                    raise ValueError("название подразделения длиннее 200 символов")
+                out[k] = x
+        return out
+
+
+GROUPS: dict[str, type[_Group]] = {"hier": HierSettings, "tech": TechSettings, "appearance": AppearanceSettings, "bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
                                    "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings}
 
 
