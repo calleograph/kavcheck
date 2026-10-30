@@ -190,11 +190,12 @@ class Runner:
             general = await self._svc.get(db, "general")
             org = (await self._svc.get(db, "organization")).model_dump()
             hw = await self._svc.get(db, "hardware")
+            hier = await self._svc.get(db, "hier") if job.kind == "quick_hier" else None
         if src is None and job.kind not in quick.NO_KSC:                    # результаты Pentest, BI и администрирования не принадлежат источнику KSC
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
         if src is None:
-            src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_admin": "KAV Checker"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
+            src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_hier": "Иерархия", "quick_admin": "KAV Checker"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
             client = None
         else:
             client = SourceClient(conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), concurrency=self._cfg.ksc_concurrency, name=src.name)
@@ -211,6 +212,7 @@ class Runner:
         watcher = asyncio.create_task(watch())
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
                         progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"], sm=self._sm, source_id=src.id, org=org, hw_cfg=hw, settings=self._cfg)
+        ctx.hier_cfg = hier
         if job.kind in ("quick_eol", "quick_devices", "quick_overview"):
             ctx.source_ids = [uuid.UUID(str(x)) for x in (job.source_ids or [str(job.source_id)])]
         if job.kind == "quick_overview":

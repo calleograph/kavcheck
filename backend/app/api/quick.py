@@ -19,6 +19,7 @@ from ..models import KscSource
 from ..reports import quick, quick_export
 from ..vdb import store as vdb_store
 from .catalog import audit_preview
+from .hier import allowed as hier_allowed
 from .schemas import QUICK_PARAMS, AuditParams, QuickZone as AuditParamsZone
 from .vulns import _ksc, groups_cached, unsupported
 
@@ -27,7 +28,7 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_admin)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_admin)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
@@ -107,6 +108,20 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
             doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
         except KscError as exc:
             raise HTTPException(status_code=422, detail=exc.message) from None
+        return _answer(doc, ctx.now)
+    if body.kind == "quick_hier":                        # структура организации: роли задаёт администратор (настройки раздела), проверка — как у самого раздела
+        cfg = await request.app.state.settings_svc.get(db, "hier")
+        if not hier_allowed(su, cfg):
+            raise HTTPException(status_code=403, detail="Раздел «Иерархия. Предприятие» недоступен для вашей роли")
+        try:
+            params = QUICK_PARAMS[body.kind].model_validate(body.params).model_dump()
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
+        ctx = quick.Ctx(source_name="Иерархия", activity_days=0, sm=request.app.state.session_maker, hier_cfg=cfg)
+        try:
+            doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
+        except KscError as exc:
+            raise HTTPException(status_code=409 if exc.code == "no_data" else 422, detail=exc.message) from None
         return _answer(doc, ctx.now)
     if body.kind == "quick_admin":                     # таблицы администрирования: только администратор, внутренняя база
         if not su.is_admin:

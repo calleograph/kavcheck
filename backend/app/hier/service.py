@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..bi.service import next_run
 from ..db import xact_lock
+from ..ksc.driver import KscError
 from ..models import AppSetting, HierSnapshot, utcnow
 from ..services.settings import HierSettings
 from . import process as P
@@ -59,12 +61,49 @@ async def latest_ok(db: AsyncSession) -> HierSnapshot | None:
     return (await db.execute(select(HierSnapshot).where(HierSnapshot.status == "ok").order_by(HierSnapshot.finished_at.desc()).limit(1))).scalar_one_or_none()
 
 
+async def ok_snapshots(db: AsyncSession, limit: int = 60) -> list[HierSnapshot]:
+    """Успешные снимки с различным содержимым, от новых к старым (одинаковые подряд — один раз): список для сравнения выгрузок."""
+    rows = (await db.execute(select(HierSnapshot).where(HierSnapshot.status == "ok").order_by(HierSnapshot.finished_at.desc()).limit(limit * 3))).scalars().all()
+    out: list[HierSnapshot] = []
+    for s in rows:
+        if not out or s.content_hash != out[-1].content_hash:
+            out.append(s)
+    return out[:limit]
+
+
+async def previous_ok(db: AsyncSession, snap: HierSnapshot, base_id: str = "") -> HierSnapshot | None:
+    """С чем сравнивать текущий снимок: указанный (`base_id`) либо ближайший более ранний с другим содержимым."""
+    if base_id:
+        try:
+            got = await db.get(HierSnapshot, uuid.UUID(base_id))
+        except ValueError:
+            raise KscError("params", "Некорректный идентификатор выгрузки для сравнения") from None
+        if got is None or got.status != "ok":
+            raise KscError("params", "Выгрузка для сравнения не найдена (возможно, удалена по сроку хранения)")
+        return got
+    return next((s for s in await ok_snapshots(db) if s.finished_at < snap.finished_at and s.content_hash != snap.content_hash), None)
+
+
 async def records_of(db: AsyncSession, snap: HierSnapshot) -> list[list[str]]:
     """Записи снимка: свои либо снимка, где они хранятся (одинаковое содержимое не дублируется)."""
     if snap.records is not None:
         return snap.records
     holder = await db.get(HierSnapshot, snap.same_as_id) if snap.same_as_id else None
     return (holder.records or []) if holder is not None else []
+
+
+_CACHE: dict[tuple, P.Result] = {}                                       # обработанный снимок: (снимок, правила) → результат; не больше нескольких штук
+
+
+async def processed(db: AsyncSession, snap: HierSnapshot, cfg: HierSettings) -> P.Result:
+    rules = rules_of(cfg)
+    key = (str(snap.id), rules.signature())
+    if key not in _CACHE:
+        res = await asyncio.to_thread(P.build, await records_of(db, snap), rules)
+        if len(_CACHE) >= 4:
+            _CACHE.pop(next(iter(_CACHE)))
+        _CACHE[key] = res
+    return _CACHE[key]
 
 
 async def prune(db: AsyncSession, keep_days: int) -> int:

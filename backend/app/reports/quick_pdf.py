@@ -10,6 +10,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from . import layout as L
+from .hier_render import pdf_story
 from .quick_export import _fmt, org_lines
 
 FONTS = Path(__file__).resolve().parent.parent / "assets" / "fonts"
@@ -135,7 +136,9 @@ def write_pdf(path: Path, doc: dict) -> None:
         t.setStyle(TableStyle(st))
         return out + [t]
 
-    blocks = L.resolve(doc)
+    if doc.get("chart"):                                    # «Иерархия»: структура подчинения отступами и цветом подразделения
+        story += pdf_story(doc, avail, base, small, h2, muted, th, _t)
+    blocks = [x for x in L.resolve(doc) if x["entry"].get("pdf") != "never"]
     for b in [x for x in blocks if x["section"] == "summary"] + [x for x in blocks if x["section"] != "summary"]:
         story += table(b)
     cards = doc.get("cards") or []

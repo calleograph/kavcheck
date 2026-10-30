@@ -353,7 +353,11 @@ class HierSettings(_Group):
     service_words: list[str] = Field(default_factory=lambda: ["служебная", "тестовая", "учётная запись", "робот"], max_length=50)
     service_prefixes: list[str] = Field(default_factory=lambda: ["support", "test", "svc", "noreply", "info", "admin"], max_length=50)
     name_lookup: bool = True                                                    # руководитель указан только текстом — искать по ФИО (при единственном совпадении)
-    dept_map: dict[str, str] = Field(default_factory=dict, max_length=1000)     # «как написано в почте» → «как показывать»
+    dept_map: dict[str, str] = Field(default_factory=dict, max_length=1000)     # «как написано в почте» → «как показывать»; это же таблица синонимов, подтверждённых администратором
+    lead_words: list[str] = Field(default_factory=lambda: ["директор", "руководитель", "начальник", "заведующ", "глава", "заместитель", "управляющий", "председатель"], max_length=100)   # должность содержит — предполагает руководящую роль
+    nonlead_words: list[str] = Field(default_factory=lambda: ["стажер", "стажёр", "оператор", "секретарь", "ассистент", "курьер", "водитель", "уборщ"], max_length=100)           # должность содержит — обычно неруководящая
+    big_group: int = Field(default=15, ge=3, le=500)                            # непосредственных подчинённых больше этого числа — повод для проверки, не ошибка
+    reviewed: list[str] = Field(default_factory=list, max_length=5000)          # идентификаторы сотрудников, чьё подчинение руководителю другого подразделения проверено
 
     @field_validator("timezone")
     @classmethod
@@ -366,7 +370,7 @@ class HierSettings(_Group):
             raise ValueError(f"неизвестный часовой пояс «{v}» (пример: Europe/Moscow)") from None
         return v
 
-    @field_validator("internal_domains", "service_words", "service_prefixes")
+    @field_validator("internal_domains", "service_words", "service_prefixes", "lead_words", "nonlead_words")
     @classmethod
     def _lists(cls, v: list[str]) -> list[str]:
         out = []
@@ -375,6 +379,18 @@ class HierSettings(_Group):
             if x and x not in out:
                 if len(x) > 120:
                     raise ValueError("значение слишком длинное")
+                out.append(x)
+        return out
+
+    @field_validator("reviewed")
+    @classmethod
+    def _reviewed(cls, v: list[str]) -> list[str]:
+        out = []
+        for x in v:
+            x = str(x).strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{10}", x):
+                raise ValueError("идентификатор сотрудника — 10 шестнадцатеричных символов")
+            if x not in out:
                 out.append(x)
         return out
 

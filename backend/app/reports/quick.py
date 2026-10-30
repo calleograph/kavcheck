@@ -24,9 +24,9 @@ from ..ksc import vulns as V
 from ..ksc.driver import KscError, SourceClient
 from ..search import any_field, matcher
 
-QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_pentest", "quick_hunt", "quick_bi", "quick_admin")
-NO_KSC = ("quick_pentest", "quick_hunt", "quick_bi", "quick_admin")          # строятся без источника KSC (своя внутренняя база)
-KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры", "quick_pentest": "Результаты Pentest", "quick_hunt": "Результаты целевого поиска уязвимостей", "quick_bi": "Владельцы устройств (BI)", "quick_admin": "Администрирование"}
+QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_admin")
+NO_KSC = ("quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_admin")          # строятся без источника KSC (своя внутренняя база)
+KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры", "quick_pentest": "Результаты Pentest", "quick_hunt": "Результаты целевого поиска уязвимостей", "quick_bi": "Владельцы устройств (BI)", "quick_hier": "Иерархия. Предприятие", "quick_admin": "Администрирование"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
 ONLINE_RU = {True: "в сети", False: "не в сети", None: "нет данных"}
@@ -51,6 +51,7 @@ class Ctx:
     records_for: Callable | None = None                # асинхронно: источник → (записи защиты, время получения); отчёт «Сводка инфраструктуры» (главная)
     org: dict = field(default_factory=dict)            # данные организации для шапки и подвала (настройки «Организация и оформление отчётов»)
     settings: object | None = None                     # настройки приложения (отчёт «Компоненты»: версии установленных частей)
+    hier_cfg: object | None = None                     # настройки раздела «Иерархия» (правила очистки выгрузки)
 
 
 def col(key: str, title: str, kind: str = "text") -> dict:
@@ -553,6 +554,10 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
         from .quick_bi import build_bi  # noqa: PLC0415
 
         BUILDERS[kind] = build_bi
+    if kind == "quick_hier" and kind not in BUILDERS:
+        from .quick_hier import build_hier  # noqa: PLC0415
+
+        BUILDERS[kind] = build_hier
     if kind == "quick_admin" and kind not in BUILDERS:
         from .quick_admin import build_admin  # noqa: PLC0415
 
@@ -568,7 +573,7 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
 
 # Таблицы, которые входят только в подробный отчёт: построчные перечни (обнаружения, компьютеры, устройства, события). В кратком остаются сводные таблицы и показатели.
 DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "software", "vulns"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
-                 "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}, "quick_pentest": {"hosts", "ports", "hits", "skipped"}, "quick_hunt": {"coverage"}, "quick_bi": {"rows"}, "quick_admin": {"rows"}}
+                 "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}, "quick_pentest": {"hosts", "ports", "hits", "skipped"}, "quick_hunt": {"coverage"}, "quick_bi": {"rows"}, "quick_hier": {"rows"}, "quick_admin": {"rows"}}
 
 
 def shape(kind: str, doc: dict, p: dict) -> dict:
@@ -591,12 +596,46 @@ def shape(kind: str, doc: dict, p: dict) -> dict:
         picked = [by[k] for k in p["columns"] if k in by]
         if picked:
             tables[0] = {**main, "columns": picked}
+    tables = _order_and_group(tables, p)
     return {**doc, "tables": tables}
+
+
+def _sort_key(v):
+    """Ключ сортировки столбца: числа — как числа, даты и текст — строкой без учёта регистра; пустые — в конец."""
+    if v is None or v == "":
+        return (1, 0, "")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return (0, v, "")
+    return (0, 0, str(v).casefold())
+
+
+def _order_and_group(tables: list[dict], p: dict) -> list[dict]:
+    """Сортировка и группировка основной таблицы по выбору пользователя в конструкторе: строки упорядочиваются (группа — первой), а к отчёту добавляется сводка «число строк по группам»."""
+    main = tables[0] if tables else None
+    keys = {c["key"] for c in main["columns"]} if main else set()
+    srt, grp = p.get("sort") or "", p.get("group") or ""
+    if main is None or ((srt not in keys) and (grp not in keys)):
+        return tables
+    rows = list(main["rows"])
+    if srt in keys:
+        rows.sort(key=lambda r: _sort_key(r.get(srt)), reverse=bool(p.get("desc")))
+    out = [{**main, "rows": rows}, *tables[1:]]
+    if grp in keys:
+        rows.sort(key=lambda r: _sort_key(r.get(grp)))                            # устойчивая: внутри группы порядок сортировки сохраняется
+        title = next(c["title"] for c in main["columns"] if c["key"] == grp)
+        cnt: dict[str, int] = {}
+        for r in rows:
+            v = r.get(grp)
+            k = "не указано" if v in (None, "") else str(v)
+            cnt[k] = cnt.get(k, 0) + 1
+        out.append({"id": "grouped", "title": f"Группировка: {title}", "columns": [col("group", title), col("n", "Строк", "num")],
+                    "rows": [{"group": k, "n": n} for k, n in cnt.items()], "note": f"Строки основной таблицы упорядочены по столбцу «{title}»."})
+    return out
 
 
 def brief(doc: dict) -> dict:
     """Документ без строк таблиц (для хранения в сводке отчёта и ответа предпросмотра): строки основной таблицы — отдельно, остальные — числом."""
-    out = {k: v for k, v in doc.items() if k not in ("tables", "host_details", "pentest")}
+    out = {k: v for k, v in doc.items() if k not in ("tables", "host_details", "pentest", "chart")}
     if out.get("org"):
         out["org"] = {k: v for k, v in out["org"].items() if k != "logo"}          # логотип в сводке отчёта не хранится
     return {**out, "tables": [{"id": t["id"], "title": t["title"], "columns": t["columns"], "n": len(t["rows"]), "note": t.get("note", "")} for t in doc["tables"]]}

@@ -19,6 +19,9 @@ class Params(BaseModel):
     `columns` — какие столбцы основной таблицы включить и в каком порядке (пусто — все)."""
     detail: Literal["summary", "full"] = "full"
     columns: list[str] = Field(default_factory=list, max_length=60)
+    sort: str = Field(default="", max_length=60)                 # ключ столбца основной таблицы, по которому сортировать (пусто — порядок отчёта)
+    desc: bool = False
+    group: str = Field(default="", max_length=60)                # ключ столбца: строки группируются по значению, добавляется сводка «число по группам»
 
     @model_validator(mode="before")
     @classmethod
@@ -345,6 +348,17 @@ class QuickBi(Params):
     device_id: int | None = None
 
 
+class QuickHier(Params):
+    """Иерархия: вид отчёта и условия страницы (поиск, подразделение, ветка выбранного сотрудника — его идентификатор из ссылки #p…)."""
+    view: str = Field(default="people", pattern=r"^(people|tree|chain|depts|managers|roles|crossdept|dups|service|quality|changes|problems|pack)$")
+    q: str = Field(default="", max_length=200)
+    dept: str = Field(default="", max_length=300)
+    branch: str = Field(default="", pattern=r"^[0-9a-f]{0,10}$")
+    direct: bool = False                                          # с руководителем (branch): только непосредственные подчинённые
+    include_reviewed: bool = False                                # в отчёте «Подразделения и подчинённость» показать и проверенные исключения
+    base: str = Field(default="", max_length=40)                  # выгрузка для сравнения (по умолчанию — предыдущая)
+
+
 class QuickAdmin(Params):
     """Таблицы администрирования: вид и фильтры страницы (журнал событий — текст, уровень, компонент, период; журнал действий — текст, действие, период; компоненты — статус; импорт BI — источник)."""
     view: str = Field(default="journal", pattern=r"^(licenses|journal|audit|users|components|bi_imports)$")
@@ -408,11 +422,11 @@ class QuickOverview(Params):
     source_id: str = Field(default="", max_length=40)
 
 
-QUICK_PARAMS = {"quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
+QUICK_PARAMS = {"quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_hier": QuickHier, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
 
 
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_admin)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_admin)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
@@ -444,7 +458,7 @@ class OverrideIn(BaseModel):
 
 class TemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_admin)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_admin)$")
     params: dict
     shared: bool = True
 

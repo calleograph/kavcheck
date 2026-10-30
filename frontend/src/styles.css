@@ -1640,7 +1640,7 @@ tr.row-stale > td a { color: inherit; }
 .hier-main { overflow: hidden; }
 .hier-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px 0; border-bottom: 1px solid var(--line); }
 .hier-tabs .tabs { border-bottom: 0; flex: 0 0 auto; }
-.hier-tools { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 0 6px; margin-left: auto; }
+.hier-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 0 0 6px; margin-left: auto; }
 .hier-hint { padding: 10px 16px; margin: 0; color: var(--muted); font-size: 12.5px; border-bottom: 1px solid var(--line); }
 .hier-gwrap { cursor: grab; touch-action: pan-x pan-y; height: min(68vh, 720px); min-height: 420px; overflow: auto; background: radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0 / 22px 22px; }
 .hier-gwrap.drag, .hier-gwrap.drag .nd { cursor: grabbing; }

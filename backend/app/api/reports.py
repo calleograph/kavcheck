@@ -42,6 +42,8 @@ def can_see(su: SessionUser, j: ReportJob) -> bool:
         return False                                       # в отчёте — сотрудники по BI: роли «Просмотр» они не показываются и на странице
     if j.kind == "quick_bi":                              # сведения о сотрудниках BI: аналитик и администратор с доступом ко всем источникам
         return su.role in ("analyst", "admin") and (su.is_admin or su.all_sources)
+    if j.kind == "quick_hier":                            # структура организации: файл с ФИО и почтой — аналитик и администратор (доступ к разделу проверяется при создании)
+        return su.role in ("analyst", "admin")
     if j.kind in ("quick_pentest", "quick_hunt"):          # результаты сканирования не принадлежат источнику KSC: права — аналитик и администратор
         return su.role in ("analyst", "admin")
     ids = job_sources(j)
@@ -126,6 +128,11 @@ async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends
     params = validate_params(body.kind, body.params)
     if body.kind == "quick_bi" and not (su.is_admin or su.all_sources):
         raise HTTPException(status_code=403, detail="Отчёты BI доступны аналитику и администратору с доступом ко всем источникам KSC")
+    if body.kind == "quick_hier":
+        from .hier import allowed as hier_allowed  # noqa: PLC0415
+
+        if not hier_allowed(su, await request.app.state.settings_svc.get(db, "hier")):
+            raise HTTPException(status_code=403, detail="Раздел «Иерархия. Предприятие» недоступен для вашей роли")
     if body.kind == "quick_admin" and not su.is_admin:
         raise HTTPException(status_code=403, detail="Отчёты администрирования доступны администратору")
     if body.kind in quick.NO_KSC:

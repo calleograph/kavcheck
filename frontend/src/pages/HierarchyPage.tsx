@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { api, type ApiError, type HierData } from "../api";
+import type { Ctx } from "../App";
 import { Modal } from "../components/Dialogs";
+import { ReportButton } from "../components/FilterBar";
 import { Icon } from "../components/Icons";
+import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { Empty, PageHead, SkelRows, Tabs } from "../components/ui";
+import { downloadGraph } from "../hierExport";
 import { fmt, num, plural } from "../util";
 
 /** «Иерархия. Предприятие»: структура организации по адресной книге почты. Данные отдаёт сервер после проверки роли; страница только показывает их и ничего не исправляет. */
@@ -27,11 +31,33 @@ function Hl({ text, q }: { text: string; q: string }) {
   return i < 0 ? <>{text}</> : <>{text.slice(0, i)}<mark>{text.slice(i, i + q.length)}</mark>{text.slice(i + q.length)}</>;
 }
 
-export default function HierarchyPage() {
+type Bridge = { params: () => Record<string, unknown>; svg: () => SVGSVGElement | null };
+
+/** Схема как файл (SVG или PNG): ровно то, что видно на экране; для всей структуры и больших схем — отчёт «Структура подчинения» (HTML и PDF рисуют её целиком). */
+function GraphExport({ bridge, at, show }: { bridge: React.MutableRefObject<Bridge>; at?: string; show: (t: string, k?: "ok" | "error") => void }) {
+  const [busy, setBusy] = useState("");
+  const go = async (kind: "svg" | "png") => {
+    const svg = bridge.current.svg();
+    if (!svg) return;
+    setBusy(kind);
+    const e = await downloadGraph(svg, kind, `hierarchy-${new Date().toISOString().slice(0, 10)}`, `Иерархия. Предприятие · выгрузка от ${fmt(at)}`);
+    setBusy("");
+    show(e || `Схема сохранена (${kind.toUpperCase()})`, e ? "error" : "ok");
+  };
+  if (!bridge.current.svg()) return null;
+  return <fieldset className="qr-sections"><legend>Схема как на экране</legend>
+    <div className="row tight"><button type="button" className="btn mini" disabled={!!busy} onClick={() => void go("svg")}><Icon name="download" size={14} />Изображение SVG</button>
+      <button type="button" className="btn mini" disabled={!!busy} onClick={() => void go("png")}><Icon name="download" size={14} />Изображение PNG</button></div>
+    <span className="muted small">Сохраняются раскрытые ветки и выбранный сотрудник, масштаб читаемый. Всю структуру целиком без обрезания даёт отчёт «Структура подчинения» (HTML, PDF).</span></fieldset>;
+}
+
+export default function HierarchyPage({ ctx }: { ctx: Ctx }) {
   const [data, setData] = useState<HierData | null>(null);
   const [err, setErr] = useState("");
   const [asked, setAsked] = useState(false);
   const [toast, show] = useToast();
+  const bridge = useRef<Bridge>({ params: () => ({}), svg: () => null });
+  const [report, setReport] = useState<Record<string, unknown> | null>(null);
   const load = useCallback(() => api.hier.data().then((d) => { setData(d); setErr(""); return d; }).catch((e) => { setErr((e as ApiError).message); return null; }), []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {                                                       // идёт сбор (или запрошен): страница сама подхватит готовый снимок
@@ -47,15 +73,20 @@ export default function HierarchyPage() {
   return (
     <section className="hier">
       <PageHead title="Иерархия. Предприятие" lede="Кто кому подчиняется и кто в каком подразделении — по адресной книге почты.">
-        {data.can_admin && <div className="row">
+        <div className="row">
+          {data.state === "ok" && <ReportButton onClick={() => setReport({ ...bridge.current.params() })} title="Готовые отчёты по структуре и качеству данных: Excel, CSV, PDF, HTML" />}
+          {data.can_admin && <>
           <button type="button" className="btn" onClick={() => void refresh()} disabled={data.running || asked} aria-busy={data.running || asked}><Icon name="refresh" size={15} />{data.running || asked ? "Идёт сбор…" : "Обновить сейчас"}</button>
-          <Link className="btn ghost" to="/admin?tab=hier"><Icon name="sliders" size={15} />Настройки</Link></div>}
+          <Link className="btn ghost" to="/admin?tab=hier"><Icon name="sliders" size={15} />Настройки</Link></>}</div>
       </PageHead>
       <Source d={data} />
       {data.warning && <div className={`alert ${data.warning.status === "stale" ? "warn" : "error"}`} role="alert"><Icon name="alert" /><div className="alert-body">
         <b>{data.warning.status === "rejected" ? "Новый снимок не опубликован." : data.warning.status === "failed" ? "Последний сбор не удался." : "Данные могли устареть."}</b> {data.warning.message}
         {data.warning.last_ok_at && <> Показан последний успешный снимок от {fmt(data.warning.last_ok_at)}.</>}</div></div>}
-      {data.state !== "ok" || !data.snapshot ? <NoData d={data} onRun={() => void refresh()} busy={data.running || asked} /> : <Chart d={data} />}
+      {data.state !== "ok" || !data.snapshot ? <NoData d={data} onRun={() => void refresh()} busy={data.running || asked} /> : <Chart d={data} bridge={bridge} onReport={setReport} canMark={ctx.me.user.role !== "viewer"}
+        onMark={(id, on) => { api.hier.review(id, on).then(() => setData((x) => x && { ...x, reviewed: on ? [...(x.reviewed ?? []), id] : (x.reviewed ?? []).filter((r) => r !== id) })).then(() => show(on ? "Отмечено как проверенное исключение" : "Отметка снята")).catch((e) => show((e as ApiError).message, "error")); }} />}
+      {report && <QuickReportPanel kind="quick_hier" title="Отчёт: иерархия предприятия" lede="Готовые отчёты по последней выгрузке адресной книги; охват — вся организация, подразделение или руководитель. Выгрузка полная, по всем подходящим сотрудникам"
+        options={{ scope: false, hier: true, hierDepts: data.depts.map((x) => x.name), aside: <GraphExport bridge={bridge} at={data.snapshot?.at} show={show} /> }} activityDays={0} canReport={ctx.me.user.role !== "viewer"} onClose={() => setReport(null)} params={report} />}
       {toast}
     </section>
   );
@@ -83,7 +114,7 @@ function NoData({ d, onRun, busy }: { d: HierData; onRun: () => void; busy: bool
 }
 
 // ------------------------------------------------------------------------------------------------ граф, карточка, поиск
-function Chart({ d }: { d: HierData }) {
+function Chart({ d, bridge, onReport, canMark, onMark }: { d: HierData; bridge: React.MutableRefObject<Bridge>; onReport: (p: Record<string, unknown>) => void; canMark: boolean; onMark: (id: string, on: boolean) => void }) {
   const loc = useLocation();
   const [tab, setTab] = useState<"g" | "d">("g");
   const [sel, setSel] = useState(-1);
@@ -94,6 +125,7 @@ function Chart({ d }: { d: HierData }) {
   const [sheet, setSheet] = useState<{ dept: number; focus: number; mode: "team" | "all"; q: string; openAll: boolean } | null>(null);
   const [q, setQ] = useState("");
   const wrap = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
 
   const model = useMemo(() => {
     const P: Person[] = d.people.map((r, i) => ({ i, id: r[0], name: r[1], email: r[2], title: r[3], dept: r[4], mgr: r[5], mgrText: r[6], inh: !!r[7], self: !!(r[8] & 1), reach: !!(r[8] & 2), head: !!(r[8] & 4), why: r[9], size: r[10], kids: [], sn: shortName(r[1]) }));
@@ -231,6 +263,7 @@ function Chart({ d }: { d: HierData }) {
     <button type="button" className={`hier-row ${cls}`} key={p.i} onClick={() => { setSheet(null); select(p.i); }}>
       <Avatar p={p} hue={hue(p.dept)} /><span className="t"><span className="n">{p.sn}</span><span className="s">{p.title || "должность не указана"}</span></span>{extra ? <span className="k">{extra}</span> : null}</button>);
 
+  bridge.current = { params: () => ({ view: tab === "d" ? "depts" : "tree", branch: sel >= 0 ? P[sel].id : "", dept: "", q: q.trim().length >= 2 ? q.trim() : "" }), svg: () => svgRef.current };
   return (
     <div className="hier-grid">
       <aside className="hier-left"><Search P={P} q={q} setQ={setQ} onPick={(i) => select(i)} hue={hue} /><Note /></aside>
@@ -244,7 +277,7 @@ function Chart({ d }: { d: HierData }) {
           <p className="hier-hint">Схему можно двигать мышью, масштаб меняют кнопки «+» и «−» или Ctrl и колесо. Нажмите на человека — справа его карточка и цепочка руководителей. Кружок справа от карточки раскрывает и сворачивает подчинённых.</p>
           <div className="hier-gwrap" ref={wrap} onPointerDown={(e) => { if (e.pointerType !== "mouse" || e.button !== 0) return; const w = wrap.current!; drag.current = { x: e.clientX, y: e.clientY, l: w.scrollLeft, t: w.scrollTop }; moved.current = false; }}
             onClickCapture={(e) => { if (moved.current) { e.stopPropagation(); e.preventDefault(); moved.current = false; } }}>
-            <svg className="hier-g" role="img" aria-label="Граф иерархии предприятия" width={Math.round(L.w * zoom)} height={Math.round(L.h * zoom)} viewBox={`0 0 ${L.w} ${L.h}`}>
+            <svg ref={svgRef} className="hier-g" role="img" aria-label="Граф иерархии предприятия" width={Math.round(L.w * zoom)} height={Math.round(L.h * zoom)} viewBox={`0 0 ${L.w} ${L.h}`}>
               {L.links.map(([a, b]) => { const pa = L.pos.get(a.id)!, pb = L.pos.get(b.id)!, x1 = pa.d * (W + GX) + 12 + W, y1 = pa.y + 4 + H / 2, x2 = pb.d * (W + GX) + 12, y2 = pb.y + 4 + H / 2, mx = (x1 + x2) / 2;
                 return <path key={`${a.id}>${b.id}`} className={`lnk${chain[a.id] && chain[b.id] ? " on" : ""}`} d={`M${x1} ${y1}C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`} />; })}
               {[...L.items].sort((a, b) => (chain[a.id] ? 1 : 0) - (chain[b.id] ? 1 : 0)).map((n) => {
@@ -281,11 +314,13 @@ function Chart({ d }: { d: HierData }) {
           })}</div>)}
       </main>
       <aside className="card hier-right" id="hier-panel" aria-live="polite">
-        {sel < 0 ? <Overview d={d} heads={heads} lone={lone.length} row={personRow} total={P.length} /> : <Card p={P[sel]} P={P} d={d} hue={hue} row={personRow} warnings={d.why ?? {}}
+        {sel < 0 ? <Overview d={d} heads={heads} lone={lone.length} row={personRow} total={P.length} P={P} onReport={onReport} /> : <Card p={P[sel]} P={P} d={d} hue={hue} row={personRow} warnings={d.why ?? {}}
           onWho={() => setSheet({ dept: P[sel].dept, focus: sel, mode: P[sel].mgr >= 0 && P.some((x) => x.i !== sel && x.mgr === P[sel].mgr) ? "team" : "all", q: "", openAll: false })}
-          onFocus={() => { setTab("g"); select(sel); }} onClose={() => select(-1)} />}
+          onFocus={() => { setTab("g"); select(sel); }} onClose={() => select(-1)}
+          onBranch={(direct) => onReport({ view: "people", branch: P[sel].id, direct })} onChain={() => onReport({ view: "chain", branch: P[sel].id })}
+          marked={(d.reviewed ?? []).includes(P[sel].id)} canMark={canMark} onMark={(on) => onMark(P[sel].id, on)} />}
       </aside>
-      {sheet && <Sheet st={sheet} setSt={setSheet} P={P} d={d} row={personRow} onClose={() => setSheet(null)} />}
+      {sheet && <Sheet st={sheet} setSt={setSheet} P={P} d={d} row={personRow} onClose={() => setSheet(null)} onReport={(dept) => { setSheet(null); onReport({ view: "people", dept }); }} />}
     </div>
   );
 }
@@ -322,19 +357,25 @@ function Search({ P, q, setQ, onPick, hue }: { P: Person[]; q: string; setQ: (v:
   );
 }
 
-function Overview({ d, heads, lone, row, total }: { d: HierData; heads: Person[]; lone: number; row: (p: Person, extra?: ReactNode, cls?: string) => ReactNode; total: number }) {
+function Overview({ d, heads, lone, row, total, P, onReport }: { d: HierData; heads: Person[]; lone: number; row: (p: Person, extra?: ReactNode, cls?: string) => ReactNode; total: number; P: Person[]; onReport: (p: Record<string, unknown>) => void }) {
+  const issues = useMemo((): [string, Person[]][] => [["Руководитель не указан", P.filter((p) => p.why === "none")], ["Руководитель не найден", P.filter((p) => ["text", "ambig", "outside"].includes(p.why))],
+    ["Круг в подчинении", P.filter((p) => p.why === "cycle")], ["Нет должности", P.filter((p) => !p.title)], ["Подразделение определено по руководителю", P.filter((p) => p.inh)]], [P]);
   const depts = d.depts.filter((x) => x.name !== "Подразделение не указано").length;
   return (<>
     <div className="pad"><h2 className="hier-h">Предприятие в цифрах</h2><div className="hier-stats">
       <div className="hier-stat"><b>{num(total)}</b><span>сотрудников в структуре</span></div><div className="hier-stat"><b>{num(depts)}</b><span>подразделений</span></div>
       <div className="hier-stat"><b>{num(heads.length)}</b><span>руководителей верхнего уровня</span></div><div className="hier-stat"><b>{num(lone)}</b><span>без руководителя в почте</span></div></div></div>
     <div className="hier-sec"><h2 className="hier-h">Верхний уровень</h2><div>{heads.map((h) => row(h, `+${h.size - 1}`))}</div></div>
+    <div className="hier-sec"><h2 className="hier-h">Качество данных</h2>
+      {issues.filter(([, l]) => l.length).map(([t, l]) => <details className="hier-grp" key={t}><summary><span>{t}</span><small>{num(l.length)}</small></summary>
+        <div>{l.slice(0, 8).map((p) => row(p))}{l.length > 8 && <div className="hier-empty">Показано 8 из {num(l.length)}: полный список — в отчёте.</div>}</div></details>)}
+      <button type="button" className="btn mt-sm" onClick={() => onReport({ view: "quality" })}>Отчёт «Качество данных»</button></div>
     <div className="hier-sec"><div className="hier-notebox">Выберите сотрудника в поиске или на графе: здесь появится его руководитель, вся цепочка выше и кнопка «Кто ещё в подразделении».</div></div>
   </>);
 }
 
-function Card({ p, P, d, hue, row, warnings, onWho, onFocus, onClose }: { p: Person; P: Person[]; d: HierData; hue: (d: number) => number; row: (p: Person, extra?: ReactNode, cls?: string) => ReactNode; warnings: Record<string, string>;
-  onWho: () => void; onFocus: () => void; onClose: () => void }) {
+function Card({ p, P, d, hue, row, warnings, onWho, onFocus, onClose, onBranch, onChain, marked, canMark, onMark }: { p: Person; P: Person[]; d: HierData; hue: (d: number) => number; row: (p: Person, extra?: ReactNode, cls?: string) => ReactNode; warnings: Record<string, string>;
+  onWho: () => void; onFocus: () => void; onClose: () => void; onBranch: (direct: boolean) => void; onChain: () => void; marked: boolean; canMark: boolean; onMark: (on: boolean) => void }) {
   const [all, setAll] = useState(false);
   const [copied, setCopied] = useState("");
   useEffect(() => { setAll(false); setCopied(""); }, [p.i]);
@@ -355,11 +396,16 @@ function Card({ p, P, d, hue, row, warnings, onWho, onFocus, onClose }: { p: Per
     {p.kids.length > 0 && <div className="hier-sec"><h2 className="hier-h">Подчинённые · {p.kids.length}</h2><div className="hier-kids">{(all ? p.kids : p.kids.slice(0, 6)).map((k) => row(P[k]))}</div>
       {p.kids.length > 6 && !all && <button type="button" className="btn mt-sm" onClick={() => setAll(true)}>Показать всех {p.kids.length}</button>}</div>}
     <div className="hier-actions"><button type="button" className="btn primary" onClick={onWho}>Кто ещё в подразделении</button><button type="button" className="btn" onClick={onFocus}>Показать на графе</button><button type="button" className="btn" onClick={onClose}>Закрыть</button></div>
+    <div className="hier-sec"><h2 className="hier-h">Выгрузить</h2><div className="row tight">
+      {p.kids.length > 0 && <button type="button" className="btn mini" onClick={() => onBranch(false)}><Icon name="file" size={14} />Ветка подчинения</button>}
+      {p.kids.length > 0 && <button type="button" className="btn mini" onClick={() => onBranch(true)}>Только непосредственные</button>}
+      <button type="button" className="btn mini" onClick={onChain}>Карточка и цепочка</button></div>
+      {canMark && p.mgr >= 0 && P[p.mgr].dept !== p.dept && !p.inh && !P[p.mgr].inh && <label className="check mt-sm"><input type="checkbox" checked={marked} onChange={(e) => onMark(e.target.checked)} />Подчинение руководителю другого подразделения проверено: не показывать в отчётах</label>}</div>
   </>);
 }
 
-function Sheet({ st, setSt, P, d, row, onClose }: { st: { dept: number; focus: number; mode: "team" | "all"; q: string; openAll: boolean }; setSt: (s: { dept: number; focus: number; mode: "team" | "all"; q: string; openAll: boolean }) => void;
-  P: Person[]; d: HierData; row: (p: Person, extra?: ReactNode, cls?: string) => ReactNode; onClose: () => void }) {
+function Sheet({ st, setSt, P, d, row, onClose, onReport }: { st: { dept: number; focus: number; mode: "team" | "all"; q: string; openAll: boolean }; setSt: (s: { dept: number; focus: number; mode: "team" | "all"; q: string; openAll: boolean }) => void;
+  P: Person[]; d: HierData; row: (p: Person, extra?: ReactNode, cls?: string) => ReactNode; onClose: () => void; onReport: (dept: string) => void }) {
   const members = useMemo(() => P.filter((x) => x.dept === st.dept), [P, st.dept]);
   const f = st.focus >= 0 ? P[st.focus] : null;
   const team = f && f.mgr >= 0 ? P.filter((x) => x.i !== f.i && x.mgr === f.mgr) : [];
@@ -379,7 +425,8 @@ function Sheet({ st, setSt, P, d, row, onClose }: { st: { dept: number; focus: n
           <button type="button" aria-pressed={!showTeam} onClick={() => setSt({ ...st, mode: "all" })}>Всё подразделение · {members.length}</button></div>}
         <div className="row tight">
           <div className="hier-search grow"><Icon name="search" size={16} /><input type="search" value={st.q} placeholder="Фильтр по фамилии или должности" aria-label="Фильтр" onChange={(e) => setSt({ ...st, q: e.target.value })} /></div>
-          <button type="button" className="btn mini" onClick={() => setSt({ ...st, openAll: !openAll })}>{openAll ? "Свернуть" : "Развернуть"} группы</button></div>
+          <button type="button" className="btn mini" onClick={() => setSt({ ...st, openAll: !openAll })}>{openAll ? "Свернуть" : "Развернуть"} группы</button>
+          <ReportButton onClick={() => onReport(d.depts[st.dept]?.name ?? "")} title="Отчёт по этому подразделению: Excel, CSV, PDF, HTML" /></div>
         {!list.length ? <div className="hier-empty">Никого не найдено.</div> : keys.map((k) => {
           const m = k >= 0 ? P[k] : null, arr = [...groups.get(k)!].sort(byName);
           const hasF = !!f && arr.some((x) => x.i === f.i);

@@ -11,6 +11,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,7 +24,6 @@ from ..services.audit import write_audit
 
 log = logging.getLogger("app.hier")
 router = APIRouter(prefix="/hier", tags=["hier"])
-_CACHE: dict[tuple, P.Result] = {}                                       # обработанный снимок: (снимок, правила) → результат; не больше нескольких штук
 MAX_UPLOAD = 40_000_000
 
 
@@ -42,16 +42,7 @@ async def hier_user(request: Request, su: SessionUser = Depends(require_user), d
     return su, cfg
 
 
-async def processed(db: AsyncSession, snap: HierSnapshot, cfg) -> P.Result:
-    rules = HS.rules_of(cfg)
-    key = (str(snap.id), rules.signature())
-    if key not in _CACHE:
-        recs = await HS.records_of(db, snap)
-        res = await asyncio.to_thread(P.build, recs, rules)
-        if len(_CACHE) >= 4:
-            _CACHE.pop(next(iter(_CACHE)))
-        _CACHE[key] = res
-    return _CACHE[key]
+processed = HS.processed
 
 
 def snap_out(s: HierSnapshot) -> dict:
@@ -87,7 +78,7 @@ async def data(request: Request, ctx=Depends(hier_user), db: AsyncSession = Depe
         warning = {"status": last.status, "message": last.message, "at": last.finished_at or last.started_at, "last_ok_at": snap.finished_at}
     elif snap is not None and cfg.enabled and cfg.source == "ldap" and utcnow() - snap.finished_at > timedelta(hours=36):
         warning = {"status": "stale", "message": "Плановое обновление не выполнялось больше 36 часов.", "at": None, "last_ok_at": snap.finished_at}
-    out = {"can_admin": su.is_admin, "running": running, "enabled": cfg.enabled, "source": cfg.source, "next_run": st.get("next_run") if cfg.enabled else None, "warning": warning, "snapshot": None, "people": [], "depts": []}
+    out = {"can_admin": su.is_admin, "running": running, "enabled": cfg.enabled, "source": cfg.source, "next_run": st.get("next_run") if cfg.enabled else None, "warning": warning, "snapshot": None, "people": [], "depts": [], "reviewed": list(cfg.reviewed)}
     if snap is None:
         out["state"] = "failed" if last is not None and last.status in ("failed", "rejected") else "empty"
         out["last_error"] = last.message if last is not None and last.status in ("failed", "rejected") else ""
@@ -104,6 +95,34 @@ async def data(request: Request, ctx=Depends(hier_user), db: AsyncSession = Depe
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="hier.open", target_type="hier", target_id=str(snap.id), details={"people": len(res.people)})
     await db.commit()
     return _payload(request, out)
+
+
+@router.get("/snapshots")
+async def snapshots(ctx=Depends(hier_user), db: AsyncSession = Depends(get_db)):
+    """Выгрузки с различным содержимым (для сравнения в отчёте «Изменения между выгрузками»); срок хранения — настройка раздела."""
+    return {"items": [{"id": str(s.id), "at": s.finished_at, "raw_n": s.raw_n} for s in await HS.ok_snapshots(db)]}
+
+
+class ReviewIn(BaseModel):
+    id: str = Field(pattern=r"^[0-9a-f]{10}$")
+    on: bool = True
+
+
+@router.post("/review")
+async def review(body: ReviewIn, request: Request, ctx=Depends(hier_user), db: AsyncSession = Depends(get_db)):
+    """Отметить подчинение сотрудника руководителю другого подразделения как проверенное исключение (не попадает в отчёт «Подразделения и подчинённость»)."""
+    su, cfg = ctx
+    if su.role == "viewer":
+        raise HTTPException(status_code=403, detail="Отметка доступна аналитику и администратору")
+    snap = await HS.latest_ok(db)
+    res = await processed(db, snap, cfg) if snap is not None else None
+    if res is None or not any(p["id"] == body.id for p in res.people):
+        raise HTTPException(status_code=404, detail="Сотрудник не найден в последней выгрузке")
+    cur = [x for x in cfg.reviewed if x != body.id] + ([body.id] if body.on else [])
+    await request.app.state.settings_svc.update(db, "hier", {"reviewed": cur}, actor=su.display_name)
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="hier.review", target_type="hier", target_id=body.id, details={"on": body.on})
+    await db.commit()
+    return {"id": body.id, "on": body.on, "reviewed": len(cur)}
 
 
 # ------------------------------------------------------------------------------------------------ администратор

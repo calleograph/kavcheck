@@ -290,7 +290,7 @@ export default function App() {
           <Route path="/pentest" element={me.user.role === "viewer" ? <Navigate to="/" replace /> : <PentestPage ctx={ctx} />} />
           <Route path="/zones" element={<ZonesPage key={currentId} ctx={ctx} />} />
           <Route path="/zones/:zid" element={<ZonesPage key={currentId} ctx={ctx} />} />
-          <Route path="/hierarchy" element={hierOk === null ? null : hierOk ? <HierarchyPage /> : <Navigate to="/" replace />} />
+          <Route path="/hierarchy" element={hierOk === null ? null : hierOk ? <HierarchyPage ctx={ctx} /> : <Navigate to="/" replace />} />
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />
           <Route path="/reports/:jobId" element={<ReportsPage ctx={ctx} />} />
           <Route path="/security" element={<SecurityPage me={me} onLogout={logout} />} />

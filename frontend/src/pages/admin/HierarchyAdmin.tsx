@@ -109,6 +109,16 @@ export default function HierarchyAdmin() {
       </div>
 
       <div className="card">
+        <h2>Правила отчётов-проверок</h2>
+        <p className="muted small">Отчёты «Должности и роль», «Руководители» и «Подразделения и подчинённость» подсказывают, что проверить: решение всегда за человеком. Слова ищутся в должности без учёта регистра.</p>
+        <div className="cols">
+          <label className="field">Должность предполагает руководство<TagInput label="Руководящие слова" mono={false} value={list("lead_words")} onChange={(v) => set("lead_words", v)} /></label>
+          <label className="field">Должность обычно неруководящая<TagInput label="Неруководящие слова" mono={false} value={list("nonlead_words")} onChange={(v) => set("nonlead_words", v)} /></label></div>
+        <label className="field">Большая группа: больше … непосредственных подчинённых<input type="number" min={3} max={500} value={Number(s.big_group ?? 15)} onChange={(e) => set("big_group", Number(e.target.value))} />
+          <span className="help">Повод для проверки, а не ошибка. Подразделения, подчинение которых проверено, отмечаются в карточке сотрудника ({list("reviewed").length} отметок).</span></label>
+      </div>
+
+      <div className="card">
         <div className="row"><h2>Названия подразделений</h2><div className="spacer" /><input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Фильтр" aria-label="Фильтр подразделений" style={{ maxWidth: 220 }} /></div>
         <p className="muted small">В почте одно подразделение часто записано по-разному («ИТ» и «Отдел информационных технологий»). Укажите, как показывать: исходное значение в выгрузке не меняется, угадывания синонимов нет. Пустое поле — показывать как написано.</p>
         {!rows.length ? <p className="muted small">Подразделений в выгрузке пока нет: сначала выполните сбор или загрузите файл.</p> : <div className="table-scroll"><table className="table compact">

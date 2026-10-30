@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, type ApiError, type QuickCol, type QuickKind, type QuickPreview, type Template } from "../api";
 import { fmt, num, plural } from "../util";
@@ -52,7 +52,7 @@ function cell(c: QuickCol, v: string | number | null | undefined) {
   return c.type === "mono" ? <span className="mono small nowrap">{v}</span> : <>{v}</>;
 }
 
-export type QuickScopeOpts = { bi?: boolean; hunt?: boolean; levels?: boolean; period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean };
+export type QuickScopeOpts = { bi?: boolean; hunt?: boolean; levels?: boolean; period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean; hier?: boolean; hierDepts?: string[]; aside?: ReactNode };
 const EXT_STATUSES: [string, string][] = [["confirmed", "Подтверждено источником"], ["potential", "Потенциально затронуто"], ["clarify", "Требуется уточнение"], ["insufficient", "Данных недостаточно"], ["fixed", "Исправлено (показать отдельно)"]];
 const EOL_STATUSES: [string, string][] = [["eol", "Стандартная поддержка закончилась (EOL)"], ["extended", "Только расширенная (платная) поддержка"], ["upcoming", "Окончание поддержки приближается"], ["undetermined", "ОС: не удалось определить EOL (причина указана)"]];
 export const BI_VIEWS: [string, string][] = [["owners", "Устройства и владельцы"], ["history", "История принадлежности устройств"], ["unknown", "Неопределённые владельцы"], ["discrepancies", "Расхождения BI и KSC"], ["problems", "Проблемы защиты и контактные лица"]];
@@ -99,9 +99,15 @@ function AffectedHosts({ rows, total, expected, link, onClose }: { rows: Record<
   );
 }
 
-const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_hunt", "quick_bi"];
+export const HIER_VIEWS: [string, [string, string][]][] = [
+  ["Структура", [["tree", "Структура подчинения (с нарисованной схемой)"], ["people", "Сотрудники и руководители"], ["chain", "Карточка и цепочка руководителей"]]],
+  ["Подразделения и руководители", [["depts", "Подразделения (и различные написания названий)"], ["managers", "Руководители: группы, ветки, глубина"]]],
+  ["Проверки: требует проверки", [["roles", "Должности и роль в иерархии"], ["crossdept", "Подразделения и подчинённость"], ["dups", "Дубликаты и подозрительные карточки"], ["service", "Служебные и неполные карточки (что исключено)"], ["quality", "Качество данных иерархии"], ["problems", "Руководитель не указан или не найден"]]],
+  ["История и книга", [["changes", "Изменения между выгрузками"], ["pack", "Все отчёты одной книгой Excel (вкладка на отчёт)"]]]];
+const HIER_FILTERS: [string, string][] = [["branch", "Только выбранный руководитель"], ["q", "Только найденные по поиску"]];
+const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_hunt", "quick_bi", "quick_hier"];
 // выбор строк и фильтры страницы в шаблон не попадают: они берутся с той страницы, откуда открыт конструктор
-const CONTEXT_KEYS = ["host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "zone", "group_contains", "threat", "product", "build", "problem"];
+const CONTEXT_KEYS = ["host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "zone", "group_contains", "threat", "product", "build", "problem", "dept", "branch"];
 
 /** Конструктор отчёта: подробность (краткий — показатели и сводные таблицы, подробный — все записи, полные перечни CVE, устройств и пользователей), столбцы основной таблицы и шаблоны. */
 function Builder({ kind, params, columnsAll, onChange, canSave }: { kind: string; params: Record<string, unknown>; columnsAll: { key: string; title: string }[]; onChange: (patch: Record<string, unknown>) => void; canSave: boolean }) {
@@ -110,7 +116,7 @@ function Builder({ kind, params, columnsAll, onChange, canSave }: { kind: string
   const [tpls, setTpls] = useState<Template[]>([]); const [name, setName] = useState(""); const [saving, setSaving] = useState(false); const [note, setNote] = useState("");
   const load = useCallback(() => { api.reports.templates().then((r) => setTpls(r.items.filter((t) => t.kind === kind))).catch(() => setTpls([])); }, [kind]);
   useEffect(load, [load]);
-  const apply = (id: string) => { const t = tpls.find((x) => x.id === id); if (t) { const keep = Object.fromEntries(Object.entries(t.params as Record<string, unknown>).filter(([k]) => !CONTEXT_KEYS.includes(k))); onChange({ detail: "full", columns: [], ...keep }); setNote(`Применён шаблон «${t.name}»`); } };
+  const apply = (id: string) => { const t = tpls.find((x) => x.id === id); if (t) { const keep = Object.fromEntries(Object.entries(t.params as Record<string, unknown>).filter(([k]) => !CONTEXT_KEYS.includes(k))); onChange({ detail: "full", columns: [], sort: "", desc: false, group: "", ...keep }); setNote(`Применён шаблон «${t.name}»`); } };
   const save = async () => {
     setSaving(true); setNote("");
     try { const settings = Object.fromEntries(Object.entries(params).filter(([k]) => !CONTEXT_KEYS.includes(k))); await api.reports.saveTemplate(name.trim(), kind as QuickKind, settings); setName(""); setNote("Шаблон сохранён: он хранит настройки отчёта, а фильтры берутся со страницы."); load(); }
@@ -130,6 +136,14 @@ function Builder({ kind, params, columnsAll, onChange, canSave }: { kind: string
           <div className="qr-cols-grid">{columnsAll.map((c) => <label key={c.key} className="check"><input type="checkbox" checked={picked.length === 0 || picked.includes(c.key)} onChange={() => toggle(c.key)} />{c.title}</label>)}</div>
           {picked.length > 0 && <button type="button" className="link-btn" onClick={() => onChange({ columns: [] })}>Включить все столбцы</button>}
         </details>)}
+      {detail === "full" && columnsAll.length > 0 && (
+        <div className="qr-build-row">
+          <label className="inline">Сортировка<select value={String(params.sort ?? "")} onChange={(e) => onChange({ sort: e.target.value })} aria-label="Сортировка по столбцу">
+            <option value="">как в отчёте</option>{columnsAll.map((c) => <option key={c.key} value={c.key}>{c.title}</option>)}</select></label>
+          {!!params.sort && <label className="check"><input type="checkbox" checked={!!params.desc} onChange={(e) => onChange({ desc: e.target.checked })} />по убыванию</label>}
+          <label className="inline">Группировка<select value={String(params.group ?? "")} onChange={(e) => onChange({ group: e.target.value })} aria-label="Группировка по столбцу">
+            <option value="">нет</option>{columnsAll.map((c) => <option key={c.key} value={c.key}>{c.title}</option>)}</select></label>
+        </div>)}
       <div className="qr-build-row qr-tpl">
         <label className="inline">Шаблон
           <select value="" onChange={(e) => apply(e.target.value)} aria-label="Применить шаблон отчёта"><option value="">{tpls.length ? "Выбрать…" : "Нет сохранённых"}</option>{tpls.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
@@ -143,6 +157,32 @@ function Builder({ kind, params, columnsAll, onChange, canSave }: { kind: string
 
 /** Боковая панель быстрого отчёта: предпросмотр (число компьютеров, условия, замечания, первые строки) и выгрузка в Excel/HTML/CSV.
  *  Просмотр и выгрузка строятся на сервере из одного документа — числа совпадают. Дополнительные условия — в «Дополнительно». */
+/** Готовые отчёты по иерархии, охват (вся организация / подразделение / руководитель) и условия сравнения выгрузок. */
+function HierOptions({ base, params, depts, onChange, aside }: { base: Record<string, unknown>; params: Record<string, unknown>; depts: string[]; onChange: (p: Record<string, unknown>) => void; aside?: ReactNode }) {
+  const view = String(params.view ?? "tree");
+  const [snaps, setSnaps] = useState<{ id: string; at: string }[]>([]);
+  useEffect(() => { if (view === "changes" || view === "pack") api.hier.snapshots().then((r) => setSnaps(r.items)).catch(() => setSnaps([])); }, [view]);
+  const mode = params.branch ? "branch" : params.dept ? "dept" : "all";
+  return (
+    <div className="qr-hier">
+      <label className="field">Готовый отчёт<select value={view} onChange={(e) => onChange({ view: e.target.value })}>
+        {HIER_VIEWS.map(([g, items]) => <optgroup key={g} label={g}>{items.filter(([k]) => k !== "chain" || !!base.branch).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</optgroup>)}</select></label>
+      {view !== "chain" && <fieldset className="qr-sections"><legend>Охват</legend>
+        <label className="check"><input type="radio" name="hier-mode" checked={mode === "all"} onChange={() => onChange({ dept: "", branch: "", direct: false })} />Вся организация</label>
+        <label className="check"><input type="radio" name="hier-mode" checked={mode === "dept"} onChange={() => onChange({ dept: String(base.dept || depts[0] || ""), branch: "" })} />Подразделение</label>
+        {mode === "dept" && <select aria-label="Подразделение" value={String(params.dept ?? "")} onChange={(e) => onChange({ dept: e.target.value })}>{depts.map((d) => <option key={d} value={d}>{d}</option>)}</select>}
+        {!!base.branch && <label className="check"><input type="radio" name="hier-mode" checked={mode === "branch"} onChange={() => onChange({ branch: base.branch, dept: "" })} />Выбранный руководитель</label>}
+        {mode === "branch" && <label className="check sub"><input type="checkbox" checked={!!params.direct} onChange={(e) => onChange({ direct: e.target.checked })} />только непосредственные подчинённые (иначе — вся ветка)</label>}
+        {HIER_FILTERS.filter(([k]) => k === "q" && base.q).map(([k, l]) => <label key={k} className="check"><input type="checkbox" checked={!!params[k]} onChange={(e) => onChange({ [k]: e.target.checked ? base[k] : "" })} />{l}</label>)}
+        <span className="muted small">Вложенных подразделений в выгрузке нет: подразделение берётся целиком.</span></fieldset>}
+      {view === "crossdept" && <label className="check"><input type="checkbox" checked={!!params.include_reviewed} onChange={(e) => onChange({ include_reviewed: e.target.checked })} />Показать и проверенные исключения</label>}
+      {view === "changes" && <label className="field">Сравнить с выгрузкой<select value={String(params.base ?? "")} onChange={(e) => onChange({ base: e.target.value })}>
+        <option value="">Предыдущая выгрузка</option>{snaps.slice(1).map((s) => <option key={s.id} value={s.id}>{fmt(s.at)}</option>)}</select></label>}
+      {view === "tree" && aside}
+    </div>
+  );
+}
+
 export function QuickReportPanel({ kind, params: base, title, lede, options = { scope: true }, activityDays, canReport, sourceIds = [], onClose }: {
   kind: QuickKind | "version_audit"; params: Record<string, unknown>; title: string; lede?: string; options?: QuickScopeOpts; activityDays: number; canReport: boolean; sourceIds?: string[]; onClose: () => void;
 }) {
@@ -209,6 +249,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
           <label className="check"><input type="checkbox" checked={!!params.coverage} onChange={(e) => setExtra({ ...extra, coverage: e.target.checked })} />Добавить журнал охвата (все проверенные адреса, включая не затронутые)</label></fieldset>}
         {options.bi && <label className="field">Вид отчёта<select value={String(params.view ?? "owners")} onChange={(e) => setExtra({ ...extra, view: e.target.value })}>
           {BI_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>}
+        {options.hier && <HierOptions base={base} params={params} depts={options.hierDepts ?? []} onChange={(patch) => setExtra({ ...extra, ...patch })} aside={options.aside} />}
         {options.levels && <SeverityLevels value={(params.levels as string[] | undefined) ?? ["critical"]} onChange={(v) => setExtra({ ...extra, levels: v })} />}
         {doc && (<>
           <div className="qr-hero">

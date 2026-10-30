@@ -57,7 +57,7 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_admin";
+export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_admin";
 
 export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "offline" | "unknown" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
@@ -316,7 +316,7 @@ export interface HierSnap { id: string; started_at: string; finished_at: string 
 export interface HierData { state: "ok" | "empty" | "failed"; can_admin: boolean; running: boolean; enabled: boolean; source: string; next_run: string | null; last_error?: string;
   warning: { status: "failed" | "rejected" | "stale"; message: string; at: string | null; last_ok_at: string | null } | null;
   snapshot: { id: string; at: string; raw_n: number; kept: number; excluded: number; excluded_by: Record<string, number>; source: string; source_name: string; errors_n: number } | null;
-  people: HierRow[]; depts: { name: string; hue: number; n: number }[]; heads?: number; lone?: number; warnings?: string[]; why?: Record<string, string> }
+  people: HierRow[]; reviewed?: string[]; depts: { name: string; hue: number; n: number }[]; heads?: number; lone?: number; warnings?: string[]; why?: Record<string, string> }
 export interface HierCheck { ok: boolean; message: string; items: { name: string; ok: boolean; sample: number; steps: { name: string; ok: boolean | null; text: string }[] }[] }
 export interface HierAdmin { settings: SettingsValues; state: { next_run: string | null; requested: boolean; retry_n: number }; snapshots: HierSnap[]; connections: { id: string; name: string; enabled: boolean; host: string }[];
   depts: { raw: string; n: number; shown: string }[]; domains: { domain: string; n: number }[]; running: boolean; last_ok: HierSnap | null; people_n: number; stats: { raw: number; kept: number; heads: number; lone: number; cycles: number; unresolved: number } | null }
@@ -542,6 +542,8 @@ export const api = {
   hier: {
     access: () => req<{ allowed: boolean; admin: boolean }>("GET", "/hier/access"),
     data: () => req<HierData>("GET", "/hier/data"),
+    snapshots: () => req<{ items: { id: string; at: string; raw_n: number }[] }>("GET", "/hier/snapshots"),
+    review: (id: string, on: boolean) => req<{ id: string; on: boolean; reviewed: number }>("POST", "/hier/review", { id, on }),
     admin: () => req<HierAdmin>("GET", "/hier/admin"),
     check: () => req<HierCheck>("POST", "/hier/admin/check"),
     run: () => req<{ requested: boolean }>("POST", "/hier/admin/run"),

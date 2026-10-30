@@ -260,7 +260,7 @@ async def test_shrinking_or_failed_collection_keeps_previous_snapshot_with_warni
 async def test_scheduler_runs_on_time_retries_after_failure_and_serves_manual_request(client, app, monkeypatch):
     sm, svc = app.state.session_maker, app.state.settings_svc
     JOBS.configure(sm, ttl=60)
-    from app.api.hier import _CACHE
+    from app.hier.service import _CACHE
 
     _CACHE.clear()
     await login(client, "admin", "Admin-Passw0rd-123")

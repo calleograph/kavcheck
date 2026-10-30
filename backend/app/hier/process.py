@@ -77,6 +77,7 @@ class Result:
     warnings: list[str]
     raw_depts: list[tuple[str, int]]         # как написано в почте → число людей (для таблицы соответствий)
     domains: list[tuple[str, int]]           # домены адресов выгрузки (подсказка для настройки внутренних доменов)
+    dropped: list[tuple[list[str], str]] = field(default_factory=list)      # исключённые записи (восемь полей) и причина (ключ EXCLUDE_RU): отчёт «Служебные и неполные карточки»
 
     def stats(self) -> dict:
         return {"raw": self.raw_n, "kept": len(self.people), "excluded": self.excluded, "heads": len(self.heads), "lone": len(self.lone), "cycles": sum(len(c) for c in self.cycles),
@@ -98,10 +99,11 @@ def _service(r: list[str], email: str, rules: Rules) -> bool:
     return any(local.startswith(p.strip().lower()) for p in rules.service_prefixes if p.strip())
 
 
-def clean(records: list[list[str]], rules: Rules) -> tuple[list[list[str]], Counter]:
-    """Оставшиеся записи (в порядке выгрузки) и число исключённых по причинам."""
+def clean(records: list[list[str]], rules: Rules) -> tuple[list[list[str]], Counter, list[tuple[list[str], str]]]:
+    """Оставшиеся записи (в порядке выгрузки), число исключённых по причинам и сами исключённые записи с причиной."""
     out: list[list[str]] = []
     why: Counter = Counter()
+    dropped: list[tuple[list[str], str]] = []
     seen: set[str] = set()
     domains = tuple(d.strip().lower().lstrip("@") for d in rules.domains if d.strip())
     for rec in records:
@@ -109,26 +111,32 @@ def clean(records: list[list[str]], rules: Rules) -> tuple[list[list[str]], Coun
         email = r[EMAIL].lower()
         if not email or "@" not in email:
             why["noaddr"] += 1
+            dropped.append((r, "noaddr"))
         elif domains and not _domain_ok(email, domains):
             why["external"] += 1
+            dropped.append((r, "external"))
         elif rules.drop_empty and not (r[TITLE] or r[DEPT] or r[MANAGER] or r[MANAGER_EMAIL]):
             why["empty"] += 1
+            dropped.append((r, "empty"))
         elif rules.drop_underscore and r[NAME].startswith("_"):
             why["underscore"] += 1
+            dropped.append((r, "underscore"))
         elif rules.drop_service and _service(r, email, rules):
             why["service"] += 1
+            dropped.append((r, "service"))
         elif email in seen:
             why["dup"] += 1
+            dropped.append((r, "dup"))
         else:
             seen.add(email)
             r[EMAIL] = email
             r[MANAGER_EMAIL] = r[MANAGER_EMAIL].lower()
             out.append(r)
-    return out, why
+    return out, why, dropped
 
 
 def build(records: list[list[str]], rules: Rules) -> Result:
-    kept, why = clean(records, rules)
+    kept, why, dropped = clean(records, rules)
     kept.sort(key=lambda r: (norm(r[NAME]), r[EMAIL]))
     n = len(kept)
     idx = {r[EMAIL]: i for i, r in enumerate(kept)}
@@ -222,13 +230,13 @@ def build(records: list[list[str]], rules: Rules) -> Result:
     people = []
     for i, r in enumerate(kept):
         people.append({"id": person_id(r[EMAIL]), "name": r[NAME], "email": r[EMAIL], "title": r[TITLE], "dept": pos[eff[i][0]], "inh": eff[i][1], "mgr": mgr[i], "mgr_text": r[MANAGER],
-                       "self": reason[i] == "self", "why": reason[i] if mgr[i] < 0 else "", "reach": reach[i], "head": i in head_set, "size": size[i], "company": r[COMPANY], "office": r[OFFICE]})
+                       "self": reason[i] == "self", "why": reason[i] if mgr[i] < 0 else "", "reach": reach[i], "head": i in head_set, "size": size[i], "company": r[COMPANY], "office": r[OFFICE], "raw_dept": r[DEPT]})
     warnings = []
     if cycles:
         warnings.append(f"Круги в подчинении: {len(cycles)} (людей: {sum(len(c) for c in cycles)}). Например: " + " → ".join(short_name(kept[u][NAME]) for u in cycles[0][:6]) + (" → …" if len(cycles[0]) > 6 else ""))
     dom = Counter(r[EMAIL].rsplit("@", 1)[-1] for r in kept)
     return Result(people, [{"name": d, "hue": hue(d), "n": cnt[d]} for d in names], {EXCLUDE_RU[k]: v for k, v in why.items()}, len(records), heads, lone, cycles, warnings,
-                  sorted(Counter(raw_dept[i] for i in range(n) if raw_dept[i]).items(), key=lambda x: (-x[1], x[0])), dom.most_common(8))
+                  sorted(Counter(raw_dept[i] for i in range(n) if raw_dept[i]).items(), key=lambda x: (-x[1], x[0])), dom.most_common(8), dropped)
 
 
 def content_hash(records: list[list[str]]) -> str:

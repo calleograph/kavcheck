@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import layout as L
 from .export import _cell, _text, write_csv
+from .hier_render import CSS as HIER_CSS, html_section
 
 HTML_ROW_LIMIT = 3000        # строк одной таблицы в HTML; полный список — в Excel
 HOST_DETAIL_LIMIT = 300      # компьютеров с подробной карточкой в HTML (остальные — в Excel)
@@ -285,7 +286,7 @@ def render_html(doc: dict) -> str:
     shown_details = details[:HOST_DETAIL_LIMIT]
     anchors = {d["anchor"] for d in shown_details}
     gen = esc(_fmt(doc.get("generated_at"), "date").replace("T", " "))
-    out = [f'<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(doc["title"])}</title><style>{CSS}</style></head><body><div class="wrap">']
+    out = [f'<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{esc(doc["title"])}</title><style>{CSS}{HIER_CSS if doc.get("chart") else ""}</style></head><body><div class="wrap">']
     out.append('<header class="doc">')
     if org["name"] or org["logo"]:
         out.append('<div class="org">' + (f'<img src="{esc(org["logo"], quote=True)}" alt="">' if org["logo"] else "") + "<div>" + (f'<div class="on">{esc(org["name"])}</div>' if org["name"] else "")
@@ -296,7 +297,7 @@ def render_html(doc: dict) -> str:
     out.append(f'<h1>{esc(doc["title"])}</h1>' + (f'<p class="sub">{esc(doc["subtitle"])}</p>' if doc.get("subtitle") else ""))
     meta = [("Сформирован", f"{gen} UTC"), ("Источник KSC", doc.get("source") or "")] + [(m["label"], m["text"]) for m in doc.get("meta") or []]
     out.append('<dl class="meta">' + "".join(f"<div><dt>{esc(k)}:</dt><dd>{esc(str(v))}</dd></div>" for k, v in meta if v) + "</dl>")
-    nav = [("#summary", "Сводка")] + ([("#problems", summary[0]["title"])] if summary else []) + ([("#details", "Подробности")] if detail or details else []) + [("#method", "Методика")]
+    nav = [("#summary", "Сводка")] + ([("#chart", "Структура")] if doc.get("chart") else []) + ([("#problems", summary[0]["title"])] if summary else []) + ([("#details", "Подробности")] if detail or details else []) + [("#method", "Методика")]
     if len(nav) >= 3:
         out.append('<nav class="toc">' + "".join(f'<a href="{h}">{esc(t)}</a>' for h, t in nav) + "</nav>")
     out.append("</header>")
@@ -326,6 +327,8 @@ def render_html(doc: dict) -> str:
             out.append(f'<p class="tnote">Показаны первые {HTML_ROW_LIMIT} строк из {len(rows)} — сокращённая выборка; полный список — в файле Excel.</p>')
         out.append(_table(b["columns"], rows, anchors=anchors) if rows else '<div class="panel">Нет данных.</div>')
 
+    if doc.get("chart"):                                     # «Иерархия»: нарисованная структура подчинения (разворачиваемое дерево)
+        out.append(html_section(doc))
     if summary:
         out.append('<section id="problems">')
         for i, b in enumerate(summary):
