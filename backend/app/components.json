@@ -1,5 +1,5 @@
 {
- "reviewed_for": "0.18.0",
+ "reviewed_for": "0.19.0",
  "reviewed_at": "2026-10-30",
  "note": "Реестр проверяется при подготовке каждого выпуска (docs/RELEASE.md): verified — версия, проверенная в выпуске; decision — решение разработчика.",
  "components": [
