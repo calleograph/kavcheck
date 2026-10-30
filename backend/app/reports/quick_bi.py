@@ -105,7 +105,7 @@ async def _devices(db, p: dict, bsid, view: str) -> dict:
     for it in items:
         name, email, dept = _owner(it)
         link = [k for k in it["ksc"] if k["level"] in LINKED]
-        ksc = "; ".join(f"{k['host_name']} ({k['ksc_source']})" for k in link) or ("требует решения: " + it["ksc"][0]["level_ru"].split(": ", 1)[-1] if it["ksc"] else "не найдено в KSC")
+        ksc = "; ".join(f"{k['host_name']} ({k['ksc_source']})" for k in link) or (("требует решения: " + it["ksc"][0]["level_ru"].split(": ", 1)[-1] if it["ksc"][0]["level"] in R.PENDING else "актуальный компьютер KSC не найден") if it["ksc"] else "не найдено в KSC")
         why = []
         if view == "unknown":
             if not it["present"]:

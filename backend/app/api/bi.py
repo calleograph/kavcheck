@@ -18,7 +18,7 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, get_db, require_admin, require_user, source_scope
@@ -63,7 +63,9 @@ class OptionsIn(BaseModel):
     stable_s: int = Field(10, ge=0, le=300)
     full_snapshot: bool = True
     owner_drift_pct: int = Field(25, ge=1, le=100)
-    auto_exact: bool = False                                              # автоматически подтверждать однозначные точные совпадения имён (по умолчанию — нет)
+    auto_exact: bool = False                                              # автоматически подтверждать однозначные совпадения по имени и активности (по умолчанию — нет)
+    activity_days: int = Field(30, ge=1, le=365)                          # период активности компьютера KSC (по последнему подключению Агента)
+    activity_margin_days: int = Field(3, ge=0, le=30)                     # активны несколько записей: позднюю выбирать, если подключения различаются не меньше чем на столько суток
 
 
 class SourceIn(BaseModel):
@@ -362,6 +364,14 @@ class DecideIn(BaseModel):
     note: str = Field("", max_length=500)
 
 
+async def _to_history(db: AsyncSession, device_id: int, keep_id: int | None, by: str) -> None:
+    """Прежние подтверждения устройства (кроме `keep_id`) становятся «прежним соответствием»: связь переходит на другой компьютер KSC, история сохраняется."""
+    q = update(BiMatch).where(BiMatch.device_id == device_id, BiMatch.level == "confirmed")
+    if keep_id is not None:
+        q = q.where(BiMatch.id != keep_id)
+    await db.execute(q.values(level="history", note=f"Прежнее соответствие: заменено решением ({by[:80]}, {utcnow():%d.%m.%Y})", updated_at=utcnow()))
+
+
 @router.post("/matches/decide")
 async def decide(body: DecideIn, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     """Решение администратора: подтвердить (надёжное соответствие), отклонить (больше не предлагается) или сбросить (снова решает автоматическое сопоставление)."""
@@ -378,8 +388,8 @@ async def decide(body: DecideIn, su: SessionUser = Depends(require_admin), db: A
         elif m is not None and m.level in M.MANUAL:
             await db.delete(m)
     else:
-        if body.decision == "confirm":                      # подтверждено одно соответствие: прочие подтверждения этого устройства снимаются
-            await db.execute(delete(BiMatch).where(BiMatch.device_id == body.device_id, BiMatch.level == "confirmed"))
+        if body.decision == "confirm":                      # подтверждено одно соответствие: прежнее подтверждение этого устройства уходит в историю (не удаляется)
+            await _to_history(db, body.device_id, m.id if m is not None else None, su.display_name)
         from ..bi.read import ksc_host  # noqa: PLC0415
 
         h = await ksc_host(db, body.ksc_source_id, body.host_id)
@@ -459,9 +469,20 @@ async def bulk(body: BulkIn, request: Request, su: SessionUser = Depends(require
         b = bi[m.bi_source_id].name if m.bi_source_id in bi else ""
         by_bi[b] = by_bi.get(b, 0) + 1
         by_ksc[ksc.get(m.ksc_source_id, "")] = by_ksc.get(ksc.get(m.ksc_source_id, ""), 0) + 1
-    plan = {"action": body.action, "n": len(keep), "skipped": [{"reason": k, "text": BULK_SKIP_RU[k], "n": v} for k, v in skipped.items()], "by_bi_source": by_bi, "by_ksc_source": by_ksc,
+    stale_n = disputed_n = inactive_n = 0
+    if body.scope == "exact":                                           # что остаётся за пределами операции: устаревшие записи не требуют решения, спорные и «без актуального компьютера» — вопрос администратору
+        dev_ids = {m.device_id for m in keep}
+        allowed = [k for k in (await db.execute(select(KscSource.id))).scalars().all() if su.can_use_source(k)]
+        base = [BiMatch.ksc_source_id.in_(allowed)] + ([BiMatch.bi_source_id == body.source_id] if body.source_id else [])
+        if dev_ids:
+            stale_n = int((await db.execute(select(func.count()).select_from(BiMatch).where(BiMatch.level == "stale", BiMatch.device_id.in_(dev_ids), *base))).scalar_one())
+        disputed_n = int((await db.execute(select(func.count(func.distinct(BiMatch.device_id))).where(*R.match_where("needs_manual", body.source_id), BiMatch.ksc_source_id.in_(allowed)))).scalar_one())
+        inactive_n = int((await db.execute(select(func.count(func.distinct(BiMatch.device_id))).where(BiMatch.level == "inactive", *base))).scalar_one())
+    plan = {"action": body.action, "n": len(keep), "stale_n": stale_n, "disputed_n": disputed_n, "inactive_n": inactive_n,
+            "skipped": [{"reason": k, "text": BULK_SKIP_RU[k], "n": v} for k, v in skipped.items()], "by_bi_source": by_bi, "by_ksc_source": by_ksc,
             "sample": [{"device": devs[m.device_id].name if m.device_id in devs else "", "host_name": m.host_name, "bi_source": bi[m.bi_source_id].name if m.bi_source_id in bi else "",
-                        "ksc_source": ksc.get(m.ksc_source_id, ""), "level_ru": M.LEVEL_RU.get(m.level, m.level), "name_ru": M.NAME_RU.get(m.name_match, "")} for m in keep[:30]]}
+                        "ksc_source": ksc.get(m.ksc_source_id, ""), "level_ru": M.LEVEL_RU.get(m.level, m.level), "name_ru": M.NAME_RU.get(m.name_match, ""),
+                        "last_connected": m.host_last_connected, "reason": (m.signals or [""])[0]} for m in keep[:30]]}
     if body.preview or not keep:
         return plan
     ops = request.app.state.__dict__.setdefault("bi_ops", {})
@@ -503,7 +524,7 @@ async def _bulk_run(app, op: dict, ids: list[int], body: BulkIn, su: SessionUser
                         continue
                     else:
                         if level == "confirmed":
-                            await db.execute(delete(BiMatch).where(BiMatch.device_id == m.device_id, BiMatch.level == "confirmed", BiMatch.id != m.id))
+                            await _to_history(db, m.device_id, m.id, su.display_name)
                             taken[(m.ksc_source_id, m.host_id)] = m.device_id
                         m.level, m.decided_by, m.decided_at, m.note, m.updated_at = level, su.display_name[:300], now, note[:500], now
                     op["changed"] += 1

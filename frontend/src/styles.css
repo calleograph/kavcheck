@@ -1596,3 +1596,12 @@ code.sql { white-space: pre-wrap; word-break: break-word; font-family: var(--mon
 .tech-problems li { align-items: center; }
 @media (max-width: 700px) { .tech-actions { width: 100%; margin-left: 0; } .tech-actions > .btn, .tech-actions .menu-wrap { flex: 1 1 auto; } .tech-actions .menu-wrap { display: flex; } .tech-actions .menu-wrap > .btn { flex: 1; } .menu-pop { left: 0; right: auto; } }
 @media (prefers-reduced-motion: reduce) { .tech-state .dot.bad, .tab-panel, .menu-pop { animation: none; } }
+
+/* сопоставление BI и KSC: устаревшие записи и другие записи устройства (0.19.0) */
+tr.row-stale > td { color: var(--muted); }
+tr.row-stale > td a { color: inherit; }
+.others { margin-top: 6px; font-size: var(--fs-sm); }
+.others summary { cursor: pointer; color: var(--accent); list-style: none; }
+.others summary::-webkit-details-marker { display: none; }
+.others ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.others li { padding-left: 10px; border-left: 2px solid var(--line-strong); }

@@ -1533,7 +1533,8 @@ class BiRecord(Base):
 
 class BiMatch(Base):
     """Сопоставление устройства BI с компьютером KSC: auto — предполагаемое (имя и подтверждающие признаки), confirmed/rejected — решение администратора;
-    candidate/ambiguous/conflict — не сопоставлено (только имя, несколько компьютеров, противоречие); manual — автоматическое подтверждение отменено, решает администратор."""
+    candidate/ambiguous/conflict — не сопоставлено (только имя, несколько компьютеров, противоречие); manual — автоматическое подтверждение отменено, решает администратор;
+    stale — устаревшая запись KSC (не активна или уступает по дате подключения), inactive — ни одна запись не активна, history — прежнее соответствие (компьютер перешёл на другой KSC)."""
     __tablename__ = "bi_matches"
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     device_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("bi_devices.id", ondelete="CASCADE"), nullable=False)
@@ -1551,4 +1552,8 @@ class BiMatch(Base):
     # совпадение имени: exact — полное имя совпадает (регистр и пробелы не учитываются) и пара однозначна (можно подтверждать массово); exact_dup — совпадает, но есть
     # конкуренты (несколько компьютеров или устройств BI с этим именем, подтверждено другое соответствие); short — совпадает короткое имя, а полное различается (имя ↔ FQDN)
     name_match: Mapped[str] = mapped_column(String(10), nullable=False, default="", server_default="")
+    # активность компьютера KSC на момент расчёта (tmLastNagentConnected из подготовленных данных зон): active — подключался за период активности, stale — давнее, none — сведений нет,
+    # future — дата в будущем (недостоверна). Уровни stale (устаревшая запись), inactive (нет активного компьютера) и history (прежнее соответствие) — не требуют решения.
+    host_last_connected: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    activity: Mapped[str] = mapped_column(String(8), nullable=False, default="", server_default="")
     __table_args__ = (Index("ux_bi_matches_pair", "device_id", "ksc_source_id", "host_id", unique=True), Index("ix_bi_matches_host", "ksc_source_id", "host_id"), Index("ix_bi_matches_src", "bi_source_id", "level"))

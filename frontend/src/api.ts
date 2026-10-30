@@ -361,7 +361,7 @@ export interface BiImport { id: string; started_at: string; finished_at: string 
   rows_gone: number; rows_empty: number; devices_n: number; persons_n: number; ms: number | null; stored: boolean; warnings_n: number; errors_n: number;
   warnings?: { code: string; n: number; text: string }[]; errors?: { row: number; reason: string }[]; headers?: string[] }
 export interface BiProfile { sheet: string; header_row: number; columns: Record<string, string>; origin: string[]; generic_names: string[]; extra?: boolean }
-export interface BiOptions { partial: boolean; max_reject_pct: number; drift_pct: number; max_mb: number; max_rows: number; keep_files: number; keep_days: number; retry_minutes: number; retries: number; stable_s: number; full_snapshot: boolean; owner_drift_pct: number; auto_exact: boolean }
+export interface BiOptions { partial: boolean; max_reject_pct: number; drift_pct: number; max_mb: number; max_rows: number; keep_files: number; keep_days: number; retry_minutes: number; retries: number; stable_s: number; full_snapshot: boolean; owner_drift_pct: number; auto_exact: boolean; activity_days: number; activity_margin_days: number }
 export interface BiSourceInfo { id: string; name: string; kind: string; is_active: boolean; smb_host: string; smb_port: number; smb_share: string; smb_path: string; username: string; password_set: boolean; smb_encrypt: boolean;
   file_mode: "fixed" | "auto"; file_name: string; schedule_time: string; timezone: string; profile: Partial<BiProfile>; options: BiOptions; next_run_at: string | null; queued: boolean; last_try_at: string | null;
   last_ok_at: string | null; last_error: string | null; fail_n: number; matched_at: string | null; last: BiImport | null; published: BiImport | null }
@@ -373,7 +373,9 @@ export interface BiImportRef { id: string; file: string; at: string | null }
 export interface BiKscHost { source_id: string; host_id: number; name: string; os: string; ip: string; last_connected: string | null; online: boolean | null; active: boolean; has_av: boolean; av_product: string; problems: string[];
   protection_ru: string; ksc_user: string; ksc_user_at: string | null; zones: string[] }
 export interface BiMatchRow { id: number; ksc_source_id: string; ksc_source: string; host_id: number; host_name: string; level: string; level_ru: string; signals: string[]; issues: { code: string; text: string }[];
-  decided_by: string; decided_at: string | null; note: string; ksc?: BiKscHost | null }
+  decided_by: string; decided_at: string | null; note: string; ksc?: BiKscHost | null; last_connected?: string | null; activity?: Activity; activity_ru?: string; name_match?: string }
+export type Activity = "" | "active" | "stale" | "none" | "future";
+export interface BiOtherRecord { ksc_source: string; host_name: string; level: string; level_ru: string; last_connected: string | null; activity: Activity; activity_ru: string; why: string }
 export interface BiOwnerRow { person: BiPerson; state: BiState; state_ru: string; note: string; first_seen_at: string; last_seen_at: string; seen_n: number; src_seen_at: string | null; owned_from: string | null; owned_to: string | null;
   confidence: string; confidence_ru: string; basis: string; first_import: BiImportRef | null; last_import: BiImportRef | null }
 export interface BiDeviceCard { id: number; source_id: string; source: string; name: string; names: { name: string; until: string }[]; generic: boolean; os: string; os_family: string; personal: boolean | null;
@@ -387,10 +389,10 @@ export interface BiPersonCard extends BiPerson { source: string; account_created
     ksc: { ksc_source_id: string; ksc_source: string; host_id: number; host_name: string; level: string; level_ru: string }[] }[]> }
 export interface BiDeviceRow { id: number; source_id: string; source: string; name: string; os: string; os_family: string; personal: boolean | null; generic: boolean; present: boolean; last_seen_at: string; av: BiDeviceCard["av"];
   owners: (BiPerson & { confidence: string })[]; previous: (BiPerson & { state: BiState; last_seen_at: string })[]; previous_n: number;
-  ksc: { ksc_source_id: string; ksc_source: string; host_id: number; host_name: string; level: string; level_ru: string }[]; ksc_state: "linked" | "candidates" | "none"; issues: string[] }
-export interface BiMatchItem extends BiMatchRow { device_id: number; device: string; device_os: string; bi_source: string; name_match: "" | "exact" | "exact_dup" | "short"; name_ru: string }
-export interface BiBulkPlan { action: "confirm" | "reject" | "reset"; n: number; skipped: { reason: string; text: string; n: number }[]; by_bi_source: Record<string, number>; by_ksc_source: Record<string, number>;
-  sample: { device: string; host_name: string; bi_source: string; ksc_source: string; level_ru: string; name_ru: string }[]; op?: string }
+  ksc: { ksc_source_id: string; ksc_source: string; host_id: number; host_name: string; level: string; level_ru: string; last_connected?: string | null; activity?: Activity }[]; ksc_state: "linked" | "candidates" | "inactive" | "none"; issues: string[] }
+export interface BiMatchItem extends BiMatchRow { device_id: number; device: string; device_os: string; bi_source: string; name_match: "" | "exact" | "exact_dup" | "short" | "moved"; name_ru: string; last_connected: string | null; activity: Activity; activity_ru: string; others: BiOtherRecord[] }
+export interface BiBulkPlan { action: "confirm" | "reject" | "reset"; n: number; stale_n: number; disputed_n: number; inactive_n: number; skipped: { reason: string; text: string; n: number }[]; by_bi_source: Record<string, number>; by_ksc_source: Record<string, number>;
+  sample: { device: string; host_name: string; bi_source: string; ksc_source: string; level_ru: string; name_ru: string; last_connected: string | null; reason: string }[]; op?: string }
 export interface BiBulkOp { id: string; status: "running" | "done" | "failed"; action: string; total: number; done: number; changed: number; skipped: { reason: string; text: string; n: number }[]; error: string | null }
 export interface KscUserRow { login: string; domain: string; hosts: number; host_names: string[]; last_session_at: string | null; now: boolean; bi_person: { id: number; name: string; department: string } | null }
 export type BiPage<T, X = object> = { items: T[]; total: number } & X & Record<string, unknown>;

@@ -70,7 +70,7 @@ export function BiDeviceView({ d, canPeople, showKsc = true }: { d: BiDeviceCard
         {showKsc && <div><span className="own-cap">Защита по KSC</span>
           {link.length ? link.map((m) => <span key={m.id} className="block">{m.ksc ? <><b>{m.ksc.name}</b> · {m.ksc.protection_ru}<span className="block muted small">{m.ksc_source} · связь с KSC {fmt(m.ksc.last_connected)}{m.ksc.ksc_user ? ` · пользователь KSC: ${m.ksc.ksc_user}` : ""}</span></> : m.host_name}
             <span className="block muted small">{m.level_ru}: {m.signals.join("; ")}</span></span>) : <span className="block">{d.ksc_state_ru}</span>}
-          {!link.length && d.matches.length > 0 && <span className="block muted small">Возможные: {d.matches.map((m) => `${m.host_name} (${m.ksc_source}) — ${m.level_ru.toLowerCase()}`).join("; ")}</span>}</div>}
+          {!link.length && d.matches.length > 0 && <span className="block muted small">Возможные: {d.matches.map((m) => `${m.host_name} (${m.ksc_source}) — ${m.level_ru.toLowerCase()}${m.last_connected ? `, подключение ${fmtDate(m.last_connected)}` : ""}`).join("; ")}</span>}</div>}
       </div>
       {d.versions.length > 0 && <details className="disclosure">
         <summary>Сведения выгрузок ({d.versions.length})</summary>

@@ -16,15 +16,19 @@ from tests.test_bi_import import BASE, T0, row, run, source, xlsx
 NOW = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
 
 
-async def ksc(app, name, hosts, users=()):
-    """Источник KSC с подготовленными данными зон: hosts — (host_id, имя, ОС, has_av, p_rtp, fqdn)."""
+async def ksc(app, name, hosts, users=(), built_days_ago=0.0):
+    """Источник KSC с подготовленными данными зон: hosts — (host_id, имя, ОС, has_av, p_rtp, fqdn[, суток с последнего подключения: по умолчанию 1; None — Агент не подключался]);
+    built_days_ago — давность среза данных источника."""
     async with app.state.session_maker() as db:
         k = KscSource(name=name, host="sql.example.local", database="KAV", username="ro")
         db.add(k)
         await db.flush()
-        db.add(ZcSource(source_id=k.id, gen=1, status="ready"))
-        for hid, n, os, has_av, rtp, fqdn in hosts:
-            db.add(ZcHost(source_id=k.id, host_id=hid, gen=1, name=n, os=os, has_av=has_av, p_rtp=rtp, p_no_av=not has_av, active=True, data={"fqdn": fqdn, "ip": "192.0.2.10"}))
+        now = utcnow()
+        db.add(ZcSource(source_id=k.id, gen=1, status="ready", built_at=now - timedelta(days=built_days_ago)))
+        for hid, n, os, has_av, rtp, fqdn, *rest in hosts:
+            ago = rest[0] if rest else 1
+            db.add(ZcHost(source_id=k.id, host_id=hid, gen=1, name=n, os=os, has_av=has_av, p_rtp=rtp, p_no_av=not has_av, active=ago is not None and ago <= 30,
+                          last_connected=None if ago is None else now - timedelta(days=ago), data={"fqdn": fqdn, "ip": "192.0.2.10"}))
         for hid, login in users:
             db.add(DeviceUser(source_id=k.id, host_id=hid, user_key=login, login=login, domain="example", kind="user", resolved=True, first_seen_at=NOW, last_seen_at=NOW, last_session_at=NOW))
         await db.commit()

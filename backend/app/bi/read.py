@@ -20,7 +20,7 @@ from ..ksc.protection import PROBLEMS
 from ..models import BiDevice, BiImport, BiMatch, BiOwner, BiPerson, BiRecord, BiSource, DeviceUser, KscSource, ZcHost, ZcSource
 from ..devices.read import zone_names
 from ..search import any_of, column_like, local_like
-from .match import LEVEL_RU, LINKED
+from .match import ACT_RU, LEVEL_RU, LINKED
 
 STATE_RU = {"current": "Текущий владелец по BI", "past": "Прежний владелец", "unknown": "Историческая связь, текущий статус неизвестен"}
 CONF_RU = {"high": "высокая (устойчивый идентификатор и почта)", "medium": "средняя (имя устройства и почта)", "low": "низкая (условное имя или только ФИО)"}
@@ -108,7 +108,8 @@ async def device_card(db: AsyncSession, device_id: int, *, pd: bool, can_source=
         if not can_source(m.ksc_source_id):
             continue
         item = {"id": m.id, "ksc_source_id": str(m.ksc_source_id), "ksc_source": ksc.get(m.ksc_source_id, ""), "host_id": m.host_id, "host_name": m.host_name, "level": m.level,
-                "level_ru": LEVEL_RU.get(m.level, m.level), "signals": m.signals, "issues": m.issues, "decided_by": m.decided_by, "decided_at": m.decided_at, "note": m.note}
+                "level_ru": LEVEL_RU.get(m.level, m.level), "signals": m.signals, "issues": m.issues, "decided_by": m.decided_by, "decided_at": m.decided_at, "note": m.note,
+                "last_connected": m.host_last_connected, "activity": m.activity, "activity_ru": ACT_RU.get(m.activity, ""), "name_match": m.name_match}
         if m.level in LINKED:
             item["ksc"] = await ksc_host(db, m.ksc_source_id, m.host_id)
             issues += m.issues
@@ -121,8 +122,10 @@ async def device_card(db: AsyncSession, device_id: int, *, pd: bool, can_source=
             "personal": dev.personal, "av": dev.av, "present": dev.present, "first_seen_at": dev.first_seen_at, "last_seen_at": dev.last_seen_at,
             "snapshot_at": (await _imports(db, [src.last_import_id])).get(src.last_import_id, {}).get("at") if src and src.last_import_id else None,
             "owner": cur[0] if len(cur) == 1 else None, "owners": owners, "versions": versions, "matches": matches, "issues": issues,
-            "ksc_state": "linked" if linked else "candidates" if matches else "none",
-            "ksc_state_ru": "Сопоставлено с KSC" if linked else "Есть возможные соответствия в KSC — требуется решение администратора" if matches else "Не найдено соответствие в подключённых источниках KSC"}
+            "ksc_state": (st := ksc_state(m["level"] for m in matches)),
+            "ksc_state_ru": {"linked": "Сопоставлено с KSC", "candidates": "Есть возможные соответствия в KSC — требуется решение администратора",
+                             "inactive": "Актуальный компьютер KSC не найден: записи с таким именем есть, но не подключались за период активности",
+                             "none": "Не найдено соответствие в подключённых источниках KSC"}[st]}
 
 
 async def host_block(db: AsyncSession, ksc_sid: uuid.UUID, host_id: int, *, pd: bool) -> dict:
@@ -222,15 +225,15 @@ async def person_card(db: AsyncSession, pid: int, *, pd: bool, can_source=lambda
     rows = (await db.execute(select(BiOwner, BiDevice).join(BiDevice, BiDevice.id == BiOwner.device_id).where(BiOwner.person_id == pid).order_by(BiOwner.last_seen_at.desc()))).all()
     ms = defaultdict(list)
     if rows:
-        for m in (await db.execute(select(BiMatch).where(BiMatch.device_id.in_([dv.id for _, dv in rows]), BiMatch.level != "rejected"))).scalars():
+        for m in (await db.execute(select(BiMatch).where(BiMatch.device_id.in_([dv.id for _, dv in rows]), BiMatch.level.notin_(("rejected", "history"))))).scalars():
             if can_source(m.ksc_source_id):
                 ms[m.device_id].append({"ksc_source_id": str(m.ksc_source_id), "ksc_source": ksc.get(m.ksc_source_id, ""), "host_id": m.host_id, "host_name": m.host_name, "level": m.level,
-                                        "level_ru": LEVEL_RU[m.level]})
+                                        "level_ru": LEVEL_RU[m.level], "last_connected": m.host_last_connected, "activity": m.activity})
     out = {"current": [], "past": [], "unknown": []}
     for o, dv in rows:
         st = state(o.present, dv.present)
         out[st].append({"device_id": dv.id, "name": dv.name, "os": dv.os, "personal": dv.personal, "generic": dv.generic, "first_seen_at": o.first_seen_at, "last_seen_at": o.last_seen_at,
-                        "state": st, "state_ru": STATE_RU[st], "confidence_ru": CONF_RU.get(o.confidence, ""), "ksc": [m for m in ms.get(dv.id, []) if m["level"] in LINKED] or ms.get(dv.id, [])[:1],
+                        "state": st, "state_ru": STATE_RU[st], "confidence_ru": CONF_RU.get(o.confidence, ""), "ksc": [m for m in ms.get(dv.id, []) if m["level"] in LINKED] or [m for m in ms.get(dv.id, []) if m["level"] in PENDING][:1] or [m for m in ms.get(dv.id, []) if m["level"] in ("stale", "inactive")][:1],
                         "others_now": max(0, dv.owners_now - (1 if st == "current" else 0))})
     return {**person_out(p, pd), "source": bi[p.source_id].name if p.source_id in bi else "", "account_created": p.account_created, "devices": out,
             "note": "Дата создания учётной записи — не дата начала владения устройством. Даты связей — даты выгрузок, в которых связь наблюдалась."}
@@ -258,7 +261,7 @@ def _device_where(q: str, source_id, flt: str, os_family: str, personal: str):
     elif flt == "multi":
         w.append(and_(BiDevice.present.is_(True), BiDevice.owners_now > 1))
     elif flt == "no_ksc":
-        w.append(~exists(select(1).where(BiMatch.device_id == BiDevice.id)))
+        w.append(~exists(select(1).where(BiMatch.device_id == BiDevice.id, BiMatch.level.in_(LIVE))))      # нет записи KSC, с которой можно сопоставить: нет такого имени либо ни одна не активна
     elif flt == "candidates":
         w.append(and_(~linked, exists(select(1).where(BiMatch.device_id == BiDevice.id, BiMatch.level.in_(("candidate", "ambiguous", "conflict"))))))
     elif flt == "linked":
@@ -287,7 +290,7 @@ async def device_rows(db: AsyncSession, ds: list[BiDevice], *, pd: bool, can_sou
         part = ids[i:i + 1000]
         for o, p in (await db.execute(select(BiOwner, BiPerson).join(BiPerson, BiPerson.id == BiOwner.person_id).where(BiOwner.device_id.in_(part)).order_by(BiOwner.last_seen_at.desc()))).all():
             own[o.device_id].append((o, p))
-        for m in (await db.execute(select(BiMatch).where(BiMatch.device_id.in_(part)))).scalars():
+        for m in (await db.execute(select(BiMatch).where(BiMatch.device_id.in_(part), BiMatch.level != "history"))).scalars():
             if can_source(m.ksc_source_id):
                 mt[m.device_id].append(m)
     out = []
@@ -304,12 +307,28 @@ async def device_rows(db: AsyncSession, ds: list[BiDevice], *, pd: bool, can_sou
                     "generic": x.generic, "present": x.present, "last_seen_at": x.last_seen_at, "av": x.av,
                     "owners": [person_out(p, pd) | {"confidence": o.confidence} for o, p in cur], "previous": [person_out(p, pd) | {"state": s, "last_seen_at": o.last_seen_at} for s, o, p in prev[:5]],
                     "previous_n": len(prev), "ksc": [{"ksc_source_id": str(m.ksc_source_id), "ksc_source": ksc.get(m.ksc_source_id, ""), "host_id": m.host_id, "host_name": m.host_name, "level": m.level,
-                                                      "level_ru": LEVEL_RU[m.level]} for m in (linked or ms)],
-                    "ksc_state": "linked" if linked else "candidates" if ms else "none", "issues": issues})
+                                                      "level_ru": LEVEL_RU[m.level], "last_connected": m.host_last_connected, "activity": m.activity} for m in shown(ms)],
+                    "ksc_state": ksc_state(m.level for m in ms), "issues": issues})
     return out
 
 
-MATCH_FILTERS = {"": "требуют решения", "exact": "точные совпадения имени", "auto": "предполагаемые", "ambiguous": "неоднозначные", "unmatched": "не сопоставлены",
+LIVE = ("auto", "confirmed", "candidate", "ambiguous", "conflict", "manual")     # строки, которые относятся к «живому» соответствию; stale, inactive и history — справочные
+PENDING = ("candidate", "ambiguous", "conflict", "manual")
+
+
+def ksc_state(levels) -> str:
+    """linked — есть связь; candidates — есть кандидаты на решение; inactive — записи KSC есть, но ни одна не актуальна; none — записей нет."""
+    lv = set(levels)
+    return "linked" if lv & set(LINKED) else "candidates" if lv & set(PENDING) else "inactive" if lv - {"rejected"} else "none"
+
+
+def shown(ms: list) -> list:
+    """Какие строки показывать в списках: связь, иначе кандидаты, иначе справочные (без прежних соответствий)."""
+    linked = [m for m in ms if m.level in LINKED]
+    return linked or [m for m in ms if m.level in PENDING] or [m for m in ms if m.level in ("stale", "inactive")]
+
+
+MATCH_FILTERS = {"": "требуют решения", "exact": "точные совпадения имени", "auto": "предполагаемые", "ambiguous": "неоднозначные", "unmatched": "не сопоставлены", "stale": "устаревшие записи",
                  "confirmed": "подтверждены", "rejected": "отклонены", "needs_manual": "требуется ручное решение"}
 DECIDE = ("candidate", "ambiguous", "conflict", "manual")
 
@@ -317,7 +336,7 @@ DECIDE = ("candidate", "ambiguous", "conflict", "manual")
 def match_where(flt: str, source_id=None) -> list:
     """Условие фильтра вкладки «Сопоставление BI и KSC» (общее для списка, счётчиков и массовых операций)."""
     w = {"": [BiMatch.level.in_(DECIDE)], "exact": [BiMatch.name_match == "exact", BiMatch.level.in_(("auto", "candidate"))], "auto": [BiMatch.level == "auto"],
-         "ambiguous": [BiMatch.level == "ambiguous"], "unmatched": [false()], "confirmed": [BiMatch.level == "confirmed"],
+         "ambiguous": [BiMatch.level == "ambiguous"], "unmatched": [false()], "stale": [BiMatch.level.in_(("stale", "inactive", "history"))], "confirmed": [BiMatch.level == "confirmed"],
          "rejected": [BiMatch.level == "rejected"], "needs_manual": [BiMatch.level.in_(DECIDE), or_(BiMatch.name_match != "exact", BiMatch.level.in_(("ambiguous", "conflict", "manual")))]}[flt]    # без пар для массового подтверждения
     if source_id:
         w.append(BiMatch.bi_source_id == source_id)
@@ -338,14 +357,22 @@ async def match_list(db: AsyncSession, *, level: str = "", q: str = "", source_i
     total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one())
     rows = (await db.execute(base.order_by(BiDevice.short, BiMatch.id).offset(offset).limit(limit))).all()
     bi, ksc = await _src_names(db)
+    sib: dict[int, list] = defaultdict(list)                           # другие записи KSC того же устройства (в том числе устаревшие) — для ручного решения нужны все
+    if rows:
+        ids = {m.id for m, _dv in rows}
+        for o in (await db.execute(select(BiMatch).where(BiMatch.device_id.in_({dv.id for _m, dv in rows}), BiMatch.ksc_source_id.in_(allowed)).order_by(BiMatch.host_last_connected.desc().nulls_last(), BiMatch.id))).scalars():
+            if o.id not in ids:
+                sib[o.device_id].append({"ksc_source": ksc.get(o.ksc_source_id, ""), "host_name": o.host_name, "level": o.level, "level_ru": LEVEL_RU[o.level], "last_connected": o.host_last_connected,
+                                         "activity": o.activity, "activity_ru": ACT_RU.get(o.activity, ""), "why": (o.signals or [""])[0] if o.level in ("stale", "inactive", "history") else ""})
     items = []
     for m, dv in rows:
         items.append({"id": m.id, "device_id": dv.id, "device": dv.name, "device_os": dv.os, "bi_source": bi[dv.source_id].name if dv.source_id in bi else "", "ksc_source_id": str(m.ksc_source_id),
                       "ksc_source": ksc.get(m.ksc_source_id, ""), "host_id": m.host_id, "host_name": m.host_name, "level": m.level, "level_ru": LEVEL_RU[m.level], "signals": m.signals,
-                      "issues": m.issues, "decided_by": m.decided_by, "decided_at": m.decided_at, "note": m.note, "name_match": m.name_match, "name_ru": NAME_RU.get(m.name_match, "")})
+                      "issues": m.issues, "decided_by": m.decided_by, "decided_at": m.decided_at, "note": m.note, "name_match": m.name_match, "name_ru": NAME_RU.get(m.name_match, ""),
+                      "last_connected": m.host_last_connected, "activity": m.activity, "activity_ru": ACT_RU.get(m.activity, ""), "others": sib.get(dv.id, [])})
     counts = {}
     for k in MATCH_FILTERS:
-        if k == "unmatched":                                            # устройства BI без единой пары в KSC: сопоставлять не с чем, список — во вкладке «Пользователи BI»
+        if k == "unmatched":                                            # устройства BI, которым не с чем сопоставиться (нет записи KSC или ни одна не активна); список — во вкладке «Пользователи BI»
             counts[k] = int((await db.execute(select(func.count()).select_from(BiDevice).where(*_device_where("", source_id, "no_ksc", "", "")))).scalar_one())
             continue
         counts[k] = int((await db.execute(select(func.count()).select_from(BiMatch).where(*match_where(k, source_id), BiMatch.ksc_source_id.in_(allowed)))).scalar_one())
