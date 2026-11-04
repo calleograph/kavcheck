@@ -17,7 +17,7 @@ const matchFn = (f: Fn, tokens: string[]) => { const hay = norm(`${f.title} ${f.
 
 /** Единый поиск и навигация в верхней панели: разделы, настройки и действия (по названию и ключевым словам), компьютеры, программы, пользователи, CVE, готовые отчёты.
  *  «/» или Ctrl+K — к полю (или кнопка «Найти…» на «Быстром доступе» с выбранной категорией); стрелки, Enter, Escape. На узком экране поле открывается кнопкой. */
-export function GlobalSearch({ sourceId, role, hier }: { sourceId: string | null; role: string; hier: boolean }) {
+export function GlobalSearch({ sourceId, role, hier, page = false }: { sourceId: string | null; role: string; hier: boolean; page?: boolean }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [wide, setWide] = useState(false);
@@ -39,9 +39,10 @@ export function GlobalSearch({ sourceId, role, hier }: { sourceId: string | null
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const typing = e.target instanceof HTMLElement && (e.target.matches("input, textarea, select") || e.target.isContentEditable);
+      if (!page && document.querySelector(".gsearch.page")) return;                  // на «Быстром доступе» поиск встроен в страницу: он и отвечает
       if ((e.key === "k" && (e.ctrlKey || e.metaKey)) || (e.key === "/" && !typing)) { e.preventDefault(); focus(null); }
     };
-    const ev = (e: Event) => focus(((e as CustomEvent).detail?.cat as Cat | undefined) ?? null);
+    const ev = (e: Event) => { if (!page && document.querySelector(".gsearch.page")) return; focus(((e as CustomEvent).detail?.cat as Cat | undefined) ?? null); };
     document.addEventListener("keydown", key); window.addEventListener(SEARCH_EVENT, ev);
     return () => { document.removeEventListener("keydown", key); window.removeEventListener(SEARCH_EVENT, ev); };
   }, []);
@@ -100,7 +101,9 @@ export function GlobalSearch({ sourceId, role, hier }: { sourceId: string | null
   let idx = -1;
   const empty = showList && !flat.length;
   return (
-    <div className={`gsearch ${wide ? "wide" : ""} ${showList || (open && !term) ? "open" : ""}`} ref={box}>
+    <div className={`gsearch ${page ? "page" : ""} ${wide ? "wide" : ""} ${showList || (open && !term) ? "open" : ""}`} ref={box}>
+      {page && <div className="gs-cats" role="group" aria-label="Что искать">{([[null, "Всё"], ["hosts", "Компьютеры"], ["software", "Программы"], ["users", "Пользователи"], ["vuln", "Уязвимости и CVE"]] as [Cat | null, string][]).map(([k, l]) =>
+        <button key={l} type="button" className={`gs-cat ${cat === k ? "on" : ""}`} aria-pressed={cat === k} onClick={() => { setCat(k); setOpen(true); input.current?.focus(); }}>{l}</button>)}</div>}
       <button type="button" className="btn ghost icon gs-toggle" aria-label="Поиск по приложению" onClick={() => focus(null)}><Icon name="search" size={18} /></button>
       <div className="input-icon gs-field">
         <Icon name="search" size={16} />

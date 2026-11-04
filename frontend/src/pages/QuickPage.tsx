@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import type { Ctx } from "../App";
 import { api, type Job, type QuickPrefs } from "../api";
 import { Icon, type IconName } from "../components/Icons";
+import { GlobalSearch } from "../components/GlobalSearch";
 import { QuickReportPanel } from "../components/QuickReport";
 import { PageHead } from "../components/ui";
 import { DEFAULT_ITEMS, DEFAULT_REPORTS, FUNCTIONS, QUICK_ACTIONS, QUICK_REPORTS, roleOk, type QuickReportDef, type Role } from "../navModel";
@@ -70,14 +71,12 @@ export default function QuickPage({ ctx }: { ctx: Ctx }) {
         </div>
       </PageHead>
 
-      <button type="button" className="qa-find" onClick={() => window.dispatchEvent(new CustomEvent(SEARCH_EVENT, {}))}>
-        <Icon name="search" size={18} /><span>Что ищем? Компьютер, программа, пользователь, CVE, раздел или настройка</span><kbd>/</kbd></button>
-
-      <Attention ctx={ctx} hidden={hidden} edit={edit} onHide={(id, on) => { const c = current(); save({ ...c, hidden: on ? [...new Set([...c.hidden, id])] : c.hidden.filter((x) => x !== id) }); }} />
+      <GlobalSearch page sourceId={ctx.current?.id ?? null} role={role} hier={ctx.hier} />
 
       <div className="qa-cols">
         <div className="qa-main">
-          <div className="qa-head"><h2>Частые действия</h2>{edit && <button type="button" className="btn mini" onClick={() => setPicker("items")}><Icon name="plus" size={14} />Добавить</button>}</div>
+          <Attention ctx={ctx} hidden={hidden} edit={edit} onHide={(id, on) => { const c = current(); save({ ...c, hidden: on ? [...new Set([...c.hidden, id])] : c.hidden.filter((x) => x !== id) }); }} />
+          <div className="qa-head mt"><h2>Частые действия</h2>{edit && <button type="button" className="btn mini" onClick={() => setPicker("items")}><Icon name="plus" size={14} />Добавить</button>}</div>
           {!items.length ? <p className="muted small">Здесь пока ничего нет. {edit ? "Нажмите «Добавить»." : "Нажмите «Настроить панель», чтобы собрать свой набор."}</p> :
             <ul className="qa-grid" aria-label="Частые действия">
               {items.map((c, i) => (
@@ -90,6 +89,7 @@ export default function QuickPage({ ctx }: { ctx: Ctx }) {
                     <button type="button" className="btn mini ghost icon" aria-label={`Сдвинуть «${c.title}» вперёд`} disabled={i === items.length - 1} onClick={() => move("items", i, i + 1)}><Icon name="arrowR" size={14} /></button>
                     <button type="button" className="btn mini ghost icon danger" aria-label={`Убрать «${c.title}» с панели`} onClick={() => remove("items", c.id)}><Icon name="close" size={14} /></button></span>}
                 </li>))}
+              {!edit && <li className="qa-card add"><button type="button" className="qa-open" onClick={() => setPicker("items")}><span className="qa-ic"><Icon name="plus" size={20} /></span><span className="qa-t"><b>Добавить</b><span>раздел, настройку или действие</span></span></button></li>}
             </ul>}
 
           <div className="qa-head mt"><h2>Быстрые отчёты</h2>{edit && <button type="button" className="btn mini" onClick={() => setPicker("reports")}><Icon name="plus" size={14} />Добавить</button>}<div className="spacer" /><Link className="small" to="/reports">Все отчёты</Link></div>
@@ -110,10 +110,11 @@ export default function QuickPage({ ctx }: { ctx: Ctx }) {
                       <button type="button" className="btn mini ghost icon danger" aria-label={`Убрать «${r.title}» с панели`} onClick={() => remove("reports", r.id)}><Icon name="close" size={14} /></button></span>}
                   </li>);
               })}
+              {!edit && <li className="qa-card add"><button type="button" className="qa-open" onClick={() => setPicker("reports")}><span className="qa-ic rep"><Icon name="plus" size={20} /></span><span className="qa-t"><b>Добавить отчёт</b><span>из готовых шаблонов</span></span></button></li>}
             </ul>}
           {saved && <p className="muted small mt-sm" role="status">{saved}</p>}
         </div>
-        <aside className="qa-side"><Recent ctx={ctx} /></aside>
+        <aside className="qa-side"><Sources ctx={ctx} /><Recent ctx={ctx} /><Reports ctx={ctx} /></aside>
       </div>
 
       {picker && <Picker kind={picker} ctx={ctx} have={current()[picker]} onPick={(id) => add(picker, id)} onClose={() => setPicker(null)} />}
@@ -215,6 +216,34 @@ function Recent({ ctx }: { ctx: Ctx }) {
       {jobs.length > 0 && <ul className="qa-rl">{jobs.map((j) => <li key={j.id}><Link to={`/reports/${j.id}`}><Icon name="play" size={15} /><span><b>{j.title}</b><small>{j.status === "queued" ? "в очереди" : `формируется${j.progress ? `: ${j.progress}` : ""}`}</small></span></Link></li>)}</ul>}
       {!recent.length && !jobs.length ? <p className="muted small">Откройте любой раздел — он появится здесь, чтобы вернуться одним щелчком.</p> :
         <ul className="qa-rl">{recent.map((r) => <li key={r.to}><Link to={r.to}><Icon name="history" size={15} /><span><b>{r.label}</b><small>{fmt(new Date(r.at).toISOString())}</small></span></Link></li>)}</ul>}
+    </div>
+  );
+}
+
+/** Состояние подключённых источников KSC: видно сразу, что данные свежие и подключение работает. */
+function Sources({ ctx }: { ctx: Ctx }) {
+  if (!ctx.sources.length) return null;
+  return (
+    <div className="card pad qa-recent">
+      <div className="qa-head"><h2>Источники данных</h2><div className="spacer" />{ctx.me.user.is_admin && <Link className="small" to="/admin?tab=sources">Настроить</Link>}</div>
+      <ul className="qa-rl">{ctx.sources.slice(0, 6).map((s) => <li key={s.id}><span className="qa-src">
+        <i className={`qa-dot ${s.last_check_ok === false ? "bad" : s.last_check_ok ? "ok" : ""}`} aria-hidden /><span><b>{s.name}{ctx.current?.id === s.id ? " · выбран" : ""}</b>
+          <small>{s.last_check_ok === false ? "проверка не пройдена" : s.last_check_ok ? "доступен" : "не проверялся"}{s.last_check_at ? ` · ${fmt(s.last_check_at)}` : ""}</small></span></span></li>)}</ul>
+    </div>
+  );
+}
+
+/** Последние отчёты: статус и прямые ссылки на готовые файлы. */
+function Reports({ ctx }: { ctx: Ctx }) {
+  const [jobs, setJobs] = useState<Job[] | null>(null);
+  useEffect(() => { api.reports.list(false).then((r) => setJobs(r.items.slice(0, 5))).catch(() => setJobs([])); }, []);
+  if (!jobs?.length) return null;
+  const st: Record<string, string> = { queued: "в очереди", running: "формируется", done: "готов", failed: "ошибка", cancelled: "отменён" };
+  return (
+    <div className="card pad qa-recent">
+      <div className="qa-head"><h2>Последние отчёты</h2><div className="spacer" /><Link className="small" to="/reports">Все</Link></div>
+      <ul className="qa-rl">{jobs.map((j) => <li key={j.id}><Link to={`/reports/${j.id}`}><Icon name="file" size={15} /><span><b>{j.title}</b><small>{st[j.status] ?? j.status} · {fmt(j.created_at)}</small></span></Link>
+        {j.status === "done" && ctx.me.user.role !== "viewer" && <span className="qa-dl">{(["xlsx", "pdf"] as const).map((f) => <a key={f} href={api.reports.downloadUrl(j.id, f)} download aria-label={`${j.title}: скачать ${f.toUpperCase()}`}>{f.toUpperCase()}</a>)}</span>}</li>)}</ul>
     </div>
   );
 }
