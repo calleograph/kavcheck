@@ -15,6 +15,7 @@ import { DEFAULT_ZONE_CATS } from "./zoneCats";
 import { AuditBuilder, AuditResult, draftFromItem, emptyDraft, itemSummary, type Draft, type PreviewState } from "./AuditBuilder";
 import { JOB_STATUS } from "./DashboardPage";
 import { getSelection, selLabel } from "../selection";
+import { QUICK_REPORTS, roleOk, type QuickReportDef, type Role } from "../navModel";
 
 /** Описание условий отчёта одной строкой (проверка версий и отчёты прежнего вида 0.1.0). */
 export function describe(p: Record<string, unknown>): string {
@@ -126,7 +127,10 @@ function ReportsHome({ ctx }: { ctx: Ctx }) {
               </ul>)}
           </div>
           <div className="card">
-            <h2>Другие отчёты</h2>
+            <h2>Все виды отчётов</h2>
+            <p className="muted small">Каждый отчёт строится в своём разделе по условиям страницы; отсюда — с условиями по умолчанию, их можно изменить в конструкторе.</p>
+            <ReportCatalog ctx={ctx} />
+            <h2 className="mt">Другие отчёты</h2>
             <button type="button" className="action-row" disabled={!canEdit} onClick={() => quick({ inactive_only: true, include_inactive: true }, "Компьютеры без связи с KSC")}>
               <span className="a-ic"><Icon name="clock" /></span><span className="a-main"><b>Компьютеры без связи с KSC</b><span>Агент не подключался дольше {ctx.me.activity_days} сут</span></span><Icon name="chevronR" className="a-go" /></button>
             <button type="button" className="action-row" disabled={!canEdit} onClick={() => setZonePick(true)}>
@@ -288,5 +292,25 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
       </>)}
       {toast}
     </section>
+  );
+}
+
+
+/** Каталог всех видов отчётов приложения: готовый конструктор (kind) или переход в раздел, где отчёт строится по условиям страницы. */
+function ReportCatalog({ ctx }: { ctx: Ctx }) {
+  const role = ctx.me.user.role as Role;
+  const navigate = useNavigate();
+  const [panel, setPanel] = useState<QuickReportDef | null>(null);
+  const list = QUICK_REPORTS.filter((r) => roleOk(r.roles, role));
+  return (
+    <>
+      <ul className="qa-pick-list">
+        {list.map((r) => (
+          <li key={r.id}><button type="button" disabled={!!r.needsSource && !ctx.current} onClick={() => (r.kind ? setPanel(r) : navigate(r.section))}>
+            <Icon name={r.icon} size={17} /><span className="qa-t"><b>{r.title}</b><span>{r.kind ? r.hint : `${r.hint} · строится в разделе`}</span></span><Icon name={r.kind ? "file" : "arrowR"} size={15} /></button></li>))}
+        {ctx.me.user.is_admin && <li><button type="button" onClick={() => navigate("/admin?tab=journal")}><Icon name="journal" size={17} /><span className="qa-t"><b>Журналы, пользователи, лицензии, компоненты</b><span>отчёт кнопкой на странице настройки · строится в разделе</span></span><Icon name="arrowR" size={15} /></button></li>}
+      </ul>
+      {panel && panel.kind && <QuickReportPanel kind={panel.kind} title={`Отчёт: ${panel.title}`} options={panel.options} params={panel.params} activityDays={ctx.me.activity_days} canReport={role !== "viewer"} onClose={() => setPanel(null)} />}
+    </>
   );
 }

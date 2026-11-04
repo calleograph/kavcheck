@@ -28,7 +28,7 @@ async def _me(request: Request, db: AsyncSession, su: SessionUser) -> MeOut:
     return MeOut(user=UserOut(id=su.user_id, username=su.username, display_name=su.display_name, role=su.role, is_admin=su.is_admin, local=su.local),
                  csrf_token=su.csrf, must_change_password=su.must_change, current_source_id=str(su.current_source_id) if su.current_source_id else None, site_name=general.site_name,
                  activity_days=general.activity_days, must_enroll_totp=su.must_totp, totp_enabled=bool(u and u.totp_enabled), second_factor=su.second_factor,
-                 secure_cookie=request.app.state.settings.secure_cookie(request.headers.get("x-forwarded-proto")), theme=u.theme if u else None, default_theme=look.default_theme)
+                 secure_cookie=request.app.state.settings.secure_cookie(request.headers.get("x-forwarded-proto")), theme=u.theme if u else None, default_theme=look.default_theme, quick=u.quick_prefs if u else None)
 
 
 def _check_origin(request: Request) -> None:
@@ -64,6 +64,30 @@ async def set_theme(request: Request, body: dict = Body(...), su: SessionUser = 
     u.theme = theme
     await db.commit()
     return {"theme": theme}
+
+
+QUICK_LISTS = ("items", "reports", "hidden")
+
+
+@router.put("/me/quick")
+async def set_quick(request: Request, body: dict = Body(...), su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    """Личная панель «Быстрый доступ»: списки идентификаторов (`items` — карточки в порядке пользователя, `reports` — выбранные отчёты, `hidden` — скрытые показатели «Требует внимания»);
+    пустое тело `{}` возвращает стартовую конфигурацию. Хранятся только короткие идентификаторы: каталог действий и права проверяет интерфейс, а доступ к данным — сервер."""
+    _check_origin(request)
+    out: dict = {}
+    for k in QUICK_LISTS:
+        v = body.get(k)
+        if v is None:
+            continue
+        if not isinstance(v, list) or len(v) > 60 or any(not isinstance(x, str) or not 0 < len(x) <= 60 for x in v):
+            raise HTTPException(status_code=422, detail=f"Поле «{k}»: список до 60 коротких идентификаторов")
+        out[k] = list(dict.fromkeys(v))
+    u = await db.get(User, su.user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    u.quick_prefs = out or None
+    await db.commit()
+    return {"quick": u.quick_prefs}
 
 
 @router.post("/login")

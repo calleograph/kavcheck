@@ -63,6 +63,7 @@ class User(Base):
     totp_secret_enc: Mapped[str | None] = mapped_column(Text)            # секрет TOTP, зашифрован APP_MASTER_KEY (AAD — пользователь)
     totp_last_step: Mapped[int | None] = mapped_column(BigInteger)       # последний принятый шаг: повтор перехваченного кода отклоняется
     totp_enabled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    quick_prefs: Mapped[dict | None] = mapped_column(JSONType)         # личная панель «Быстрый доступ»: избранное, порядок, выбранные отчёты (идентификаторы); None — стартовая конфигурация
     theme: Mapped[str | None] = mapped_column(String(16))               # выбранная тема оформления; None — тема по умолчанию системы (выбор не перезаписывается обновлениями)
 
 

@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, setAllSources, setCsrf, setSourceId, setUnauthorizedHandler, type Me, type SourceRef } from "./api";
-import { Icon, Mark, type IconName } from "./components/Icons";
+import { api, setAllSources, setCsrf, setSourceId, setUnauthorizedHandler, type Me, type QuickPrefs, type SourceRef } from "./api";
+import { Icon, Mark } from "./components/Icons";
 import { Empty, ToTop } from "./components/ui";
 import { GlobalSearch } from "./components/GlobalSearch";
 import LoginPage from "./pages/LoginPage";
@@ -9,6 +9,7 @@ import ChangePasswordPage from "./pages/ChangePasswordPage";
 import SecurityPage from "./pages/SecurityPage";
 import DashboardPage from "./pages/DashboardPage";
 import HierarchyPage from "./pages/HierarchyPage";
+import QuickPage from "./pages/QuickPage";
 // разделы загружаются по первому обращению: стартовая загрузка — оболочка, вход и главная
 const PentestPage = lazy(() => import("./pages/PentestPage"));
 const HuntPage = lazy(() => import("./pages/HuntPage"));
@@ -29,35 +30,18 @@ const AdminPage = lazy(() => import("./pages/AdminPage"));
 const EolPage = lazy(() => import("./pages/EolPage"));
 const DevicesPage = lazy(() => import("./pages/DevicesPage"));
 const AppearancePage = lazy(() => import("./pages/AppearancePage"));
+import { ADMIN_GROUPS, ADMIN_ICONS, ADMIN_TABS, NAV_GROUPS, NAV_REPORTS, NAV_TOP, roleOk, type NavItem } from "./navModel";
+import { pushRecent } from "./recent";
 import { DEFAULT_THEME, THEMES, chooseTheme, isTheme, syncTheme, type ThemeId } from "./theme";
 
-export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; /** выбрано «Все источники» (разделы, которые это умеют, показывают данные всех доступных источников) */ all: boolean; reloadSources: () => Promise<void>; /** переключить источник или «Все источники» (id = "all") */ setScope: (id: string) => void }
+export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; /** выбрано «Все источники» (разделы, которые это умеют, показывают данные всех доступных источников) */ all: boolean; reloadSources: () => Promise<void>; /** раздел «Иерархия. Предприятие» доступен роли */ hier: boolean; /** сохранить личную панель «Быстрый доступ» в профиле (null — исходный набор) */ onQuick: (q: QuickPrefs | null) => void; /** переключить источник или «Все источники» (id = "all") */ setScope: (id: string) => void }
 
 /** Разделы, работающие со всеми источниками сразу; остальные показывают выбранный источник. */
 export const ALL_PAGES = ["/eol", "/devices", "/reports", "/zones"];
 /** Страницы, для которых «Все источники» не требуют пояснения: главная и независимые от KSC разделы. */
-const scopeAware = (pathname: string) => pathname === "/" || pathname.startsWith("/pentest") || pathname.startsWith("/hunt") || ALL_PAGES.some((p) => pathname.startsWith(p));
+const scopeAware = (pathname: string) => pathname === "/" || pathname === "/overview" || pathname.startsWith("/pentest") || pathname.startsWith("/hunt") || ALL_PAGES.some((p) => pathname.startsWith(p));
 
-const NAV: { to: string; label: string; icon: IconName; end?: boolean; roles?: string[] }[] = [
-  { to: "/", label: "Главная", icon: "home", end: true },
-  { to: "/software", label: "Программы", icon: "layers" },
-  { to: "/hosts", label: "Компьютеры", icon: "monitor" },
-  { to: "/devices", label: "Устройства и пользователи", icon: "users" },
-  { to: "/vulnerabilities", label: "Уязвимости", icon: "bug" },
-  { to: "/vdb", label: "База уязвимостей", icon: "vault" },
-  { to: "/eol", label: "EOL", icon: "clock" },
-  { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" },
-  { to: "/events", label: "События безопасности", icon: "bell" },
-  { to: "/zones", label: "Зоны ответственности", icon: "grid" },
-  { to: "/hunt", label: "CVE Hunt", icon: "search", roles: ["analyst", "admin"] },
-  { to: "/pentest", label: "Pentest", icon: "target", roles: ["analyst", "admin"] },
-  { to: "/reports", label: "Отчёты", icon: "file" },
-];
-export const ADMIN_TABS: { id: string; label: string }[] = [
-  { id: "system", label: "Техническое состояние" }, { id: "sources", label: "Источники данных" }, { id: "licenses", label: "Лицензии" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" }, { id: "hier", label: "Иерархия предприятия" },
-  { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "zcache", label: "Расчёт данных зон" }, { id: "eolcfg", label: "EOL и пользователи" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" }, { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "pentest", label: "Pentest" }, { id: "ptchecks", label: "Pentest: шаблоны и проверки" }, { id: "updates", label: "Обновления" }, { id: "components", label: "Компоненты" }, { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" }, { id: "logs", label: "Журналы и хранение" },
-];
-
+export { ADMIN_TABS };
 
 /** Закрытие всплывающего элемента по щелчку снаружи и Escape (фокус возвращается на кнопку). */
 function usePopover() {
@@ -157,8 +141,9 @@ function NavIndicator({ deps }: { deps: unknown[] }) {
   const [pos, setPos] = useState<{ y: number; h: number } | null>(null);
   useLayoutEffect(() => {
     const measure = () => {
-      const el = self.current?.parentElement?.querySelector<HTMLElement>("a.active, a[aria-current='page']");
-      setPos(el ? { y: el.offsetTop, h: el.offsetHeight } : null);
+      const host = self.current?.parentElement;
+      const el = host?.querySelector<HTMLElement>("a.active, a[aria-current='page']");
+      setPos(el && host ? { y: el.getBoundingClientRect().top - host.getBoundingClientRect().top, h: el.offsetHeight } : null);   // вложенные группы: отсчёт от списка, а не от offsetParent
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -179,10 +164,24 @@ function Shell({ me, hierOk, version, onLogout, onTheme, children, sources, curr
   useEffect(() => { if (!open) return; const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); document.querySelector<HTMLElement>(".topbar .burger")?.focus(); } }; document.addEventListener("keydown", esc); return () => document.removeEventListener("keydown", esc); }, [open]);
   const inAdmin = pathname.startsWith("/admin");
   const tab = new URLSearchParams(search).get("tab") ?? "system";
-  // группа администрирования сворачивается (запоминается в браузере) и раскрывается сама при входе в раздел
-  const [adminOpen, setAdminOpen] = useState(() => { try { return localStorage.getItem("kc:nav-admin") !== "0"; } catch { return true; } });
-  useEffect(() => { if (inAdmin) setAdminOpen(true); }, [inAdmin]);
-  const toggleAdmin = () => setAdminOpen((o) => { try { localStorage.setItem("kc:nav-admin", o ? "0" : "1"); } catch { /* не запомнится */ } return !o; });
+  // группы меню сворачиваются и раскрываются; состояние запоминается для пользователя в этом браузере, раздел с открытой страницей раскрывается сам
+  const navKey = `kc:nav:${me.user.id}`;
+  const [navOpen, setNavOpen] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem(navKey) ?? "{}"); } catch { return {}; } });
+  const isOpen = (id: string) => navOpen[id] ?? (id === "admin" ? inAdmin : !id.startsWith("a:"));
+  const setNav = (next: Record<string, boolean>) => { setNavOpen(next); try { localStorage.setItem(navKey, JSON.stringify(next)); } catch { /* не запомнится */ } };
+  const toggle = (id: string) => setNav({ ...navOpen, [id]: !isOpen(id) });
+  const setAdminAll = (on: boolean) => setNav({ ...navOpen, admin: true, ...Object.fromEntries(ADMIN_GROUPS.map((g) => [`a:${g.id}`, on])) });
+  useEffect(() => {                                                                  // страница открыта по ссылке: её группа раскрывается
+    const g = inAdmin ? ADMIN_GROUPS.find((x) => x.tabs.includes(tab)) : NAV_GROUPS.find((x) => x.items.some((i) => pathname === i.to || pathname.startsWith(`${i.to}/`)));
+    if (!g) return;
+    const ids = inAdmin ? ["admin", `a:${g.id}`] : [g.id];
+    if (ids.some((id) => !isOpen(id))) setNav({ ...navOpen, ...Object.fromEntries(ids.map((id) => [id, true])) });
+  }, [pathname, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { const t = window.setTimeout(() => document.querySelector<HTMLElement>(".sidenav a.active")?.scrollIntoView({ block: "nearest" }), 80); return () => window.clearTimeout(t); }, [pathname, search]);   // открытый раздел всегда виден в меню
+  const link = (n: NavItem) => {
+    if (!roleOk(n.roles, me.user.role) || (n.hier && !hierOk)) return null;
+    return <NavLink key={n.to} to={n.to === "/vdb" && vdbNew > 0 ? "/vdb?tab=mine" : n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.to === "/vdb" && vdbNew > 0 && <span className="nav-badge" title="Новых уязвимостей с высокой и критической опасностью или признаком эксплуатации, затрагивающих установленное ПО">{vdbNew}</span>}</NavLink>;
+  };
   return (
     <div className="shell">
       <a className="skip-link" href="#main">Перейти к содержимому</a>
@@ -190,17 +189,26 @@ function Shell({ me, hierOk, version, onLogout, onTheme, children, sources, curr
         <Link to="/" className="side-brand"><Mark size={28} /><span className="site-name">{me.site_name || "KAV Checker"}</span></Link>
         <div className="side-scroll">
           <div className="nav-list">
-            <NavIndicator deps={[pathname, search, adminOpen]} />
-            <div className="nav-label">Аудит</div>
-            {(hierOk ? [...NAV.slice(0, -1), { to: "/hierarchy", label: "Иерархия. Предприятие", icon: "sitemap" as IconName }, NAV[NAV.length - 1]] : NAV).filter((n) => !n.roles || n.roles.includes(me.user.role)).map((n) => <NavLink key={n.to} to={n.to === "/vdb" && vdbNew > 0 ? "/vdb?tab=mine" : n.to} end={n.end}><Icon name={n.icon} />{n.label}{n.to === "/vdb" && vdbNew > 0 && <span className="nav-badge" title="Новых уязвимостей с высокой и критической опасностью или признаком эксплуатации, затрагивающих установленное ПО">{vdbNew}</span>}</NavLink>)}
-            {me.user.is_admin && <>
-              <button type="button" className="nav-label nav-toggle" aria-expanded={adminOpen} onClick={toggleAdmin}>Администрирование<Icon name="chevronD" size={14} /></button>
-              {adminOpen && ADMIN_TABS.map((t) => {
-                const active = inAdmin && tab === t.id;
-                return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>
-                  <Icon name={({ system: "gauge", sources: "database", licenses: "key", users: "users", ldap: "key", hier: "sitemap", general: "sliders", zones: "grid", zcache: "clock", eolcfg: "users", mail: "mail", org: "file", catalog: "package", vdb: "vault", pentest: "target", ptchecks: "shieldPulse", updates: "upload", components: "package", journal: "journal", audit: "history", logs: "database" } as Record<string, IconName>)[t.id]} />{t.label}</Link>;
-              })}
-            </>}
+            <NavIndicator deps={[pathname, search, JSON.stringify(navOpen)]} />
+            {NAV_TOP.map(link)}
+            {NAV_GROUPS.map((g) => {
+              const items = g.items.filter((n) => roleOk(n.roles, me.user.role) && (!n.hier || hierOk));
+              if (!items.length) return null;
+              return <div key={g.id} className="nav-group">
+                <button type="button" className="nav-label nav-toggle" aria-expanded={isOpen(g.id)} aria-controls={`ng-${g.id}`} onClick={() => toggle(g.id)}>{g.label}<Icon name="chevronD" size={14} /></button>
+                {isOpen(g.id) && <div id={`ng-${g.id}`} className="nav-sub">{items.map(link)}</div>}</div>;
+            })}
+            {link(NAV_REPORTS)}
+            {me.user.is_admin && <div className="nav-group nav-admin">
+              <button type="button" className="nav-label nav-toggle" aria-expanded={isOpen("admin")} aria-controls="ng-admin" onClick={() => toggle("admin")}>Администрирование<Icon name="chevronD" size={14} /></button>
+              {isOpen("admin") && <div id="ng-admin" className="nav-sub"><span className="nav-all"><button type="button" onClick={() => setAdminAll(true)}>Развернуть все</button><button type="button" onClick={() => setAdminAll(false)}>Свернуть все</button></span>{ADMIN_GROUPS.map((g) => <div key={g.id} className="nav-agroup">
+                <button type="button" className={`nav-toggle sub ${inAdmin && g.tabs.includes(tab) ? "has-active" : ""}`} aria-expanded={isOpen(`a:${g.id}`)} aria-controls={`na-${g.id}`} onClick={() => toggle(`a:${g.id}`)}><Icon name="chevronD" size={12} />{g.label}</button>
+                {isOpen(`a:${g.id}`) && <div id={`na-${g.id}`} className="nav-sub">{g.tabs.map((id) => {
+                  const t = ADMIN_TABS.find((x) => x.id === id)!;
+                  const active = inAdmin && tab === t.id;
+                  return <Link key={t.id} to={`/admin?tab=${t.id}`} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><Icon name={ADMIN_ICONS[t.id]} />{t.label}</Link>;
+                })}</div>}</div>)}</div>}
+            </div>}
           </div>
         </div>
         <div className="side-foot">KAV Checker {version}</div>
@@ -210,7 +218,7 @@ function Shell({ me, hierOk, version, onLogout, onTheme, children, sources, curr
         <header className="topbar">
           <button type="button" className="btn ghost icon burger" aria-label="Открыть меню разделов" aria-expanded={open} onClick={() => setOpen(true)}><Icon name="menu" size={20} /></button>
           <SourceSwitcher sources={sources} current={current} onPick={onPick} isAdmin={me.user.is_admin} all={all} onAll={onAll} />
-          <GlobalSearch sourceId={current?.id ?? null} />
+          <GlobalSearch sourceId={current?.id ?? null} role={me.user.role} hier={!!hierOk} />
           <div className="spacer" />
           <UserMenu me={me} version={version} onLogout={onLogout} onTheme={onTheme} />
         </header>
@@ -236,7 +244,8 @@ export default function App() {
   useLayoutEffect(() => { setAllSources(all && sources.length > 1); }, [all, sources.length]);      // до эффектов страниц: их первый запрос уже должен идти с заголовком «все источники»
   const onAll = useCallback((on: boolean) => { setAll(on); try { localStorage.setItem("kc:scope-all", on ? "1" : "0"); } catch { /* не запомнится */ } }, []);
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const { pathname, search: urlSearch } = useLocation();
+  useEffect(() => { if (!me) return; const t = window.setTimeout(() => pushRecent(me.user.id, pathname, urlSearch), 600); return () => window.clearTimeout(t); }, [pathname, urlSearch, me?.user.id]);   // eslint-disable-line react-hooks/exhaustive-deps
   const [hierOk, setHierOk] = useState<boolean | null>(null);   // раздел «Иерархия. Предприятие» доступен роли пользователя (решает сервер; пункт меню — только удобство)
   useEffect(() => { if (me) api.hier.access().then((r) => setHierOk(r.allowed)).catch(() => setHierOk(false)); else setHierOk(null); }, [me?.user.id, me?.user.role, pathname]);   // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -251,8 +260,8 @@ export default function App() {
   useEffect(() => { if (me) void reloadSources(); }, [me, reloadSources]);
   useEffect(() => { setUnauthorizedHandler(() => { setCsrf(""); setMe(null); }); return () => setUnauthorizedHandler(null); }, []);
   useEffect(() => {
-    const titles: [string, string][] = [["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/devices", "Устройства и пользователи"], ["/eol", "EOL"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/pentest", "Pentest"], ["/hunt", "CVE Hunt"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
-    const t = me ? (titles.find(([p]) => pathname.startsWith(p))?.[1] ?? "Главная") : "Вход";
+    const titles: [string, string][] = [["/overview", "Обзор"], ["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/devices", "Устройства и пользователи"], ["/eol", "EOL"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/pentest", "Pentest"], ["/hunt", "CVE Hunt"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
+    const t = me ? (titles.find(([p]) => pathname.startsWith(p))?.[1] ?? "Быстрый доступ") : "Вход";
     document.title = `${t} — ${me?.site_name || "KAV Checker"}`;
   }, [pathname, me]);
 
@@ -269,12 +278,13 @@ export default function App() {
   const current = sources.find((s) => s.id === currentId) ?? null;
   const allOn = all && sources.length > 1;
   const setScope = (id: string) => { if (id === "all") onAll(true); else { onAll(false); void pick(id); } };
-  const ctx: Ctx = { me, sources, current, all: allOn, reloadSources, setScope };
+  const ctx: Ctx = { me, sources, current, all: allOn, reloadSources, setScope, hier: !!hierOk, onQuick: (q) => setMe((m) => (m ? { ...m, quick: q } : m)) };
   return (
     <Shell me={me} hierOk={hierOk} version={version} onLogout={logout} onTheme={onTheme} sources={sources} current={current} onPick={pick} all={allOn} onAll={onAll}>
       <Suspense fallback={<div className="center"><span className="spin" role="status" aria-label="Загрузка" /></div>}>
         <Routes>
-          <Route path="/" element={<DashboardPage key={`${currentId}:${allOn}`} ctx={ctx} />} />
+          <Route path="/" element={<QuickPage ctx={ctx} />} />
+          <Route path="/overview" element={<DashboardPage key={`${currentId}:${allOn}`} ctx={ctx} />} />
           <Route path="/software" element={<SoftwarePage key={currentId} ctx={ctx} />} />
           <Route path="/software/p/:key" element={<ProductPage key={currentId} ctx={ctx} />} />
           <Route path="/eol" element={<EolPage key={`${currentId}:${allOn}`} ctx={ctx} />} />
@@ -297,7 +307,7 @@ export default function App() {
           <Route path="/appearance" element={<AppearancePage me={me} onTheme={onTheme} />} />
           <Route path="/password" element={<Navigate to="/security" replace />} />
           <Route path="/admin" element={me.user.is_admin ? <AdminPage ctx={ctx} version={version} /> : <Navigate to="/" replace />} />
-          <Route path="*" element={<Empty icon="target" title="Страница не найдена" action={<Link className="btn" to="/">На главную</Link>}>Проверьте адрес или вернитесь на главную.</Empty>} />
+          <Route path="*" element={<Empty icon="target" title="Страница не найдена" action={<Link className="btn" to="/">К быстрому доступу</Link>}>Проверьте адрес или вернитесь к быстрому доступу.</Empty>} />
         </Routes>
       </Suspense>
     </Shell>

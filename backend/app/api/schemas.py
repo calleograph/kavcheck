@@ -64,6 +64,7 @@ class MeOut(BaseModel):
     secure_cookie: bool = False
     theme: str | None = None                                            # личный выбор; None — действует default_theme
     default_theme: str = "night"
+    quick: dict | None = None                                           # личная панель «Быстрый доступ» (избранное, порядок, отчёты); None — стартовая конфигурация
 
 
 class SourceIn(BaseModel):

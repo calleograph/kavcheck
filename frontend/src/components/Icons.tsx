@@ -2,6 +2,9 @@ import type { ReactNode, SVGProps } from "react";
 
 /** Собственный набор линейных пиктограмм: сетка 24×24, штрих 1.75, скругления, цвет — currentColor. Без внешних библиотек. */
 const PATHS: Record<string, ReactNode> = {
+  bolt: <><path d="M13 3.5 6 13.5h5l-1 7 7-10h-5Z" /></>,
+  star: <><path d="m12 4 2.4 5 5.4.7-4 3.8 1 5.4-4.8-2.7-4.8 2.7 1-5.4-4-3.8 5.4-.7Z" /></>,
+  grip: <><circle cx="9" cy="6.5" r="1.1" /><circle cx="15" cy="6.5" r="1.1" /><circle cx="9" cy="12" r="1.1" /><circle cx="15" cy="12" r="1.1" /><circle cx="9" cy="17.5" r="1.1" /><circle cx="15" cy="17.5" r="1.1" /></>,
   sitemap: <><rect x="9" y="3.5" width="6" height="4.5" rx="1.2" /><rect x="3" y="16" width="6" height="4.5" rx="1.2" /><rect x="15" y="16" width="6" height="4.5" rx="1.2" /><path d="M12 8v4M6 16v-4h12v4" /></>,
   grid: <><rect x="4" y="4" width="7" height="7" rx="1.4" /><rect x="13" y="4" width="7" height="7" rx="1.4" /><rect x="4" y="13" width="7" height="7" rx="1.4" /><rect x="13" y="13" width="7" height="7" rx="1.4" /></>,
   mail: <><rect x="3.5" y="5.5" width="17" height="13" rx="2" /><path d="m4 7.5 8 6 8-6" /></>,

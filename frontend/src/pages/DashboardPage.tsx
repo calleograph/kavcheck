@@ -119,7 +119,7 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
 
   return (
     <section className="ov">
-      <PageHead title="Главная" lede={lede}>
+      <PageHead title="Обзор" lede={lede}>
         <Segmented<string> label="Период активности" value={String(days)} onChange={(v) => pick(Number(v))} options={PERIODS.map((p) => [String(p), `${p} дн.`, `Активные за ${p} суток`] as [string, string, string])} />
         <button className="btn" onClick={() => void load(true)} aria-busy={busy && !!d}><Icon name="refresh" /><span>Обновить</span></button>
         {canReport && <ReportButton onClick={() => setReport({})} title="Сформировать отчёт «Сводка инфраструктуры» с текущим периодом и источниками" />}

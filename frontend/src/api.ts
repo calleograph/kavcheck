@@ -1,6 +1,7 @@
 // Клиент REST API. Сессия — HttpOnly cookie; CSRF-токен хранится только в памяти; выбранный источник — в сессии (и дублируется заголовком).
 export interface User { id: string; username: string; display_name: string; role: "admin" | "analyst" | "viewer"; is_admin: boolean; local: boolean }
-export interface Me { user: User; csrf_token: string; must_change_password: boolean; current_source_id: string | null; site_name: string; activity_days: number; must_enroll_totp: boolean; totp_enabled: boolean; second_factor: string | null; secure_cookie: boolean; theme: string | null; default_theme: string }
+export interface Me { user: User; csrf_token: string; must_change_password: boolean; current_source_id: string | null; site_name: string; activity_days: number; must_enroll_totp: boolean; totp_enabled: boolean; second_factor: string | null; secure_cookie: boolean; theme: string | null; default_theme: string; quick?: QuickPrefs | null }
+export interface QuickPrefs { items?: string[]; reports?: string[]; hidden?: string[] }
 export interface SourceRef { id: string; name: string; host: string; port: number; database: string; is_active: boolean; last_check_at: string | null; last_check_ok: boolean | null; ksc_version: string | null; features: Record<string, boolean | null> }
 export interface Stage { stage: string; ok: boolean | null; message: string; ms: number }
 export interface DiagResult { ok: boolean; stages: Stage[]; server?: { version: string; edition: string; database: string }; features?: Record<string, { ok: boolean; title: string; missing: string[] }>; warnings?: string[]; ksc_version?: string | null; hosts?: number; test_user?: { display_name: string; username: string; role: string | null; groups: string[] } }
@@ -413,6 +414,7 @@ export interface BiOwnerBrief { name: string; email: string; department: string;
 export const api = {
   login: (login: string, password: string, domain = "") => req<Me | { totp_required: true; challenge: string }>("POST", "/auth/login", { login, password, domain }),
   loginOptions: () => req<{ domains: { id: string; name: string }[]; default_theme?: string }>("GET", "/auth/login-options"),
+  setQuick: (q: QuickPrefs) => req<{ quick: QuickPrefs | null }>("PUT", "/auth/me/quick", q),
   setTheme: (theme: string | null) => req<{ theme: string | null }>("PUT", "/auth/me/theme", { theme }),
   loginTotp: (challenge: string, code: string) => req<Me>("POST", "/auth/login/totp", { challenge, code }),
   totp: {

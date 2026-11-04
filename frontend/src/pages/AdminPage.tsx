@@ -1,5 +1,6 @@
 import { useSearchParams } from "react-router-dom";
-import { ADMIN_TABS, type Ctx } from "../App";
+import type { Ctx } from "../App";
+import { ADMIN_TABS } from "../navModel";
 import { PageHead } from "../components/ui";
 import SourcesAdmin from "./admin/SourcesAdmin";
 import LicensesAdmin from "./admin/LicensesAdmin";
