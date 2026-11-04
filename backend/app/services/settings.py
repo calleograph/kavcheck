@@ -357,6 +357,10 @@ class HierSettings(_Group):
     lead_words: list[str] = Field(default_factory=lambda: ["директор", "руководитель", "начальник", "заведующ", "глава", "заместитель", "управляющий", "председатель"], max_length=100)   # должность содержит — предполагает руководящую роль
     nonlead_words: list[str] = Field(default_factory=lambda: ["стажер", "стажёр", "оператор", "секретарь", "ассистент", "курьер", "водитель", "уборщ"], max_length=100)           # должность содержит — обычно неруководящая
     big_group: int = Field(default=15, ge=3, le=500)                            # непосредственных подчинённых больше этого числа — повод для проверки, не ошибка
+    ad_roles: list[Literal["viewer", "analyst", "admin"]] = Field(default_factory=lambda: ["analyst", "admin"], max_length=3)    # кому доступна вкладка «Active Directory» (группы и учётные записи — чувствительнее структуры); администратор — всегда
+    ad_connection: str = Field(default="", max_length=64)                       # подключение LDAPS для вкладки AD; пусто — первое включённое из выбранных для сбора
+    ad_cache_seconds: int = Field(default=300, ge=30, le=3600)                  # срок жизни кэша ответов каталога
+    ad_max_results: int = Field(default=500, ge=50, le=2000)                    # предел записей одного поиска (защита контроллера домена)
     reviewed: list[str] = Field(default_factory=list, max_length=5000)          # идентификаторы сотрудников, чьё подчинение руководителю другого подразделения проверено
 
     @field_validator("timezone")

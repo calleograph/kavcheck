@@ -58,7 +58,7 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_admin";
+export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_ad" | "quick_admin";
 
 export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "offline" | "unknown" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
@@ -317,7 +317,23 @@ export interface HierSnap { id: string; started_at: string; finished_at: string 
 export interface HierData { state: "ok" | "empty" | "failed"; can_admin: boolean; running: boolean; enabled: boolean; source: string; next_run: string | null; last_error?: string;
   warning: { status: "failed" | "rejected" | "stale"; message: string; at: string | null; last_ok_at: string | null } | null;
   snapshot: { id: string; at: string; raw_n: number; kept: number; excluded: number; excluded_by: Record<string, number>; source: string; source_name: string; errors_n: number } | null;
-  people: HierRow[]; reviewed?: string[]; depts: { name: string; hue: number; n: number }[]; heads?: number; lone?: number; warnings?: string[]; why?: Record<string, string> }
+  people: HierRow[]; reviewed?: string[]; ad?: boolean; depts: { name: string; hue: number; n: number }[]; heads?: number; lone?: number; warnings?: string[]; why?: Record<string, string> }
+// ------------------------------------------------------------------------------------------------ Active Directory
+export interface AdUserRow { ref: string; dn: string; name: string; cn: string; login: string; upn: string; mail: string; title: string; department: string; disabled: boolean }
+export interface AdMember extends AdUserRow { kind: "user" | "group" | "computer" | "contact" }
+export interface AdGroup { ref: string; dn: string; cn: string; sam: string; description: string; type: string; scope: string }
+export interface AdPage<T> { items: T[]; total: number; has_more: boolean; truncated: boolean; max: number }
+export interface AdStatus { ok: boolean; name: string; url: string; base_dn: string; message: string; ms?: number }
+export interface AdAttr { name: string; values: string[]; more: number }
+export interface AdExchange { status: "linked" | "none" | "multiple"; person?: { id: string; name: string; title: string; email: string }; persons?: { id: string; name: string }[] }
+export interface AdUserCard { kind: "user"; ref: string; guid: string; dn: string; manager: { ref: string; name: string; dn: string } | null; exchange: AdExchange; member_of_n: number; has_member_of: boolean; hidden_n: number; sid: string; emails: string[]
+  main: Record<"name" | "given" | "surname" | "login" | "cn" | "upn" | "mail" | "dn" | "department" | "title" | "company" | "office" | "phone" | "mobile" | "description" | "employee_id", string>
+  state: { disabled: boolean; locked: boolean; locked_basis: string; created: string | null; changed: string | null; pwd_last_set: string | null; expires: string | null; last_logon: string | null; last_logon_note: string; password_expired: boolean; pwd_never_expires: boolean }
+  attributes: AdAttr[] }
+export interface AdGroupCard extends AdGroup { kind: "group"; guid: string; sid: string; members_attr_n: number; hidden_n: number; attributes: AdAttr[]
+  main: { cn: string; sam: string; dn: string; description: string; mail: string; managed_by: string; type: string; scope: string; created: string | null; changed: string | null; note: string } }
+export interface AdUserGroups { direct: AdGroup[]; direct_basis: string; primary: AdGroup | null; nested: { items: AdGroup[]; method: string; truncated?: boolean } | null }
+export interface AdMatch { status: "exact" | "multiple" | "manual" | "none"; items: AdUserRow[]; basis: string }
 export interface HierCheck { ok: boolean; message: string; items: { name: string; ok: boolean; sample: number; steps: { name: string; ok: boolean | null; text: string }[] }[] }
 export interface HierAdmin { settings: SettingsValues; state: { next_run: string | null; requested: boolean; retry_n: number }; snapshots: HierSnap[]; connections: { id: string; name: string; enabled: boolean; host: string }[];
   depts: { raw: string; n: number; shown: string }[]; domains: { domain: string; n: number }[]; running: boolean; last_ok: HierSnap | null; people_n: number; stats: { raw: number; kept: number; heads: number; lone: number; cycles: number; unresolved: number } | null }
@@ -550,6 +566,16 @@ export const api = {
     check: () => req<HierCheck>("POST", "/hier/admin/check"),
     run: () => req<{ requested: boolean }>("POST", "/hier/admin/run"),
     upload: (data: ArrayBuffer) => rawPost<HierSnap>("/hier/admin/upload", data),
+  },
+  ad: {
+    status: (refresh = false) => req<AdStatus>("GET", `/ad/status${qs({ refresh })}`),
+    users: (q: string, offset = 0, refresh = false) => req<AdPage<AdUserRow>>("GET", `/ad/users${qs({ q, offset, limit: 50, refresh })}`),
+    groups: (q: string, offset = 0, refresh = false) => req<AdPage<AdGroup>>("GET", `/ad/groups${qs({ q, offset, limit: 50, refresh })}`),
+    user: (ref: string, refresh = false) => req<AdUserCard>("GET", `/ad/users/${encodeURIComponent(ref)}${qs({ refresh })}`),
+    userGroups: (ref: string, nested = false, refresh = false) => req<AdUserGroups>("GET", `/ad/users/${encodeURIComponent(ref)}/groups${qs({ nested, refresh })}`),
+    group: (ref: string, refresh = false) => req<AdGroupCard>("GET", `/ad/groups/${encodeURIComponent(ref)}${qs({ refresh })}`),
+    members: (ref: string, offset = 0) => req<AdPage<AdMember> & { basis: string; primary_exists: boolean }>("GET", `/ad/groups/${encodeURIComponent(ref)}/members${qs({ offset, limit: 50 })}`),
+    match: (pid: string, refresh = false) => req<AdMatch>("GET", `/ad/match/${pid}${qs({ refresh })}`),
   },
   bi: {
     summary: () => req<{ items: { id: string; name: string; snapshot_at: string | null; last_ok_at: string | null; error: boolean }[]; can_people: boolean; can_pd: boolean }>("GET", "/bi/summary"),

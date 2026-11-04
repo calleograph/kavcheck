@@ -92,6 +92,13 @@ export default function HierarchyAdmin() {
         <h2>Кто видит раздел</h2>
         <p className="muted small">В разделе — персональные данные сотрудников. Права проверяются на сервере: пользователь без выбранной роли не видит пункт меню и не получает данные прямым запросом. Открытия раздела и сборы записываются в журналы.</p>
         <div className="seg-line">{ROLES.map(([r, l]) => <label className="check" key={r}><input type="checkbox" checked={r === "admin" || list("roles").includes(r)} disabled={r === "admin"} onChange={() => toggleIn("roles", r)} /><span className="check-body">{l}</span></label>)}</div>
+        <h3 className="mt">Active Directory</h3>
+        <p className="muted small">Вкладка «Active Directory» читает пользователей и группы домена через то же подключение LDAPS (только чтение). Видна выбранным ролям; администратор — всегда. Группы и учётные записи чувствительнее структуры, поэтому роли задаются отдельно.</p>
+        <div className="seg-line">{ROLES.map(([r, l]) => <label className="check" key={r}><input type="checkbox" checked={r === "admin" || list("ad_roles").includes(r)} disabled={r === "admin"} onChange={() => toggleIn("ad_roles", r)} /><span className="check-body">{l}</span></label>)}</div>
+        <div className="cols">
+          <label className="field">Подключение для просмотра AD<select value={String(s.ad_connection ?? "")} onChange={(e) => set("ad_connection", e.target.value)}><option value="">Первое из выбранных для сбора</option>{d.connections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+          <label className="field">Предел результатов поиска<input type="number" min={50} max={2000} value={Number(s.ad_max_results ?? 500)} onChange={(e) => set("ad_max_results", Number(e.target.value))} /><span className="help">Защищает контроллер домена от широких запросов.</span></label>
+          <label className="field">Кэш ответов каталога, секунд<input type="number" min={30} max={3600} value={Number(s.ad_cache_seconds ?? 300)} onChange={(e) => set("ad_cache_seconds", Number(e.target.value))} /><span className="help">Кнопка «Проверить и обновить» читает каталог заново.</span></label></div>
       </div>
 
       <div className="card">

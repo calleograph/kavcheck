@@ -78,7 +78,7 @@ async def data(request: Request, ctx=Depends(hier_user), db: AsyncSession = Depe
         warning = {"status": last.status, "message": last.message, "at": last.finished_at or last.started_at, "last_ok_at": snap.finished_at}
     elif snap is not None and cfg.enabled and cfg.source == "ldap" and utcnow() - snap.finished_at > timedelta(hours=36):
         warning = {"status": "stale", "message": "Плановое обновление не выполнялось больше 36 часов.", "at": None, "last_ok_at": snap.finished_at}
-    out = {"can_admin": su.is_admin, "running": running, "enabled": cfg.enabled, "source": cfg.source, "next_run": st.get("next_run") if cfg.enabled else None, "warning": warning, "snapshot": None, "people": [], "depts": [], "reviewed": list(cfg.reviewed)}
+    out = {"can_admin": su.is_admin, "running": running, "enabled": cfg.enabled, "source": cfg.source, "next_run": st.get("next_run") if cfg.enabled else None, "warning": warning, "snapshot": None, "people": [], "depts": [], "reviewed": list(cfg.reviewed), "ad": su.is_admin or (su.role in cfg.ad_roles)}
     if snap is None:
         out["state"] = "failed" if last is not None and last.status in ("failed", "rejected") else "empty"
         out["last_error"] = last.message if last is not None and last.status in ("failed", "rejected") else ""

@@ -52,7 +52,7 @@ function cell(c: QuickCol, v: string | number | null | undefined) {
   return c.type === "mono" ? <span className="mono small nowrap">{v}</span> : <>{v}</>;
 }
 
-export type QuickScopeOpts = { bi?: boolean; hunt?: boolean; levels?: boolean; period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean; hier?: boolean; hierDepts?: string[]; aside?: ReactNode };
+export type QuickScopeOpts = { bi?: boolean; hunt?: boolean; levels?: boolean; period?: boolean; severity?: boolean; patchable?: boolean; scope?: boolean; sections?: boolean; ext?: boolean; zone?: boolean; zoneFilter?: boolean; eol?: boolean; hier?: boolean; ad?: boolean; hierDepts?: string[]; aside?: ReactNode };
 const EXT_STATUSES: [string, string][] = [["confirmed", "Подтверждено источником"], ["potential", "Потенциально затронуто"], ["clarify", "Требуется уточнение"], ["insufficient", "Данных недостаточно"], ["fixed", "Исправлено (показать отдельно)"]];
 const EOL_STATUSES: [string, string][] = [["eol", "Стандартная поддержка закончилась (EOL)"], ["extended", "Только расширенная (платная) поддержка"], ["upcoming", "Окончание поддержки приближается"], ["undetermined", "ОС: не удалось определить EOL (причина указана)"]];
 export const BI_VIEWS: [string, string][] = [["owners", "Устройства и владельцы"], ["history", "История принадлежности устройств"], ["unknown", "Неопределённые владельцы"], ["discrepancies", "Расхождения BI и KSC"], ["problems", "Проблемы защиты и контактные лица"]];
@@ -105,7 +105,7 @@ export const HIER_VIEWS: [string, [string, string][]][] = [
   ["Проверки: требует проверки", [["roles", "Должности и роль в иерархии"], ["crossdept", "Подразделения и подчинённость"], ["dups", "Дубликаты и подозрительные карточки"], ["service", "Служебные и неполные карточки (что исключено)"], ["quality", "Качество данных иерархии"], ["problems", "Руководитель не указан или не найден"]]],
   ["История и книга", [["changes", "Изменения между выгрузками"], ["pack", "Все отчёты одной книгой Excel (вкладка на отчёт)"]]]];
 const HIER_FILTERS: [string, string][] = [["branch", "Только выбранный руководитель"], ["q", "Только найденные по поиску"]];
-const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_hunt", "quick_bi", "quick_hier"];
+const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_hunt", "quick_bi", "quick_hier", "quick_ad"];
 // выбор строк и фильтры страницы в шаблон не попадают: они берутся с той страницы, откуда открыт конструктор
 const CONTEXT_KEYS = ["host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "zone", "group_contains", "threat", "product", "build", "problem", "dept", "branch"];
 
@@ -157,6 +157,26 @@ function Builder({ kind, params, columnsAll, onChange, canSave }: { kind: string
 
 /** Боковая панель быстрого отчёта: предпросмотр (число компьютеров, условия, замечания, первые строки) и выгрузка в Excel/HTML/CSV.
  *  Просмотр и выгрузка строятся на сервере из одного документа — числа совпадают. Дополнительные условия — в «Дополнительно». */
+const AD_VIEWS: [string, string][] = [["users", "Пользователи Active Directory"], ["disabled", "Отключённые учётные записи"], ["locked", "Заблокированные учётные записи"], ["expiring", "Учётные записи с истекающим сроком"],
+  ["memberships", "Членство пользователей в группах"], ["group_members", "Состав выбранной группы"], ["mismatch", "Расхождения Exchange и AD"]];
+/** Отчёты по Active Directory: вид, маска поиска пользователей, срок для истекающих, вложенные участники группы. */
+function AdOptions({ params, onChange }: { params: Record<string, unknown>; onChange: (p: Record<string, unknown>) => void }) {
+  const view = String(params.view ?? "users");
+  const userViews = ["users", "disabled", "locked", "expiring", "memberships"];
+  return (
+    <div className="qr-hier">
+      <label className="field">Отчёт<select value={view} onChange={(e) => onChange({ view: e.target.value })}>{AD_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
+      {userViews.includes(view) && <label className="field">Отбор пользователей<input value={String(params.q ?? "")} onChange={(e) => onChange({ q: e.target.value })} placeholder="пусто — все; например *support* или ivan*" />
+        <span className="help">Маска с *: ФИО, CN, логин, UPN, почта, подразделение, должность. Минимум 3 символа без звёздочки.</span></label>}
+      {view === "expiring" && <label className="field">Срок истекает<select value={String(params.days ?? 30)} onChange={(e) => onChange({ days: Number(e.target.value) })}>{[7, 14, 30, 60, 90, 180].map((d) => <option key={d} value={d}>в ближайшие {d} суток</option>)}</select></label>}
+      {view === "group_members" && <>
+        <p className="muted small">{params.group ? "Группа выбрана в карточке на вкладке «Active Directory»." : "Откройте группу на вкладке «Active Directory» и нажмите «Отчёт» в списке участников."}</p>
+        <label className="check"><input type="checkbox" checked={!!params.nested} onChange={(e) => onChange({ nested: e.target.checked })} />С вложенными участниками (через группы; только Active Directory)</label></>}
+      {view === "memberships" && <p className="muted small">Непосредственное членство (memberOf). Первичная группа и вложенное членство в отчёт не входят.</p>}
+    </div>
+  );
+}
+
 /** Готовые отчёты по иерархии, охват (вся организация / подразделение / руководитель) и условия сравнения выгрузок. */
 function HierOptions({ base, params, depts, onChange, aside }: { base: Record<string, unknown>; params: Record<string, unknown>; depts: string[]; onChange: (p: Record<string, unknown>) => void; aside?: ReactNode }) {
   const view = String(params.view ?? "tree");
@@ -249,6 +269,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
           <label className="check"><input type="checkbox" checked={!!params.coverage} onChange={(e) => setExtra({ ...extra, coverage: e.target.checked })} />Добавить журнал охвата (все проверенные адреса, включая не затронутые)</label></fieldset>}
         {options.bi && <label className="field">Вид отчёта<select value={String(params.view ?? "owners")} onChange={(e) => setExtra({ ...extra, view: e.target.value })}>
           {BI_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>}
+        {options.ad && <AdOptions params={params} onChange={(patch) => setExtra({ ...extra, ...patch })} />}
         {options.hier && <HierOptions base={base} params={params} depts={options.hierDepts ?? []} onChange={(patch) => setExtra({ ...extra, ...patch })} aside={options.aside} />}
         {options.levels && <SeverityLevels value={(params.levels as string[] | undefined) ?? ["critical"]} onChange={(v) => setExtra({ ...extra, levels: v })} />}
         {doc && (<>

@@ -71,6 +71,7 @@ export const FUNCTIONS: Fn[] = [
   { title: "Владельцы устройств (BI)", to: "/devices?tab=bi", kw: "владелец сотрудник bi принадлежность история устройства", icon: "users", group: "Инфраструктура" },
   { title: "Сопоставление BI и KSC", to: "/devices?tab=match", kw: "сопоставление bi ksc совпадения подтвердить расхождения владелец", icon: "branch", group: "Инфраструктура" },
   { title: "Пользователи KSC", to: "/devices?tab=ksc", kw: "пользователи ksc вход последний пользователь логин", icon: "users", group: "Инфраструктура" },
+  { title: "Active Directory: пользователи и группы", to: "/hierarchy?tab=ad", kw: "active directory ad домен учётная запись группы членство memberof участники группы пользователь домена логин upn dn", icon: "users", roles: ["analyst", "admin"], hier: true, group: "Организация" },
   { title: "Импорт BI-выгрузки", to: "/admin?tab=sources", kw: "импорт bi выгрузка excel smb структура проверить запустить", icon: "upload", roles: ROLE_ADMIN, group: "Администрирование · Подключения и источники" },
   { title: "Новая проверка версий программ", to: "/reports", kw: "проверка версий устаревшие версии программ отчёт аудит", icon: "file", group: "Отчёты" },
   { title: "Моя тема оформления", to: "/appearance", kw: "тема оформления night glass grove aurora цвет", icon: "sun", group: "Личное" },

@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from starlette.datastructures import MutableHeaders
 
-from .api import admin, admin_ldap, bi as bi_api, admin_updates, auth, auth_totp, catalog, dashboard, devices as devices_api, eol as eol_api, events, health, hier as hier_api, hosts, logs as logs_api, hunt as hunt_api, components as components_api, overview, pentest as pentest_api, protection, quick, reports, software, tech as tech_api, vdb as vdb_api, vulns, zones as zones_api
+from .api import ad as ad_api, admin, admin_ldap, bi as bi_api, admin_updates, auth, auth_totp, catalog, dashboard, devices as devices_api, eol as eol_api, events, health, hier as hier_api, hosts, logs as logs_api, hunt as hunt_api, components as components_api, overview, pentest as pentest_api, protection, quick, reports, software, tech as tech_api, vdb as vdb_api, vulns, zones as zones_api
 from .auth.deps import client_ip
 from .search import MaskError
 from .auth.service import AuthService
@@ -29,6 +29,7 @@ from .security.secretbox import SecretBox, SecretBoxError
 from .services.audit import Journal, audit_ctx
 from .services.cache import TtlCache
 from .services.ldap_store import LdapStore
+from .ad.service import AdService
 from .security import totp
 from .services.settings import SettingsService
 from .services.sources import SourceRegistry
@@ -110,6 +111,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         app.state.sessions = SessionStore(settings)
         totp.set_pepper(settings.app_master_key)
         app.state.ldap = LdapStore(settings_svc)
+        app.state.ad = AdService(app.state.ldap, settings_svc)
         app.state.auth = AuthService(settings, settings_svc, app.state.ldap)
         app.state.journal = Journal(session_maker)
         app.state.sources = SourceRegistry(settings, settings_svc)
@@ -188,7 +190,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
     prefix = "/api/v1"
-    for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, overview.router, overview.lic_router, pentest_api.router, admin.router, hier_api.router, tech_api.router, logs_api.router, components_api.router, hunt_api.router, bi_api.router,
+    for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, overview.router, overview.lic_router, pentest_api.router, admin.router, hier_api.router, ad_api.router, tech_api.router, logs_api.router, components_api.router, hunt_api.router, bi_api.router,
               admin_updates.router, vdb_api.router, eol_api.router, devices_api.router, zones_api.router, zones_api.admin_router, zones_api.mail_router, zones_api.triage_router, health.router):
         app.include_router(r, prefix=prefix)
     return app

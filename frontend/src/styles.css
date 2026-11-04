@@ -1809,3 +1809,44 @@ svg.hier-g { display: block; user-select: none; -webkit-user-select: none; }
 @media (max-width: 700px) { .gsearch.page .gs-field { position: relative; inset: auto; } .gsearch.page .gs-list { left: 0; right: 0; top: calc(100% + 4px); } }
 .qa-grid, .qa-tiles { gap: 10px; }
 .qa-side { position: static; }
+
+/* ---- Иерархия: вкладка Active Directory ---- */
+.hier-adwrap { display: flex; flex-direction: column; gap: 12px; }
+.ad { display: flex; flex-direction: column; gap: 10px; }
+.ad-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ad-state { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--muted); min-width: 0; }
+.ad-state i { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; } .ad-state.ok i { background: var(--ok); } .ad-state.bad i { background: var(--danger); } .ad-state.bad { color: var(--danger-text); }
+.ad-state b { color: var(--ink); font-weight: 600; } .ad-state small { color: var(--muted); }
+.ad-grid { display: grid; grid-template-columns: 330px minmax(0, 1fr) 380px; gap: 12px; align-items: start; }
+.ad-col { min-width: 0; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.ad-wide { grid-column: span 2; }
+.ad-find { position: sticky; top: calc(var(--top-h) + 8px); max-height: calc(100vh - var(--top-h) - 24px); overflow: auto; }
+.ad-count { font-size: var(--fs-sm); color: var(--ink-2); } .ad-count .warn { color: var(--warn-text); }
+.ad-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ad-item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 7px 8px; border: 1px solid transparent; background: none; color: var(--ink); font: inherit; text-align: left; border-radius: var(--radius-sm); cursor: pointer; }
+.ad-item:hover:not(:disabled) { background: var(--sunken); } .ad-item.on { background: var(--accent-soft); border-color: var(--accent-line); } .ad-item:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; } .ad-item:disabled { cursor: default; opacity: .75; }
+.ad-t { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; } .ad-t b { font-weight: 600; font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ad-t span { font-size: var(--fs-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-av { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent); } .ad-av.off { background: var(--sunken); color: var(--muted); } .ad-av.lg { width: 44px; height: 44px; font-size: 15px; }
+.ad-tag { display: inline-flex; align-items: center; font-size: var(--fs-xs); padding: 2px 8px; border-radius: 999px; background: var(--sunken); color: var(--ink-2); border: 1px solid var(--line); white-space: nowrap; }
+.ad-tag.ok { background: var(--ok-bg); color: var(--ok-text); border-color: transparent; } .ad-tag.off { background: var(--danger-bg); color: var(--danger-text); border-color: transparent; } .ad-tag.warn { background: var(--warn-bg); color: var(--warn-text); border-color: transparent; }
+.ad-more { display: flex; justify-content: center; padding: 6px 0; }
+.ad-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .ad-hn { flex: 1; min-width: 0; } .ad-hn h2 { margin: 0; font-size: var(--fs-lg); overflow-wrap: anywhere; }
+.ad-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.ad-h { margin: 6px 0 0; font-size: var(--fs-sm); color: var(--ink-2); font-weight: 600; }
+.ad-dl { display: grid; grid-template-columns: minmax(120px, 190px) minmax(0, 1fr); gap: 5px 12px; margin: 0; font-size: var(--fs-sm); }
+.ad-dl dt { color: var(--muted); } .ad-dl dd { margin: 0; min-width: 0; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; overflow-wrap: anywhere; } .ad-dl dd > span { min-width: 0; }
+.break { overflow-wrap: anywhere; word-break: break-word; }
+.ad-copy { flex: none; opacity: .65; } .ad-copy:hover, .ad-copy:focus-visible { opacity: 1; }
+.ad-attrs { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; } .ad-attrs summary { cursor: pointer; font-weight: 600; font-size: var(--fs-sm); } .ad-attrs .input-icon { margin: 8px 0; }
+.ad-attrs .table-scroll { max-height: 420px; overflow: auto; }
+.ad-sh { display: flex; align-items: center; justify-content: space-between; gap: 8px; } .ad-sh h2 { margin: 0; font-size: var(--fs-md); }
+.ad-groups { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ad-groups li { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+.ad-gname { display: flex; gap: 8px; align-items: flex-start; border: 0; background: none; padding: 0; text-align: left; color: var(--ink); font: inherit; cursor: pointer; width: 100%; } .ad-gname:disabled { cursor: default; }
+.ad-gname > svg { flex: none; margin-top: 2px; color: var(--accent); } .ad-gname > span { display: flex; flex-direction: column; min-width: 0; gap: 1px; } .ad-gname b { font-weight: 600; font-size: var(--fs-sm); } .ad-gname small { color: var(--muted); font-size: var(--fs-xs); }
+.ad-gname:hover b { color: var(--accent); } .ad-gname:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.ad-gmeta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ad-st.exact b { color: var(--ok-text); } .ad-st.multiple b, .ad-st.manual b { color: var(--warn-text); }
+@media (max-width: 1320px) { .ad-grid { grid-template-columns: 320px minmax(0, 1fr); } .ad-side { grid-column: 2; } .ad-wide { grid-column: 2; } .ad-find { grid-row: span 2; } }
+@media (max-width: 860px) { .ad-grid { grid-template-columns: minmax(0, 1fr); } .ad-side, .ad-wide { grid-column: auto; } .ad-find { position: static; max-height: none; grid-row: auto; } .ad-dl { grid-template-columns: minmax(0, 1fr); gap: 0; } .ad-dl dt { margin-top: 6px; } }
+.hier-adwrap > .hier-main { min-height: 0; } .hier-adwrap > .hier-main .hier-tabs { border-bottom: 0; padding-bottom: 0; }

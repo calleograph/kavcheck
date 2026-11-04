@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { api, type ApiError, type HierData } from "../api";
+import { api, type AdMatch, type ApiError, type HierData } from "../api";
 import type { Ctx } from "../App";
 import { Modal } from "../components/Dialogs";
+import AdTab, { type AdSel } from "./hier/AdTab";
 import { ReportButton } from "../components/FilterBar";
 import { Icon } from "../components/Icons";
 import { QuickReportPanel } from "../components/QuickReport";
@@ -83,7 +84,7 @@ export default function HierarchyPage({ ctx }: { ctx: Ctx }) {
       {data.warning && <div className={`alert ${data.warning.status === "stale" ? "warn" : "error"}`} role="alert"><Icon name="alert" /><div className="alert-body">
         <b>{data.warning.status === "rejected" ? "Новый снимок не опубликован." : data.warning.status === "failed" ? "Последний сбор не удался." : "Данные могли устареть."}</b> {data.warning.message}
         {data.warning.last_ok_at && <> Показан последний успешный снимок от {fmt(data.warning.last_ok_at)}.</>}</div></div>}
-      {data.state !== "ok" || !data.snapshot ? <NoData d={data} onRun={() => void refresh()} busy={data.running || asked} /> : <Chart d={data} bridge={bridge} onReport={setReport} canMark={ctx.me.user.role !== "viewer"}
+      {data.state !== "ok" || !data.snapshot ? <NoData d={data} onRun={() => void refresh()} busy={data.running || asked} /> : <Chart d={data} bridge={bridge} onReport={setReport} canMark={ctx.me.user.role !== "viewer"} canReport={ctx.me.user.role !== "viewer"} activityDays={ctx.me.activity_days}
         onMark={(id, on) => { api.hier.review(id, on).then(() => setData((x) => x && { ...x, reviewed: on ? [...(x.reviewed ?? []), id] : (x.reviewed ?? []).filter((r) => r !== id) })).then(() => show(on ? "Отмечено как проверенное исключение" : "Отметка снята")).catch((e) => show((e as ApiError).message, "error")); }} />}
       {report && <QuickReportPanel kind="quick_hier" title="Отчёт: иерархия предприятия" lede="Готовые отчёты по последней выгрузке адресной книги; охват — вся организация, подразделение или руководитель. Выгрузка полная, по всем подходящим сотрудникам"
         options={{ scope: false, hier: true, hierDepts: data.depts.map((x) => x.name), aside: <GraphExport bridge={bridge} at={data.snapshot?.at} show={show} /> }} activityDays={0} canReport={ctx.me.user.role !== "viewer"} onClose={() => setReport(null)} params={report} />}
@@ -114,9 +115,10 @@ function NoData({ d, onRun, busy }: { d: HierData; onRun: () => void; busy: bool
 }
 
 // ------------------------------------------------------------------------------------------------ граф, карточка, поиск
-function Chart({ d, bridge, onReport, canMark, onMark }: { d: HierData; bridge: React.MutableRefObject<Bridge>; onReport: (p: Record<string, unknown>) => void; canMark: boolean; onMark: (id: string, on: boolean) => void }) {
+function Chart({ d, bridge, onReport, canMark, onMark, canReport, activityDays }: { d: HierData; canReport: boolean; activityDays: number; bridge: React.MutableRefObject<Bridge>; onReport: (p: Record<string, unknown>) => void; canMark: boolean; onMark: (id: string, on: boolean) => void }) {
   const loc = useLocation();
-  const [tab, setTab] = useState<"g" | "d">("g");
+  const [tab, setTab] = useState<"g" | "d" | "ad">(() => (d.ad && new URLSearchParams(loc.search).get("tab") === "ad" ? "ad" : "g"));
+  const [adSel, setAdSel] = useState<AdSel | null>(null);
   const [sel, setSel] = useState(-1);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => ({ root: true, ...Object.fromEntries(d.people.map((r, i) => [r, i]).filter(([r]) => ((r as HierData["people"][number])[8] & 4) !== 0).slice(0, 3).map(([, i]) => [`p${i}`, true])) }));
   const [limit, setLimit] = useState<Record<string, number>>({});
@@ -264,11 +266,19 @@ function Chart({ d, bridge, onReport, canMark, onMark }: { d: HierData; bridge: 
       <Avatar p={p} hue={hue(p.dept)} /><span className="t"><span className="n">{p.sn}</span><span className="s">{p.title || "должность не указана"}</span></span>{extra ? <span className="k">{extra}</span> : null}</button>);
 
   bridge.current = { params: () => ({ view: tab === "d" ? "depts" : "tree", branch: sel >= 0 ? P[sel].id : "", dept: "", q: q.trim().length >= 2 ? q.trim() : "" }), svg: () => svgRef.current };
+  const tabItems = [{ id: "g" as const, label: "Граф" }, { id: "d" as const, label: "Подразделения", count: d.depts.length }, ...(d.ad ? [{ id: "ad" as const, label: "Active Directory" }] : [])];
+  if (tab === "ad") return (
+    <div className="hier-adwrap">
+      <div className="card hier-main"><div className="hier-tabs"><Tabs value={tab} onChange={setTab} label="Вид структуры" items={tabItems} /></div></div>
+      <AdTab sel={adSel} setSel={setAdSel} canReport={canReport} activityDays={activityDays} exchangeOk
+        onOpenPerson={(id) => { setTab("g"); const i = P.findIndex((x) => x.id === id); if (i >= 0) select(i); }} />
+    </div>
+  );
   return (
     <div className="hier-grid">
       <aside className="hier-left"><Search P={P} q={q} setQ={setQ} onPick={(i) => select(i)} hue={hue} /><Note /></aside>
       <main className="card hier-main">
-        <div className="hier-tabs"><Tabs value={tab} onChange={setTab} label="Вид структуры" items={[{ id: "g", label: "Граф" }, { id: "d", label: "Подразделения", count: d.depts.length }]} />
+        <div className="hier-tabs"><Tabs value={tab} onChange={setTab} label="Вид структуры" items={tabItems} />
           {tab === "g" && <div className="hier-tools">
             <button type="button" className="btn mini" onClick={() => setZoomAt(zoom / 1.2)} aria-label="Уменьшить">−</button><button type="button" className="btn mini" onClick={() => setZoomAt(zoom * 1.2)} aria-label="Увеличить">+</button>
             <button type="button" className="btn mini" onClick={() => { setExpanded({ root: true }); setLimit({}); setChain({}); setSel(-1); }}>Свернуть всё</button>
@@ -317,7 +327,7 @@ function Chart({ d, bridge, onReport, canMark, onMark }: { d: HierData; bridge: 
         {sel < 0 ? <Overview d={d} heads={heads} lone={lone.length} row={personRow} total={P.length} P={P} onReport={onReport} /> : <Card p={P[sel]} P={P} d={d} hue={hue} row={personRow} warnings={d.why ?? {}}
           onWho={() => setSheet({ dept: P[sel].dept, focus: sel, mode: P[sel].mgr >= 0 && P.some((x) => x.i !== sel && x.mgr === P[sel].mgr) ? "team" : "all", q: "", openAll: false })}
           onFocus={() => { setTab("g"); select(sel); }} onClose={() => select(-1)}
-          onBranch={(direct) => onReport({ view: "people", branch: P[sel].id, direct })} onChain={() => onReport({ view: "chain", branch: P[sel].id })}
+          ad={!!d.ad} onAd={(ref) => { setAdSel({ t: "u", ref }); setTab("ad"); }} onBranch={(direct) => onReport({ view: "people", branch: P[sel].id, direct })} onChain={() => onReport({ view: "chain", branch: P[sel].id })}
           marked={(d.reviewed ?? []).includes(P[sel].id)} canMark={canMark} onMark={(on) => onMark(P[sel].id, on)} />}
       </aside>
       {sheet && <Sheet st={sheet} setSt={setSheet} P={P} d={d} row={personRow} onClose={() => setSheet(null)} onReport={(dept) => { setSheet(null); onReport({ view: "people", dept }); }} />}
@@ -374,8 +384,8 @@ function Overview({ d, heads, lone, row, total, P, onReport }: { d: HierData; he
   </>);
 }
 
-function Card({ p, P, d, hue, row, warnings, onWho, onFocus, onClose, onBranch, onChain, marked, canMark, onMark }: { p: Person; P: Person[]; d: HierData; hue: (d: number) => number; row: (p: Person, extra?: ReactNode, cls?: string) => ReactNode; warnings: Record<string, string>;
-  onWho: () => void; onFocus: () => void; onClose: () => void; onBranch: (direct: boolean) => void; onChain: () => void; marked: boolean; canMark: boolean; onMark: (on: boolean) => void }) {
+function Card({ p, P, d, hue, row, warnings, onWho, onFocus, onClose, onBranch, onChain, marked, canMark, onMark, ad, onAd }: { p: Person; P: Person[]; d: HierData; hue: (d: number) => number; row: (p: Person, extra?: ReactNode, cls?: string) => ReactNode; warnings: Record<string, string>;
+  onWho: () => void; onFocus: () => void; onClose: () => void; onBranch: (direct: boolean) => void; onChain: () => void; marked: boolean; canMark: boolean; onMark: (on: boolean) => void; ad: boolean; onAd: (ref: string) => void }) {
   const [all, setAll] = useState(false);
   const [copied, setCopied] = useState("");
   useEffect(() => { setAll(false); setCopied(""); }, [p.i]);
@@ -396,6 +406,7 @@ function Card({ p, P, d, hue, row, warnings, onWho, onFocus, onClose, onBranch, 
     {p.kids.length > 0 && <div className="hier-sec"><h2 className="hier-h">Подчинённые · {p.kids.length}</h2><div className="hier-kids">{(all ? p.kids : p.kids.slice(0, 6)).map((k) => row(P[k]))}</div>
       {p.kids.length > 6 && !all && <button type="button" className="btn mt-sm" onClick={() => setAll(true)}>Показать всех {p.kids.length}</button>}</div>}
     <div className="hier-actions"><button type="button" className="btn primary" onClick={onWho}>Кто ещё в подразделении</button><button type="button" className="btn" onClick={onFocus}>Показать на графе</button><button type="button" className="btn" onClick={onClose}>Закрыть</button></div>
+    {ad && <AdLink pid={p.id} onAd={onAd} />}
     <div className="hier-sec"><h2 className="hier-h">Выгрузить</h2><div className="row tight">
       {p.kids.length > 0 && <button type="button" className="btn mini" onClick={() => onBranch(false)}><Icon name="file" size={14} />Ветка подчинения</button>}
       {p.kids.length > 0 && <button type="button" className="btn mini" onClick={() => onBranch(true)}>Только непосредственные</button>}
@@ -435,5 +446,19 @@ function Sheet({ st, setSt, P, d, row, onClose, onReport }: { st: { dept: number
         })}
       </div>
     </Modal>
+  );
+}
+
+/** Связь сотрудника Exchange с учётной записью Active Directory: только по адресу (mail, UPN); по ФИО не сопоставляется. */
+function AdLink({ pid, onAd }: { pid: string; onAd: (ref: string) => void }) {
+  const [m, setM] = useState<AdMatch | null | "err">(null);
+  useEffect(() => { setM(null); api.ad.match(pid).then(setM).catch(() => setM("err")); }, [pid]);
+  const title: Record<string, string> = { exact: "Найдена точная учётная запись", multiple: "Найдено несколько кандидатов", manual: "Данные требуют ручного выбора", none: "Учётная запись отсутствует" };
+  return (
+    <div className="hier-sec"><h2 className="hier-h">Active Directory</h2>
+      {m === null ? <span className="spin sm" /> : m === "err" ? <p className="muted small">Каталог сейчас недоступен.</p> : <>
+        <p className={`small ad-st ${m.status}`}><b>{title[m.status]}</b><br /><span className="muted">{m.basis}</span></p>
+        {m.items.map((u) => <button key={u.ref} type="button" className="btn mini" onClick={() => onAd(u.ref)}><Icon name="users" size={14} />{m.status === "exact" ? "Открыть в Active Directory" : u.name}{m.status !== "exact" && <small> · {u.login}</small>}</button>)}</>}
+    </div>
   );
 }
