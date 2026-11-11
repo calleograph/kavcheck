@@ -610,6 +610,32 @@ class VdbFindingProduct(Base):
     __table_args__ = (Index("ix_vdb_fp_product", "source_id", "product_key"), Index("ix_vdb_fp_category", "source_id", "category"))
 
 
+class VdbVersionHit(Base):
+    """Подготовленный результат сопоставления: уязвимость × продукт каталога × версия (статус и основание). Зависит только от каталога и баз уязвимостей, не от компьютера:
+    карточка и отчёты берут по установленным у компьютера парам «продукт — версия» готовые строки, а не пересчитывают базы. Пишет только анализ (worker) порциями по уязвимостям."""
+    __tablename__ = "vdb_version_hits"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    product_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    version: Mapped[str] = mapped_column(String(200), primary_key=True)
+    vuln_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    status: Mapped[str] = mapped_column(String(14), nullable=False, default="")
+    basis: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    __table_args__ = (Index("ix_vdb_hits_vuln", "source_id", "vuln_key"),)
+
+
+class VdbAnalysis(Base):
+    """Состояние расчёта подготовленных результатов по источнику KSC: для какой ревизии данных (базы, каталог, решения администратора, версия логики) они построены, когда и чем закончился последний расчёт."""
+    __tablename__ = "vdb_analysis"
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), primary_key=True)
+    rev: Mapped[str] = mapped_column(String(40), nullable=False, default="")                       # ревизия данных последнего успешного расчёта (хэш)
+    built_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))                    # окончание последнего успешного расчёта
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="none")               # none | running | ok | error
+    error: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    hits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class ProductClass(Base):
     """Решение администратора: категория продукта каталога для аналитики уязвимостей (PostgreSQL — серверное или системное ПО, решает роль на вашей установке)."""
     __tablename__ = "product_classes"

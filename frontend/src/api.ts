@@ -37,7 +37,8 @@ export interface HostVulnRow { id: string; keys: string[]; kla_id: string; title
   verdict: "confirmed_ksc" | "confirmed_ext" | "potential"; verdict_ru: string; basis: string; exploited: boolean; sources: string[];
   ksc: { url: string; patches_available: boolean; kb: string[]; detected: string | null } | null; external: { key: string; status: string; status_ru: string; basis: string; databases: string[] } | null }
 export interface HostVulnGroup { gid: string; product: string; version: string; severity: "critical" | "high" | "warning"; severity_ru: string; cves: number; kev: number; sample: string[]; more: number; rows: number; confirmed_ksc: number; external_only: number; detected_by: string[]; eol: { status: string; status_ru: string; severity: string } | null }
-export interface HostVulnsAll { external_checked: boolean; groups: HostVulnGroup[]; groups_total: number; notes: string[]; fetched_at: string; counts: { total: number; confirmed_ksc: number; confirmed_ext: number; potential: number; critical: number; high: number; warning: number } }
+export interface ExtState { state: "none" | "updating" | "stale" | "fresh"; built_at: string | null; error: string; truncated: boolean }
+export interface HostVulnsAll { external_checked: boolean; ext?: ExtState | null; groups: HostVulnGroup[]; groups_total: number; notes: string[]; fetched_at: string; counts: { total: number; confirmed_ksc: number; confirmed_ext: number; potential: number; critical: number; high: number; warning: number } }
 export interface HostVuln { occurrence_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label: string; url: string; product: string; product_version: string; app_name: string; app_version: string; publisher: string; detected: string | null; patches_available: boolean; cve: string[]; mssb: string[]; kb: string[] }
 export type ProblemKey = "no_av" | "rtp_off" | "infected" | "bases_old" | "license" | "scan_old" | "reboot" | "hw_cpu" | "hw_ram";
 export interface HwProblem { key: "hw_cpu" | "hw_ram"; level: "critical" | "warning"; level_ru: string; title: string; actual: number; threshold: number; text: string }
@@ -617,6 +618,8 @@ export const api = {
   vdb: {
     sources: () => req<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[]; storage: { db_bytes: number | null; tmp_bytes: number; free_bytes: number } }>("GET", "/vdb/sources"),
     syncAll: () => req<{ queued: string[] }>("POST", "/vdb/sync-all"),
+    analysis: () => req<{ items: { source_id: string; source: string; state: ExtState["state"]; built_at: string | null; error: string; status: string; hits: number; duration_ms: number; started_at: string | null }[] }>("GET", "/vdb/analysis"),
+    analysisRun: () => req<{ queued: number }>("POST", "/vdb/analysis/run"),
     updateSource: (key: string, body: { enabled?: boolean; interval_hours?: number; settings?: Record<string, unknown>; api_key?: string }) => req<VdbSourceInfo>("PUT", `/vdb/sources/${key}`, body),
     sync: (key: string) => req<{ requested: boolean }>("POST", `/vdb/sources/${key}/sync`),
     restore: (key: string) => req<VdbSourceInfo>("POST", `/vdb/sources/${key}/restore`),

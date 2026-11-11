@@ -253,6 +253,13 @@ LEVEL_I = {"critical": 3, "high": 2, "warning": 1}
 
 
 async def build_ext_index(ctx: Ctx, statuses: tuple[str, ...] = M.AFFECTED, *, res=None, tkeys: frozenset | set = frozenset(), cap: int = 300) -> ExtIndex:
+    """Индекс по подготовленным результатам анализа (`vdb_version_hits`), без повторного сопоставления баз с каталогом: результат зависит только от версии каталога, а не от компьютера.
+    Версии без активных компьютеров в индекс не входят (как и прежде). Читает версии порциями: память зависит от числа версий каталога, а не от числа уязвимостей."""
+    from ..models import CatalogProduct, VdbAffected, VdbVersionHit as H  # noqa: PLC0415
+    from ..vdb import hostext as HX  # noqa: PLC0415
+    from ..vdb.store import active  # noqa: PLC0415
+    from sqlalchemy import tuple_  # noqa: PLC0415
+
     idx = ExtIndex(cap)
     if ctx.sm is None or ctx.source_id is None:
         idx.notes.append("Внешние базы недоступны: нет доступа к локальной базе уязвимостей")
@@ -260,59 +267,72 @@ async def build_ext_index(ctx: Ctx, statuses: tuple[str, ...] = M.AFFECTED, *, r
     bas_id: dict[str, int] = {}
     vid_of: dict[tuple[str, str], int] = {}
     async with ctx.sm() as db:
-        prods, maps = await M.load_context(db, ctx.source_id)
-        if not prods:
+        info = await HX.state(db, ctx.source_id)
+        cat = (await db.execute(select(CatalogProduct.key, CatalogProduct.name, CatalogProduct.versions).where(CatalogProduct.source_id == ctx.source_id))).all()
+        if not cat:
             idx.notes.append("Каталог программ источника ещё не построен: потенциальные совпадения с внешними базами не рассчитаны")
             return idx
-        matcher = M.Matcher(prods, maps)
+        if info["state"] == "none":
+            idx.notes.append("Проверка по внешним базам ещё не подготовлена (фоновый расчёт не завершался для этого источника): потенциальные совпадения не рассчитаны")
+            return idx
+        pids: dict[tuple[str, str], list] = {}
+        names = {key: name for key, name, _v in cat}
+        for key, _name, versions in cat:
+            for v in versions or []:
+                if v.get("hosts_active"):
+                    pids[(key, v.get("version") or "")] = list(v.get("product_ids") or [])
         fnd = (await db.execute(select(VdbFinding.vuln_key, VdbFinding.sev_rank, VdbFinding.exploited).where(VdbFinding.source_id == ctx.source_id).order_by(VdbFinding.vuln_key))).all()
-        keys = [k for k, _r, _e in fnd]
         for k, rank, ex in fnd:
             idx.sev[k] = (3 if (ex or rank >= 4) else LEVEL_I[_level(rank)], bool(ex))
-        async for _part, rows in M.iter_affected(db, keys, 200):             # порциями по уязвимостям: в памяти только порция и компактный результат
-            ms = [m for m in M.matches_from(matcher, rows) if m.status in statuses]
-            if ms:
-                by_src: dict[str, set[str]] = {}
-                for a in rows:
-                    by_src.setdefault(a.vuln_key, set()).add(a.source)
-                for m in ms:
-                    k = (m.product_key, m.version)
-                    vid = vid_of.get(k)
-                    if vid is None:
-                        vid = vid_of[k] = len(idx.versions)
-                        idx.versions.append(k)
-                        idx.agg.append([0, 0, 0, 0, 0, 0])
-                        idx.top.append([])
-                        idx.tk.append([])
-                        for pid in m.product_ids:
-                            idx.by_pid[int(pid)] = vid
-                    idx.pnames[m.product_key] = m.product_name
-                    sev, kev = idx.sev.get(m.vuln_key, (1, False))
-                    conf = m.status == "confirmed"
-                    a = idx.agg[vid]
-                    a[0 if sev == 3 else 1 if sev == 2 else 2] += 1
-                    a[3] += 1
-                    a[4] += 1 if kev else 0
-                    a[5] += 1 if conf else 0
-                    bid = bas_id.get(m.basis)
-                    if bid is None:
-                        bid = bas_id[m.basis] = len(idx.bases)
-                        idx.bases.append(m.basis)
-                    t = idx.top[vid]
-                    t.append((0 if kev else 1, -sev, -M.STATUS_RANK[m.status], m.vuln_key, m.status, bid))
-                    if len(t) > cap * 2:
-                        t.sort()
-                        del t[cap:]
-                    if m.vuln_key.upper() in tkeys:
-                        idx.tk[vid].append((m.vuln_key, m.status, bid, sev, kev, conf))
-                    idx.total_matches += 1
-                    if m.vuln_key not in idx.srcs:
-                        idx.srcs[m.vuln_key] = ", ".join(sorted(by_src.get(m.vuln_key, set())))
-            del rows, ms
+        matched: set[str] = set()
+        pairs = sorted(pids)
+        for i in range(0, len(pairs), 200):
+            rows = (await db.execute(select(H.product_key, H.version, H.vuln_key, H.status, H.basis).where(H.source_id == ctx.source_id, H.status.in_(statuses),
+                                                                                                          tuple_(H.product_key, H.version).in_(pairs[i:i + 200])))).all()
+            for pk, ver, vk, status, basis in rows:
+                k = (pk, ver)
+                vid = vid_of.get(k)
+                if vid is None:
+                    vid = vid_of[k] = len(idx.versions)
+                    idx.versions.append(k)
+                    idx.agg.append([0, 0, 0, 0, 0, 0])
+                    idx.top.append([])
+                    idx.tk.append([])
+                    for pid in pids[k]:
+                        idx.by_pid[int(pid)] = vid
+                    idx.pnames[pk] = names[pk]
+                sev, kev = idx.sev.get(vk, (1, False))
+                conf = status == "confirmed"
+                a = idx.agg[vid]
+                a[0 if sev == 3 else 1 if sev == 2 else 2] += 1
+                a[3] += 1
+                a[4] += 1 if kev else 0
+                a[5] += 1 if conf else 0
+                bid = bas_id.get(basis)
+                if bid is None:
+                    bid = bas_id[basis] = len(idx.bases)
+                    idx.bases.append(basis)
+                t = idx.top[vid]
+                t.append((0 if kev else 1, -sev, -M.STATUS_RANK[status], vk, status, bid))
+                if len(t) > cap * 2:
+                    t.sort()
+                    del t[cap:]
+                if vk.upper() in tkeys:
+                    idx.tk[vid].append((vk, status, bid, sev, kev, conf))
+                idx.total_matches += 1
+                matched.add(vk)
+            del rows
             if res is not None:
                 await res.breathe("индекс внешних баз")
             if ctx.cancelled():
                 raise RuntimeError("cancelled")
+        ks = sorted(matched)
+        for i in range(0, len(ks), 1000):                    # источники сведений — по записям, у которых есть затронутые продукты (как и прежде)
+            by_src: dict[str, set[str]] = {}
+            for vk, src in (await db.execute(select(VdbAffected.vuln_key, VdbAffected.source).join(VdbSource, active(VdbAffected)).where(VdbAffected.vuln_key.in_(ks[i:i + 1000])).distinct())).all():
+                by_src.setdefault(vk, set()).add(src)
+            for vk in ks[i:i + 1000]:
+                idx.srcs[vk] = ", ".join(sorted(by_src.get(vk, set())))
     for t in idx.top:
         t.sort()
         del t[cap:]

@@ -86,6 +86,34 @@ async def sync_all(su: SessionUser = Depends(require_admin), db: AsyncSession = 
     return {"queued": queued}
 
 
+@router.get("/analysis")
+async def analysis_status(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    """Подготовленные результаты проверки по внешним базам по доступным источникам KSC: когда построены, актуальны ли, чем закончился последний расчёт."""
+    from ..models import VdbAnalysis  # noqa: PLC0415
+    from ..vdb import hostext as HX  # noqa: PLC0415
+
+    out = []
+    for src in (await db.execute(select(KscSource).where(KscSource.is_active.is_(True)).order_by(KscSource.name))).scalars().all():
+        if not su.can_use_source(src.id):
+            continue
+        st = await db.get(VdbAnalysis, src.id)
+        info = await HX.state(db, src.id)
+        out.append({"source_id": str(src.id), "source": src.name, "state": info["state"], "built_at": _iso(info["built_at"]), "error": info["error"], "status": st.status if st else "none",
+                    "hits": st.hits if st else 0, "duration_ms": st.duration_ms if st else 0, "started_at": _iso(st.started_at) if st else None})
+    return {"items": out}
+
+
+@router.post("/analysis/run", status_code=202)
+async def analysis_run(su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Пересчитать подготовленные результаты по всем источникам: расчёт выполняет фоновая служба в течение минуты (идущий расчёт не дублируется). Прежние результаты остаются в работе до завершения."""
+    from ..models import VdbAnalysis  # noqa: PLC0415
+
+    n = (await db.execute(update(VdbAnalysis).where(VdbAnalysis.status != "running").values(rev=""))).rowcount
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="vdb.analysis.run", target_type="vdb_analysis", target_id="*", details={"sources": n})
+    await db.commit()
+    return {"queued": n}
+
+
 class SourceIn(BaseModel):
     enabled: bool | None = None
     interval_hours: int | None = Field(default=None, ge=1, le=24 * 30)
@@ -611,42 +639,28 @@ async def product_vulns(key: str, offset: int = Query(0, ge=0), limit: int = Que
     return {"items": [{**_vuln_out(v, f), "versions": next((p["versions"] for p in f.products if p["key"] == key), [])} for f, v in sel[offset:offset + limit]], "total": len(sel)}
 
 
-async def host_ext_items(db: AsyncSession, client, source_id: uuid.UUID, host_id: int) -> tuple[list[dict], bool]:
-    """Потенциальные уязвимости компьютера по внешним базам: установленное ПО (записи реестра KSC) сопоставляется с каталогом и внешними базами.
-    Возвращает (элементы по убыванию важности, построен ли каталог)."""
+async def host_ext_items(db: AsyncSession, client, source_id: uuid.UUID, host_id: int, soft: list[dict] | None = None) -> tuple[list[dict], dict]:
+    """Результаты проверки установленного ПО компьютера по внешним базам — из подготовленных данных (`vdb/hostext.py`), без пересчёта баз.
+    Возвращает (элементы по убыванию важности, сведения о подготовленных данных: catalog — построен ли каталог, state/built_at/error — их актуальность, truncated).
+    `soft` — уже прочитанные записи реестра ПО компьютера (чтобы не читать их второй раз)."""
     from ..ksc import queries as q  # noqa: PLC0415
+    from ..vdb import hostext as HX  # noqa: PLC0415
 
-    soft = await client.run(q.SOFTWARE_ON_HOST, {"id": host_id}, max_rows=20_000)
-    ids = {int(s["product_id"]) for s in soft}
-    prods, maps = await M.load_context(db, source_id)
-    mine = [p for p in prods if any(set(v.get("product_ids") or []) & ids for v in p.versions)]
-    if not mine:
-        return [], bool(prods)
-    for p in mine:
-        p.versions = [v for v in p.versions if set(v.get("product_ids") or []) & ids]
-    matcher = M.Matcher(mine, maps)
-    ms: list[M.Match] = []
-    async for _part, rows in M.iter_affected(db, await M.reverse_keys(db, mine, maps), 200):       # порциями: память не зависит от числа уязвимостей
-        ms += [m for m in M.matches_from(matcher, rows, only_active=False) if m.status in M.AFFECTED]
-        if len(ms) > 20_000:
-            break
-    meta = {v.vuln_key: v for i in range(0, len(ms), 400) for v in (await db.execute(select(VdbVuln).where(VdbVuln.vuln_key.in_({m.vuln_key for m in ms[i:i + 400]})))).scalars().all()}
-    items = []
-    for m in ms:
-        v = meta.get(m.vuln_key)
-        rank = v.sev_rank if v else 0
-        items.append({"key": m.vuln_key, "title": v.title if v else "", "severity_ru": SEV_RU[next((k for k, r in SEV_RANK.items() if r == rank), "")], "sev_rank": rank, "exploited": bool(v and v.exploited),
-                      "product": m.product_name, "version": m.version, "status": m.status, "status_ru": M.STATUS_RU[m.status], "basis": m.basis,
-                      "sources": [x for x in (v.sources.split(",") if v else []) if x], "ids": [x.upper() for x in (v.ids_text.split() if v else [])][:20]})
-    items.sort(key=lambda x: (not x["exploited"], -x["sev_rank"], -M.STATUS_RANK[x["status"]]))
-    return items, True
+    if soft is None:
+        soft = await client.run(q.SOFTWARE_ON_HOST, {"id": host_id}, max_rows=20_000)
+    pm = await HX.pid_map(db, source_id)
+    info = {"catalog": bool(pm), **await HX.state(db, source_id), "truncated": False}
+    if not pm or info["state"] == "none":
+        return [], info
+    items, cut = await HX.items_for(db, source_id, (int(s["product_id"]) for s in soft))
+    return items, {**info, "truncated": cut}
 
 
 @router.get("/hosts/{host_id}")
 async def host_vulns(host_id: int, request: Request, su: SessionUser = Depends(require_user), src: KscSource = Depends(current_source), db: AsyncSession = Depends(get_db)):
     """Независимая проверка компьютера по внешним базам. Результат — потенциальные уязвимости, не подтверждённые KSC (общий список вместе с данными KSC — `/hosts/{id}/vulnerabilities`)."""
-    items, catalog = await host_ext_items(db, request.app.state.sources.client(src), src.id, host_id)
-    return {"items": [{k: v for k, v in i.items() if k not in ("sources", "ids")} for i in items[:500]], "total": len(items), "catalog": catalog}
+    items, info = await host_ext_items(db, request.app.state.sources.client(src), src.id, host_id)
+    return {"items": [{k: v for k, v in i.items() if k not in ("sources", "ids")} for i in items[:500]], "total": len(items), "catalog": info["catalog"], "ext": {k: info[k] for k in ("state", "built_at", "error", "truncated")}}
 
 
 # ------------------------------------------------------------------------------------------------ решения по сопоставлению

@@ -27,10 +27,34 @@ export default function VdbAdmin() {
         <button className="btn" disabled={!d.items.some((s) => s.enabled && s.status !== "running")} onClick={async () => { try { const r = await api.vdb.syncAll(); show(r.queued.length ? `В очередь поставлено источников: ${r.queued.length}` : "Нет включённых источников"); void load(); } catch (e) { show((e as ApiError).message, "error"); } }}><Icon name="refresh" />Обновить все сейчас</button>
         <span className="muted small">Расписание работает само (у каждого источника — свой интервал). Занято базой уязвимостей: <b>{d.storage.db_bytes != null ? bytes(d.storage.db_bytes) : "—"}</b>; временных файлов загрузки: <b>{bytes(d.storage.tmp_bytes)}</b> (удаляются после каждой загрузки); свободно на диске: <b>{bytes(d.storage.free_bytes)}</b>.
           Данные не накапливаются: устаревшие поколения и отозванные записи удаляются, у крупных источников хранится одна копия.</span>{toast}</div>
+      <Analysis />
       {d.items.some((s) => !s.enabled) && <EnableAll items={d.items} onChanged={load} />}
       {d.items.map((s) => <SourceCard key={s.key} s={s} ecosystems={d.ecosystems} onChanged={load} />)}
       <Mappings />
     </div>
+  );
+}
+
+const AN_STATE: Record<string, [string, string]> = { fresh: ["актуально", "ok"], stale: ["устарело, пересчитывается", "warn"], updating: ["идёт расчёт", "info"], none: ["не подготовлено", "warn"] };
+
+/** Подготовленные результаты проверки по внешним базам: карточка компьютера и отчёты берут их готовыми; расчёт — в фоне, здесь видно, когда он выполнен и актуален ли. */
+function Analysis() {
+  const [items, setItems] = useState<Awaited<ReturnType<typeof api.vdb.analysis>>["items"] | null>(null);
+  const [toast, show] = useToast();
+  const load = useCallback(() => api.vdb.analysis().then((r) => setItems(r.items)).catch(() => setItems([])), []);
+  useEffect(() => { void load(); const t = window.setInterval(load, 10000); return () => window.clearInterval(t); }, [load]);
+  if (!items || !items.length) return null;
+  return (
+    <section className="card" aria-label="Подготовленные результаты проверки по внешним базам">
+      <div className="card-head"><h2>Подготовленные результаты проверки</h2></div>
+      <p className="muted small">Сопоставление установленного ПО с базами уязвимостей считает фоновая служба и сохраняет по каждой версии программ. Карточка компьютера и отчёты показывают готовый результат с отметкой актуальности, а не пересчитывают базы.</p>
+      <div className="table-scroll"><table className="table compact"><thead><tr><th>Источник KSC</th><th>Состояние</th><th>Последний расчёт</th><th className="num">Строк</th><th>Длительность</th></tr></thead><tbody>
+        {items.map((a) => { const [label, tone] = AN_STATE[a.state] ?? [a.state, ""]; return (
+          <tr key={a.source_id}><td>{a.source}</td><td><span className={`badge ${tone}`}>{label}</span>{a.error && <div className="muted xs">{a.error}</div>}</td>
+            <td>{a.built_at ? new Date(a.built_at).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" }) : "—"}</td><td className="num">{num(a.hits)}</td><td>{a.duration_ms ? `${(a.duration_ms / 1000).toFixed(0)} с` : "—"}</td></tr>); })}
+      </tbody></table></div>
+      <div className="row"><button className="btn" onClick={async () => { try { const r = await api.vdb.analysisRun(); show(r.queued ? "Пересчёт поставлен в очередь: выполнит фоновая служба" : "Расчёт уже идёт"); void load(); } catch (e) { show((e as ApiError).message, "error"); } }}>Пересчитать сейчас</button>{toast}</div>
+    </section>
   );
 }
 

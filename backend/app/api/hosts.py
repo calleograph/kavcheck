@@ -88,14 +88,16 @@ async def host(host_id: int, request: Request, su: SessionUser = Depends(require
                            "av_bases_date": k.get("av_bases_date"), "is_av": bool(k.get("is_av")), "has_rtp": bool(k.get("has_rtp"))} for k in kaspersky]}
 
 
-async def _host_vuln_rows(request: Request, db: AsyncSession, src: KscSource, host_id: int, external: bool) -> tuple[list[dict], list[str]]:
-    """Объединённый список уязвимостей компьютера (KSC + внешние базы) и замечания. Кэшируется на короткое время: раскрытие продуктов и страницы не повторяют обращение к KSC."""
+async def _host_vuln_rows(request: Request, db: AsyncSession, src: KscSource, host_id: int, external: bool) -> tuple[list[dict], list[str], dict | None]:
+    """Объединённый список уязвимостей компьютера (KSC + внешние базы), замечания и сведения о подготовленных данных внешних баз (None — не запрашивались).
+    Внешние базы — готовые результаты фонового расчёта (`vdb_version_hits`): запрос не пересчитывает базы. Кэшируется на минуту: раскрытие продуктов и страницы не повторяют обращение к KSC."""
     from ..ksc import vulns as V  # noqa: PLC0415
     from ..services import hostvulns as HV  # noqa: PLC0415
+    from ..vdb import hostext as HX  # noqa: PLC0415
     from .vdb import host_ext_items  # noqa: PLC0415
     from .vulns import unsupported  # noqa: PLC0415
 
-    async def build() -> tuple[list[dict], list[str]]:
+    async def build() -> tuple[list[dict], list[str], dict | None]:
         client = request.app.state.sources.client(src)
         notes: list[str] = []
         ksc_items: list[dict] = []
@@ -106,25 +108,25 @@ async def _host_vuln_rows(request: Request, db: AsyncSession, src: KscSource, ho
                 ksc_items = await V.on_host(client, host_id)
             except KscError as exc:
                 notes.append(f"Данные об уязвимостях KSC получить не удалось ({exc.message}): показаны только результаты проверки по внешним базам.")
-        ext_items, catalog = [], True
+        ext_items, info = [], None
         if external:
-            try:       # сопоставление с внешними базами — самая долгая часть: результат кэшируется (ключ — состояние баз уязвимостей и каталога), страница сначала просит только данные KSC (`external=false`)
-                from ..vdb import store as vdb_store  # noqa: PLC0415
-
-                rev = await vdb_store.revision(db, src.id)
-                (ext_items, catalog), _at = await request.app.state.cache.get((str(src.id), "host_ext", host_id, rev), request.app.state.settings.cache_ttl_seconds,
-                                                                              lambda: host_ext_items(db, client, src.id, host_id))
+            try:
+                ext_items, info = await host_ext_items(db, client, src.id, host_id)
             except KscError as exc:
                 notes.append(f"Проверка по внешним базам не выполнена ({exc.message}): показаны только данные KSC.")
-        if external and not catalog:
-            notes.append("Каталог программ источника ещё не построен: проверка по внешним базам не выполнялась.")
-        return HV.merge(ksc_items, ext_items), notes
+            if info is not None:
+                if not info["catalog"]:
+                    notes.append("Каталог программ источника ещё не построен: проверка по внешним базам не выполнялась.")
+                elif HX.state_note(info):
+                    notes.append(HX.state_note(info))
+                if info.get("truncated"):
+                    notes.append("Результатов по внешним базам больше предела просмотра: показана наиболее важная часть, полный список — в отчёте.")
+        return HV.merge(ksc_items, ext_items), notes, info
 
-    from ..vdb import store as vdb_store  # noqa: PLC0415
-
-    rev = await vdb_store.revision(db, src.id) if external else ""
-    (rows, notes), _at = await request.app.state.cache.get((str(src.id), "host_vulns", host_id, external, rev), min(60, request.app.state.settings.cache_ttl_seconds), build)
-    return rows, list(notes)
+    # состояние подготовленных данных — часть ключа: смена ревизии баз или каталога, начало и конец пересчёта сразу видны в отметке, а не через минуту
+    now = await HX.state(db, src.id) if external else {"state": "", "built_at": None}
+    (rows, notes, info), _at = await request.app.state.cache.get((str(src.id), "host_vulns", host_id, external, now["state"], str(now["built_at"])), min(60, request.app.state.settings.cache_ttl_seconds), build)
+    return rows, list(notes), info
 
 
 @router.get("/{host_id}/vulnerabilities")
@@ -135,8 +137,9 @@ async def host_vulnerabilities(host_id: int, request: Request, external: bool = 
     Недоступность одного источника сведений не скрывает другой: причина — в `notes`."""
     from ..services import hostvulns as HV  # noqa: PLC0415
 
-    rows, notes = await _host_vuln_rows(request, db, src, host_id, external)
-    base = {"counts": HV.counts(rows), "notes": notes, "external_checked": external, "fetched_at": datetime.now(timezone.utc)}
+    rows, notes, info = await _host_vuln_rows(request, db, src, host_id, external)
+    base = {"counts": HV.counts(rows), "notes": notes, "external_checked": external, "fetched_at": datetime.now(timezone.utc),
+            "ext": {k: info[k] for k in ("state", "built_at", "error", "truncated")} if info else None}
     if group == "product":
         eol: list[dict] = []
         try:
@@ -157,7 +160,7 @@ async def host_vulnerability_items(host_id: int, request: Request, product: str 
     """Полный список уязвимостей одного продукта и версии на компьютере (по раскрытию строки), серверная пагинация."""
     from ..services import hostvulns as HV  # noqa: PLC0415
 
-    rows, _notes = await _host_vuln_rows(request, db, src, host_id, external)
+    rows, _notes, _info = await _host_vuln_rows(request, db, src, host_id, external)
     sel = HV.group_rows(rows, "" if product == "—" else product, version)
     return {"items": sel[offset:offset + limit], "total": len(sel), "offset": offset}
 

@@ -25,12 +25,16 @@ class SourceRegistry:
         fp = f"{src.host}:{src.port}/{src.database}/{src.username}/{src.password_enc}/{src.tls_mode}/{src.query_timeout_s}/{src.connect_timeout_s}"
         got = self._clients.get(src.id)
         if got is None or got[0] != fp:
+            if got is not None:
+                got[1].close()                      # параметры изменились: простаивающие соединения со старыми реквизитами закрываются
             got = (fp, SourceClient(self.params(src), concurrency=self._s.ksc_concurrency, name=src.name))
             self._clients[src.id] = got
         return got[1]
 
     def forget(self, source_id: uuid.UUID) -> None:
-        self._clients.pop(source_id, None)
+        got = self._clients.pop(source_id, None)
+        if got is not None:
+            got[1].close()
 
 
 def _norm_host(h: str) -> str:

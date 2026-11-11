@@ -26,7 +26,7 @@ from ..ksc import protection as P
 from ..ksc import queries as q
 from ..ksc import vulns as V
 from ..ksc.driver import KscError
-from ..models import KscSource, Zone, ZcDashboard, ZcDetection, ZcHost, ZcHostZone, ZcSource, utcnow
+from ..models import KscSource, VdbAnalysis, Zone, ZcDashboard, ZcDetection, ZcHost, ZcHostZone, ZcSource, utcnow
 from ..reports import quick
 from ..reports.quick_ext import ext_meta, ext_row
 from ..reports.quick import SEV_RU
@@ -216,13 +216,10 @@ async def get_zc(db: AsyncSession, source_id) -> ZcSource:
     return zs
 
 
-MATCH_REV = "2"        # версия логики сопоставления с внешними базами: меняется при исправлении ошибок — подготовленные данные зон считаются устаревшими и пересчитываются
-
-
 def vdb_rev_hash(rev: str) -> str:
-    import hashlib  # noqa: PLC0415
+    from ..vdb.store import rev_hash  # noqa: PLC0415
 
-    return hashlib.sha1(f"{MATCH_REV}|{rev}".encode()).hexdigest()[:16]
+    return rev_hash(rev)
 
 
 async def probe(bc: BuildCtx, src: KscSource) -> None:
@@ -254,7 +251,9 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
         zindex = await S.index(db)
         zones_days = {str(z.id): z.activity_days for z in (await db.execute(select(Zone))).scalars() if z.activity_days}
         tindex = await T.load(db, sid, started)
-        vrev = vdb_rev_hash(await vdb_store.revision(db, sid))
+        vnow = vdb_rev_hash(await vdb_store.revision(db, sid))
+        an = await db.get(VdbAnalysis, sid)
+        vrev = an.rev if an is not None and an.built_at is not None else ""          # данные зон штампуются ревизией готовых результатов, из которых посчитаны: отстающий анализ виден как «есть более свежие сведения»
         old_gens = (await db.execute(select(ZcHost.gen).where(ZcHost.source_id == sid, ZcHost.gen != cur).distinct())).scalars().all()
         await db.commit()
     now_s = int(time.time())
@@ -419,7 +418,7 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
                 zs.gen, zs.status, zs.built_at, zs.finished_at = stage, "ready", started, utcnow()
                 zs.duration_ms, zs.progress, zs.error = int((time.monotonic() - t0) * 1000), None, None
                 zs.hosts_n, zs.detections_n, zs.agg_only, zs.notes = n_hosts, total_det + ext_total, agg_only, notes
-                zs.stamp, zs.probe_stamp, zs.probe_at, zs.vdb_rev, zs.vdb_rev_now = stamp_now, stamp_now, utcnow(), vrev, vrev
+                zs.stamp, zs.probe_stamp, zs.probe_at, zs.vdb_rev, zs.vdb_rev_now = stamp_now, stamp_now, utcnow(), vrev, vnow
             await db.commit()
         if not partial and cur:
             await purge_gen(bc.sm, sid, cur)

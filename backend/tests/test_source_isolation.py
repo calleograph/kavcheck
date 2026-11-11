@@ -54,7 +54,7 @@ async def test_page_caches_are_keyed_by_source(client, app, monkeypatch):
         return [ksc([f"CVE-2024-{1 if c.tag == 'KSC-1' else 2}"])]
 
     async def ext(*_a):
-        return [], True
+        return [], {"catalog": True, "state": "fresh", "built_at": None, "error": "", "truncated": False}
 
     monkeypatch.setattr(V, "on_host", on_host)
     monkeypatch.setattr(vdb_api, "host_ext_items", ext)

@@ -259,7 +259,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
       </div> : <span className="muted small">Выгрузка доступна аналитику и администратору.</span>}>
       <div className="qr">
         {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-        {msg && <div className="alert info" role="status"><span className="spin accent" /><div className="alert-body">{msg}</div></div>}
+        {msg && <div className="alert info" role="status">{busy ? <span className="spin accent" /> : <Icon name="check" />}<div className="alert-body">{msg}</div></div>}
         {!data && !err && <div className="qr-loading" role="status"><span className="spin accent" />Считаем затронутые компьютеры…</div>}
         {data?.unsupported && <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет нужных объектов KSC ({data.unsupported.join(", ")}): отчёт недоступен.</div></div>}
         {options.hunt && <fieldset className="qr-sections"><legend>Результаты в отчёте</legend>

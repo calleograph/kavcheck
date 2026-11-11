@@ -11,11 +11,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
-from ..models import CaCertificate, CatalogState, KscSource, VdbAffected, VdbFinding, VdbFindingProduct, VdbRecord, VdbRun, VdbSource, VdbVuln, utcnow
+from ..models import CaCertificate, CatalogState, KscSource, VdbAffected, VdbAnalysis, VdbFinding, VdbFindingProduct, VdbRecord, VdbRun, VdbSource, VdbVersionHit, VdbVuln, utcnow
 from ..services.settings import SettingsService
 from ..services.audit import Journal
 from ..services.resources import RES, MemoryPressure, Resources
@@ -44,7 +44,6 @@ class VdbSync:
         self._sm, self._settings, self._svc, self._journal = sm, settings, svc, journal
         self._http_factory, self._sleep = http_factory, sleep
         self._running: set[str] = set()
-        self._analyzed: dict[uuid.UUID, str] = {}
         self._retry_at: dict[uuid.UUID, float] = {}
 
     # ------------------------------------------------------------------------------------------ запуск источника
@@ -246,29 +245,38 @@ class VdbSync:
             if has:
                 for st in states:
                     rev = await store.revision(db, st.source_id)
-                    if self._analyzed.get(st.source_id) != rev:
-                        todo.append((st.source_id, rev))
+                    done = await db.get(VdbAnalysis, st.source_id)
+                    if done is not None and done.status == "ok" and done.rev == store.rev_hash(rev) and done.built_at is not None:
+                        continue                                    # результаты построены для этой ревизии данных (в том числе до перезапуска службы)
+                    todo.append((st.source_id, rev))
         for sid, rev in todo:
             if time.monotonic() < self._retry_at.get(sid, 0):
                 continue
             try:
-                if await self.analyze_full(sid) is not None:          # None — анализ этого источника уже ведёт другой исполнитель: не считаем сделанным
-                    self._analyzed[sid] = rev
+                await self.analyze_full(sid)          # None — анализ этого источника ведёт другой исполнитель: состояние запишет он
             except MemoryPressure as exc:               # память на пределе: сделанное сохранено порциями, повторим позже
                 self._retry_at[sid] = time.monotonic() + 600
                 log.warning("Анализ уязвимостей отложен: %s", exc)
+            except Exception:                           # ошибка записана в состояние расчёта (видна в интерфейсе); повтор через 5 минут, а не каждую минуту
+                self._retry_at[sid] = time.monotonic() + 300
+                log.exception("Анализ уязвимостей не выполнен", extra={"source_id": str(sid)})
 
     async def analyze_keys(self, keys: set[str]) -> None:
         async with self._sm() as db:
             sids = [s for s in (await db.execute(select(KscSource.id).where(KscSource.is_active.is_(True)))).scalars().all()]
         for sid in sids:
+            async with self._sm() as db:
+                ok = await db.get(VdbAnalysis, sid)
+            if ok is None or ok.status != "ok":            # полного расчёта ещё нет (или он идёт): частичный даст неполные результаты, полный по ревизии догонит
+                continue
             # место, затем аренда; один анализ источника за раз (между worker тоже); идёт чужой — пропускаем: полный анализ по ревизии догонит
             async with JOBS.run_heavy("vdb_analyze", str(sid), "анализ изменённых уязвимостей", task=f"анализ уязвимостей {sid}") as lease:
                 if lease is None:
                     continue
                 async with self._sm() as db:
                     await analyze(db, sid, keys=sorted(keys), res=RES, lease=lease)
-                    self._analyzed[sid] = await store.revision(db, sid)
+                    rev = await store.revision(db, sid)
+                    await db.execute(update(VdbAnalysis).where(VdbAnalysis.source_id == sid).values(rev=store.rev_hash(rev), built_at=utcnow()))
                     await db.commit()
 
     async def analyze_full(self, source_id: uuid.UUID) -> int | None:
@@ -276,10 +284,25 @@ class VdbSync:
         async with JOBS.run_heavy("vdb_analyze", str(source_id), "анализ уязвимостей", task=f"анализ уязвимостей {source_id}") as lease:
             if lease is None:
                 return None
-            async with self._sm() as db:
-                n = await analyze(db, source_id, keys=None, res=RES, lease=lease)
-                await db.commit()
+            try:
+                async with self._sm() as db:
+                    n = await analyze(db, source_id, keys=None, res=RES, lease=lease)
+                    await db.commit()
+            except BaseException as exc:
+                async with self._sm() as db:
+                    await _set_state(db, source_id, status="error", error=f"{type(exc).__name__}: {exc}"[:400])
+                    await db.commit()
+                raise
         return n
+
+
+async def _set_state(db: AsyncSession, source_id: uuid.UUID, **fields) -> None:
+    st = await db.get(VdbAnalysis, source_id)
+    if st is None:
+        db.add(VdbAnalysis(source_id=source_id, **fields))
+    else:
+        for k, v in fields.items():
+            setattr(st, k, v)
 
 
 def _utc(d: datetime) -> datetime:
@@ -293,6 +316,11 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     prods, maps = await M.load_context(db, source_id)
     if not prods:
         return 0
+    full = keys is None
+    if full:
+        rev0 = store.rev_hash(await store.revision(db, source_id))            # ревизия данных на начало расчёта: изменились во время расчёта — следующий проход пересчитает
+        await _set_state(db, source_id, status="running", started_at=utcnow())
+        await db.commit()
     matcher = M.Matcher(prods, maps)
     classes = await class_map(db, prods)
     all_keys = await M.reverse_keys(db, prods, maps) if keys is None else sorted(set(keys))
@@ -303,7 +331,9 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     log.info("Анализ уязвимостей начат", extra={"source_id": str(source_id), "keys": total, "products": len(prods)})
     async for part, rows in M.iter_affected(db, all_keys, batch):
         # сопоставление — чистые вычисления Python: в отдельном потоке, иначе событийный цикл стоит и продление аренд, этапы и другие задания ждут
-        matches = [m for m in await asyncio.to_thread(lambda rows=rows: list(M.matches_from(matcher, rows))) if m.status in M.AFFECTED]
+        # версии без активных компьютеров тоже сохраняются (компьютер вне периода активности всё равно показывает свои уязвимости), находки и план — только по активным
+        every = [m for m in await asyncio.to_thread(lambda rows=rows: list(M.matches_from(matcher, rows, only_active=False))) if m.status in M.AFFECTED]
+        matches = [m for m in every if m.hosts_active]
         done += len(part)
         if lease is not None:
             await lease.stage("анализ уязвимостей", f"обработано {min(done, total)} из {total} уязвимостей, найдено {len(matched)}")
@@ -343,6 +373,9 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
             matched |= set(by)
             await db.execute(delete(VdbFindingProduct).where(VdbFindingProduct.source_id == source_id, VdbFindingProduct.vuln_key.in_(ks)))
             db.add_all(fp_rows)
+        await db.execute(delete(VdbVersionHit).where(VdbVersionHit.source_id == source_id, VdbVersionHit.vuln_key.in_(part)))
+        if every:
+            await db.execute(insert(VdbVersionHit), [dict(source_id=source_id, product_key=m.product_key, version=m.version[:200], vuln_key=m.vuln_key, status=m.status, basis=m.basis[:400]) for m in every])
         await db.commit()                       # порция сохранена: транзакция не остаётся открытой на время вычислений следующей
         db.expunge_all()
         if res is not None:
@@ -352,6 +385,15 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     for i in range(0, len(stale), 400):
         await db.execute(delete(VdbFinding).where(VdbFinding.source_id == source_id, VdbFinding.vuln_key.in_(stale[i:i + 400])))
         await db.execute(delete(VdbFindingProduct).where(VdbFindingProduct.source_id == source_id, VdbFindingProduct.vuln_key.in_(stale[i:i + 400])))
+    if scope is None:                         # полный расчёт: результаты уязвимостей, которых больше нет среди кандидатов каталога
+        seen = set(all_keys)
+        gone = [k for k in (await db.execute(select(VdbVersionHit.vuln_key).where(VdbVersionHit.source_id == source_id).distinct())).scalars().all() if k not in seen]
+        for i in range(0, len(gone), 400):
+            await db.execute(delete(VdbVersionHit).where(VdbVersionHit.source_id == source_id, VdbVersionHit.vuln_key.in_(gone[i:i + 400])))
     await db.commit()
+    if full:
+        hits = (await db.execute(select(func.count()).select_from(VdbVersionHit).where(VdbVersionHit.source_id == source_id))).scalar_one()
+        await _set_state(db, source_id, status="ok", error="", rev=rev0, built_at=utcnow(), hits=int(hits), duration_ms=int((time.monotonic() - t0) * 1000))
+        await db.commit()
     log.info("Анализ уязвимостей завершён", extra={"source_id": str(source_id), "keys": total, "matched": len(matched), "duration_s": round(time.monotonic() - t0)})
     return len(matched)

@@ -219,7 +219,7 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
     async def make() -> dict:
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
                         protection_loader=lambda: _cached_protection(request, src, rcfg.exclude_slave_servers, hw), hw_cfg=hw, sm=request.app.state.session_maker, source_id=src.id,
-                        zone_hosts=zset, zone_name=zname, features=(src.last_check or {}).get("features") or {})
+                        zone_hosts=zset, zone_name=zname, features=(src.last_check or {}).get("features") or {}, light=body.kind == "quick_hosts")
         doc = await quick.build(body.kind, client, params, ctx)
         main = doc["tables"][0]
         # в кэше и ответе — только документ без строк и первые строки основной таблицы

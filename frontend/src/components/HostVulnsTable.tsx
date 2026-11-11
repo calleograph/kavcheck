@@ -28,6 +28,7 @@ export function HostVulnsTable({ data, hostId, onMore }: { data: HostVulnsAll; h
     <>
       {!data.external_checked && <div className="alert info calc-progress"><span className="spin sm" /><div className="alert-body">Показаны данные KSC. Идёт проверка установленного ПО по внешним базам (NVD, CISA KEV, OSV, БДУ) — результаты появятся здесь автоматически.</div></div>}
       {data.notes.map((n) => <div key={n} className="alert warn"><Icon name="alert" /><div className="alert-body">{n}</div></div>)}
+      {data.ext?.state === "fresh" && data.ext.built_at && <p className="muted ext-stamp">Внешние базы: результаты рассчитаны {new Date(data.ext.built_at).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })} — актуальны для текущих баз и каталога программ.</p>}
       <div className="alert info"><Icon name="info" /><div className="alert-body">
         {data.external_checked ? <>Продуктов с уязвимостями: <b>{num(data.groups_total)}</b>; уязвимостей всего <b>{num(c.total)}</b>: <b>{num(c.confirmed_ksc)}</b> подтверждено Kaspersky Security Center, <b>{num(other)}</b> найдено только по внешним базам (NVD, CISA KEV, OSV, БДУ ФСТЭК) —
           это предварительное совпадение установленной версии с описанием уязвимости, а не доказанный факт. Уязвимость, найденная обоими источниками, показана одной строкой. Нажмите на продукт, чтобы увидеть полный список.</>

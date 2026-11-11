@@ -92,6 +92,9 @@ HOSTS_COUNT = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h LEFT JOIN dbo.v_akpu
 HOST_ONE = f"SELECT {HOST_COLS}, g.wstrName AS group_name FROM dbo.v_akpub_host h LEFT JOIN dbo.v_akpub_adm_group g ON g.nId = h.nGroup WHERE h.nId = %(id)s"
 SOFTWARE_ON_HOST = ("SELECT a.nId AS install_id, a.nProductId AS product_id, a.wstrDisplayName AS name, a.wstrBuild AS version, a.wstrPublisher AS publisher, "
                     "a.tmInstallDate AS install_date, a.bMsiInstaller AS is_msi FROM dbo.v_akpub_application a WHERE a.nHostId = %(id)s ORDER BY a.wstrDisplayName")
+# тот же состав, что у SOFTWARE_ON_HOST (карточка), для группы компьютеров одним запросом: отчёт по нескольким компьютерам не делает запрос на каждый
+SOFTWARE_ON_HOSTS = ("SELECT a.nHostId AS host_id, a.nId AS install_id, a.nProductId AS product_id, a.wstrDisplayName AS name, a.wstrBuild AS version, a.wstrPublisher AS publisher, "
+                     "a.tmInstallDate AS install_date, a.bMsiInstaller AS is_msi FROM dbo.v_akpub_application a WHERE a.nHostId IN ({ids}) ORDER BY a.nHostId, a.wstrDisplayName")
 KASPERSKY_ON_HOST = ("SELECT p.wstrProductNameId AS product_code, p.wstrProductDisplayName AS product, p.wstrProductBuildNumber AS build, p.nState AS state, "
                      "p.tmAvbasesDate AS av_bases_date, p.bAvProduct AS is_av, p.bHasRtp AS has_rtp FROM dbo.v_akpub_hst_prdstate p WHERE p.nHost = %(id)s")
 HOST_STATUS = "SELECT s.nStatus AS status, s.nStatusMask AS mask FROM dbo.v_akpub_host_status s WHERE s.nId = %(id)s"

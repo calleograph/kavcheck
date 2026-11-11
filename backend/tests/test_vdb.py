@@ -403,6 +403,64 @@ async def test_findings_new_serious_and_seen_flow(app, client):
     assert card["infrastructure"]["catalog"] and {m["status"] for m in card["infrastructure"]["matches"]} == {"confirmed"}
 
 
+async def test_prepared_hits_serve_the_host_view_without_recalculation(app, client, monkeypatch):
+    """Карточка и отчёт берут готовые результаты анализа: до расчёта — явное «не подготовлено», после — те же строки без сопоставления, при изменении данных — отметка «устарело»."""
+    from app.api.vdb import host_ext_items
+    from app.models import VdbVersionHit
+
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await _ksc_source(client, app)
+    chrome = next(p for p in CATALOG if p.key == "google-chrome")
+    pid = {v["version"]: v["product_ids"][0] for v in chrome.versions}
+    async with app.state.session_maker() as db:
+        await store.ensure_sources(db)
+        row = await db.get(CatalogProduct, (uuid.UUID(sid), "google-chrome"))
+        row.versions = [*row.versions, {"version": "114.0.1", "scheme": "numeric", "platform": 1, "hosts_active": 0, "installs_active": 0, "product_ids": [777001], "raw": ["114.0.1"], "names": ["Google Chrome"]}]   # версия без активных компьютеров
+        a = Rec(source="nvd", ext_id="CVE-2099-1", vuln_key="CVE-2099-1", severity="critical", score=9.8, title="Chrome RCE", published=utcnow(), modified=utcnow(),
+                affected=[Aff(vendor="google", product="chrome", v_end="116.0.5845.187")])
+        await store.save_batch(db, 1, [a])
+        await store.refresh_vulns(db, {"CVE-2099-1"})
+        await db.commit()
+        items, info = await host_ext_items(db, None, uuid.UUID(sid), 6, soft=[{"product_id": pid["115.0.5790.0"]}])
+        assert items == [] and info["state"] == "none" and info["catalog"]                  # расчёта не было: раздел не подготовлен (не «ноль уязвимостей»)
+
+    def boom(*_a, **_k):
+        raise AssertionError("сопоставление в момент обращения не выполняется")
+    sync = make_sync(app)
+    assert await sync.analyze_full(uuid.UUID(sid)) == 1
+    monkeypatch.setattr(M, "matches_from", boom)
+    async with app.state.session_maker() as db:
+        items, info = await host_ext_items(db, None, uuid.UUID(sid), 6, soft=[{"product_id": pid["115.0.5790.0"]}, {"product_id": pid["117.0.1"]}, {"product_id": 777001}, {"product_id": 1}])
+        assert info["state"] == "fresh" and info["built_at"] is not None and not info["truncated"]
+        assert sorted((i["key"], i["version"], i["status"], i["product"]) for i in items) == [("CVE-2099-1", "114.0.1", "confirmed", "Google Chrome"), ("CVE-2099-1", "115.0.5790.0", "confirmed", "Google Chrome")]
+        n = (await db.execute(select(func.count()).select_from(VdbVersionHit).where(VdbVersionHit.source_id == uuid.UUID(sid)))).scalar_one()
+        assert n == 2                                                                         # версия без активных компьютеров сохранена, 116+ не затронуты
+        fin = (await db.execute(select(VdbFinding).where(VdbFinding.source_id == uuid.UUID(sid)))).scalars().one()
+        assert fin.installs == 5                                                              # находки и план — только по активным версиям, как прежде
+        db.add(VdbMapping(vendor_key="acme", product_key="widget", catalog_key="contoso-agent", action="map"))
+        await db.commit()
+        _items, info2 = await host_ext_items(db, None, uuid.UUID(sid), 6, soft=[])
+        assert info2["state"] == "stale" and info2["built_at"] == info["built_at"]           # данные изменились: показан последний готовый расчёт с отметкой
+    f = (await client.get("/api/v1/vdb/findings")).json()
+    assert f["total"] == 1
+
+
+async def test_analysis_status_api_and_manual_rerun(app, client):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = await _ksc_source(client, app)
+    st = (await client.get("/api/v1/vdb/analysis")).json()["items"]
+    assert [x["state"] for x in st] == ["none"] and st[0]["built_at"] is None                      # расчёта не было: не «актуально» и не нули
+    async with app.state.session_maker() as db:
+        await store.ensure_sources(db)
+        await db.commit()
+    assert await make_sync(app).analyze_full(uuid.UUID(sid)) == 0
+    st = (await client.get("/api/v1/vdb/analysis")).json()["items"][0]
+    assert st["state"] == "fresh" and st["status"] == "ok" and st["built_at"]
+    r = await client.post("/api/v1/vdb/analysis/run")
+    assert r.status_code == 202 and r.json() == {"queued": 1}
+    assert (await client.get("/api/v1/vdb/analysis")).json()["items"][0]["state"] == "stale"      # прежний результат остаётся, отмечен устаревшим до пересчёта
+
+
 async def test_mappings_exclusion_changes_findings_and_permissions(app, client):
     await login(client, "admin", "Admin-Passw0rd-123")
     sid = await _ksc_source(client, app)

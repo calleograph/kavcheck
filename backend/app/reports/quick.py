@@ -54,6 +54,7 @@ class Ctx:
     ad: object | None = None                           # служба просмотра AD (ad.service.AdService): отчёты по каталогу
     features: dict = field(default_factory=dict)       # признаки состава источника (last_check.features): раздел без нужных объектов назван, а не показан нулями
     hier_cfg: object | None = None                     # настройки раздела «Иерархия» (правила очистки выгрузки)
+    light: bool = False                                # предпросмотр: только быстрые разделы (без чтения ПО, уязвимостей, событий и оборудования по каждому компьютеру); полный состав — в файле
 
 
 def col(key: str, title: str, kind: str = "text") -> dict:
@@ -306,7 +307,6 @@ async def _hosts_by_filter(client: SourceClient, p: dict, ctx: Ctx) -> list[int]
     raise KscError("too_many_rows", f"Под условия подходит больше {ctx.max_rows} компьютеров: сузьте условия или повысьте предел в «Администрирование → Общие настройки»")
 
 
-HOST_EXT_LIMIT = 50             # внешние базы — по каждому компьютеру, как в карточке; для большой выборки это слишком долго — явное примечание
 EVENT_DAYS = 30                 # как вкладка «События» карточки компьютера
 HOST_SECTIONS = ("software", "vulns", "protection", "eol", "events", "hardware")
 HOST_SECTION_TITLE = (("protection", "состояние защиты"), ("software", "установленное ПО"), ("vulns", "уязвимости"), ("eol", "EOL"), ("events", "события (30 суток)"), ("hardware", "аппаратная часть"))
@@ -358,36 +358,54 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     ev_rows: list[dict] = []
     hw_rows: list[dict] = []
     avail = {"software": "software" in secs, "vulns": "vulns" in secs, "eol": "eol" in secs, "events": "events" in secs, "hardware": "hardware" in secs}
+    asked = dict(avail)
+    if ctx.light:                      # предпросмотр не читает данные по каждому компьютеру: состав выбранных разделов называется, содержимое формируется в файле
+        avail = dict.fromkeys(avail, False)
+        notes.append("Предварительный просмотр показывает компьютеры и состояние защиты. Разделы " + ", ".join(label if label == "EOL" else label.lower() for key, label in HOST_SECTION_TITLE if key != "protection" and asked.get(key))
+                     + " формируются при создании файла (быстро, из подготовленных данных); их счётчики появятся в готовом отчёте." if any(asked.values()) else "Предварительный просмотр показывает компьютеры и состояние защиты.")
     # --- уязвимости: KSC и внешние базы — так же, как карточка компьютера (по умолчанию внешние базы включены)
     if avail["vulns"]:
         miss = _missing(ctx, "vulnerabilities")
         if miss:
             avail["vulns"] = False
             notes.append("Уязвимости KSC на этом источнике недоступны: в базе нет объектов " + ", ".join(miss) + ". Раздел не включён, а не равен нулю.")
-    ext_ok = avail["vulns"] and len(ids) <= HOST_EXT_LIMIT
-    if avail["vulns"] and not ext_ok:
-        notes.append(f"Внешние базы не включены: отчёт по {len(ids)} компьютерам (проверка выполняется по каждому, как в карточке, — до {HOST_EXT_LIMIT}). Уязвимости показаны по данным KSC.")
     from ..api.vdb import host_ext_items  # noqa: PLC0415
     from ..services import hostvulns as HV  # noqa: PLC0415
+    from ..vdb import hostext as HX  # noqa: PLC0415
 
     host_vulns: dict[int, list[dict]] = {}
+    soft_by: dict[int, list[dict]] = {}
+    ext_info: dict | None = None
+    if avail["software"] or avail["vulns"]:
+        for i in range(0, len(ids), 100):                  # записи реестра ПО читаются один раз и группами: из них и список программ, и подготовленные результаты внешних баз
+            if ctx.cancelled():
+                raise RuntimeError("cancelled")
+            for r in await client.run(q.SOFTWARE_ON_HOSTS.format(ids=q.ids_list(ids[i:i + 100])), max_rows=2_000_000):
+                soft_by.setdefault(int(r["host_id"]), []).append(r)
+            ctx.progress(f"программы: компьютеров {min(i + 100, len(ids))} из {len(ids)}")
     if avail["vulns"]:
         async with ctx.sm() as db:
             for hid in ids:
                 if ctx.cancelled():
                     raise RuntimeError("cancelled")
                 ksc = await V.on_host(client, hid)
-                ext = []
-                if ext_ok:
-                    ext, catalog = await host_ext_items(db, client, ctx.source_id, hid)
-                    if not catalog and hid == ids[0]:
-                        notes.append("Каталог программ источника ещё не построен: проверка по внешним базам не выполнялась.")
+                ext, info = await host_ext_items(db, client, ctx.source_id, hid, soft=soft_by.get(hid, []))
+                ext_info = ext_info or info
                 rows_h = HV.merge(ksc, ext)
                 host_vulns[hid] = rows_h
                 vrows += [{**r, "host_id": hid, "host": names.get(hid, str(hid)), "cve": ", ".join(k for k in r["keys"] if str(k).upper().startswith("CVE")),
                            "sources_text": ", ".join(r["sources"]), "exploited_text": "да" if r["exploited"] else "",
                            "patch": "исправление доступно" if (r.get("ksc") or {}).get("patches_available") else ""} for r in rows_h]
-                ctx.progress(f"уязвимости: компьютеров {len(host_vulns)}")
+                if len(vrows) > ctx.max_rows:
+                    raise KscError("too_many_rows", f"Уязвимостей в отчёте больше предела ({ctx.max_rows}): выберите меньше компьютеров или отключите раздел")
+                ctx.progress(f"уязвимости: компьютеров {len(host_vulns)} из {len(ids)}")
+        if ext_info is not None:
+            if not ext_info["catalog"]:
+                notes.append("Каталог программ источника ещё не построен: проверка по внешним базам не выполнялась.")
+            elif HX.state_note(ext_info):
+                notes.append(HX.state_note(ext_info))
+            if ext_info.get("truncated"):
+                notes.append("Результатов по внешним базам у части компьютеров больше предела: показаны наиболее важные.")
     # --- программы, EOL, события, аппаратная часть — по каждому компьютеру
     if avail["eol"]:
         from ..eol import read as EOLR  # noqa: PLC0415
@@ -407,17 +425,23 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         if ctx.cancelled():
             raise RuntimeError("cancelled")
         if avail["software"]:
-            for s in await client.run(q.SOFTWARE_ON_HOST, {"id": hid}, max_rows=20_000):
+            for s in soft_by.get(hid, []):
                 soft_rows.append({"host_id": hid, "name": names.get(hid, str(hid)), "program": s.get("name") or "", "version": s.get("version") or "",
                                   "publisher": s.get("publisher") or "", "install_date": s.get("install_date")})
-            ctx.progress(f"программы: {len(soft_rows)}")
         if avail["events"]:
             for e in await EV.all_rows(client, days=EVENT_DAYS, types=[], host_id=hid, max_rows=ctx.max_rows):
                 ev_rows.append({"host_id": hid, "host": names.get(hid, str(hid)), "at": e["at"], "type_ru": e["type_title"], "threat": e["threat"] or "",
                                 "target": (f"{e['attacker'] or '?'} → порт {e['port']} ({e['protocol']})" if e["type"] == "attack" else e["object"]) or "", "product": e["product"] or "",
                                 "ip": e["ip"] or ""})
         if avail["hardware"] and not _missing(ctx, "hardware"):
-            hw = HW.finish(HW.summarize(await client.run(q.HW_HOST, {"id": hid}, max_rows=2000)))
+            try:
+                hw_src = await client.run(q.HW_HOST, {"id": hid}, max_rows=2000)
+            except KscError as exc:                       # на источнике нет таблиц оборудования: раздел назван недоступным, отчёт не падает
+                avail["hardware"] = False
+                hw_rows.clear()
+                notes.append(f"Аппаратная часть недоступна на этом источнике ({exc.message}). Раздел не включён, а не равен нулю.")
+                continue
+            hw = HW.finish(HW.summarize(hw_src))
             r = recs.get(hid) or {}
             linux = "linux" in str(r.get("platform") or r.get("os") or "").lower()
             probs = HW.evaluate(hw, ctx.hw_cfg, names.get(hid, "")) if linux and hw["known"] and ctx.hw_cfg is not None else []      # ключи: title, level_ru
@@ -456,7 +480,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                   "Счётчики уязвимостей — по объединённому списку, как в карточке."]
     notes = base_notes + notes
     conds = [{"label": "Компьютеры", "text": ", ".join(r["name"] for r in rows[:10]) + (f" и ещё {len(rows) - 10}" if len(rows) > 10 else "")},
-             {"label": "Разделы", "text": ", ".join(label for key, label in HOST_SECTION_TITLE if key == "protection" or avail.get(key))},
+             {"label": "Разделы", "text": ", ".join(label for key, label in HOST_SECTION_TITLE if key == "protection" or (asked if ctx.light else avail).get(key))},
              {"label": "Источник KSC", "text": ctx.source_name}, {"label": "Порог баз / полной проверки", "text": f"{bases_days} / {scan_days} сут"}]
     metrics = [metric("hosts", "Компьютеров в отчёте", len(rows)), metric("online", "В сети сейчас", on, f"не в сети: {sum(1 for r in rows if r['online_raw'] is False)}; нет данных: {sum(1 for r in rows if r['online_raw'] is None)}"),
                metric("problems", "С проблемами защиты", sum(1 for r in rows if r["problems_n"]), "", "danger" if any(r["problems_n"] for r in rows) else "ok")]

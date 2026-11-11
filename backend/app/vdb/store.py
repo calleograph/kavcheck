@@ -221,6 +221,20 @@ async def revision(db: AsyncSession, source_id) -> str:
     return "|".join([",".join(f"{k}:{t.isoformat() if t else ''}:{g}:{int(e)}" for k, t, g, e in srcs), f"{maps[0]}:{maps[1]}", str(built)])
 
 
+MATCH_REV = "3"        # версия логики сопоставления и хранения результатов: меняется при исправлениях — подготовленные данные считаются устаревшими и пересчитываются
+
+
+def rev_hash(rev: str) -> str:
+    import hashlib  # noqa: PLC0415
+
+    return hashlib.sha1(f"{MATCH_REV}|{rev}".encode()).hexdigest()[:16]
+
+
+async def analysis_rev(db: AsyncSession, source_id) -> str:
+    """Короткий отпечаток данных, от которых зависят подготовленные результаты источника (`revision` + версия логики)."""
+    return rev_hash(await revision(db, source_id))
+
+
 DEFAULTS = {"kev": (True, 12, {}), "nvd": (False, 6, {"years_back": 3}), "osv": (False, 24, {"ecosystems": ["Debian", "Alpine", "Red Hat", "AlmaLinux", "Rocky Linux"]}),
             "bdu": (False, 24, {"url": "https://bdu.fstec.ru/files/documents/vulxml.zip", "verify_tls": True, "builtin_ca": True}), "eol": (True, 24, {"url": "https://endoflife.date/api/v1"}), "oval": (False, 24, {"feeds": []})}
 

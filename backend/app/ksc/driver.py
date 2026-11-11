@@ -103,33 +103,78 @@ def query(conn, sql: str, params: dict | tuple | None = None, *, max_rows: int) 
     return rows
 
 
+def _close(conn) -> None:
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001 — закрытие не должно скрывать исходную ошибку
+        pass
+
+
+IDLE_TTL_S = 30          # соединение, простоявшее дольше, не используется (сервер или сетевой экран мог его закрыть)
+
+
 class SourceClient:
-    """Клиент одного источника: пул из одного соединения на поток запроса, семафор на число одновременных запросов, журнал подключений."""
+    """Клиент одного источника: семафор на число одновременных запросов, небольшой пул простаивающих соединений (подключение к SQL Server стоит ~0,25 с — вдвое больше самого запроса),
+    журнал подключений. Запросы только на чтение, поэтому при разрыве взятого из пула соединения запрос безопасно повторяется на новом."""
 
     def __init__(self, params: ConnParams, *, concurrency: int = 3, name: str = ""):
         self.params = params
         self.name = name
+        self._concurrency = concurrency
         self._sem = asyncio.Semaphore(concurrency)
         self._tsem = threading.Semaphore(concurrency)
+        self._idle: list[tuple[Any, float]] = []
+        self._lock = threading.Lock()
+
+    def _take(self):
+        now = time.monotonic()
+        with self._lock:
+            while self._idle:
+                conn, at = self._idle.pop()
+                if now - at <= IDLE_TTL_S:
+                    return conn
+                _close(conn)
+        return None
+
+    def _give(self, conn) -> None:
+        with self._lock:
+            if len(self._idle) < self._concurrency:
+                self._idle.append((conn, time.monotonic()))
+                return
+        _close(conn)
+
+    def close(self) -> None:
+        with self._lock:
+            idle, self._idle = self._idle, []
+        for conn, _at in idle:
+            _close(conn)
 
     def run_sync(self, sql: str, params: dict | tuple | None = None, *, max_rows: int = 100_000) -> list[dict]:
         guard.check(sql)                       # до подключения: запрещённый запрос не доходит до сервера
         with self._tsem:
             started = time.perf_counter()
-            conn = connect(self.params)
-            try:
-                rows = query(conn, sql, params, max_rows=max_rows)
-            except (KscError, guard.UnsafeQuery):
-                raise
-            except Exception as exc:  # noqa: BLE001
-                msg = _sanitize(exc)
-                log.warning("Ошибка запроса к KSC", extra={"source": self.name, "error": type(exc).__name__, "ms": int((time.perf_counter() - started) * 1000)})
-                raise KscError("query", f"Ошибка запроса к базе KSC: {type(exc).__name__}: {msg}") from None
-            finally:
-                conn.close()
-            if len(rows) > max_rows:
-                raise KscError("too_many_rows", f"Результат превышает предел {max_rows} строк: сузьте фильтр или используйте фоновый отчёт")
-            return rows
+            for attempt in (0, 1):
+                conn = self._take() if attempt == 0 else None
+                reused = conn is not None
+                conn = conn or connect(self.params)
+                try:
+                    rows = query(conn, sql, params, max_rows=max_rows)
+                except (KscError, guard.UnsafeQuery):
+                    _close(conn)
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _close(conn)
+                    if reused:                 # соединение из пула могло быть разорвано сервером: один повтор на новом (запрос только читает)
+                        continue
+                    msg = _sanitize(exc)
+                    log.warning("Ошибка запроса к KSC", extra={"source": self.name, "error": type(exc).__name__, "ms": int((time.perf_counter() - started) * 1000)})
+                    raise KscError("query", f"Ошибка запроса к базе KSC: {type(exc).__name__}: {msg}") from None
+                if len(rows) > max_rows:       # не дочитанный результат: соединение в пул не возвращается
+                    _close(conn)
+                    raise KscError("too_many_rows", f"Результат превышает предел {max_rows} строк: сузьте фильтр или используйте фоновый отчёт")
+                self._give(conn)
+                return rows
+        raise AssertionError("unreachable")
 
     async def run(self, sql: str, params: dict | tuple | None = None, *, max_rows: int = 100_000) -> list[dict]:
         from ..services.jobs import touch_current  # noqa: PLC0415

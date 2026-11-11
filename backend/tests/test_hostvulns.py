@@ -54,7 +54,7 @@ async def test_host_vulnerabilities_endpoint_merges_and_survives_one_source_fail
         return [ksc(["CVE-2024-1"])]
 
     async def ext_ok(_db, _client, _sid, _hid):
-        return [ext("CVE-2024-1", rank=3), ext("CVE-2024-9", rank=2)], True
+        return [ext("CVE-2024-1", rank=3), ext("CVE-2024-9", rank=2)], {"catalog": True, "state": "fresh", "built_at": None, "error": "", "truncated": False}
 
     monkeypatch.setattr(V, "on_host", on_host)
     import app.api.vdb as vdb_api
@@ -96,7 +96,7 @@ async def test_host_vulnerabilities_grouped_by_product_with_paginated_items(clie
         return [ksc([f"CVE-2026-{i:04d}"], kla=f"KLA{i}", occ=i, sev="critical" if i == 0 else "high") for i in range(60)] + [ksc(["CVE-2025-1"], kla="KLA999", app="7-Zip", ver="23.01", occ=999, sev="warning")]
 
     async def ext_ok(*_a):
-        return [], True
+        return [], {"catalog": True, "state": "fresh", "built_at": None, "error": "", "truncated": False}
 
     monkeypatch.setattr(V, "on_host", on_host)
     import app.api.vdb as vdb_api

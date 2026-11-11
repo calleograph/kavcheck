@@ -113,7 +113,11 @@ async def test_hosts_report(client, app):
     sw = list(wb["Установленное ПО"].iter_rows(values_only=True))
     assert len(sw) > 3 and {r[0] for r in sw[1:]} == {"ws-001", "ksc-server"}
     v = list(wb["Уязвимости"].iter_rows(values_only=True))
-    assert {r[0] for r in v[1:]} <= {"ws-001", "ksc-server"} and len(v) - 1 == m(pv, "vrows")                # первый столбец — компьютер
+    cards = 0
+    for h in (6, 1):
+        cards += (await client.get(f"/api/v1/hosts/{h}/vulnerabilities")).json()["counts"]["total"]
+    assert {r[0] for r in v[1:]} <= {"ws-001", "ksc-server"} and len(v) - 1 == cards                          # первый столбец — компьютер; число строк — как в карточках
+    assert not any(x["key"] == "vrows" for x in pv["doc"]["metrics"]) and any("формируются при создании файла" in n for n in pv["doc"]["notes"])      # предпросмотр лёгкий
 
 
 async def test_protection_report_matches_page(client, app):
@@ -172,7 +176,8 @@ async def test_hosts_report_by_page_filter_without_selection_and_constructor_opt
     assert full["total"] >= 2 and all(r["name"].startswith("ws-") for r in full["items"]) and m(full, "hosts") == full["total"]
     assert [t["id"] for t in full["doc"]["tables"]] == ["hosts", "protection"]         # по условиям — только состояние защиты; ПО, уязвимости, EOL, события, аппаратная часть — явно (до 500 компьютеров)
     wide = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True, "sections": ["software", "protection"]})
-    assert "software" in [t["id"] for t in wide["doc"]["tables"]]
+    assert [t["id"] for t in wide["doc"]["tables"]] == ["hosts", "protection"]            # предпросмотр лёгкий: выбранный раздел назван в условиях, содержимое — в файле
+    assert any(c["label"] == "Разделы" and "установленное ПО" in c["text"] for c in wide["doc"]["conditions"])
     short = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True, "detail": "summary"})
     assert [t["id"] for t in short["doc"]["tables"]] == ["summary"] and m(short, "hosts") == full["total"]
     cols = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True, "columns": ["name", "ip", "nonexistent"]})
