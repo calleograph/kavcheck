@@ -13,13 +13,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: "nmap (с повторами — зеркало Ubuntu иногда недоступно)"
+      - name: "nmap (ограничено по времени — зеркало Ubuntu иногда недоступно; тесты Nmap без него пропускаются)"
         run: |
-          for i in 1 2 3 4 5; do
-            sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 nmap && exit 0
-            echo "попытка $i не удалась, повтор через 30 с"; sleep 30
+          for i in 1 2 3; do
+            timeout 240 sh -c 'sudo apt-get update -o Acquire::Retries=2 && sudo apt-get install -y --no-install-recommends -o Acquire::Retries=2 nmap' && exit 0
+            echo "попытка $i не удалась"; sleep 15
           done
-          exit 1
+          echo "::warning::nmap не установлен: тесты Nmap будут пропущены"
       - run: pip install -r backend/requirements-dev.txt
       - run: pytest -q
         working-directory: backend
