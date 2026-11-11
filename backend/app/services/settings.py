@@ -29,6 +29,7 @@ class GeneralSettings(_Group):
     report_keep_days: int = Field(default=90, ge=1, le=3650)         # сколько хранить сформированные отчёты
     journal_keep_days: int = Field(default=90, ge=1, le=3650)         # устарело: срок хранения журнала событий задаётся в «Журналы и хранение»
     components_check: bool = True                                    # фоновая проверка доступных версий компонентов (GitHub, PyPI, npm, endoflife.date); без доступа в интернет кэш остаётся пустым
+    components_check_hours: int = Field(default=6, ge=1, le=168)         # как часто проверять доступные версии компонентов и релизы на GitHub (часы); по запросу — в любой момент
 
     @field_validator("timezone")
     @classmethod

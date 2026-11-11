@@ -308,9 +308,10 @@ async def _hosts_by_filter(client: SourceClient, p: dict, ctx: Ctx) -> list[int]
 
 
 EVENT_DAYS = 30                 # как вкладка «События» карточки компьютера
+VULN_MIN_PER_HOST = 200      # нижняя граница построчного списка CVE на компьютер в отчёте по компьютерам
 HOST_SECTIONS = ("software", "vulns", "protection", "eol", "events", "hardware")
 HOST_SECTION_TITLE = (("protection", "состояние защиты"), ("software", "установленное ПО"), ("vulns", "уязвимости"), ("eol", "EOL"), ("events", "события (30 суток)"), ("hardware", "аппаратная часть"))
-HOST_TABS = (("hosts", "Общие сведения"), ("protection", "Состояние защиты"), ("software", "Установленное ПО"), ("vulns", "Уязвимости"), ("eol", "EOL"),
+HOST_TABS = (("hosts", "Общие сведения"), ("protection", "Состояние защиты"), ("software", "Установленное ПО"), ("vulns", "Уязвимости"), ("vulns_groups", "Уязвимости по программам"), ("eol", "EOL"),
              ("events", "События безопасности"), ("hardware", "Аппаратная часть"))
 
 
@@ -373,7 +374,11 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     from ..services import hostvulns as HV  # noqa: PLC0415
     from ..vdb import hostext as HX  # noqa: PLC0415
 
-    host_vulns: dict[int, list[dict]] = {}
+    host_vc: dict[int, Counter] = {}                             # опасность по ВСЕМ уязвимостям компьютера (таблица может быть сокращена, счётчики — нет)
+    vgroups: list[dict] = []                                     # полная сводка «компьютер × программа × версия»
+    vcut: list[tuple[str, int, int]] = []                        # компьютеры, у которых построчный список сокращён: (имя, показано, всего)
+    vsev: Counter = Counter()
+    vtotal = 0
     soft_by: dict[int, list[dict]] = {}
     ext_info: dict | None = None
     ext_missing = False                                          # внешние результаты не подготовлены: счётчики уязвимостей неполны и не показываются нулями
@@ -385,6 +390,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                 soft_by.setdefault(int(r["host_id"]), []).append(r)
             ctx.progress(f"программы: компьютеров {min(i + 100, len(ids))} из {len(ids)}")
     if avail["vulns"]:
+        per_host = max(VULN_MIN_PER_HOST, ctx.max_rows // max(1, len(ids)))        # построчный список — не более этого числа самых опасных на компьютер (предел отчёта делится поровну); счётчики и сводка — полные
         async with ctx.sm() as db:
             for hid in ids:
                 if ctx.cancelled():
@@ -392,14 +398,24 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                 ksc = await V.on_host(client, hid)
                 ext, info = await host_ext_items(db, client, ctx.source_id, hid, soft=soft_by.get(hid, []))
                 ext_info = ext_info or info
-                rows_h = HV.merge(ksc, ext)
-                host_vulns[hid] = rows_h
-                vrows += [{**r, "host_id": hid, "host": names.get(hid, str(hid)), "cve": ", ".join(k for k in r["keys"] if str(k).upper().startswith("CVE")),
+                rows_h = HV.merge(ksc, ext)                          # отсортирован: самые важные первыми
+                host_vc[hid] = Counter(x["severity"] for x in rows_h)
+                vsev.update(host_vc[hid])
+                vtotal += len(rows_h)
+                name = names.get(hid, str(hid))
+                for g in HV.groups(rows_h):
+                    vgroups.append({"host": name, "product": g["product"], "version": g["version"], "severity": g["severity"], "severity_ru": g["severity_ru"], "cves": g["cves"], "kev": g["kev"],
+                                    "confirmed_ksc": g["confirmed_ksc"], "external_only": g["external_only"], "sample": ", ".join(g["sample"]) + (f" и ещё {g['more']}" if g["more"] else "")})
+                if len(rows_h) > per_host:
+                    vcut.append((name, per_host, len(rows_h)))
+                vrows += [{**r, "host_id": hid, "host": name, "cve": ", ".join(k for k in r["keys"] if str(k).upper().startswith("CVE")),
                            "sources_text": ", ".join(r["sources"]), "exploited_text": "да" if r["exploited"] else "",
-                           "patch": "исправление доступно" if (r.get("ksc") or {}).get("patches_available") else ""} for r in rows_h]
-                if len(vrows) > ctx.max_rows:
-                    raise KscError("too_many_rows", f"Уязвимостей в отчёте больше предела ({ctx.max_rows}): выберите меньше компьютеров или отключите раздел")
-                ctx.progress(f"уязвимости: компьютеров {len(host_vulns)} из {len(ids)}")
+                           "patch": "исправление доступно" if (r.get("ksc") or {}).get("patches_available") else ""} for r in rows_h[:per_host]]
+                del rows_h, ext
+                ctx.progress(f"уязвимости: компьютеров {len(host_vc)} из {len(ids)}, найдено {vtotal}")
+        if vcut:
+            notes.append(f"У {len(vcut)} компьютеров построчный список CVE в таблице «Уязвимости» сокращён до самых опасных (на компьютер — не более {vcut[0][1]}; например {vcut[0][0]}: {vcut[0][1]} из {vcut[0][2]}). "
+                         "Счётчики в отчёте — по всем уязвимостям. Полная сводка по каждой программе и версии — в таблице «Уязвимости по программам»; полный список CVE одного компьютера — в его карточке или в отчёте только по этому компьютеру.")
         if ext_info is not None:
             ext_missing = not ext_info["catalog"] or ext_info["state"] == "none"
             if not ext_info["catalog"]:
@@ -463,7 +479,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
             continue
         pr = P.problems(r, ctx.now, bases_days=bases_days, scan_days=scan_days)
         av = r["av"] or {}
-        vc = Counter(x["severity"] for x in host_vulns.get(hid, []))
+        vc = host_vc.get(hid, Counter())
         rtp = r["rtp_label"] or av.get("state_label") or "—"
         prot = {"host_id": hid, "host": r["name"], "problems": "; ".join(P.PROBLEMS[x][0] for x in pr) or "защита в порядке", "av": av.get("product") or "нет",
                 "av_build": av.get("build") or "", "rtp": rtp, "bases": av.get("bases"), "last_full_scan": r["last_full_scan"], "agent": r["agent_build"],
@@ -493,7 +509,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
             metrics += [metric("vhosts", "Компьютеров с уязвимостями", "нет данных", "внешние базы не подготовлены: известны только уязвимости, подтверждённые KSC", "danger"),
                         metric("vrows", "Уязвимостей в объединённом списке", "нет данных", f"только KSC: {len(vrows)}; по внешним базам расчёта нет (журнал: Администрирование → База уязвимостей)", "danger")]
         else:
-            metrics += [metric("vhosts", "Компьютеров с уязвимостями", len(worst), "уникальных"), metric("vrows", "Уязвимостей в объединённом списке", len(vrows), "строка: уязвимость × программа × источник")]
+            metrics += [metric("vhosts", "Компьютеров с уязвимостями", len(worst), "уникальных"), metric("vrows", "Уязвимостей в объединённом списке", vtotal, "строка: уязвимость × программа × источник" + (f"; в таблице «Уязвимости» показано {len(vrows)} самых опасных, остальные — в сводке по программам" if vcut else ""))]
     if avail["eol"]:
         metrics.append(metric("eolhosts", "Компьютеров с EOL", len(eol_n), "программы или ОС без поддержки или с её окончанием"))
     if avail["events"]:
@@ -518,6 +534,11 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                                                                        col("cve", "CVE", "mono"), col("product", "Программа"), col("version", "Версия", "mono"), col("verdict_ru", "Достоверность"),
                                                                        col("basis", "Основание"), col("sources_text", "Источники"), col("exploited_text", "Эксплуатируется"), col("patch", "Исправление")],
                        "rows": vrows, "note": "Одна строка — уязвимость на компьютере (программа и версия). Потенциальные — найдены по внешним базам по установленной версии, KSC их не подтвердил."})
+    if avail["vulns"] and vgroups:
+        tables.append({"id": "vulns_groups", "title": "Уязвимости по программам", "columns": [col("host", "Компьютер"), col("product", "Программа"), col("version", "Версия", "mono"), col("severity_ru", "Наивысшая опасность", "sev"),
+                                                                                           col("cves", "Уникальных уязвимостей", "num"), col("kev", "Из них эксплуатируемых (KEV)", "num"), col("confirmed_ksc", "Подтверждено KSC", "num"),
+                                                                                           col("external_only", "Только по внешним базам", "num"), col("sample", "Примеры идентификаторов", "mono")], "rows": vgroups,
+                       "note": "Одна строка — установленная программа и версия на компьютере: по ней посчитаны ВСЕ уязвимости (построчная таблица «Уязвимости» может быть сокращена до самых опасных)."})
     if avail["eol"]:
         tables.append({"id": "eol", "title": "EOL", "columns": [col("host", "Компьютер"), col("kind_ru", "Вид"), col("title", "Программа или ОС"),
                                                                                             col("version", "Версия", "mono"), col("status_ru", "Поддержка"), col("severity_ru", "Критичность"),
@@ -535,7 +556,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     sev = None
     if avail["vulns"] and not ext_missing:
         sev = {"title": "Компьютеры по наивысшему уровню опасности (сумма = затронуто компьютеров)",
-               "levels": [{"key": k, "label": SEV_RU[k], "value": sum(1 for v in worst.values() if v == k), "hint": f"уязвимостей {sum(1 for r in vrows if r['severity'] == k)}"} for k in ("critical", "high", "warning")]}
+               "levels": [{"key": k, "label": SEV_RU[k], "value": sum(1 for v in worst.values() if v == k), "hint": f"уязвимостей {vsev[k]}"} for k in ("critical", "high", "warning")]}
     tabs = [{"id": tid, "title": title} for tid, title in HOST_TABS if any(t["id"] == tid for t in tables)]
     return {"title": f"Компьютеры: {rows[0]['name']}" if len(rows) == 1 else f"Компьютеры: {len(rows)}", "subtitle": "Состояние, защита, программы, уязвимости, EOL, события и аппаратная часть",
             "conditions": conds, "metrics": metrics, "severity": sev, "notes": notes, "tables": tables, "tabs": tabs}
@@ -742,7 +763,7 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
 
 
 # Таблицы, которые входят только в подробный отчёт: построчные перечни (обнаружения, компьютеры, устройства, события). В кратком остаются сводные таблицы и показатели.
-DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "protection", "software", "vulns", "eol", "events", "hardware"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
+DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "protection", "software", "vulns", "vulns_groups", "eol", "events", "hardware"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
                  "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}, "quick_pentest": {"hosts", "ports", "hits", "skipped"}, "quick_hunt": {"coverage"}, "quick_bi": {"rows"}, "quick_hier": {"rows"}, "quick_ad": {"rows"}, "quick_admin": {"rows"}}
 
 

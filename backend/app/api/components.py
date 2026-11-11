@@ -13,7 +13,7 @@ router = APIRouter(prefix="/admin/components", tags=["admin-components"])
 
 @router.get("")
 async def overview(request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    return await C.table(db, request.app.state.settings)
+    return await C.table(db, request.app.state.settings, (await request.app.state.settings_svc.get(db, "general")).components_check_hours)
 
 
 @router.post("/check", status_code=202)

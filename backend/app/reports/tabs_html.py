@@ -11,7 +11,8 @@ from .quick_export import CSS as BASE_CSS
 from .quick_export import _fmt, org_lines
 
 esc = html.escape
-PAGE = 200                                    # строк в порции; остальные — по «Показать ещё» или при печати
+PAGE = 200                     # строк в порции; остальные — по «Показать ещё» или при печати
+HTML_TAB_LIMIT = 20_000        # строк одной вкладки в HTML (десятки тысяч строк браузер держит плохо)
 CSS_TABS = """
 .tabs { position: relative; margin-top: 14px; }
 .kt-r { position: absolute; opacity: 0; pointer-events: none; }
@@ -118,7 +119,7 @@ def _cell(v, col: dict) -> str:
 def _panel(i: int, t: dict) -> str:
     cols, rows = t["columns"], t["rows"]
     head = "".join(f'<th class="{"num" if c["type"] == "num" else ""}">{esc(c["title"])}</th>' for c in cols)
-    body = "".join("<tr>" + "".join(_cell(r.get(c["key"]), c) for c in cols) + "</tr>" for r in rows)
+    body = "".join("<tr>" + "".join(_cell(r.get(c["key"]), c) for c in cols) + "</tr>" for r in rows[:HTML_TAB_LIMIT])
     key = SUMMARY_KEY.get(t["id"])
     summary = f"<b>{len(rows):,}</b> записей".replace(",", " ")
     if key and rows:
@@ -128,6 +129,8 @@ def _panel(i: int, t: dict) -> str:
             dist[v] = dist.get(v, 0) + 1
         summary += " · " + "; ".join(f"{esc(k)}: {n}" for k, n in sorted(dist.items(), key=lambda kv: -kv[1])[:6])
     note = f'<p class="sub">{esc(t["note"])}</p>' if t.get("note") else ""
+    if len(rows) > HTML_TAB_LIMIT:                                   # файл остаётся открываемым в браузере; полный список — в Excel
+        note += f'<p class="sub"><b>В этом файле показаны первые {HTML_TAB_LIMIT:,} из {len(rows):,} строк</b> (самые важные первыми); полный список — в файле Excel.</p>'.replace(",", " ")
     empty = '<p class="kt-empty">Нет записей.</p>' if not rows else ""
     return (f'<section class="kt-panel" id="kp-{i}" aria-label="{esc(t["title"])}">{note}<p class="kt-sum">{summary}</p>{empty}'
             f'<div class="kt-tools"><input class="kt-q" type="search" placeholder="Поиск в таблице" aria-label="Поиск в таблице: {esc(t["title"])}"><span class="kt-count"></span></div>'

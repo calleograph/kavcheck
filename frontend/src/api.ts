@@ -39,7 +39,7 @@ export interface HostVulnRow { id: string; keys: string[]; kla_id: string; title
 export interface HostVulnGroup { gid: string; product: string; version: string; severity: "critical" | "high" | "warning"; severity_ru: string; cves: number; kev: number; sample: string[]; more: number; rows: number; confirmed_ksc: number; external_only: number; detected_by: string[]; eol: { status: string; status_ru: string; severity: string } | null }
 export interface ExtState { state: "none" | "updating" | "stalled" | "stale" | "fresh"; built_at: string | null; error: string; truncated: boolean }
 export interface OvalFeedInfo { id: string; group: string; name: string; url: string; size: number; current: boolean; selected: boolean }
-export interface VdbAnalysisItem { source_id: string; source: string; state: ExtState["state"]; built_at: string | null; error: string; status: string; hits: number; duration_ms: number; started_at: string | null; lease: boolean;
+export interface VdbAnalysisItem { next_auto_at: string | null; min_hours: number; source_id: string; source: string; state: ExtState["state"]; built_at: string | null; error: string; status: string; hits: number; duration_ms: number; started_at: string | null; lease: boolean;
   progress: { stage: string; done: number; total: number; at: string | null; eta_s: number | null } | null }
 export interface VdbJournalItem { id: number; at: string; level: "info" | "warn" | "error"; kind: string; kind_ru: string; source: string; vdb_key: string; message: string; details: Record<string, unknown> | null }
 export interface VdbJournalPage { items: VdbJournalItem[]; next_before: number | null; bytes: number; limit_bytes: number; counts_24h: Record<string, number>; kinds: { key: string; label: string }[] }
@@ -128,7 +128,7 @@ export interface PtLogPage { items: PtLogEvent[]; first_id: number | null; last_
 export type CompStatus = "current" | "update" | "deferred" | "incompatible" | "review" | "unknown" | "unavailable";
 export interface CompRow { key: string; title: string; group: string; purpose: string; running: boolean | null; installed: string | null; verified: string | null; latest: string | null; latest_url: string | null; published_at: string | null;
   checked_at: string | null; check_error: string; status: CompStatus; status_ru: string; why: string; release_notes: string; compat: string; limits: string; branch: string; decision: { status: string; reason: string; note: string } }
-export interface CompTable { items: CompRow[]; reviewed_for: string; reviewed_at: string; note: string; checked_at: string | null; requested: boolean; counts: Record<CompStatus, number> }
+export interface CompTable { interval_hours: number; items: CompRow[]; reviewed_for: string; reviewed_at: string; note: string; checked_at: string | null; requested: boolean; counts: Record<CompStatus, number> }
 export interface PtTool { key: string; title: string; running: boolean | null; installed: string | null; latest: string | null; status: CompStatus; status_ru: string; why: string }
 export interface PtOverview { enabled: boolean; tools: PtTool[]; scanner: { alive: boolean; age_s: number | null; data: { nmap?: string; scan?: string; net_raw?: boolean; jobs_running?: number } }; active: number; results: { jobs: number; findings: number; confirmed: number; last_at: string | null } | null;
   recent: PtJob[]; latest_sev: Record<string, number>; policy: { allowed: string[] | null; max_targets: number; large_threshold: number; full_ports_max_targets: number; safe_scripts_enabled: boolean; scan_type: string; max_rate: number } }
@@ -171,7 +171,7 @@ export interface VdbRunRow { started_at: string | null; finished_at: string | nu
 export interface VdbAttempt { channel: string; title: string; ok: boolean; error: string; ms: number; records: number }
 export interface VdbSourceInfo { channel: string; channels: string[]; attempts: VdbAttempt[]; key: string; title: string; url: string; terms: string; mode: "full" | "incremental"; enabled: boolean; interval_hours: number; settings: Record<string, unknown>; secret_set: boolean;
   status: "never" | "running" | "ok" | "error"; progress: string | null; last_started_at: string | null; last_ok_at: string | null; last_duration_ms: number | null; last_error: string | null; records: number;
-  requested: boolean; requested_at: string | null; can_restore: boolean; upload: boolean; runs: VdbRunRow[] }
+  requested: boolean; requested_at: string | null; feed_state: Record<string, { definitions: number | null; at: string | null; error: string; error_at?: string }> | null; can_restore: boolean; upload: boolean; runs: VdbRunRow[] }
 export interface VdbAffectedRow { vendor: string; product: string; ecosystem: string; cpe: string; purl: string; platform: string; exact: string; from: string; from_incl: boolean; to: string; to_incl: boolean; fixed: string;
   all_versions: boolean; version_text: string; conditional: boolean }
 export interface VdbRecordOut { source: string; scores: VdbScore[]; title: string; ext_id: string; aliases: string[]; severity: string; severity_ru: string; score: number | null; vector: string; published: string | null; modified: string | null;
@@ -626,6 +626,7 @@ export const api = {
     sources: () => req<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[]; storage: { db_bytes: number | null; tmp_bytes: number; free_bytes: number } }>("GET", "/vdb/sources"),
     syncAll: () => req<{ queued: string[] }>("POST", "/vdb/sync-all"),
     ovalCatalog: () => req<{ items: OvalFeedInfo[] }>("GET", "/vdb/oval/catalog"),
+    ovalProbe: () => req<{ items: { url: string; ok: boolean; status: number | null; size: number; ms: number; error: string }[] }>("POST", "/vdb/oval/probe"),
     analysis: () => req<{ items: VdbAnalysisItem[] }>("GET", "/vdb/analysis"),
     analysisRun: (sourceId?: string) => req<{ queued: number }>("POST", `/vdb/analysis/run${sourceId ? `?source_id=${sourceId}` : ""}`),
     journal: (p: Record<string, string | number | undefined>) => req<VdbJournalPage>("GET", `/vdb/journal${qs(p)}`),

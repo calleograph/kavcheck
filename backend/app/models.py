@@ -639,6 +639,7 @@ class VdbAnalysis(Base):
     done: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")             # ход: обработано уязвимостей
     total: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")            # ход: всего к обработке
     progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))                        # когда ход обновлялся последний раз (признак зависания)
+    eta_s: Mapped[int | None] = mapped_column(Integer)                                                      # оценка оставшегося времени по недавней скорости (расчёт замедляется к концу)
 
 
 class VdbJournal(Base):

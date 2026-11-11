@@ -32,6 +32,7 @@ log = logging.getLogger("app.vdb")
 STALE = timedelta(hours=3)
 BACKLOG_DAYS = 90
 MIN_FREE_MB = int(os.environ.get("VDB_MIN_FREE_MB", "1024"))
+MIN_ANALYSIS_H = float(os.environ.get("VDB_ANALYSIS_MIN_HOURS", "6"))      # автоматический полный расчёт одного источника — не чаще; ручной «Пересчитать» и первый расчёт ограничению не подчиняются
 UPLOAD_DIR = "vdb"
 
 
@@ -145,9 +146,9 @@ class VdbSync:
                 await db.commit()
             await self._journal.emit("system", "vdb_sync_done" if not error else "vdb_sync_failed", level="info" if not error else "error", message=f"{S.INFO[key]['title']}: "
                                      + (f"записей получено {ctx.fetched}, изменено {ctx.changed}" if not error else error[:300]), duration_ms=ms, data={"source": key, "trigger": trigger})
-            await J.emit(self._sm, "sync", f"{S.INFO[key]['title']}: " + (f"загружено, получено {ctx.fetched}, изменено {ctx.changed}, {ms / 1000:.0f} с" if not error else f"ошибка загрузки: {error[:300]}"),
-                         level="error" if error else "info", vdb_key=key, details={"run_id": run_id, "fetched": ctx.fetched, "changed": ctx.changed, "seconds": round(ms / 1000), "channel": ctx.channel,
-                                                                                    "attempts": (ctx.attempts or [])[:6]})
+            await J.emit(self._sm, "sync", f"{S.INFO[key]['title']}: " + (f"загружено, получено {ctx.fetched}, изменено {ctx.changed}, {ms / 1000:.0f} с" + (f"; не получено: {len(ctx.warnings)} (см. подробности)" if ctx.warnings else "") if not error else f"ошибка загрузки: {error[:300]}"),
+                         level="error" if error else ("warn" if ctx.warnings else "info"), vdb_key=key, details={"run_id": run_id, "fetched": ctx.fetched, "changed": ctx.changed, "seconds": round(ms / 1000), "channel": ctx.channel,
+                                                                                    "attempts": (ctx.attempts or [])[:6], "warnings": ctx.warnings[:20]})
             if error:
                 outcome[:] = ["error", error[:500]]
             if not error and ctx.keys and len(ctx.keys) <= 3000:
@@ -288,6 +289,15 @@ class VdbSync:
                     done = await db.get(VdbAnalysis, st.source_id)
                     if done is not None and done.status == "ok" and done.rev == store.rev_hash(rev) and done.built_at is not None:
                         continue                                    # результаты построены для этой ревизии данных (в том числе до перезапуска службы)
+                    if done is not None and done.status == "ok" and done.built_at is not None and done.rev.startswith(f"{store.MATCH_REV}.") and done.started_at is not None:
+                        # данные изменились, но прошлый полный расчёт начат недавно: на большой базе он идёт десятки минут, и следующий сразу за ним не даёт ничего посчитать до конца — ждём интервала
+                        st_at = done.started_at if done.started_at.tzinfo else done.started_at.replace(tzinfo=timezone.utc)
+                        due_at = st_at + timedelta(hours=MIN_ANALYSIS_H)
+                        if datetime.now(timezone.utc) < due_at:
+                            if self._once(("throttle", st.source_id), 3600):
+                                await J.emit(self._sm, "analysis", f"Данные изменились; следующий автоматический расчёт не раньше {due_at:%d.%m.%Y %H:%M} UTC (не чаще раза в {MIN_ANALYSIS_H:g} ч). Показан последний готовый результат; изменения небольших уязвимостей разбираются сразу, «Пересчитать» — вручную",
+                                             source_id=st.source_id, details={"min_hours": MIN_ANALYSIS_H})
+                            continue
                     why = "расчёта ещё не было" if done is None or done.built_at is None else "прошлый расчёт завершился ошибкой" if done.status == "error" else \
                           "прошлый расчёт не закончен" if done.status == "running" else "данные баз, каталога или решения изменились"
                     todo.append((st.source_id, rev, why))
@@ -355,9 +365,13 @@ class VdbSync:
                     n = await analyze(db, source_id, keys=None, res=RES, lease=lease)
                     await db.commit()
             except BaseException as exc:
+                stopped = isinstance(exc, asyncio.CancelledError)
+                msg = "Расчёт прерван остановкой службы (обновление или перезапуск); будет начат заново" if stopped else f"{type(exc).__name__}: {exc}"[:400]
                 async with self._sm() as db:
-                    await _set_state(db, source_id, status="error", error=f"{type(exc).__name__}: {exc}"[:400])
+                    await _set_state(db, source_id, status="error", error=msg, stage="", eta_s=None)
                     await db.commit()
+                if stopped:
+                    await J.emit(self._sm, "analysis", "Расчёт прерван: служба остановлена (обновление или перезапуск); будет начат заново", level="warn", source_id=source_id)
                 raise
         return n
 
@@ -369,6 +383,11 @@ async def _set_state(db: AsyncSession, source_id: uuid.UUID, **fields) -> None:
     else:
         for k, v in fields.items():
             setattr(st, k, v)
+
+
+def _dur(sec: float) -> str:
+    sec = int(sec)
+    return f"{sec // 3600} ч {sec % 3600 // 60} мин" if sec >= 3600 else f"{sec // 60} мин {sec % 60} с" if sec >= 60 else f"{sec} с"
 
 
 def _utc(d: datetime) -> datetime:
@@ -400,12 +419,13 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     if full:
         await _set_state(db, source_id, stage="сопоставление", total=len(all_keys), done=0, progress_at=utcnow())
         await db.commit()
-        await emit(f"Подобрано уязвимостей для сопоставления: {len(all_keys)} (поиск {time.monotonic() - t_keys:.0f} с)")
+        await emit(f"Подобрано уязвимостей для сопоставления: {len(all_keys)} (поиск {_dur(time.monotonic() - t_keys)})")
     scope = None if keys is None else set(keys)
     matched: set[str] = set()
     now = utcnow()
     total, done, t0 = len(all_keys), 0, time.monotonic()
     next_mark, last_say = max(1, total // 10), time.monotonic()
+    hist: list[tuple[float, int]] = [(time.monotonic(), 0)]        # (время, обработано): оценка по скорости последних минут — расчёт замедляется к концу, средняя скорость обманывает в 3–4 раза
     log.info("Анализ уязвимостей начат", extra={"source_id": str(source_id), "keys": total, "products": len(prods)})
     async for part, rows in M.iter_affected(db, all_keys, batch):
         # сопоставление — чистые вычисления Python: в отдельном потоке, иначе событийный цикл стоит и продление аренд, этапы и другие задания ждут
@@ -416,12 +436,18 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
         if lease is not None:
             await lease.stage("анализ уязвимостей", f"обработано {min(done, total)} из {total} уязвимостей, найдено {len(matched)}")
         if full:
-            await _set_state(db, source_id, done=min(done, total), progress_at=utcnow())
-            if done >= next_mark or time.monotonic() - last_say >= 180:             # ход в журнал: каждые 10% или раз в 3 минуты
-                next_mark, last_say = done + max(1, total // 10), time.monotonic()
-                el = time.monotonic() - t0
-                await emit(f"Ход расчёта: {min(done, total)} из {total} ({100 * min(done, total) // max(total, 1)}%), прошло {el:.0f} с, ожидается ещё ≈{el * (total - done) / max(done, 1):.0f} с",
-                           details={"done": done, "total": total, "matched": len(matched)})
+            nowm = time.monotonic()
+            hist.append((nowm, done))
+            while len(hist) > 2 and nowm - hist[0][0] > 420:
+                hist.pop(0)
+            span = nowm - hist[0][0]
+            eta = int((total - done) * span / max(done - hist[0][1], 1)) if span > 0 and done > hist[0][1] else None
+            await _set_state(db, source_id, done=min(done, total), progress_at=utcnow(), eta_s=eta)
+            if done >= next_mark or nowm - last_say >= 180:             # ход в журнал: каждые 10% или раз в 3 минуты
+                next_mark, last_say = done + max(1, total // 10), nowm
+                el = nowm - t0
+                await emit(f"Ход расчёта: {min(done, total)} из {total} ({100 * min(done, total) // max(total, 1)}%), прошло {_dur(el)}" + (f", осталось ≈{_dur(eta)} (по скорости последних минут)" if eta is not None else ""),
+                           details={"done": done, "total": total, "matched": len(matched), "eta_s": eta})
         by: dict[str, list[M.Match]] = {}
         for m in matches:
             by.setdefault(m.vuln_key, []).append(m)
@@ -478,9 +504,9 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     await db.commit()
     if full:
         hits = (await db.execute(select(func.count()).select_from(VdbVersionHit).where(VdbVersionHit.source_id == source_id))).scalar_one()
-        await _set_state(db, source_id, status="ok", error="", rev=rev0, built_at=utcnow(), hits=int(hits), duration_ms=int((time.monotonic() - t0) * 1000), stage="", done=total, total=total, progress_at=utcnow())
+        await _set_state(db, source_id, status="ok", error="", rev=rev0, built_at=utcnow(), hits=int(hits), duration_ms=int((time.monotonic() - t0) * 1000), stage="", done=total, total=total, progress_at=utcnow(), eta_s=None)
         await db.commit()
-        await emit(f"Расчёт завершён: уязвимостей {total}, с совпадениями {len(matched)}, строк результата {int(hits)}, {time.monotonic() - t0:.0f} с",
+        await emit(f"Расчёт завершён: уязвимостей {total}, с совпадениями {len(matched)}, строк результата {int(hits)}, {_dur(time.monotonic() - t0)}",
                    details={"keys": total, "matched": len(matched), "hits": int(hits), "seconds": round(time.monotonic() - t0)})
     log.info("Анализ уязвимостей завершён", extra={"source_id": str(source_id), "keys": total, "matched": len(matched), "duration_s": round(time.monotonic() - t0)})
     return len(matched)

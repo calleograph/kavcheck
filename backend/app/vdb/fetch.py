@@ -124,6 +124,21 @@ class Http:
             raise FetchError(f"{url.split('/')[2]}: HTTP {r.status_code}")
         return r
 
+    async def probe(self, url: str, *, timeout: float = 8) -> dict:
+        """Доступен ли адрес с этого сервера: запрос первого байта (без скачивания файла). Возвращает {ok, status, size, ms, error}."""
+        t0 = time.monotonic()
+        try:
+            async with self._c.stream("GET", url, headers={"Range": "bytes=0-0"}, timeout=httpx.Timeout(timeout, connect=min(timeout, 6))) as r:
+                size = int((r.headers.get("content-range") or "").rpartition("/")[2] or 0) if "/" in (r.headers.get("content-range") or "") else int(r.headers.get("content-length") or 0)
+                code = r.status_code
+        except httpx.HTTPError as exc:
+            return {"ok": False, "status": None, "size": 0, "ms": int((time.monotonic() - t0) * 1000), "error": _why(exc)}
+        ms = int((time.monotonic() - t0) * 1000)
+        if code >= 400:
+            why = {403: "доступ запрещён (HTTP 403): сервер закрыт для вашей сети или страны", 404: "адрес не найден (HTTP 404): фид перенесён или снят", 429: "слишком частые запросы (HTTP 429)"}.get(code, f"HTTP {code}")
+            return {"ok": False, "status": code, "size": 0, "ms": ms, "error": why}
+        return {"ok": True, "status": code, "size": size, "ms": ms, "error": ""}
+
     async def download(self, url: str, dest: Path, *, etag: str = "", last_modified: str = "", max_bytes: int = MAX_BYTES,
                        progress: Callable[[int, int], Awaitable[None]] | None = None, headers: dict | None = None) -> Downloaded:
         """Скачивание большого файла потоком (память — один блок). Проверяется свободное место по Content-Length до начала, размер — после (оборванный файл отклоняется).
@@ -154,6 +169,18 @@ class Http:
                 return Downloaded(total, r.headers.get("etag", ""), r.headers.get("last-modified", ""))
         except httpx.HTTPError as exc:
             raise FetchError(_net_error(url, exc)) from None
+
+
+def _why(exc: Exception) -> str:
+    """Короткая причина недоступности для администратора."""
+    msg = str(exc)
+    if isinstance(exc, (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout)):
+        return "не отвечает: таймаут подключения (сервер недоступен из вашей сети: сетевой экран, прокси или ограничение по стране)"
+    if isinstance(exc, httpx.ConnectError):
+        return "нет соединения (имя сервера не найдено или порт закрыт)" if "Name or service" in msg or "resolve" in msg.lower() else "нет соединения с сервером"
+    if "CERTIFICATE" in msg.upper():
+        return "сертификат сервера не прошёл проверку (добавьте корневой сертификат: LDAPS → Сертификаты CA)"
+    return f"{type(exc).__name__}: {msg[:120]}"
 
 
 def _net_error(url: str, exc: Exception) -> str:

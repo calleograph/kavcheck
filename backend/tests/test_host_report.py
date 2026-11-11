@@ -70,10 +70,10 @@ async def test_host_report_matches_the_card(client, app):
     # HTML: вкладки как в карточке, автономно, строки вкладок совпадают с таблицами
     rid = await _job(client, app, runner, sid, 6)
     page = (await client.get(f"/api/v1/reports/{rid}/download/html")).text
-    for tab in ("Общие сведения", "Состояние защиты", "Установленное ПО", "Уязвимости", "EOL", "События безопасности", "Аппаратная часть"):
+    for tab in ("Общие сведения", "Состояние защиты", "Установленное ПО", "Уязвимости", "Уязвимости по программам", "EOL", "События безопасности", "Аппаратная часть"):
         assert f'<span class="kt-n">' in page and f">{tab}<" in page, tab
     assert "<link " not in page and 'src="http' not in page and "<script>" in page                       # без внешних ресурсов; сценарий встроен
-    assert page.count('class="kt-panel"') == page.count('class="kt-tab"') == 7                            # полный набор разделов — семь вкладок
+    assert page.count('class="kt-panel"') == page.count('class="kt-tab"') == 8                            # полный набор разделов — восемь вкладок (с суммарной таблицей «Уязвимости по программам»)
     assert "Уязвимостей в объединённом списке" in page and "kt-table" in page
     d = job_dir(app.state.settings, uuid.UUID(rid))
     assert (d / "report.pdf").read_bytes()[:4] == b"%PDF" and (d / "report.csv").stat().st_size > 50       # PDF и CSV строятся из того же документа
@@ -114,3 +114,27 @@ async def test_unprepared_external_results_are_not_zeros(client, app):
     assert any("не подготовлена" in n for n in notes)                                                            # причина названа и в карточке
     wb = _tables(rid, app)
     assert "Уязвимости" in wb.sheetnames                                                                         # раздел остаётся: подтверждённые KSC видны
+
+
+async def test_huge_vulnerability_lists_shrink_the_row_table_but_never_fail_or_lose_counts(client, app, monkeypatch):
+    """Сотни тысяч совпадений на компьютер: построчная таблица — самые опасные (с пометкой), счётчики и сводка «по программам» — по всем; отчёт не падает."""
+    from app.api.schemas import QUICK_PARAMS
+    from app.reports import quick
+
+    sid, _runner = await _setup(client, app)
+    monkeypatch.setattr(quick, "VULN_MIN_PER_HOST", 1)
+    sm = app.state.session_maker
+    from app.vdb.sync import analyze
+    async with sm() as db:
+        await analyze(db, uuid.UUID(sid), None)                                                                  # результаты внешних баз подготовлены
+        await db.commit()
+    async with sm() as db:
+        src = await db.get(KscSource, uuid.UUID(sid))
+    ctx = quick.Ctx(source_name=src.name, activity_days=30, sm=sm, source_id=uuid.UUID(sid), max_rows=2, features=(src.last_check or {}).get("features") or {})
+    params = QUICK_PARAMS["quick_hosts"].model_validate({"host_ids": [6, 1, 5, 7], "sections": ["vulns"]}).model_dump()
+    doc = await quick.build("quick_hosts", app.state.sources.client(src), params, ctx)
+    by = {t["id"]: t for t in doc["tables"]}
+    total = sum(int(r["v_total"] or 0) for r in by["hosts"]["rows"])
+    assert total > len(by["vulns"]["rows"]) and len(by["vulns"]["rows"]) == 4                                  # по одной самой опасной на компьютер (4 компьютера)
+    assert sum(r["cves"] for r in by["vulns_groups"]["rows"]) >= 1 and any("сокращён" in n for n in doc["notes"])  # причина названа, полная сводка есть
+    assert next(m["value"] for m in doc["metrics"] if m["key"] == "vrows") == total                              # метрика — по всем

@@ -118,6 +118,8 @@ code { background: var(--surface-2); border: 1px solid var(--line); padding: 0 5
 /* ход расчёта и журнал базы уязвимостей */
 .oval-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin: 12px 0; }
 .oval-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.feed-ok { color: var(--ok-text); font-size: var(--fs-sm); }
+.feed-bad { color: var(--danger-text); font-size: var(--fs-sm); }
 .oval-g { padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 .oval-f { padding-left: 4px; }
 .jf { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 12px 0; }

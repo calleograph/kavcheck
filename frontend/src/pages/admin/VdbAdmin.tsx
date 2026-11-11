@@ -60,7 +60,7 @@ function Analysis() {
         {items.map((a) => { const [label, tone] = AN_STATE[a.state] ?? [a.state, ""]; const p = a.progress; const pct = p && p.total ? Math.min(100, Math.floor((100 * p.done) / p.total)) : 0; return (
           <tr key={a.source_id}>
             <td>{a.source}</td>
-            <td><span className={`badge ${tone}`}>{label}</span>{a.error && <div className="muted xs">{a.error}</div>}</td>
+            <td><span className={`badge ${tone}`}>{label}</span>{a.next_auto_at && <div className="muted xs">автоматический пересчёт не раньше {dt(a.next_auto_at)} (не чаще раза в {a.min_hours} ч)</div>}{a.error && <div className="muted xs">{a.error}</div>}</td>
             <td style={{ minWidth: 220 }}>{p ? <><div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={`Ход расчёта ${a.source}`}><div className="progress-bar" style={{ width: `${pct}%` }} /></div>
               <div className="muted xs">{p.stage || "расчёт"}: {num(p.done)} из {num(p.total)}{p.total ? ` (${pct}%)` : ""} · начат {dt(a.started_at)}{p.eta_s != null ? ` · осталось ≈ ${dur(p.eta_s)}` : ""}{p.at ? ` · ход обновлён ${dt(p.at)}` : ""}</div></> : <span className="muted">—</span>}</td>
             <td>{dt(a.built_at)}</td><td className="num">{num(a.hits)}</td><td>{a.duration_ms ? dur(Math.round(a.duration_ms / 1000)) : "—"}</td>
@@ -138,11 +138,18 @@ function EnableAll({ items, onChanged }: { items: VdbSourceInfo[]; onChanged: ()
     <div className="mt-sm"><button className="btn primary" onClick={go} aria-busy={busy}><Icon name="upload" />Включить все источники и загрузить</button></div></div>{toast}</div>;
 }
 
+const feedMark = (c: OvalFeedInfo, probe: Record<string, { ok: boolean; error: string; ms: number }> | null, state: Record<string, { definitions: number | null; at: string | null; error: string }>) => {
+  const p = probe?.[c.url]; const st = state[c.name];
+  return <>{p && <span className={p.ok ? "feed-ok" : "feed-bad"} title={p.error || `ответил за ${p.ms} мс`}> · {p.ok ? "✓ доступен" : `✕ недоступен: ${p.error}`}</span>}
+    {st?.error ? <span className="feed-bad"> · ошибка последней загрузки: {st.error}</span> : st?.definitions != null ? <span className="muted small"> · загружено {num(st.definitions)} опр.{st.at ? `, ${dt(st.at)}` : ""}</span> : null}</>;
+};
 const mb = (b: number) => (b === 0 ? "0" : b >= 1048576 ? `${(b / 1048576).toFixed(b >= 10485760 ? 0 : 1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
 
 /** Выбор фидов OVAL галочками: готовый список официальных источников дистрибутивов (искать адреса не нужно) и «свои» фиды. Выбор хранится в настройках источника как список «название — адрес». */
-function OvalFeeds({ feeds, onChange, onFirst }: { feeds: { name: string; url: string }[]; onChange: (f: { name: string; url: string }[]) => void; onFirst: () => void }) {
+function OvalFeeds({ feeds, state, onChange, onFirst }: { feeds: { name: string; url: string }[]; state: Record<string, { definitions: number | null; at: string | null; error: string }>; onChange: (f: { name: string; url: string }[]) => void; onFirst: () => void }) {
   const [cat, setCat] = useState<OvalFeedInfo[] | null>(null); const [err, setErr] = useState("");
+  const [probe, setProbe] = useState<Record<string, { ok: boolean; error: string; ms: number }> | null>(null); const [probing, setProbing] = useState(false);
+  const check = async () => { setProbing(true); setErr(""); try { const r = await api.vdb.ovalProbe(); setProbe(Object.fromEntries(r.items.map((x) => [x.url, x]))); } catch (e) { setErr((e as ApiError).message); } finally { setProbing(false); } };
   useEffect(() => { api.vdb.ovalCatalog().then((r) => setCat(r.items)).catch((e) => setErr((e as ApiError).message)); }, []);
   const known = new Set((cat ?? []).map((c) => c.url));
   const chosen = new Set(feeds.map((f) => f.url));
@@ -160,16 +167,19 @@ function OvalFeeds({ feeds, onChange, onFirst }: { feeds: { name: string; url: s
           <button type="button" className="btn mini" onClick={() => pick(new Set(cat.map((c) => c.url)))}>Выбрать все</button>
           <button type="button" className="btn mini" onClick={() => pick(new Set(cat.filter((c) => c.current).map((c) => c.url)))}>Только актуальные выпуски</button>
           <button type="button" className="btn mini" onClick={() => pick(new Set())} disabled={!nSel}>Снять все</button>
+          <button type="button" className="btn mini" onClick={check} aria-busy={probing} disabled={probing}>{probing ? "Проверяем…" : "Проверить доступность"}</button>
+          {probe && <button type="button" className="btn mini" onClick={() => pick(new Set(cat.filter((c) => probe[c.url]?.ok).map((c) => c.url)))}>Выбрать только доступные</button>}
           <span className="muted small">Выбрано {nSel} из {cat.length} · ≈ {mb(total)} архивов (в разобранном виде больше)</span>
         </div>
         <div className="oval-groups">
           {groups.map((g) => { const items = cat.filter((c) => c.group === g); const n = items.filter((c) => chosen.has(c.url)).length; return (
             <div key={g} className="oval-group">
               <label className="check oval-g"><input type="checkbox" checked={n === items.length} ref={(el) => { if (el) el.indeterminate = n > 0 && n < items.length; }} onChange={() => { const u = new Set(chosen); items.forEach((c) => (n === items.length ? u.delete(c.url) : u.add(c.url))); pick(u); }} /><span className="check-body"><b>{g}</b> <span className="muted small">({n}/{items.length})</span></span></label>
-              {items.map((c) => <label key={c.id} className="check oval-f"><input type="checkbox" checked={chosen.has(c.url)} onChange={() => toggle(c)} /><span className="check-body">{c.name} <span className="muted small">· {mb(c.size)}{c.current ? "" : " · выпуск снят с поддержки"}</span></span></label>)}
+              {items.map((c) => <label key={c.id} className="check oval-f"><input type="checkbox" checked={chosen.has(c.url)} onChange={() => toggle(c)} /><span className="check-body">{c.name} <span className="muted small">· {mb(c.size)}{c.current ? "" : " · выпуск снят с поддержки"}</span>{feedMark(c, probe, state)}</span></label>)}
             </div>); })}
         </div>
       </>}
+      {probe && cat && <div className="muted small" role="status">Доступно с сервера {cat.filter((c) => probe[c.url]?.ok).length} из {cat.length}{cat.some((c) => probe[c.url] && !probe[c.url].ok) ? ". Недоступные фиды отмечены ✕ с причиной: если сервер выходит в интернет через прокси, задайте HTTPS_PROXY для служб; некоторые производители закрывают доступ из ряда стран." : "."}</div>}
       {!cat && !err && <div className="muted small">Загрузка списка…</div>}
       <div className="stack-sm">
         <b className="small">Свои фиды</b>
@@ -244,7 +254,7 @@ function SourceCard({ s, ecosystems, onChanged }: { s: VdbSourceInfo; ecosystems
           <label className="check"><input type="checkbox" className="switch" checked={!!st.all_ecosystems} onChange={(e) => set("all_ecosystems", e.target.checked)} /><span className="check-body">Вся база OSV одним архивом (≈ 2,8 ГБ; нужно не менее 4 ГБ свободного места, загрузка и разбор — около часа)</span></label>
         </>}
         {s.key === "oval" && <>
-          <OvalFeeds feeds={((st.feeds as { name: string; url: string }[] | undefined) ?? [])} onChange={(f) => set("feeds", f)} onFirst={() => { if (!enabled) setEnabled(true); }} />
+          <OvalFeeds feeds={((st.feeds as { name: string; url: string }[] | undefined) ?? [])} state={s.feed_state ?? {}} onChange={(f) => set("feeds", f)} onFirst={() => { if (!enabled) setEnabled(true); }} />
         </>}
         {s.key === "bdu" && <>
           <label>Адрес XML-выгрузки<input className="mono" value={String(st.url ?? "")} onChange={(e) => set("url", e.target.value)} /><span className="help">Если сервер не имеет доступа к сайту БДУ, скачайте выгрузку вручную и загрузите файл ниже.</span></label>

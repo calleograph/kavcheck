@@ -2,7 +2,7 @@
 
 * Состав и решения разработчика — `app/components.json` (проверяется при подготовке каждого выпуска, см. docs/RELEASE.md; тест сверяет реестр с requirements.txt и Dockerfile).
 * Установленные версии определяются на месте (пакеты Python, PostgreSQL, пульс сканера и worker); версии, зафиксированные при сборке образа, берутся из реестра.
-* Доступные версии проверяются **в фоне** (worker) раз в сутки и по запросу, с тайм-аутом и кэшем в базе: страница внешних сервисов не опрашивает, недоступность GitHub/PyPI/npm её не замедляет.
+* Доступные версии проверяются **в фоне** (worker) с интервалом из настроек (по умолчанию каждые 6 часов) и по запросу, с тайм-аутом и кэшем в базе: страница внешних сервисов не опрашивает, недоступность GitHub/PyPI/npm её не замедляет.
 * Обновления приложения идут только через проверенный выпуск KAV Checker; здесь ничего не устанавливается."""
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from ..models import AppSetting, CompCheck, PtEngine, ServiceHeartbeat, utcnow
 log = logging.getLogger("app.components")
 REGISTRY = Path(__file__).resolve().parent.parent / "components.json"
 TIMEOUT = 8.0
-INTERVAL = timedelta(hours=24)
+INTERVAL = timedelta(hours=6)           # по умолчанию; интервал задаётся в настройках (general.components_check_hours)
 RETRY = timedelta(hours=2)
 STATUS_RU = {"current": "Актуален", "update": "Доступно обновление", "deferred": "Обновление отложено", "incompatible": "Несовместимо", "review": "Требует проверки", "unknown": "Версия неизвестна",
              "unavailable": "Проверка обновлений недоступна"}
@@ -175,7 +175,7 @@ def status_of(spec: dict, inst: str | None, chk: CompCheck | None) -> tuple[str,
     return ("update", "") if same_major else ("review", "Новая основная версия: совместимость не проверена")
 
 
-async def table(db: AsyncSession, settings) -> dict:
+async def table(db: AsyncSession, settings, interval_hours: int | None = None) -> dict:
     reg = load()
     checks = {c.key: c for c in (await db.execute(select(CompCheck))).scalars()}
     rows = []
@@ -188,7 +188,7 @@ async def table(db: AsyncSession, settings) -> dict:
                      "checked_at": chk.checked_at if chk else None, "check_error": chk.error if chk else "", "status": code, "status_ru": STATUS_RU[code], "why": why,
                      "release_notes": spec["release_notes"], "compat": spec["compat"], "limits": spec["limits"], "decision": spec["decision"], "branch": spec.get("branch") or ""})
     st = await get_state(db)
-    return {"items": rows, "reviewed_for": reg["reviewed_for"], "reviewed_at": reg["reviewed_at"], "note": reg["note"], "checked_at": st.get("last_run"), "requested": bool(st.get("requested")),
+    return {"items": rows, "reviewed_for": reg["reviewed_for"], "reviewed_at": reg["reviewed_at"], "note": reg["note"], "checked_at": st.get("last_run"), "requested": bool(st.get("requested")), "interval_hours": interval_hours or int(INTERVAL.total_seconds() // 3600),
             "counts": {k: sum(1 for r in rows if r["status"] == k) for k in STATUS_RU}}
 
 
@@ -208,7 +208,7 @@ async def set_state(sm: async_sessionmaker[AsyncSession], **kv) -> None:
 
 
 class Checker:
-    """Фоновая проверка доступных версий (worker): раз в сутки, по запросу администратора; после сбоя — повтор через RETRY."""
+    """Фоновая проверка доступных версий (worker): с интервалом из настроек (по умолчанию 6 часов), по запросу администратора; после сбоя — повтор через RETRY."""
 
     def __init__(self, sm: async_sessionmaker[AsyncSession], svc):
         self._sm, self._svc = sm, svc
@@ -220,11 +220,13 @@ class Checker:
     async def tick(self) -> bool:
         async with self._sm() as db:
             st = await get_state(db)
-            enabled = (await self._svc.get(db, "general")).components_check
+            gen = await self._svc.get(db, "general")
+            enabled = gen.components_check
+            interval = timedelta(hours=gen.components_check_hours)
         if not enabled and not st.get("requested"):
             return False
         last = datetime.fromisoformat(st["last_run"]) if st.get("last_run") else None
-        gap = RETRY if st.get("last_failed") else INTERVAL
+        gap = min(RETRY, interval) if st.get("last_failed") else interval
         if not (st.get("requested") or last is None or utcnow() - last >= gap):
             return False
         res = await check_all(self._sm)

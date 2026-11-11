@@ -104,6 +104,27 @@ async def test_check_all_stores_fetched_versions(app, monkeypatch):
     assert r["latest"] == "9.9.9" and r["status"] == "review" and r["latest_url"] == "https://example.org/r" and r["published_at"].year == 2026
 
 
+async def test_check_interval_comes_from_settings_not_a_fixed_day(app, monkeypatch):
+    """Проверка версий (GitHub, PyPI, npm) идёт с интервалом из настроек: 2 часа назад при интервале 1 ч — пора, при 6 ч (по умолчанию) — рано; не «раз в сутки»."""
+    from datetime import timedelta
+
+    calls = []
+
+    async def fake_check_all(sm):
+        calls.append(1)
+        return {"ok": 1, "failed": 0}
+    monkeypatch.setattr(C, "check_all", fake_check_all)
+    sm = app.state.session_maker
+    ck = C.Checker(sm, app.state.settings_svc)
+    await C.set_state(sm, last_run=(utcnow() - timedelta(hours=2)).isoformat(), requested=False, last_failed=False)
+    assert await ck.tick() is False and not calls                                                  # 6 ч по умолчанию: прошло 2 — рано
+    async with sm() as db:
+        assert (await app.state.settings_svc.get(db, "general")).components_check_hours == 6
+        await app.state.settings_svc.update(db, "general", {"components_check_hours": 1}, actor="тест")
+        await db.commit()
+    assert await ck.tick() is True and calls == [1]                                                # 1 ч: прошло 2 — пора
+
+
 async def test_installed_versions_and_running_state(app):
     async with app.state.session_maker() as db:
         db.add(PtEngine(key="nuclei", version="3.11.1", templates_ver="10.5.1"))

@@ -23,7 +23,7 @@ from ..vdb.classify import CATEGORIES, CATEGORY_RU
 from ..vdb.normalize import SEV_RANK, SEV_RU, norm, pick_primary, score_key
 from ..search import clean, is_mask, local_like
 from ..services.catalog import text_conds
-from ..vdb.sync import analyze, upload_path
+from ..vdb.sync import MIN_ANALYSIS_H, analyze, upload_path
 
 router = APIRouter(prefix="/vdb", tags=["vdb"])
 ECOSYSTEMS = S.OSV_ECOSYSTEMS
@@ -35,13 +35,22 @@ def _iso(d: datetime | None) -> str | None:
 
 
 # ------------------------------------------------------------------------------------------------ источники
+def _feed_state(r: VdbSource) -> dict:
+    """Итог последней загрузки по каждому фиду OVAL: сколько определений и когда, либо причина ошибки."""
+    cur = r.cursor or {}
+    out = {n: {"definitions": v.get("definitions"), "at": v.get("at"), "error": ""} for n, v in (cur.get("feeds") or {}).items()}
+    for n, v in (cur.get("feed_errors") or {}).items():
+        out[n] = {**out.get(n, {"definitions": None, "at": None}), "error": v.get("error", ""), "error_at": v.get("at")}
+    return out
+
+
 def source_out(r: VdbSource, runs: list[VdbRun] | None = None) -> dict:
     info = S.INFO[r.key]
     st = dict(r.settings or {})
     return {"key": r.key, "title": info["title"], "url": info["url"], "terms": info["terms"], "mode": info["mode"], "enabled": r.enabled, "interval_hours": r.interval_hours,
             "settings": st, "secret_set": bool(r.secret_enc), "status": r.status, "progress": r.progress, "last_started_at": _iso(r.last_started_at), "last_ok_at": _iso(r.last_ok_at),
             "last_duration_ms": r.last_duration_ms, "last_error": r.last_error, "records": r.records, "requested": r.requested_at is not None, "requested_at": _iso(r.requested_at), "can_restore": r.prev_generation is not None,
-            "upload": r.key == "bdu", "channel": r.channel, "channels": info["channels"], "attempts": r.diag or [],
+            "upload": r.key == "bdu", "feed_state": _feed_state(r) if r.key == "oval" else None, "channel": r.channel, "channels": info["channels"], "attempts": r.diag or [],
             "runs": [{"started_at": _iso(x.started_at), "finished_at": _iso(x.finished_at), "trigger": x.trigger, "status": x.status, "fetched": x.fetched, "changed": x.changed,
                       "duration_ms": x.duration_ms, "error": x.error, "channel": x.channel, "attempts": x.attempts or []} for x in (runs or [])]}
 
@@ -87,6 +96,22 @@ async def sync_all(su: SessionUser = Depends(require_admin), db: AsyncSession = 
     return {"queued": queued}
 
 
+def request_sm(db: AsyncSession):
+    from sqlalchemy.ext.asyncio import async_sessionmaker  # noqa: PLC0415
+
+    return async_sessionmaker(db.bind, expire_on_commit=False)
+
+
+def _next_auto(st):
+    """Когда автоматически начнётся следующий полный расчёт (интервал считается от начала прошлого)."""
+    from datetime import timedelta, timezone  # noqa: PLC0415
+
+    if st is None or st.started_at is None or not st.rev.startswith(f"{store.MATCH_REV}."):          # ручной запуск (rev="") и смена версии логики ждать не должны
+        return None
+    a = st.started_at if st.started_at.tzinfo else st.started_at.replace(tzinfo=timezone.utc)
+    return a + timedelta(hours=MIN_ANALYSIS_H)
+
+
 def _dt(d):
     return _iso(d) if d else None
 
@@ -99,6 +124,30 @@ async def oval_catalog(su: SessionUser = Depends(require_user), db: AsyncSession
     row = await db.get(VdbSource, "oval")
     chosen = {str(f.get("url")) for f in ((row.settings or {}).get("feeds") or []) if isinstance(f, dict)} if row else set()
     return {"items": [{**c, "selected": c["url"] in chosen} for c in CATALOG]}
+
+
+@router.post("/oval/probe")
+async def oval_probe(su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Какие фиды OVAL доступны с этого сервера (первый байт, без скачивания): каталог и фиды, заданные в настройках. Адреса берутся только из них — произвольные адреса не запрашиваются."""
+    import asyncio  # noqa: PLC0415
+
+    from ..vdb.fetch import Http  # noqa: PLC0415
+    from ..vdb.oval_catalog import CATALOG  # noqa: PLC0415
+
+    row = await db.get(VdbSource, "oval")
+    urls = {c["url"] for c in CATALOG} | {str(f.get("url")) for f in ((row.settings or {}).get("feeds") or []) if isinstance(f, dict) and str(f.get("url") or "").lower().startswith("https://")} if row else {c["url"] for c in CATALOG}
+    http, sem = Http(timeout=10), asyncio.Semaphore(8)
+
+    async def one(u: str) -> dict:
+        async with sem:
+            return {"url": u, **await http.probe(u)}
+    try:
+        res = await asyncio.gather(*(one(u) for u in sorted(urls)))
+    finally:
+        await http.close()
+    await VJ.emit(request_sm(db), "system", f"{su.display_name}: проверка доступности фидов OVAL — доступно {sum(1 for r in res if r['ok'])} из {len(res)}", vdb_key="oval",
+                  details={"unreachable": [{"url": r["url"], "error": r["error"]} for r in res if not r["ok"]][:30]})
+    return {"items": res}
 
 
 @router.get("/analysis")
@@ -117,14 +166,13 @@ async def analysis_status(su: SessionUser = Depends(require_user), db: AsyncSess
             continue
         st = await db.get(VdbAnalysis, src.id)
         info = await HX.state(db, src.id)
-        prog, eta = info.get("progress"), None
-        if prog and prog["total"] and prog["done"] and st and st.started_at:
-            el = (datetime.now(timezone.utc) - (st.started_at if st.started_at.tzinfo else st.started_at.replace(tzinfo=timezone.utc))).total_seconds()
-            eta = int(el * (prog["total"] - prog["done"]) / prog["done"])
+        prog = info.get("progress")
+        eta = st.eta_s if st and prog else None                       # по скорости последних минут (расчёт замедляется к концу)
         out.append({"source_id": str(src.id), "source": src.name, "state": info["state"], "built_at": _dt(info["built_at"]), "error": info["error"], "status": st.status if st else "none",
                     "hits": st.hits if st else 0, "duration_ms": st.duration_ms if st else 0, "started_at": _dt(info["started_at"]),
                     "progress": {"stage": prog["stage"], "done": prog["done"], "total": prog["total"], "at": _dt(prog["at"]), "eta_s": eta} if prog else None,
-                    "lease": bool(await JOBS.is_live("vdb_analyze", str(src.id)))})
+                    "lease": bool(await JOBS.is_live("vdb_analyze", str(src.id))),
+                    "next_auto_at": _dt(_next_auto(st)) if info["state"] == "stale" else None, "min_hours": MIN_ANALYSIS_H})
     return {"items": out}
 
 

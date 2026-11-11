@@ -84,6 +84,7 @@ class RunCtx:
     generation: int = 1                     # поколение, в которое пишутся записи (у инкрементальной загрузки — действующее)
     channel: str = ""
     attempts: list[dict] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)       # загрузка выполнена, но часть сведений получить не удалось (например, недоступные фиды OVAL)
     _tmp: Path | None = None
     _swapped: bool = False
 
@@ -589,24 +590,45 @@ async def _oval_feeds(ctx: RunCtx) -> None:
         raise FetchError("Фиды OVAL не заданы: добавьте адрес фида (OVAL дистрибутива: Ubuntu, Debian, Red Hat…) в настройках источника и сохраните. Пока фидов нет, загружать нечего")
     cur = dict(ctx.cursor or {})
     done: dict = dict(cur.get("feeds") or {})
+    errors: dict[str, dict] = {}
+    bad_hosts: set[str] = set()
+    ok = 0
     for i, f in enumerate(feeds):
         name, url = str(f["name"])[:60], str(f["url"])
-        dest = ctx.tmp() / f"oval-{i}.xml"
-        await ctx.progress(f"фид «{name}»: загрузка")
-        cond = ctx.has_data and not ctx.force
-        got = await ctx.http.download(url, dest, etag=(done.get(name) or {}).get("etag", "") if cond else "", progress=ctx.dl_progress(name))
-        if got.not_modified:
+        host = url.split("/")[2] if "//" in url else url
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if host in bad_hosts:                                    # сервер уже не ответил в этом запуске: остальные его фиды пропускаем, а не ждём таймаут каждого
+            errors[name] = {"error": f"пропущен: {host} не отвечает (см. ошибку другого фида этого сервера)", "at": stamp}
             continue
-        await ctx.progress(f"фид «{name}»: разбор и запись")
+        dest = ctx.tmp() / f"oval-{i}.xml"
         try:
-            n = await oval.store_feed(ctx.sm, name, oval.batches(oval.parse(dest)))
-        except Exception as exc:  # noqa: BLE001 — повреждённый фид не должен ломать остальные; прежние определения этого фида сохраняются (транзакция откатывается)
-            raise FetchError(f"Фид «{name}»: файл не разобран ({type(exc).__name__}: {str(exc)[:120]})") from None
-        dest.unlink(missing_ok=True)
+            await ctx.progress(f"фид «{name}»: загрузка")
+            cond = ctx.has_data and not ctx.force
+            got = await ctx.http.download(url, dest, etag=(done.get(name) or {}).get("etag", "") if cond else "", progress=ctx.dl_progress(name))
+            if got.not_modified:
+                ok += 1
+                continue
+            await ctx.progress(f"фид «{name}»: разбор и запись")
+            try:
+                n = await oval.store_feed(ctx.sm, name, oval.batches(oval.parse(dest)))
+            except Exception as exc:  # noqa: BLE001 — повреждённый фид не должен ломать остальные; прежние определения этого фида сохраняются (транзакция откатывается)
+                raise FetchError(f"Фид «{name}»: файл не разобран ({type(exc).__name__}: {str(exc)[:120]})") from None
+        except FetchError as exc:
+            errors[name] = {"error": str(exc)[:300], "at": stamp}
+            if any(k in str(exc) for k in ("Timeout", "ConnectError")):
+                bad_hosts.add(host)
+            continue
+        finally:
+            dest.unlink(missing_ok=True)
+        ok += 1
         ctx.fetched += n
         ctx.changed += n
-        done[name] = {"etag": got.etag, "definitions": n, "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    ctx.new_cursor = {"feeds": done}
+        done[name] = {"etag": got.etag, "definitions": n, "at": stamp}
+    ctx.new_cursor = {"feeds": done, "feed_errors": errors}
+    if errors:
+        ctx.warnings = [f"«{k}»: {v['error']}" for k, v in errors.items()]
+    if errors and not ok:
+        raise FetchError(f"Ни один фид OVAL не загружен ({len(errors)}): " + "; ".join(f"«{k}»: {v['error']}" for k, v in list(errors.items())[:3]) + (" …" if len(errors) > 3 else ""))
 
 
 async def run_oval(ctx: RunCtx) -> None:

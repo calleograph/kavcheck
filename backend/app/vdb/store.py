@@ -211,23 +211,37 @@ async def prune_runs(db: AsyncSession, source: str, keep: int = 60) -> None:
         await db.execute(delete(VdbRun).where(VdbRun.id.in_(ids)))
 
 
+async def catalog_fingerprint(db: AsyncSession, source_id) -> str:
+    """Отпечаток СОСТАВА каталога (продукты, версии, платформы, схемы): перестроение каталога без изменения состава не меняет его — полный пересчёт на большой базе (десятки минут)
+    из-за этого не запускается. Счётчики компьютеров и записи реестра в отпечаток не входят: на сопоставление они не влияют."""
+    import hashlib  # noqa: PLC0415
+
+    from ..models import CatalogProduct  # noqa: PLC0415
+
+    rows = (await db.execute(select(CatalogProduct.key, CatalogProduct.name, CatalogProduct.publisher_key, CatalogProduct.family_key, CatalogProduct.component, CatalogProduct.platforms,
+                                    CatalogProduct.scheme, CatalogProduct.versions_count, CatalogProduct.latest_version).where(CatalogProduct.source_id == source_id).order_by(CatalogProduct.key))).all()
+    h = hashlib.sha1()
+    for r in rows:
+        h.update(repr(tuple(r)).encode())
+    return f"{len(rows)}:{h.hexdigest()[:16]}"
+
+
 async def revision(db: AsyncSession, source_id) -> str:
-    """Отпечаток состояния данных, от которых зависит сопоставление: версия данных источников (растёт, когда загрузка что-то изменила), число решений администратора, построение каталога источника KSC."""
-    from ..models import CatalogState, VdbMapping  # noqa: PLC0415
+    """Отпечаток состояния данных, от которых зависит сопоставление: версия данных источников (растёт, когда загрузка что-то изменила), число решений администратора, состав каталога источника KSC."""
+    from ..models import VdbMapping  # noqa: PLC0415
 
     srcs = (await db.execute(select(VdbSource.key, VdbSource.data_ver, VdbSource.active_generation, VdbSource.enabled).where(VdbSource.key.notin_(("eol", "oval"))).order_by(VdbSource.key))).all()
     maps = (await db.execute(select(func.count(), func.max(VdbMapping.created_at)).select_from(VdbMapping))).one()
-    built = (await db.execute(select(CatalogState.built_at).where(CatalogState.source_id == source_id))).scalar_one_or_none()
-    return "|".join([",".join(f"{k}:{v or 0}:{g}:{int(e)}" for k, v, g, e in srcs), f"{maps[0]}:{maps[1]}", str(built)])
+    return "|".join([",".join(f"{k}:{v or 0}:{g}:{int(e)}" for k, v, g, e in srcs), f"{maps[0]}:{maps[1]}", await catalog_fingerprint(db, source_id)])
 
 
-MATCH_REV = "4"        # версия логики сопоставления и хранения результатов: меняется при исправлениях — подготовленные данные считаются устаревшими и пересчитываются
+MATCH_REV = "5"        # версия логики сопоставления и хранения результатов: меняется при исправлениях — подготовленные данные считаются устаревшими и пересчитываются
 
 
 def rev_hash(rev: str) -> str:
     import hashlib  # noqa: PLC0415
 
-    return hashlib.sha1(f"{MATCH_REV}|{rev}".encode()).hexdigest()[:16]
+    return f"{MATCH_REV}.{hashlib.sha1(rev.encode()).hexdigest()[:14]}"        # версия логики — в начале: смена логики применяется сразу, без ожидания интервала
 
 
 async def analysis_rev(db: AsyncSession, source_id) -> str:

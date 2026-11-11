@@ -129,3 +129,83 @@ async def test_journal_and_audit_require_proper_roles(app, client):
     await client.post("/api/v1/auth/logout")
     assert (await client.get("/api/v1/vdb/journal")).status_code in (401, 403)
     assert (await client.post("/api/v1/vdb/audit/run", params={"source_id": sid})).status_code in (401, 403)
+
+
+async def _stale_state(app, sid, *, started_ago_h, status="ok", rev=f"{store.MATCH_REV}.устарело"):
+    async with app.state.session_maker() as db:
+        await db.execute(delete(VdbAnalysis))
+        db.add(VdbAnalysis(source_id=uuid.UUID(sid), status=status, rev=rev, built_at=utcnow() - timedelta(hours=started_ago_h), started_at=utcnow() - timedelta(hours=started_ago_h)))
+        await db.commit()
+
+
+async def test_automatic_full_recalculation_is_not_more_often_than_every_six_hours(app, client, monkeypatch):
+    """Расчёт на большой базе идёт десятки минут; новый сразу за ним (данные успели измениться) не даёт посчитать ничего до конца: автоматически — не чаще раза в 6 часов от начала прошлого."""
+    sid = await _seed(app, client)
+    sync = make_sync(app)
+    calls = []
+
+    async def fake_full(source_id):
+        calls.append(source_id)
+        return 1
+    monkeypatch.setattr(sync, "analyze_full", fake_full)
+    await _stale_state(app, sid, started_ago_h=1)
+    await sync.analysis_tick()
+    assert calls == []                                                                                     # прошёл час: рано, показан последний результат
+    msgs = [e["message"] for e in (await client.get("/api/v1/vdb/journal", params={"kind": "analysis"})).json()["items"]]
+    assert any("не раньше" in m and "не чаще раза в 6 ч" in m for m in msgs)                              # причина ожидания записана
+    st = (await client.get("/api/v1/vdb/analysis")).json()["items"][0]
+    assert st["state"] == "stale" and st["next_auto_at"] and st["min_hours"] == 6
+    await _stale_state(app, sid, started_ago_h=7)
+    await sync.analysis_tick()
+    assert len(calls) == 1                                                                                 # прошло больше 6 часов — пора
+    await _stale_state(app, sid, started_ago_h=1, rev="")                                                  # «Пересчитать» вручную обходит интервал
+    await sync.analysis_tick()
+    assert len(calls) == 2
+    await _stale_state(app, sid, started_ago_h=1, status="error")                                          # ошибка — повтор не ждёт 6 часов (пауза 5 минут)
+    await sync.analysis_tick()
+    assert len(calls) == 3
+    await _stale_state(app, sid, started_ago_h=1, rev="3.прежняя-логика")                                  # сменилась версия логики сопоставления — пересчёт сразу
+    await sync.analysis_tick()
+    assert len(calls) == 4
+
+
+async def test_catalog_rebuild_without_composition_change_does_not_change_the_revision(app, client):
+    from app.models import CatalogProduct, CatalogState
+
+    sid = uuid.UUID(await _seed(app, client))
+    sm = app.state.session_maker
+    async with sm() as db:
+        r0 = await store.revision(db, sid)
+        (await db.get(CatalogState, sid)).built_at = utcnow() + timedelta(hours=1)                         # каталог перестроен, состав тот же
+        await db.commit()
+        assert await store.revision(db, sid) == r0                                                         # полный пересчёт не нужен
+        row = await db.get(CatalogProduct, (sid, "google-chrome"))
+        row.versions_count += 1
+        await db.commit()
+        assert await store.revision(db, sid) != r0                                                         # новая версия программы — нужен
+
+
+def test_durations_are_readable():
+    from app.vdb.sync import _dur
+
+    assert [_dur(5), _dur(125), _dur(2862), _dur(7500)] == ["5 с", "2 мин 5 с", "47 мин 42 с", "2 ч 5 мин"]
+
+
+async def test_service_stop_during_calculation_is_recorded_not_silent(app, client, monkeypatch):
+    import asyncio
+
+    from app.vdb import sync as sync_mod
+
+    sid = await _seed(app, client)
+
+    async def cancelled(*_a, **_k):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(sync_mod, "analyze", cancelled)
+    try:
+        await make_sync(app).analyze_full(uuid.UUID(sid))
+    except asyncio.CancelledError:
+        pass
+    row = (await client.get("/api/v1/vdb/analysis")).json()["items"][0]
+    assert row["status"] == "error" and "остановкой службы" in row["error"]
+    warn = (await client.get("/api/v1/vdb/journal", params={"level": "warn"})).json()["items"]
+    assert any("служба остановлена" in e["message"] for e in warn)
