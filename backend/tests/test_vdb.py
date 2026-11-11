@@ -116,6 +116,29 @@ def test_no_false_matches_on_similar_names():
     assert {k[0] for k in out} == {"php"}                                                                      # компоненты семейства (php-xml) отдельно не совпадают по названию
 
 
+def test_one_generic_word_does_not_link_other_vendors_products():
+    """CVE-2025-57819: компонент «endpoint» FreePBX (Sangoma) не должен затрагивать «Kaspersky Endpoint Security» и «Citrix Endpoint Analysis»."""
+    cat = M.load_catalog([
+        prod("kes", "Kaspersky Endpoint Security", "Kaspersky", [("12.3.0", 2)]),
+        prod("citrix-epa", "Citrix Gateway Endpoint Analysis", "Citrix", [("23.5", 1)]),
+        prod("sangoma-endpoint", "Endpoint Manager", "Sangoma", [("17.0", 1)]),
+    ])
+    mat = M.Matcher(cat, [])
+    out = run([aff(vendor="sangoma", product="endpoint", versions_all=True)], mat)
+    assert {k[0] for k in out} == set()                                                                      # слово «endpoint» одно ничего не доказывает, даже у того же производителя
+    out = run([aff(vendor="check_point", product="endpoint_security", versions_all=True)], mat)
+    assert out == {}                                                                                           # название из общих слов у другого производителя
+    out = run([aff(vendor="kaspersky", product="endpoint_security", versions_all=True)], mat)
+    assert {k[0] for k in out} == {"kes"}                                                                      # свой производитель — совпадает
+
+
+def test_fuzzy_match_requires_same_vendor():
+    cat = M.load_catalog([prod("contoso-agent", "Contoso Agent", "Contoso", [("8.9", 4)]), prod("fabrikam-agent", "Fabrikam Agent", "Fabrikam", [("1.0", 1)])])
+    mat = M.Matcher(cat, [])
+    assert run([aff(vendor="fabrikam", product="agent_pro", versions_all=True)], mat) == {}                       # другое название: токен «agent» общий, но производитель иной
+    assert {k[0] for k in run([aff(vendor="contoso", product="agent", versions_all=True)], mat)} == {"contoso-agent"}
+
+
 def test_version_ordering_is_numeric_not_textual():
     out = run([aff(vendor="contoso", product="agent", v_end="8.10", v_end_incl=False)])
     assert {k[1] for k in out} == {"8.9", "8.4.14"}                                                             # 8.9 < 8.10, а 8.10.1 уже нет

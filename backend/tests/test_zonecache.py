@@ -359,6 +359,21 @@ def test_host_ext_totals_dedupe_installs_and_apply_decisions_without_listing_all
     assert len(forced) == 2 and all(p[6] == "x" for p in forced)                                                                  # строки с решениями сохраняются независимо от лимита
 
 
+def test_host_ext_rows_stay_with_the_install_they_were_matched_to():
+    """Каждая уязвимость остаётся у своей установки: раньше все строки получали последнюю установку компьютера (в отчёте — один и тот же пакет у разных CVE)."""
+    from app.zones import triage as T
+
+    idx = _index(cap=10)
+    own = {"CVE-1": 0, "CVE-2": 0, "CVE-3": 0, "CVE-4": 0, "CVE-5": 1, "CVE-6": 2}           # уязвимость → версия каталога, у которой она найдена (CVE-2 есть и у версии 1)
+    inst = [{"product_id": 10, "version": "120"}, {"product_id": 20, "version": "124"}, {"product_id": 30, "version": "19"}]            # последняя — 7-Zip
+    _c, picked, _over = SN.host_ext(idx, inst, 1, "pc", ["z"], T.TriageIndex([]), cap=20)
+    assert len(picked) == 4 + 2 + 1 and len({(p[0], p[1], int(p[5]["product_id"])) for p in picked}) == len(picked)                       # без технических дублей
+    for vid, vk, _st, _bid, pkey, r, _b in picked:
+        assert idx.by_pid[int(r["product_id"])] == vid and idx.versions[vid][0] == pkey              # установка, версия и продукт согласованы
+        assert vid == own[vk] or (vk == "CVE-2" and vid == 1)
+    assert {p[4] for p in picked if p[1] in ("CVE-1", "CVE-5")} == {"chrome"} and [p[4] for p in picked if p[1] == "CVE-6"] == ["7zip"]
+
+
 def test_compact_rows_restore_derived_fields_and_are_small():
     import json
 

@@ -26,7 +26,8 @@ from .store import active
 STATUS_RU = {"confirmed": "Подтверждено источником", "potential": "Потенциально затронуто", "clarify": "Требуется уточнение", "fixed": "Исправлено", "insufficient": "Данных недостаточно"}
 STATUS_RANK = {"confirmed": 5, "potential": 4, "clarify": 3, "insufficient": 2, "fixed": 1}
 AFFECTED = ("confirmed", "potential", "clarify", "insufficient")      # статусы, при которых компьютеры попадают в результат проверки
-GENERIC = {"agent", "server", "client", "service", "services", "manager", "tools", "tool", "desktop", "core", "base", "data", "system", "security", "studio", "enterprise", "platform", "suite", "free", "standard"}
+GENERIC = {"agent", "server", "client", "service", "services", "manager", "tools", "tool", "desktop", "core", "base", "data", "system", "security", "studio", "enterprise", "platform", "suite", "free", "standard",
+           "endpoint", "gateway", "analysis", "protection", "connect", "console", "module", "plugin", "web", "network", "cloud", "mobile", "admin", "application", "framework", "library"}   # одно такое слово не доказывает, что это тот же продукт
 _SAFE_VER = re.compile(r"^[0-9]+([.\-_+~:][0-9a-z]+)*$", re.I)
 _JAVA_U = re.compile(r"^\d+u\d+$", re.I)
 
@@ -111,19 +112,29 @@ class Matcher:
                     add(p, "high")
         if not out:
             vtok = set(tokens(vendor))
+            vtok_check = set() if ecosystem else vtok          # у пакета дистрибутива «производитель» — сам дистрибутив (ubuntu, debian), а не издатель ПО: сверка производителя не применяется
+
+            def other_vendor(p: CatProd) -> bool:
+                """Производитель записи источника и издатель продукта известны и не совпадают: это другой продукт с похожим названием."""
+                pub = set(tokens(p.publisher)) | set(tokens(p.publisher_key.replace("-", " ")))
+                return bool(vtok_check) and bool(pub) and not (vtok_check & pub) and not (vtok_check & p.tokens)
+            generic_name = not (set(tokens(product or pkg_name)) - GENERIC)
             for p in self.by_sig.get(pk, []):
+                if generic_name and other_vendor(p):                # «Endpoint Security» другого производителя — не «Kaspersky Endpoint Security»
+                    continue
                 pub = set(tokens(p.publisher)) | set(tokens(p.publisher_key.replace("-", " ")))
                 vendor_ok = bool(vtok & pub) or bool(vtok & p.tokens) or not p.publisher
                 add(p, "high" if vendor_ok and p.publisher else "medium")
             if not out:
                 ptok = set(tokens(product or pkg_name))
-                if ptok:
+                if ptok - GENERIC:                      # только общие слова («endpoint», «server»…) — не основание для совпадения
                     cands = None
                     for t in ptok:
                         s = {p.key for p in self.by_token.get(t, [])}
                         cands = s if cands is None else cands & s
                     for k in sorted(cands or [])[:5]:
-                        add(self.by_key[k], "medium")
+                        if not other_vendor(self.by_key[k]):
+                            add(self.by_key[k], "medium")
         return list(out.values())
 
 

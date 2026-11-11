@@ -216,10 +216,13 @@ async def get_zc(db: AsyncSession, source_id) -> ZcSource:
     return zs
 
 
+MATCH_REV = "2"        # версия логики сопоставления с внешними базами: меняется при исправлении ошибок — подготовленные данные зон считаются устаревшими и пересчитываются
+
+
 def vdb_rev_hash(rev: str) -> str:
     import hashlib  # noqa: PLC0415
 
-    return hashlib.sha1(rev.encode()).hexdigest()[:16]
+    return hashlib.sha1(f"{MATCH_REV}|{rev}".encode()).hexdigest()[:16]
 
 
 async def probe(bc: BuildCtx, src: KscSource) -> None:
@@ -483,7 +486,7 @@ def host_ext(index, inst: list[dict], hid: int, name: str, zones: list[str], tin
                 c["e_conf"] -= 1 if conf else 0
                 c["e_exc" if d.status in T.EXCLUDED else "e_acc"] += 1
                 forced.append((vid, vk, status, bid, pkey, r, "x"))
-        lists.append(((t, vid, pkey, r) for t in index.top[vid]))
+        lists.append([(t, vid, pkey, r) for t in index.top[vid]])             # список, а не генератор: vid/pkey/r берутся сейчас, а не после цикла (иначе все совпадения получат последнюю установку)
     picked: list[tuple] = []
     for (t, vid, pkey, r) in islice(heapq.merge(*lists, key=lambda x: x[0][:4]), cap):
         picked.append((vid, t[3], t[4], t[5], pkey, r, "c"))
