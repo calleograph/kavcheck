@@ -116,6 +116,10 @@ code { background: var(--surface-2); border: 1px solid var(--line); padding: 0 5
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 ::-webkit-scrollbar { width: 10px; height: 10px; } ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
 /* ход расчёта и журнал базы уязвимостей */
+.oval-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin: 12px 0; }
+.oval-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.oval-g { padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.oval-f { padding-left: 4px; }
 .jf { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 12px 0; }
 .jf label { display: flex; flex-direction: column; gap: 4px; }
 .jf-q { flex: 1 1 240px; min-width: 0; }

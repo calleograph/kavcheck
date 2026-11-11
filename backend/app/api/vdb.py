@@ -91,6 +91,16 @@ def _dt(d):
     return _iso(d) if d else None
 
 
+@router.get("/oval/catalog")
+async def oval_catalog(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    """Готовые фиды OVAL официальных источников дистрибутивов (администратор отмечает галочками, адреса искать не нужно); `selected` — уже заданные в настройках источника."""
+    from ..vdb.oval_catalog import CATALOG  # noqa: PLC0415
+
+    row = await db.get(VdbSource, "oval")
+    chosen = {str(f.get("url")) for f in ((row.settings or {}).get("feeds") or []) if isinstance(f, dict)} if row else set()
+    return {"items": [{**c, "selected": c["url"] in chosen} for c in CATALOG]}
+
+
 @router.get("/analysis")
 async def analysis_status(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     """Подготовленные результаты проверки по внешним базам по доступным источникам KSC: состояние, ход расчёта (этап, обработано из всего, время старта, оценка окончания),
@@ -213,7 +223,7 @@ def _clean_settings(key: str, cur: dict, new: dict) -> dict:
         out["url"] = u.rstrip("/")
     if key == "oval" and "feeds" in new:
         feeds = []
-        for f in (new["feeds"] or [])[:20]:
+        for f in (new["feeds"] or [])[:60]:
             name, url = str(f.get("name") or "").strip()[:60], str(f.get("url") or "").strip()
             if not name or not re.fullmatch(r"[\w .:\-]{1,60}", name) or not url.lower().startswith("https://") or len(url) > 400:
                 raise HTTPException(status_code=422, detail="Фид OVAL: укажите название (буквы, цифры, пробел, точка, дефис) и адрес https://…")

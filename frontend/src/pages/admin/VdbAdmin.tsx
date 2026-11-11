@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { api, type ApiError, type VdbAnalysisItem, type VdbAudit, type VdbJournalItem, type VdbJournalPage, type VdbMapping, type VdbSourceInfo } from "../../api";
+import { api, type ApiError, type OvalFeedInfo, type VdbAnalysisItem, type VdbAudit, type VdbJournalItem, type VdbJournalPage, type VdbMapping, type VdbSourceInfo } from "../../api";
 import { ConfirmDialog } from "../../components/Dialogs";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
@@ -138,6 +138,54 @@ function EnableAll({ items, onChanged }: { items: VdbSourceInfo[]; onChanged: ()
     <div className="mt-sm"><button className="btn primary" onClick={go} aria-busy={busy}><Icon name="upload" />Включить все источники и загрузить</button></div></div>{toast}</div>;
 }
 
+const mb = (b: number) => (b === 0 ? "0" : b >= 1048576 ? `${(b / 1048576).toFixed(b >= 10485760 ? 0 : 1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
+
+/** Выбор фидов OVAL галочками: готовый список официальных источников дистрибутивов (искать адреса не нужно) и «свои» фиды. Выбор хранится в настройках источника как список «название — адрес». */
+function OvalFeeds({ feeds, onChange, onFirst }: { feeds: { name: string; url: string }[]; onChange: (f: { name: string; url: string }[]) => void; onFirst: () => void }) {
+  const [cat, setCat] = useState<OvalFeedInfo[] | null>(null); const [err, setErr] = useState("");
+  useEffect(() => { api.vdb.ovalCatalog().then((r) => setCat(r.items)).catch((e) => setErr((e as ApiError).message)); }, []);
+  const known = new Set((cat ?? []).map((c) => c.url));
+  const chosen = new Set(feeds.map((f) => f.url));
+  const custom = feeds.filter((f) => !known.has(f.url));
+  const pick = (urls: Set<string>) => { const next = (cat ?? []).filter((c) => urls.has(c.url)).map((c) => ({ name: c.name, url: c.url })); if (next.length && !feeds.length) onFirst(); onChange([...next, ...custom]); };
+  const toggle = (c: OvalFeedInfo) => { const u = new Set(chosen); if (u.has(c.url)) u.delete(c.url); else u.add(c.url); pick(u); };
+  const groups = [...new Set((cat ?? []).map((c) => c.group))];
+  const total = (cat ?? []).filter((c) => chosen.has(c.url)).reduce((a, c) => a + c.size, 0);
+  const nSel = (cat ?? []).filter((c) => chosen.has(c.url)).length;
+  return (
+    <fieldset className="oval-feeds"><legend>Фиды OVAL</legend>
+      {err && <div className="alert error"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
+      {cat && <>
+        <div className="row wrap">
+          <button type="button" className="btn mini" onClick={() => pick(new Set(cat.map((c) => c.url)))}>Выбрать все</button>
+          <button type="button" className="btn mini" onClick={() => pick(new Set(cat.filter((c) => c.current).map((c) => c.url)))}>Только актуальные выпуски</button>
+          <button type="button" className="btn mini" onClick={() => pick(new Set())} disabled={!nSel}>Снять все</button>
+          <span className="muted small">Выбрано {nSel} из {cat.length} · ≈ {mb(total)} архивов (в разобранном виде больше)</span>
+        </div>
+        <div className="oval-groups">
+          {groups.map((g) => { const items = cat.filter((c) => c.group === g); const n = items.filter((c) => chosen.has(c.url)).length; return (
+            <div key={g} className="oval-group">
+              <label className="check oval-g"><input type="checkbox" checked={n === items.length} ref={(el) => { if (el) el.indeterminate = n > 0 && n < items.length; }} onChange={() => { const u = new Set(chosen); items.forEach((c) => (n === items.length ? u.delete(c.url) : u.add(c.url))); pick(u); }} /><span className="check-body"><b>{g}</b> <span className="muted small">({n}/{items.length})</span></span></label>
+              {items.map((c) => <label key={c.id} className="check oval-f"><input type="checkbox" checked={chosen.has(c.url)} onChange={() => toggle(c)} /><span className="check-body">{c.name} <span className="muted small">· {mb(c.size)}{c.current ? "" : " · выпуск снят с поддержки"}</span></span></label>)}
+            </div>); })}
+        </div>
+      </>}
+      {!cat && !err && <div className="muted small">Загрузка списка…</div>}
+      <div className="stack-sm">
+        <b className="small">Свои фиды</b>
+        {custom.map((f, i) => (
+          <div key={i} className="row wrap">
+            <label>Название<input value={f.name} maxLength={60} onChange={(e) => onChange(feeds.map((x) => (x === f ? { ...x, name: e.target.value } : x)))} placeholder="например, my-distro" /></label>
+            <label>Адрес (https://…, XML, .bz2 или .gz)<input className="mono" value={f.url} onChange={(e) => onChange(feeds.map((x) => (x === f ? { ...x, url: e.target.value } : x)))} /></label>
+            <button type="button" className="btn mini ghost danger" aria-label="Удалить фид" onClick={() => onChange(feeds.filter((x) => x !== f))}><Icon name="trash" size={15} /></button>
+          </div>))}
+        <button type="button" className="btn mini" onClick={() => onChange([...feeds, { name: "", url: "" }])}><Icon name="plus" size={15} />Добавить свой фид</button>
+      </div>
+      <span className="help">Отметьте дистрибутивы, которые есть в вашей инфраструктуре. Загружаются определения vulnerability/patch с CVE; хранятся отдельно от записей баз уязвимостей и не запускают пересчёт находок по программам. Размер указан для архивов; повторная загрузка идёт условным запросом (изменений нет — файл не скачивается).</span>
+    </fieldset>
+  );
+}
+
 const CHANNEL_NAME: Record<string, string> = { oval: "фиды OVAL", feeds: "ленты JSON 2.0", api: "API", archives: "архивы экосистем", site: "сайт bdu.fstec.ru", file: "файл, загруженный вручную", cisa: "cisa.gov", github: "GitHub cisagov/kev-data", supplement: "дополнения" };
 const YEARS: [number, string][] = [[1, "текущий год"], [2, "2 года"], [3, "3 года"], [5, "5 лет"], [10, "10 лет"], [30, "всё (с 2002 года)"]];
 const ECO_MB: Record<string, number> = { Debian: 75, Ubuntu: 755, Alpine: 4, "Red Hat": 26, AlmaLinux: 6, "Rocky Linux": 5, SUSE: 46, openSUSE: 21, Linux: 56, Go: 12, PyPI: 35, npm: 209, Maven: 10, NuGet: 3, Packagist: 10, RubyGems: 5, "crates.io": 3 };
@@ -196,16 +244,7 @@ function SourceCard({ s, ecosystems, onChanged }: { s: VdbSourceInfo; ecosystems
           <label className="check"><input type="checkbox" className="switch" checked={!!st.all_ecosystems} onChange={(e) => set("all_ecosystems", e.target.checked)} /><span className="check-body">Вся база OSV одним архивом (≈ 2,8 ГБ; нужно не менее 4 ГБ свободного места, загрузка и разбор — около часа)</span></label>
         </>}
         {s.key === "oval" && <>
-          <fieldset className="qr-sections"><legend>Фиды OVAL</legend>
-            {((st.feeds as { name: string; url: string }[] | undefined) ?? []).map((f, i, all) => (
-              <div key={i} className="row wrap">
-                <label>Название<input value={f.name} maxLength={60} onChange={(e) => set("feeds", all.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} placeholder="например, ubuntu-jammy" /></label>
-                <label>Адрес (https://…, XML, .bz2 или .gz)<input className="mono" value={f.url} onChange={(e) => set("feeds", all.map((x, j) => (j === i ? { ...x, url: e.target.value } : x)))} /></label>
-                <button type="button" className="btn mini ghost danger" aria-label="Удалить фид" onClick={() => set("feeds", all.filter((_, j) => j !== i))}><Icon name="trash" size={15} /></button>
-              </div>))}
-            <button type="button" className="btn mini" onClick={() => set("feeds", [...(((st.feeds as unknown[]) ?? [])), { name: "", url: "" }])}><Icon name="plus" size={15} />Добавить фид</button>
-            <span className="help">Фиды задаёте вы: например, OVAL дистрибутива (Ubuntu, Debian, Red Hat). Загружаются определения vulnerability/patch с CVE; хранятся отдельно от записей баз уязвимостей и не запускают пересчёт находок по программам. OVAL оценивает состояние системы: в Pentest проверка выполняется по перечню пакетов устройства KSC, явно связанного с адресом; остальные условия дают «недостаточно данных».</span>
-          </fieldset>
+          <OvalFeeds feeds={((st.feeds as { name: string; url: string }[] | undefined) ?? [])} onChange={(f) => set("feeds", f)} onFirst={() => { if (!enabled) setEnabled(true); }} />
         </>}
         {s.key === "bdu" && <>
           <label>Адрес XML-выгрузки<input className="mono" value={String(st.url ?? "")} onChange={(e) => set("url", e.target.value)} /><span className="help">Если сервер не имеет доступа к сайту БДУ, скачайте выгрузку вручную и загрузите файл ниже.</span></label>

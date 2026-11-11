@@ -38,6 +38,7 @@ export interface HostVulnRow { id: string; keys: string[]; kla_id: string; title
   ksc: { url: string; patches_available: boolean; kb: string[]; detected: string | null } | null; external: { key: string; status: string; status_ru: string; basis: string; databases: string[] } | null }
 export interface HostVulnGroup { gid: string; product: string; version: string; severity: "critical" | "high" | "warning"; severity_ru: string; cves: number; kev: number; sample: string[]; more: number; rows: number; confirmed_ksc: number; external_only: number; detected_by: string[]; eol: { status: string; status_ru: string; severity: string } | null }
 export interface ExtState { state: "none" | "updating" | "stalled" | "stale" | "fresh"; built_at: string | null; error: string; truncated: boolean }
+export interface OvalFeedInfo { id: string; group: string; name: string; url: string; size: number; current: boolean; selected: boolean }
 export interface VdbAnalysisItem { source_id: string; source: string; state: ExtState["state"]; built_at: string | null; error: string; status: string; hits: number; duration_ms: number; started_at: string | null; lease: boolean;
   progress: { stage: string; done: number; total: number; at: string | null; eta_s: number | null } | null }
 export interface VdbJournalItem { id: number; at: string; level: "info" | "warn" | "error"; kind: string; kind_ru: string; source: string; vdb_key: string; message: string; details: Record<string, unknown> | null }
@@ -624,6 +625,7 @@ export const api = {
   vdb: {
     sources: () => req<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[]; storage: { db_bytes: number | null; tmp_bytes: number; free_bytes: number } }>("GET", "/vdb/sources"),
     syncAll: () => req<{ queued: string[] }>("POST", "/vdb/sync-all"),
+    ovalCatalog: () => req<{ items: OvalFeedInfo[] }>("GET", "/vdb/oval/catalog"),
     analysis: () => req<{ items: VdbAnalysisItem[] }>("GET", "/vdb/analysis"),
     analysisRun: (sourceId?: string) => req<{ queued: number }>("POST", `/vdb/analysis/run${sourceId ? `?source_id=${sourceId}` : ""}`),
     journal: (p: Record<string, string | number | undefined>) => req<VdbJournalPage>("GET", `/vdb/journal${qs(p)}`),
