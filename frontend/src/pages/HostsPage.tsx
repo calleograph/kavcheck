@@ -174,7 +174,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       </div>
       <div className="mt">
         <Tabs<HostTab> label="Сведения о компьютере" value={tab} onChange={(t) => setSp((p) => { if (t === "software") p.delete("tab"); else p.set("tab", t); return p; }, { replace: true })}
-          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: vulns && !vulns.external_checked ? "Уязвимости (идёт проверка по внешним базам)" : "Уязвимости", count: vulns?.counts.total }, { id: "eol", label: "EOL", count: eol?.length }, { id: "events", label: "События безопасности" }, { id: "hardware", label: "Аппаратная часть", ...(hwq.d && hwq.d.problems.length ? { count: hwq.d.problems.length } : {}) }]} />
+          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: vulns && !vulns.external_checked ? "Уязвимости (идёт проверка по внешним базам)" : vulns?.ext && ["none", "stalled"].includes(vulns.ext.state) ? "Уязвимости (внешние базы не подготовлены)" : "Уязвимости", count: vulns?.counts.total }, { id: "eol", label: "EOL", count: eol?.length }, { id: "events", label: "События безопасности" }, { id: "hardware", label: "Аппаратная часть", ...(hwq.d && hwq.d.problems.length ? { count: hwq.d.problems.length } : {}) }]} />
       </div>
       {tab === "software" && <>
         <div className="section-head"><span className="muted small">Программ: {num(d.software.length)}</span><div className="spacer" />

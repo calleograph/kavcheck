@@ -40,6 +40,10 @@ async def test_host_report_matches_the_card(client, app):
     async with sm() as db:
         src = await db.get(KscSource, uuid.UUID(sid))
     await C.compute_source(sm, app.state.sources.client(src), src, activity_days=30, today=TODAY)          # EOL по этому источнику (как ночной расчёт)
+    from app.vdb.sync import analyze                                                                             # подготовленные результаты внешних баз (как расчёт воркера)
+    async with sm() as db:
+        await analyze(db, uuid.UUID(sid), None)
+        await db.commit()
     totals = []
     for hid in HOSTS:
         card = (await client.get(f"/api/v1/hosts/{hid}")).json()
@@ -98,3 +102,15 @@ async def test_unavailable_sections_are_named_not_zeroed(client, app):
     notes2 = " ".join(str(x) for x in (await client.get(f"/api/v1/reports/{rid2}")).json()["summary"].get("notes", []))
     assert "Уязвимости KSC на этом источнике недоступны" in notes2
     assert "Уязвимости" not in _tables(rid2, app).sheetnames
+
+
+async def test_unprepared_external_results_are_not_zeros(client, app):
+    """Пока расчёт внешних баз не завершён, счётчики уязвимостей в отчёте — «нет данных», а не 0; причина названа, строки KSC остаются."""
+    sid, runner = await _setup(client, app)
+    rid = await _job(client, app, runner, sid, 6)
+    host = next(r for r in (await client.get(f"/api/v1/reports/{rid}/rows", params={"limit": 5})).json()["items"])
+    assert host["v_total"] is None and host["v_critical"] is None                                                # не «0»
+    notes = (await client.get(f"/api/v1/hosts/6/vulnerabilities")).json()["notes"]
+    assert any("не подготовлена" in n for n in notes)                                                            # причина названа и в карточке
+    wb = _tables(rid, app)
+    assert "Уязвимости" in wb.sheetnames                                                                         # раздел остаётся: подтверждённые KSC видны

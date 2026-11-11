@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import time
+import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from ..models import CaCertificate, CatalogState, KscSource, VdbAffected, VdbAna
 from ..services.settings import SettingsService
 from ..services.audit import Journal
 from ..services.resources import RES, MemoryPressure, Resources
+from . import journal as J
 from . import match as M
 from . import sources as S
 from . import store
@@ -45,6 +47,8 @@ class VdbSync:
         self._http_factory, self._sleep = http_factory, sleep
         self._running: set[str] = set()
         self._retry_at: dict[uuid.UUID, float] = {}
+        self._pending: set[str] = set()                    # изменённые уязвимости, пока полный расчёт не позволял разобрать их частично: разбираются сразу после него
+        self._said: dict[tuple, float] = {}                # когда в журнал последний раз писали повторяющееся сообщение (чтобы не засорять его)
 
     # ------------------------------------------------------------------------------------------ запуск источника
     async def _http(self, db: AsyncSession, key: str, row: VdbSource) -> Http:
@@ -68,6 +72,7 @@ class VdbSync:
                     row.status, row.last_error, row.progress, row.requested_at, row.last_started_at = "error", msg, None, None, utcnow()
                     await db.commit()
             await self._journal.emit("system", "vdb_sync_failed", level="error", message=f"{S.INFO[key]['title']}: {msg}", data={"source": key, "trigger": trigger})
+            await J.emit(self._sm, "sync", f"{S.INFO[key]['title']}: загрузка не начата: {msg}", level="error", vdb_key=key, details={"free_mb": free_mb, "need_mb": MIN_FREE_MB})
             return False
         lease = await JOBS.acquire("vdb_sync", key)                 # загрузку источника выполняет один исполнитель (между несколькими worker тоже)
         if lease is None:
@@ -92,6 +97,7 @@ class VdbSync:
                 run_id = run.id
                 http = await self._http(db, key, row)
                 await db.commit()
+            await J.emit(self._sm, "sync", f"{S.INFO[key]['title']}: загрузка начата ({'вручную' if trigger != 'schedule' else 'по расписанию'})", vdb_key=key, details={"trigger": trigger, "run_id": run_id, "mode": S.INFO[key]["mode"]})
 
             async def progress(text: str) -> None:
                 async with self._sm() as db2:
@@ -132,11 +138,16 @@ class VdbSync:
                     else:
                         row.records = int((await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.source == key, VdbRecord.generation == row.active_generation))).scalar_one())
                 row.last_duration_ms = ms
+                if not error and (ctx.changed or ctx.keys):
+                    row.data_ver = (row.data_ver or 0) + 1                  # данные изменились: от этого зависит ревизия расчёта; загрузка «без изменений» повторного расчёта не вызывает
                 await store.finish_run(db, run_id, finished_at=utcnow(), status="error" if error else "ok", fetched=ctx.fetched, changed=ctx.changed, duration_ms=ms, error=error[:1500] or None, channel=ctx.channel, attempts=ctx.attempts or None)
                 await store.prune_runs(db, key)
                 await db.commit()
             await self._journal.emit("system", "vdb_sync_done" if not error else "vdb_sync_failed", level="info" if not error else "error", message=f"{S.INFO[key]['title']}: "
                                      + (f"записей получено {ctx.fetched}, изменено {ctx.changed}" if not error else error[:300]), duration_ms=ms, data={"source": key, "trigger": trigger})
+            await J.emit(self._sm, "sync", f"{S.INFO[key]['title']}: " + (f"загружено, получено {ctx.fetched}, изменено {ctx.changed}, {ms / 1000:.0f} с" if not error else f"ошибка загрузки: {error[:300]}"),
+                         level="error" if error else "info", vdb_key=key, details={"run_id": run_id, "fetched": ctx.fetched, "changed": ctx.changed, "seconds": round(ms / 1000), "channel": ctx.channel,
+                                                                                    "attempts": (ctx.attempts or [])[:6]})
             if error:
                 outcome[:] = ["error", error[:500]]
             if not error and ctx.keys and len(ctx.keys) <= 3000:
@@ -178,7 +189,6 @@ class VdbSync:
             await self.run_source(key, "file" if file else trig, file=file)
             if file is not None:
                 file.unlink(missing_ok=True)
-        await self.analysis_tick()
 
     async def upgrade_scores(self) -> int:
         async with self._sm() as db:
@@ -228,6 +238,12 @@ class VdbSync:
             await self.upgrade_scores()
         except Exception:  # noqa: BLE001
             log.exception("Не удалось преобразовать прежние оценки CVSS")
+        try:
+            await self._recover_analysis()
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось обработать прерванные расчёты")
+        # расчёт (часы на большой базе) идёт в своём цикле: он не должен задерживать загрузки источников и очередь «Обновить сейчас»
+        self._analysis_task = asyncio.create_task(self.analysis_loop())
         while True:
             try:
                 await self.tick()
@@ -235,6 +251,28 @@ class VdbSync:
                 log.exception("Ошибка цикла базы уязвимостей")
             await asyncio.sleep(60)
 
+    async def analysis_loop(self) -> None:
+        await asyncio.sleep(20)
+        while True:
+            try:
+                await self.analysis_tick()
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Ошибка цикла расчёта базы уязвимостей")
+                await J.emit(self._sm, "analysis", f"Ошибка цикла расчёта: {type(exc).__name__}: {exc}"[:500], level="error", details={"trace": traceback.format_exc()[-1500:]})
+            await asyncio.sleep(30)
+
+    async def _recover_analysis(self) -> None:
+        """После перезапуска «идёт расчёт» без действующей аренды — след прерванного расчёта: статус снимается сразу (с записью в журнал), расчёт начнётся заново."""
+        async with self._sm() as db:
+            stuck = [(a.source_id, a.started_at) for a in (await db.execute(select(VdbAnalysis).where(VdbAnalysis.status == "running"))).scalars().all()]
+        for sid, started in stuck:
+            if await JOBS.is_live("vdb_analyze", str(sid)):
+                continue
+            async with self._sm() as db:
+                await _set_state(db, sid, status="error", error="Расчёт прерван (перезапуск или сбой службы); будет начат заново", stage="")
+                await db.commit()
+            await J.emit(self._sm, "analysis", "Расчёт прерван: служба перезапущена или остановлена во время расчёта; будет начат заново", level="warn", source_id=sid,
+                         details={"started_at": started.isoformat() if started else None})
     # ------------------------------------------------------------------------------------------ анализ по каталогу
     async def analysis_tick(self) -> None:
         """Полный пересчёт находок источника KSC, когда изменились данные, от которых зависит сопоставление: загрузка баз, решения администратора, перестроение каталога."""
@@ -248,18 +286,42 @@ class VdbSync:
                     done = await db.get(VdbAnalysis, st.source_id)
                     if done is not None and done.status == "ok" and done.rev == store.rev_hash(rev) and done.built_at is not None:
                         continue                                    # результаты построены для этой ревизии данных (в том числе до перезапуска службы)
-                    todo.append((st.source_id, rev))
-        for sid, rev in todo:
+                    why = "расчёта ещё не было" if done is None or done.built_at is None else "прошлый расчёт завершился ошибкой" if done.status == "error" else \
+                          "прошлый расчёт не закончен" if done.status == "running" else "данные баз, каталога или решения изменились"
+                    todo.append((st.source_id, rev, why))
+        for sid, rev, why in todo:
             if time.monotonic() < self._retry_at.get(sid, 0):
                 continue
             try:
-                await self.analyze_full(sid)          # None — анализ этого источника ведёт другой исполнитель: состояние запишет он
+                await J.emit(self._sm, "analysis", f"Полный расчёт поставлен: {why}", source_id=sid)
+                if await self.analyze_full(sid) is None:          # None — расчёт этого источника ведёт другой исполнитель: состояние запишет он
+                    if self._once(("busy", sid), 1800):
+                        await J.emit(self._sm, "analysis", "Расчёт не начат: источник уже обрабатывает другой исполнитель (аренда действует)", level="warn", source_id=sid)
+                else:
+                    await self._drain_pending()
             except MemoryPressure as exc:               # память на пределе: сделанное сохранено порциями, повторим позже
                 self._retry_at[sid] = time.monotonic() + 600
                 log.warning("Анализ уязвимостей отложен: %s", exc)
-            except Exception:                           # ошибка записана в состояние расчёта (видна в интерфейсе); повтор через 5 минут, а не каждую минуту
+                await J.emit(self._sm, "analysis", f"Расчёт отложен на 10 минут: не хватает памяти ({exc})", level="warn", source_id=sid)
+            except Exception as exc:                    # ошибка записана в состояние расчёта (видна в интерфейсе); повтор через 5 минут, а не каждую минуту
                 self._retry_at[sid] = time.monotonic() + 300
                 log.exception("Анализ уязвимостей не выполнен", extra={"source_id": str(sid)})
+                await J.emit(self._sm, "analysis", f"Расчёт не выполнен: {type(exc).__name__}: {exc}"[:500], level="error", source_id=sid, details={"trace": traceback.format_exc()[-1500:], "retry_in_s": 300})
+
+    def _once(self, key: tuple, every_s: float) -> bool:
+        """Истина, если это сообщение давно не писали: повторяющиеся события не заполняют журнал."""
+        now = time.monotonic()
+        if now - self._said.get(key, -1e9) < every_s:
+            return False
+        self._said[key] = now
+        return True
+
+    async def _drain_pending(self) -> None:
+        """Уязвимости, изменившиеся во время полного расчёта, разбираются частично сразу после него (иначе полный расчёт пришлось бы повторять)."""
+        if self._pending:
+            keys, self._pending = self._pending, set()
+            await J.emit(self._sm, "analysis", f"Разбор изменений, накопленных за время расчёта: {len(keys)} уязвимостей")
+            await self.analyze_keys(keys)
 
     async def analyze_keys(self, keys: set[str]) -> None:
         async with self._sm() as db:
@@ -267,11 +329,13 @@ class VdbSync:
         for sid in sids:
             async with self._sm() as db:
                 ok = await db.get(VdbAnalysis, sid)
-            if ok is None or ok.status != "ok":            # полного расчёта ещё нет (или он идёт): частичный даст неполные результаты, полный по ревизии догонит
+            if ok is None or ok.status != "ok":            # полного расчёта ещё нет (или он идёт): изменения разберутся сразу после него
+                self._pending |= set(keys)
                 continue
             # место, затем аренда; один анализ источника за раз (между worker тоже); идёт чужой — пропускаем: полный анализ по ревизии догонит
             async with JOBS.run_heavy("vdb_analyze", str(sid), "анализ изменённых уязвимостей", task=f"анализ уязвимостей {sid}") as lease:
                 if lease is None:
+                    self._pending |= set(keys)
                     continue
                 async with self._sm() as db:
                     await analyze(db, sid, keys=sorted(keys), res=RES, lease=lease)
@@ -317,17 +381,29 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     if not prods:
         return 0
     full = keys is None
+    jsm = async_sessionmaker(db.bind, expire_on_commit=False) if full else None            # журнал пишется отдельными короткими транзакциями
+
+    async def emit(msg: str, **kw) -> None:
+        await J.emit(jsm, "analysis", msg, source_id=source_id, **kw)
     if full:
         rev0 = store.rev_hash(await store.revision(db, source_id))            # ревизия данных на начало расчёта: изменились во время расчёта — следующий проход пересчитает
-        await _set_state(db, source_id, status="running", started_at=utcnow())
+        await _set_state(db, source_id, status="running", started_at=utcnow(), error="", stage="подбор уязвимостей по каталогу", done=0, total=0, progress_at=utcnow())
         await db.commit()
+        n_versions = sum(len(p.versions) for p in prods)
+        await emit(f"Расчёт начат: продуктов {len(prods)}, версий {n_versions}", details={"products": len(prods), "versions": n_versions, "rev": rev0})
     matcher = M.Matcher(prods, maps)
     classes = await class_map(db, prods)
+    t_keys = time.monotonic()
     all_keys = await M.reverse_keys(db, prods, maps) if keys is None else sorted(set(keys))
+    if full:
+        await _set_state(db, source_id, stage="сопоставление", total=len(all_keys), done=0, progress_at=utcnow())
+        await db.commit()
+        await emit(f"Подобрано уязвимостей для сопоставления: {len(all_keys)} (поиск {time.monotonic() - t_keys:.0f} с)")
     scope = None if keys is None else set(keys)
     matched: set[str] = set()
     now = utcnow()
     total, done, t0 = len(all_keys), 0, time.monotonic()
+    next_mark, last_say = max(1, total // 10), time.monotonic()
     log.info("Анализ уязвимостей начат", extra={"source_id": str(source_id), "keys": total, "products": len(prods)})
     async for part, rows in M.iter_affected(db, all_keys, batch):
         # сопоставление — чистые вычисления Python: в отдельном потоке, иначе событийный цикл стоит и продление аренд, этапы и другие задания ждут
@@ -337,6 +413,13 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
         done += len(part)
         if lease is not None:
             await lease.stage("анализ уязвимостей", f"обработано {min(done, total)} из {total} уязвимостей, найдено {len(matched)}")
+        if full:
+            await _set_state(db, source_id, done=min(done, total), progress_at=utcnow())
+            if done >= next_mark or time.monotonic() - last_say >= 180:             # ход в журнал: каждые 10% или раз в 3 минуты
+                next_mark, last_say = done + max(1, total // 10), time.monotonic()
+                el = time.monotonic() - t0
+                await emit(f"Ход расчёта: {min(done, total)} из {total} ({100 * min(done, total) // max(total, 1)}%), прошло {el:.0f} с, ожидается ещё ≈{el * (total - done) / max(done, 1):.0f} с",
+                           details={"done": done, "total": total, "matched": len(matched)})
         by: dict[str, list[M.Match]] = {}
         for m in matches:
             by.setdefault(m.vuln_key, []).append(m)
@@ -393,7 +476,9 @@ async def analyze(db: AsyncSession, source_id: uuid.UUID, keys: list[str] | None
     await db.commit()
     if full:
         hits = (await db.execute(select(func.count()).select_from(VdbVersionHit).where(VdbVersionHit.source_id == source_id))).scalar_one()
-        await _set_state(db, source_id, status="ok", error="", rev=rev0, built_at=utcnow(), hits=int(hits), duration_ms=int((time.monotonic() - t0) * 1000))
+        await _set_state(db, source_id, status="ok", error="", rev=rev0, built_at=utcnow(), hits=int(hits), duration_ms=int((time.monotonic() - t0) * 1000), stage="", done=total, total=total, progress_at=utcnow())
         await db.commit()
+        await emit(f"Расчёт завершён: уязвимостей {total}, с совпадениями {len(matched)}, строк результата {int(hits)}, {time.monotonic() - t0:.0f} с",
+                   details={"keys": total, "matched": len(matched), "hits": int(hits), "seconds": round(time.monotonic() - t0)})
     log.info("Анализ уязвимостей завершён", extra={"source_id": str(source_id), "keys": total, "matched": len(matched), "duration_s": round(time.monotonic() - t0)})
     return len(matched)

@@ -376,6 +376,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     host_vulns: dict[int, list[dict]] = {}
     soft_by: dict[int, list[dict]] = {}
     ext_info: dict | None = None
+    ext_missing = False                                          # внешние результаты не подготовлены: счётчики уязвимостей неполны и не показываются нулями
     if avail["software"] or avail["vulns"]:
         for i in range(0, len(ids), 100):                  # записи реестра ПО читаются один раз и группами: из них и список программ, и подготовленные результаты внешних баз
             if ctx.cancelled():
@@ -400,6 +401,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                     raise KscError("too_many_rows", f"Уязвимостей в отчёте больше предела ({ctx.max_rows}): выберите меньше компьютеров или отключите раздел")
                 ctx.progress(f"уязвимости: компьютеров {len(host_vulns)} из {len(ids)}")
         if ext_info is not None:
+            ext_missing = not ext_info["catalog"] or ext_info["state"] == "none"
             if not ext_info["catalog"]:
                 notes.append("Каталог программ источника ещё не построен: проверка по внешним базам не выполнялась.")
             elif HX.state_note(ext_info):
@@ -470,8 +472,8 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         rows.append({**host_part(r, p, ctx), "ksc_status": r["ksc_status"] or "—", "reasons": prot["reasons"], "problems": prot["problems"], "problems_n": len(pr),
                      "av": prot["av"], "av_build": prot["av_build"], "rtp": rtp, "bases": av.get("bases"), "last_full_scan": r["last_full_scan"], "agent": r["agent_build"],
                      "software": soft_n.get(hid, 0) if avail["software"] else None,
-                     "v_critical": vc["critical"] if avail["vulns"] else None, "v_high": vc["high"] if avail["vulns"] else None,
-                     "v_warning": vc["warning"] if avail["vulns"] else None, "v_total": sum(vc.values()) if avail["vulns"] else None,
+                     "v_critical": vc["critical"] if avail["vulns"] and not ext_missing else None, "v_high": vc["high"] if avail["vulns"] and not ext_missing else None,
+                     "v_warning": vc["warning"] if avail["vulns"] and not ext_missing else None, "v_total": sum(vc.values()) if avail["vulns"] and not ext_missing else None,
                      "eol_n": eol_n.get(hid, 0) if avail["eol"] else None, "events_n": ev_n.get(hid, 0) if avail["events"] else None,
                      "hardware": hw_by[hid]["line"] if hid in hw_by else None, "is_slave": r["is_slave"]})
     on = sum(1 for r in rows if r["online_raw"] is True)
@@ -487,7 +489,11 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     if avail["software"]:
         metrics.append(metric("software", "Установленных программ (записей)", len(soft_rows)))
     if avail["vulns"]:
-        metrics += [metric("vhosts", "Компьютеров с уязвимостями", len(worst), "уникальных"), metric("vrows", "Уязвимостей в объединённом списке", len(vrows), "строка: уязвимость × программа × источник")]
+        if ext_missing:        # не «0»: уязвимости по внешним базам не рассчитаны, видны только подтверждённые KSC
+            metrics += [metric("vhosts", "Компьютеров с уязвимостями", "нет данных", "внешние базы не подготовлены: известны только уязвимости, подтверждённые KSC", "danger"),
+                        metric("vrows", "Уязвимостей в объединённом списке", "нет данных", f"только KSC: {len(vrows)}; по внешним базам расчёта нет (журнал: Администрирование → База уязвимостей)", "danger")]
+        else:
+            metrics += [metric("vhosts", "Компьютеров с уязвимостями", len(worst), "уникальных"), metric("vrows", "Уязвимостей в объединённом списке", len(vrows), "строка: уязвимость × программа × источник")]
     if avail["eol"]:
         metrics.append(metric("eolhosts", "Компьютеров с EOL", len(eol_n), "программы или ОС без поддержки или с её окончанием"))
     if avail["events"]:
@@ -527,7 +533,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                                                                               col("disk_total_gb", "Диски, ГБ", "num"), col("virtual", "Виртуальная машина"), col("problems", "Недостаточно ресурсов")], "rows": hw_rows,
                        "note": "Данные инвентаризации Агента. «Нет данных» — Агент не передал сведения; это не означает отсутствия оборудования."})
     sev = None
-    if avail["vulns"]:
+    if avail["vulns"] and not ext_missing:
         sev = {"title": "Компьютеры по наивысшему уровню опасности (сумма = затронуто компьютеров)",
                "levels": [{"key": k, "label": SEV_RU[k], "value": sum(1 for v in worst.values() if v == k), "hint": f"уязвимостей {sum(1 for r in vrows if r['severity'] == k)}"} for k in ("critical", "high", "warning")]}
     tabs = [{"id": tid, "title": title} for tid, title in HOST_TABS if any(t["id"] == tid for t in tables)]

@@ -462,6 +462,7 @@ class VdbSource(Base):
     cursor: Mapped[dict | None] = mapped_column(JSONType)                                 # NVD: до какой даты изменений загружено; OSV: обработанные идентификаторы
     channel: Mapped[str] = mapped_column(String(24), nullable=False, default="", server_default="")   # канал, которым получены действующие данные
     diag: Mapped[list | None] = mapped_column(JSONType)                                   # попытки последней загрузки: [{channel, ok, error, ms, bytes}]
+    data_ver: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")        # растёт, когда загрузка изменила данные (не при каждой успешной): от него зависит ревизия расчёта
 
 
 class VdbRun(Base):
@@ -634,6 +635,25 @@ class VdbAnalysis(Base):
     error: Mapped[str] = mapped_column(String(400), nullable=False, default="")
     hits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stage: Mapped[str] = mapped_column(String(80), nullable=False, default="", server_default="")        # что делает расчёт сейчас
+    done: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")             # ход: обработано уязвимостей
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")            # ход: всего к обработке
+    progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))                        # когда ход обновлялся последний раз (признак зависания)
+
+
+class VdbJournal(Base):
+    """Журнал базы уязвимостей: загрузки источников, расчёты и их ход, решения администратора, аудит, ошибки. Кольцевой: общий размер записей не превышает предела (старые перезаписываются), диск не растёт."""
+    __tablename__ = "vdb_journal"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+    level: Mapped[str] = mapped_column(String(5), nullable=False, default="info")                    # info | warn | error
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="")                        # analysis | sync | decision | audit | system
+    source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)                                         # источник KSC (расчёт) — без внешнего ключа: записи переживают удаление источника
+    vdb_key: Mapped[str] = mapped_column(String(16), nullable=False, default="")                     # источник базы уязвимостей (nvd, osv…)
+    message: Mapped[str] = mapped_column(String(600), nullable=False, default="")
+    details: Mapped[dict | None] = mapped_column(JSONType)
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)                            # байты записи для расчёта предела
+    __table_args__ = (Index("ix_vdb_journal_kind", "kind", "id"), Index("ix_vdb_journal_level", "level", "id"))
 
 
 class ProductClass(Base):

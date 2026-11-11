@@ -36,26 +36,42 @@ async def pid_map(db: AsyncSession, source_id: uuid.UUID) -> dict[int, tuple[str
     return out
 
 
+STALL_S = 600                       # расчёт, не обновлявший ход дольше 10 минут, считается зависшим или прерванным
+
+
 async def state(db: AsyncSession, source_id: uuid.UUID) -> dict:
-    """Актуальность подготовленных данных: none (ещё не рассчитаны) | updating | stale (данные баз или каталога изменились, идёт ожидание пересчёта) | fresh."""
+    """Актуальность подготовленных данных: none (ещё не рассчитаны) | updating | stalled (расчёт давно не обновлял ход) | stale (данные баз или каталога изменились, ждёт пересчёта) | fresh.
+    Ход расчёта (`progress`) и время старта — для интерфейса; `error` — последняя ошибка расчёта."""
+    from datetime import datetime, timezone  # noqa: PLC0415
+
     st = await db.get(VdbAnalysis, source_id)
-    if st is None or st.built_at is None:
-        return {"state": "updating" if st is not None and st.status == "running" else "none", "built_at": None, "error": st.error if st else ""}
+    if st is None:
+        return {"state": "none", "built_at": None, "error": "", "progress": None, "started_at": None}
+    prog = {"stage": st.stage, "done": st.done, "total": st.total, "at": st.progress_at} if st.status == "running" else None
+    base = {"built_at": st.built_at, "error": st.error if st.status in ("error", "running") and st.error else "", "progress": prog, "started_at": st.started_at if st.status == "running" else None}
     if st.status == "running":
-        kind = "updating"
-    else:
-        kind = "fresh" if st.rev == await store.analysis_rev(db, source_id) else "stale"
-    return {"state": kind, "built_at": st.built_at, "error": st.error if st.status == "error" else ""}
+        last = st.progress_at or st.started_at
+        stalled = last is not None and (datetime.now(timezone.utc) - (last if last.tzinfo else last.replace(tzinfo=timezone.utc))).total_seconds() > STALL_S
+        return {**base, "state": "stalled" if stalled else "updating"}
+    if st.built_at is None:
+        return {**base, "state": "none"}
+    return {**base, "state": "fresh" if st.rev == await store.analysis_rev(db, source_id) else "stale"}
 
 
 def state_note(info: dict) -> str:
     """Подпись для интерфейса и отчёта: что за данные и насколько они актуальны."""
     at = info.get("built_at")
     when = f"{at:%d.%m.%Y %H:%M} UTC" if at else ""
-    return {"none": "Проверка по внешним базам ещё не подготовлена: фоновый расчёт не завершался для этого источника. Раздел не включён, а не равен нулю.",
-            "updating": f"Результаты проверки по внешним базам пересчитываются; показан последний готовый расчёт от {when}." if when else "Результаты проверки по внешним базам готовятся; расчёт ещё не завершён.",
+    prog = info.get("progress") or {}
+    pct = f" ({100 * prog['done'] // prog['total']}%)" if prog.get("total") else ""
+    last = f" показан последний готовый расчёт от {when}." if when else " готовых результатов пока нет — уязвимости по внешним базам не показаны (это не значит, что их нет)."
+    text = {"none": "Проверка по внешним базам ещё не подготовлена: фоновый расчёт не завершался для этого источника. Уязвимости по внешним базам не показаны (это не значит, что их нет) — "
+                    "ход расчёта и журнал: Администрирование → База уязвимостей.",
+            "updating": f"Результаты проверки по внешним базам пересчитываются{pct};" + last,
+            "stalled": "Расчёт результатов проверки по внешним базам давно не обновлял ход (возможно, служба перезапускалась); см. журнал в Администрирование → База уязвимостей;" + last,
             "stale": f"Базы уязвимостей или каталог программ изменились; показан последний готовый расчёт от {when}, пересчёт выполняется в фоне.",
-            "fresh": ""}[info.get("state") or "none"] + (f" Последний расчёт завершился ошибкой: {info['error']}." if info.get("error") else "")
+            "fresh": ""}[info.get("state") or "none"]
+    return text + (f" Последний расчёт завершился ошибкой: {info['error']}." if info.get("error") and info.get("state") not in ("fresh",) else "")
 
 
 async def items_for(db: AsyncSession, source_id: uuid.UUID, pids: Iterable[int]) -> tuple[list[dict], bool]:

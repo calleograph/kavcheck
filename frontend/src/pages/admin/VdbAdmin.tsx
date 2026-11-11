@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type ApiError, type VdbMapping, type VdbSourceInfo } from "../../api";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { api, type ApiError, type VdbAnalysisItem, type VdbAudit, type VdbJournalItem, type VdbJournalPage, type VdbMapping, type VdbSourceInfo } from "../../api";
 import { ConfirmDialog } from "../../components/Dialogs";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
@@ -31,29 +31,97 @@ export default function VdbAdmin() {
       {d.items.some((s) => !s.enabled) && <EnableAll items={d.items} onChanged={load} />}
       {d.items.map((s) => <SourceCard key={s.key} s={s} ecosystems={d.ecosystems} onChanged={load} />)}
       <Mappings />
+      <VdbJournalView />
     </div>
   );
 }
 
-const AN_STATE: Record<string, [string, string]> = { fresh: ["актуально", "ok"], stale: ["устарело, пересчитывается", "warn"], updating: ["идёт расчёт", "info"], none: ["не подготовлено", "warn"] };
+const AN_STATE: Record<string, [string, string]> = { fresh: ["актуально", "ok"], stale: ["устарело, ждёт пересчёта", "warn"], updating: ["идёт расчёт", "info"], stalled: ["расчёт не обновлялся — возможно завис", "error"], none: ["не подготовлено", "warn"] };
+const dt = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" }) : "—");
+const dur = (s: number | null | undefined) => (s == null ? "—" : s >= 3600 ? `${Math.floor(s / 3600)} ч ${Math.floor((s % 3600) / 60)} мин` : s >= 60 ? `${Math.floor(s / 60)} мин ${s % 60} с` : `${s} с`);
+const LEVEL_TONE: Record<string, string> = { info: "info", warn: "warn", error: "error", ok: "ok" };
 
-/** Подготовленные результаты проверки по внешним базам: карточка компьютера и отчёты берут их готовыми; расчёт — в фоне, здесь видно, когда он выполнен и актуален ли. */
+/** Подготовленные результаты проверки по внешним базам: карточка компьютера и отчёты берут их готовыми; расчёт — в фоне. Здесь видно ход, время, ошибки и запускается аудит применения. */
 function Analysis() {
-  const [items, setItems] = useState<Awaited<ReturnType<typeof api.vdb.analysis>>["items"] | null>(null);
+  const [items, setItems] = useState<VdbAnalysisItem[] | null>(null);
+  const [audit, setAudit] = useState<VdbAudit | null>(null); const [auditBusy, setAuditBusy] = useState("");
   const [toast, show] = useToast();
   const load = useCallback(() => api.vdb.analysis().then((r) => setItems(r.items)).catch(() => setItems([])), []);
-  useEffect(() => { void load(); const t = window.setInterval(load, 10000); return () => window.clearInterval(t); }, [load]);
+  useEffect(() => { void load(); const t = window.setInterval(load, 5000); return () => window.clearInterval(t); }, [load]);
   if (!items || !items.length) return null;
+  const run = async (id?: string) => { try { const r = await api.vdb.analysisRun(id); show(r.queued ? "Пересчёт поставлен в очередь: фоновая служба начнёт его в течение минуты" : "Расчёт уже идёт"); void load(); } catch (e) { show((e as ApiError).message, "error"); } };
+  const doAudit = async (id: string) => { setAuditBusy(id); try { setAudit(await api.vdb.auditRun(id)); } catch (e) { show((e as ApiError).message, "error"); } finally { setAuditBusy(""); } };
   return (
     <section className="card" aria-label="Подготовленные результаты проверки по внешним базам">
       <div className="card-head"><h2>Подготовленные результаты проверки</h2></div>
-      <p className="muted small">Сопоставление установленного ПО с базами уязвимостей считает фоновая служба и сохраняет по каждой версии программ. Карточка компьютера и отчёты показывают готовый результат с отметкой актуальности, а не пересчитывают базы.</p>
-      <div className="table-scroll"><table className="table compact"><thead><tr><th>Источник KSC</th><th>Состояние</th><th>Последний расчёт</th><th className="num">Строк</th><th>Длительность</th></tr></thead><tbody>
-        {items.map((a) => { const [label, tone] = AN_STATE[a.state] ?? [a.state, ""]; return (
-          <tr key={a.source_id}><td>{a.source}</td><td><span className={`badge ${tone}`}>{label}</span>{a.error && <div className="muted xs">{a.error}</div>}</td>
-            <td>{a.built_at ? new Date(a.built_at).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" }) : "—"}</td><td className="num">{num(a.hits)}</td><td>{a.duration_ms ? `${(a.duration_ms / 1000).toFixed(0)} с` : "—"}</td></tr>); })}
+      <p className="muted small">Сопоставление установленного ПО с базами уязвимостей считает фоновая служба отдельным циклом (загрузки источников не ждут расчёта) и сохраняет по каждой версии программ. Карточка компьютера и отчёты показывают готовый результат с отметкой актуальности.
+        Пока расчёт не завершён, уязвимости по внешним базам в карточке и отчётах не показываются — это «нет данных», а не «нет уязвимостей».</p>
+      <div className="table-scroll"><table className="table compact"><thead><tr><th>Источник KSC</th><th>Состояние</th><th>Ход расчёта</th><th>Последний расчёт</th><th className="num">Строк</th><th>Длительность</th><th /></tr></thead><tbody>
+        {items.map((a) => { const [label, tone] = AN_STATE[a.state] ?? [a.state, ""]; const p = a.progress; const pct = p && p.total ? Math.min(100, Math.floor((100 * p.done) / p.total)) : 0; return (
+          <tr key={a.source_id}>
+            <td>{a.source}</td>
+            <td><span className={`badge ${tone}`}>{label}</span>{a.error && <div className="muted xs">{a.error}</div>}</td>
+            <td style={{ minWidth: 220 }}>{p ? <><div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={`Ход расчёта ${a.source}`}><div className="progress-bar" style={{ width: `${pct}%` }} /></div>
+              <div className="muted xs">{p.stage || "расчёт"}: {num(p.done)} из {num(p.total)}{p.total ? ` (${pct}%)` : ""} · начат {dt(a.started_at)}{p.eta_s != null ? ` · осталось ≈ ${dur(p.eta_s)}` : ""}{p.at ? ` · ход обновлён ${dt(p.at)}` : ""}</div></> : <span className="muted">—</span>}</td>
+            <td>{dt(a.built_at)}</td><td className="num">{num(a.hits)}</td><td>{a.duration_ms ? dur(Math.round(a.duration_ms / 1000)) : "—"}</td>
+            <td><div className="an-actions"><button className="btn" onClick={() => doAudit(a.source_id)} aria-busy={auditBusy === a.source_id} disabled={!!auditBusy}>Аудит применения</button>
+              <button className="btn" onClick={() => run(a.source_id)} disabled={a.state === "updating"}>Пересчитать</button></div></td></tr>); })}
       </tbody></table></div>
-      <div className="row"><button className="btn" onClick={async () => { try { const r = await api.vdb.analysisRun(); show(r.queued ? "Пересчёт поставлен в очередь: выполнит фоновая служба" : "Расчёт уже идёт"); void load(); } catch (e) { show((e as ApiError).message, "error"); } }}>Пересчитать сейчас</button>{toast}</div>
+      <div className="row"><button className="btn" onClick={() => run()}>Пересчитать все</button>{toast}</div>
+      {audit && <AuditView a={audit} onClose={() => setAudit(null)} />}
+    </section>
+  );
+}
+
+function AuditView({ a, onClose }: { a: VdbAudit; onClose: () => void }) {
+  const lab: Record<string, string> = { ok: "в порядке", info: "справка", warn: "замечание", error: "ошибка" };
+  return (
+    <div className="stack" role="region" aria-label={`Аудит применения: ${a.source}`}>
+      <div className="row"><h3>Аудит применения: {a.source}</h3><div className="spacer" /><span className="muted small">{dt(a.at)} · ошибок {a.counts.error ?? 0}, замечаний {a.counts.warn ?? 0}, в порядке {a.counts.ok ?? 0}</span><button className="btn" onClick={onClose}>Закрыть</button></div>
+      <div className="table-scroll"><table className="table compact"><thead><tr><th>Проверка</th><th>Итог</th><th>Подробности</th></tr></thead><tbody>
+        {a.checks.map((c) => <tr key={c.key}><td>{c.title}</td><td><span className={`badge ${LEVEL_TONE[c.status] ?? ""}`}>{lab[c.status]}</span></td><td>{c.detail}</td></tr>)}
+      </tbody></table></div>
+    </div>
+  );
+}
+
+const LEVELS: [string, string][] = [["", "все"], ["warn,error", "замечания и ошибки"], ["error", "только ошибки"]];
+
+/** Журнал базы уязвимостей: загрузки, расчёты и их ход, решения, аудит и ошибки. Кольцевой (до 10 МБ): старые записи перезаписываются. */
+function VdbJournalView() {
+  const [level, setLevel] = useState(""); const [kind, setKind] = useState(""); const [q, setQ] = useState(""); const [live, setLive] = useState(true);
+  const [page, setPage] = useState<VdbJournalPage | null>(null); const [more, setMore] = useState<VdbJournalItem[]>([]); const [open, setOpen] = useState<number | null>(null); const [err, setErr] = useState("");
+  const load = useCallback(() => api.vdb.journal({ level, kind, q, limit: 100 }).then((r) => { setPage(r); setMore([]); setErr(""); }).catch((e) => setErr((e as ApiError).message)), [level, kind, q]);
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (!live) return; const t = window.setInterval(load, 8000); return () => window.clearInterval(t); }, [live, load]);
+  const items = [...(page?.items ?? []), ...more];
+  const last = more.length ? more[more.length - 1].id : page?.items.at(-1)?.id;
+  const next = async () => { if (!last) return; const r = await api.vdb.journal({ level, kind, q, limit: 100, before: last }); setMore((m) => [...m, ...r.items]); };
+  const pctUsed = page ? Math.min(100, Math.round((100 * page.bytes) / page.limit_bytes)) : 0;
+  return (
+    <section className="card" aria-label="Журнал базы уязвимостей">
+      <div className="card-head"><h2>Журнал</h2><div className="spacer" />{page && <span className="muted small">занято {(page.bytes / 1048576).toFixed(1)} из {(page.limit_bytes / 1048576).toFixed(0)} МБ ({pctUsed}%) · за сутки: ошибок {page.counts_24h.error ?? 0}, замечаний {page.counts_24h.warn ?? 0}</span>}</div>
+      <p className="muted small">Загрузки источников, расчёты и их ход, решения по сопоставлению, аудит, ошибки. Журнал кольцевой: при достижении предела старые записи удаляются сами, диск не растёт.</p>
+      <div className="jf">
+        <label className="small">Уровень <select className="input" value={level} onChange={(e) => setLevel(e.target.value)}>{LEVELS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+        <label className="small">Вид <select className="input" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">все</option>{page?.kinds.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}</select></label>
+        <input className="input jf-q" placeholder="Поиск по тексту" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Поиск по журналу" />
+        <label className="small jf-live"><input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} /> обновлять</label>
+      </div>
+      {err && <div className="alert error"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
+      <div className="table-scroll"><table className="table compact"><thead><tr><th>Время</th><th>Уровень</th><th>Вид</th><th>Источник</th><th>Событие</th></tr></thead><tbody>
+        {items.map((e) => (
+          <Fragment key={e.id}>
+            <tr onClick={() => e.details && setOpen(open === e.id ? null : e.id)} style={{ cursor: e.details ? "pointer" : undefined }}>
+              <td className="nowrap">{new Date(e.at).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "medium" })}</td>
+              <td><span className={`badge ${LEVEL_TONE[e.level] ?? ""}`}>{e.level === "error" ? "ошибка" : e.level === "warn" ? "замечание" : "инфо"}</span></td>
+              <td>{e.kind_ru}{e.vdb_key ? ` · ${e.vdb_key}` : ""}</td><td>{e.source || "—"}</td>
+              <td>{e.message}{e.details ? <span className="muted xs"> · подробности</span> : null}</td></tr>
+            {open === e.id && e.details && <tr><td colSpan={5}><pre className="code-block" style={{ whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(e.details, null, 2)}</pre></td></tr>}
+          </Fragment>))}
+        {!items.length && page && <tr><td colSpan={5} className="muted">Записей нет по выбранным условиям.</td></tr>}
+      </tbody></table></div>
+      {(more.length ? more.length >= 100 : page?.next_before) ? <div className="row"><button className="btn" onClick={next}>Показать ещё</button></div> : null}
     </section>
   );
 }
@@ -104,7 +172,8 @@ function SourceCard({ s, ecosystems, onChanged }: { s: VdbSourceInfo; ecosystems
         <div><span className="l">Режим</span><b>{s.mode === "full" ? "полная выгрузка, замена после проверки" : "первая загрузка — замена после проверки, затем только изменения"}</b></div>
       </div>
       {s.status === "running" && <div className="alert info" role="status"><span className="spin accent" /><div className="alert-body"><b>Этап:</b> {s.progress ?? "Выполняется загрузка…"}{s.last_started_at && <span className="muted small"> · идёт {Math.max(0, Math.round((Date.now() - new Date(s.last_started_at).getTime()) / 1000))} с</span>}</div></div>}
-      {s.enabled && s.requested && s.status !== "running" && <div className="alert info" role="status"><Icon name="clock" /><div className="alert-body">Загрузка в очереди: фоновая служба начнёт её в течение минуты.</div></div>}
+      {s.enabled && s.requested && s.status !== "running" && <div className={`alert ${s.requested_at && Date.now() - new Date(s.requested_at).getTime() > 600000 ? "warn" : "info"}`} role="status"><Icon name="clock" /><div className="alert-body">Загрузка в очереди{s.requested_at ? ` с ${dt(s.requested_at)}` : ""}: фоновая служба начнёт её в течение минуты.
+          {s.requested_at && Date.now() - new Date(s.requested_at).getTime() > 600000 ? " Ожидание дольше обычного — проверьте журнал ниже: возможно, служба перезапускается или недоступна." : ""}</div></div>}
       {s.attempts.length > 0 && <details className="disclosure" open={!!s.last_error}><summary>Попытки последней загрузки ({s.attempts.length})</summary>
         <div className="table-scroll"><table className="table compact"><thead><tr><th>Канал</th><th>Результат</th><th className="num">Записей</th><th className="num">с</th><th>Причина</th></tr></thead>
           <tbody>{s.attempts.map((a, i) => <tr key={i}><td>{a.title}</td><td>{a.ok ? <span className="badge ok">успех</span> : <span className="badge err">ошибка</span>}</td><td className="num">{num(a.records)}</td><td className="num">{(a.ms / 1000).toFixed(1)}</td><td className="small">{a.error || "—"}</td></tr>)}</tbody></table></div>

@@ -37,7 +37,13 @@ export interface HostVulnRow { id: string; keys: string[]; kla_id: string; title
   verdict: "confirmed_ksc" | "confirmed_ext" | "potential"; verdict_ru: string; basis: string; exploited: boolean; sources: string[];
   ksc: { url: string; patches_available: boolean; kb: string[]; detected: string | null } | null; external: { key: string; status: string; status_ru: string; basis: string; databases: string[] } | null }
 export interface HostVulnGroup { gid: string; product: string; version: string; severity: "critical" | "high" | "warning"; severity_ru: string; cves: number; kev: number; sample: string[]; more: number; rows: number; confirmed_ksc: number; external_only: number; detected_by: string[]; eol: { status: string; status_ru: string; severity: string } | null }
-export interface ExtState { state: "none" | "updating" | "stale" | "fresh"; built_at: string | null; error: string; truncated: boolean }
+export interface ExtState { state: "none" | "updating" | "stalled" | "stale" | "fresh"; built_at: string | null; error: string; truncated: boolean }
+export interface VdbAnalysisItem { source_id: string; source: string; state: ExtState["state"]; built_at: string | null; error: string; status: string; hits: number; duration_ms: number; started_at: string | null; lease: boolean;
+  progress: { stage: string; done: number; total: number; at: string | null; eta_s: number | null } | null }
+export interface VdbJournalItem { id: number; at: string; level: "info" | "warn" | "error"; kind: string; kind_ru: string; source: string; vdb_key: string; message: string; details: Record<string, unknown> | null }
+export interface VdbJournalPage { items: VdbJournalItem[]; next_before: number | null; bytes: number; limit_bytes: number; counts_24h: Record<string, number>; kinds: { key: string; label: string }[] }
+export interface VdbAuditCheck { key: string; title: string; status: "ok" | "info" | "warn" | "error"; detail: string; data: Record<string, unknown> }
+export interface VdbAudit { source_id: string; source: string; at: string; checks: VdbAuditCheck[]; counts: Record<string, number> }
 export interface HostVulnsAll { external_checked: boolean; ext?: ExtState | null; groups: HostVulnGroup[]; groups_total: number; notes: string[]; fetched_at: string; counts: { total: number; confirmed_ksc: number; confirmed_ext: number; potential: number; critical: number; high: number; warning: number } }
 export interface HostVuln { occurrence_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label: string; url: string; product: string; product_version: string; app_name: string; app_version: string; publisher: string; detected: string | null; patches_available: boolean; cve: string[]; mssb: string[]; kb: string[] }
 export type ProblemKey = "no_av" | "rtp_off" | "infected" | "bases_old" | "license" | "scan_old" | "reboot" | "hw_cpu" | "hw_ram";
@@ -164,7 +170,7 @@ export interface VdbRunRow { started_at: string | null; finished_at: string | nu
 export interface VdbAttempt { channel: string; title: string; ok: boolean; error: string; ms: number; records: number }
 export interface VdbSourceInfo { channel: string; channels: string[]; attempts: VdbAttempt[]; key: string; title: string; url: string; terms: string; mode: "full" | "incremental"; enabled: boolean; interval_hours: number; settings: Record<string, unknown>; secret_set: boolean;
   status: "never" | "running" | "ok" | "error"; progress: string | null; last_started_at: string | null; last_ok_at: string | null; last_duration_ms: number | null; last_error: string | null; records: number;
-  requested: boolean; can_restore: boolean; upload: boolean; runs: VdbRunRow[] }
+  requested: boolean; requested_at: string | null; can_restore: boolean; upload: boolean; runs: VdbRunRow[] }
 export interface VdbAffectedRow { vendor: string; product: string; ecosystem: string; cpe: string; purl: string; platform: string; exact: string; from: string; from_incl: boolean; to: string; to_incl: boolean; fixed: string;
   all_versions: boolean; version_text: string; conditional: boolean }
 export interface VdbRecordOut { source: string; scores: VdbScore[]; title: string; ext_id: string; aliases: string[]; severity: string; severity_ru: string; score: number | null; vector: string; published: string | null; modified: string | null;
@@ -618,8 +624,10 @@ export const api = {
   vdb: {
     sources: () => req<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[]; storage: { db_bytes: number | null; tmp_bytes: number; free_bytes: number } }>("GET", "/vdb/sources"),
     syncAll: () => req<{ queued: string[] }>("POST", "/vdb/sync-all"),
-    analysis: () => req<{ items: { source_id: string; source: string; state: ExtState["state"]; built_at: string | null; error: string; status: string; hits: number; duration_ms: number; started_at: string | null }[] }>("GET", "/vdb/analysis"),
-    analysisRun: () => req<{ queued: number }>("POST", "/vdb/analysis/run"),
+    analysis: () => req<{ items: VdbAnalysisItem[] }>("GET", "/vdb/analysis"),
+    analysisRun: (sourceId?: string) => req<{ queued: number }>("POST", `/vdb/analysis/run${sourceId ? `?source_id=${sourceId}` : ""}`),
+    journal: (p: Record<string, string | number | undefined>) => req<VdbJournalPage>("GET", `/vdb/journal${qs(p)}`),
+    auditRun: (sourceId: string) => req<VdbAudit>("POST", `/vdb/audit/run?source_id=${sourceId}`),
     updateSource: (key: string, body: { enabled?: boolean; interval_hours?: number; settings?: Record<string, unknown>; api_key?: string }) => req<VdbSourceInfo>("PUT", `/vdb/sources/${key}`, body),
     sync: (key: string) => req<{ requested: boolean }>("POST", `/vdb/sources/${key}/sync`),
     restore: (key: string) => req<VdbSourceInfo>("POST", `/vdb/sources/${key}/restore`),

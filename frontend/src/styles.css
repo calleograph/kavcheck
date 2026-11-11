@@ -115,6 +115,16 @@ code { background: var(--surface-2); border: 1px solid var(--line); padding: 0 5
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 ::-webkit-scrollbar { width: 10px; height: 10px; } ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+/* ход расчёта и журнал базы уязвимостей */
+.jf { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 12px 0; }
+.jf label { display: flex; flex-direction: column; gap: 4px; }
+.jf-q { flex: 1 1 240px; min-width: 0; }
+.jf label.jf-live { flex-direction: row; align-items: center; gap: 8px; min-height: 44px; }
+.an-actions { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+.progress { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin-bottom: 4px; }
+.progress-bar { height: 100%; background: var(--accent); border-radius: 4px; transition: width 400ms var(--ease-out); }
+.code-block { font: 12px/1.5 var(--mono); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; overflow-x: auto; max-width: 100%; }
+@media (prefers-reduced-motion: reduce) { .progress-bar { transition: none; } }
 .ext-stamp { margin: 0 0 12px; font-size: var(--fs-sm); }
 .muted { color: var(--muted); } .small { font-size: var(--fs-sm); } .xs { font-size: var(--fs-xs); } .spacer { flex: 1; } .nowrap { white-space: nowrap; } .num { font-variant-numeric: tabular-nums; }
 .ok-text { color: var(--ok-text); } .bad-text { color: var(--danger-text); } .warn-text { color: var(--warn-text); }

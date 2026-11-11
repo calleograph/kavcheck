@@ -212,16 +212,16 @@ async def prune_runs(db: AsyncSession, source: str, keep: int = 60) -> None:
 
 
 async def revision(db: AsyncSession, source_id) -> str:
-    """Отпечаток состояния данных, от которых зависит сопоставление: время загрузки источников, число решений администратора, построение каталога источника KSC."""
+    """Отпечаток состояния данных, от которых зависит сопоставление: версия данных источников (растёт, когда загрузка что-то изменила), число решений администратора, построение каталога источника KSC."""
     from ..models import CatalogState, VdbMapping  # noqa: PLC0415
 
-    srcs = (await db.execute(select(VdbSource.key, VdbSource.last_ok_at, VdbSource.active_generation, VdbSource.enabled).where(VdbSource.key.notin_(("eol", "oval"))).order_by(VdbSource.key))).all()
+    srcs = (await db.execute(select(VdbSource.key, VdbSource.data_ver, VdbSource.active_generation, VdbSource.enabled).where(VdbSource.key.notin_(("eol", "oval"))).order_by(VdbSource.key))).all()
     maps = (await db.execute(select(func.count(), func.max(VdbMapping.created_at)).select_from(VdbMapping))).one()
     built = (await db.execute(select(CatalogState.built_at).where(CatalogState.source_id == source_id))).scalar_one_or_none()
-    return "|".join([",".join(f"{k}:{t.isoformat() if t else ''}:{g}:{int(e)}" for k, t, g, e in srcs), f"{maps[0]}:{maps[1]}", str(built)])
+    return "|".join([",".join(f"{k}:{v or 0}:{g}:{int(e)}" for k, v, g, e in srcs), f"{maps[0]}:{maps[1]}", str(built)])
 
 
-MATCH_REV = "3"        # версия логики сопоставления и хранения результатов: меняется при исправлениях — подготовленные данные считаются устаревшими и пересчитываются
+MATCH_REV = "4"        # версия логики сопоставления и хранения результатов: меняется при исправлениях — подготовленные данные считаются устаревшими и пересчитываются
 
 
 def rev_hash(rev: str) -> str:

@@ -17,6 +17,7 @@ from ..models import CatalogProduct, EolFinding, KscSource, ProductClass, VdbAff
 from ..services.audit import write_audit
 from ..vdb import match as M
 from ..vdb import sources as S
+from ..vdb import journal as VJ
 from ..vdb import store
 from ..vdb.classify import CATEGORIES, CATEGORY_RU
 from ..vdb.normalize import SEV_RANK, SEV_RU, norm, pick_primary, score_key
@@ -39,7 +40,7 @@ def source_out(r: VdbSource, runs: list[VdbRun] | None = None) -> dict:
     st = dict(r.settings or {})
     return {"key": r.key, "title": info["title"], "url": info["url"], "terms": info["terms"], "mode": info["mode"], "enabled": r.enabled, "interval_hours": r.interval_hours,
             "settings": st, "secret_set": bool(r.secret_enc), "status": r.status, "progress": r.progress, "last_started_at": _iso(r.last_started_at), "last_ok_at": _iso(r.last_ok_at),
-            "last_duration_ms": r.last_duration_ms, "last_error": r.last_error, "records": r.records, "requested": r.requested_at is not None, "can_restore": r.prev_generation is not None,
+            "last_duration_ms": r.last_duration_ms, "last_error": r.last_error, "records": r.records, "requested": r.requested_at is not None, "requested_at": _iso(r.requested_at), "can_restore": r.prev_generation is not None,
             "upload": r.key == "bdu", "channel": r.channel, "channels": info["channels"], "attempts": r.diag or [],
             "runs": [{"started_at": _iso(x.started_at), "finished_at": _iso(x.finished_at), "trigger": x.trigger, "status": x.status, "fetched": x.fetched, "changed": x.changed,
                       "duration_ms": x.duration_ms, "error": x.error, "channel": x.channel, "attempts": x.attempts or []} for x in (runs or [])]}
@@ -86,10 +87,18 @@ async def sync_all(su: SessionUser = Depends(require_admin), db: AsyncSession = 
     return {"queued": queued}
 
 
+def _dt(d):
+    return _iso(d) if d else None
+
+
 @router.get("/analysis")
 async def analysis_status(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    """Подготовленные результаты проверки по внешним базам по доступным источникам KSC: когда построены, актуальны ли, чем закончился последний расчёт."""
+    """Подготовленные результаты проверки по внешним базам по доступным источникам KSC: состояние, ход расчёта (этап, обработано из всего, время старта, оценка окончания),
+    когда построены, актуальны ли, чем закончился последний расчёт."""
+    from datetime import datetime, timezone  # noqa: PLC0415
+
     from ..models import VdbAnalysis  # noqa: PLC0415
+    from ..services.jobs import JOBS  # noqa: PLC0415
     from ..vdb import hostext as HX  # noqa: PLC0415
 
     out = []
@@ -98,20 +107,75 @@ async def analysis_status(su: SessionUser = Depends(require_user), db: AsyncSess
             continue
         st = await db.get(VdbAnalysis, src.id)
         info = await HX.state(db, src.id)
-        out.append({"source_id": str(src.id), "source": src.name, "state": info["state"], "built_at": _iso(info["built_at"]), "error": info["error"], "status": st.status if st else "none",
-                    "hits": st.hits if st else 0, "duration_ms": st.duration_ms if st else 0, "started_at": _iso(st.started_at) if st else None})
+        prog, eta = info.get("progress"), None
+        if prog and prog["total"] and prog["done"] and st and st.started_at:
+            el = (datetime.now(timezone.utc) - (st.started_at if st.started_at.tzinfo else st.started_at.replace(tzinfo=timezone.utc))).total_seconds()
+            eta = int(el * (prog["total"] - prog["done"]) / prog["done"])
+        out.append({"source_id": str(src.id), "source": src.name, "state": info["state"], "built_at": _dt(info["built_at"]), "error": info["error"], "status": st.status if st else "none",
+                    "hits": st.hits if st else 0, "duration_ms": st.duration_ms if st else 0, "started_at": _dt(info["started_at"]),
+                    "progress": {"stage": prog["stage"], "done": prog["done"], "total": prog["total"], "at": _dt(prog["at"]), "eta_s": eta} if prog else None,
+                    "lease": bool(await JOBS.is_live("vdb_analyze", str(src.id)))})
     return {"items": out}
 
 
 @router.post("/analysis/run", status_code=202)
-async def analysis_run(su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    """Пересчитать подготовленные результаты по всем источникам: расчёт выполняет фоновая служба в течение минуты (идущий расчёт не дублируется). Прежние результаты остаются в работе до завершения."""
+async def analysis_run(request: Request, source_id: uuid.UUID | None = None, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Пересчитать подготовленные результаты (все источники или один): расчёт выполняет фоновая служба в течение минуты (идущий расчёт не дублируется). Прежние результаты остаются в работе до завершения."""
     from ..models import VdbAnalysis  # noqa: PLC0415
 
-    n = (await db.execute(update(VdbAnalysis).where(VdbAnalysis.status != "running").values(rev=""))).rowcount
-    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="vdb.analysis.run", target_type="vdb_analysis", target_id="*", details={"sources": n})
+    q = update(VdbAnalysis).where(VdbAnalysis.status != "running")
+    if source_id is not None:
+        q = q.where(VdbAnalysis.source_id == source_id)
+    n = (await db.execute(q.values(rev=""))).rowcount
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="vdb.analysis.run", target_type="vdb_analysis", target_id=str(source_id or "*"), details={"sources": n})
     await db.commit()
+    await VJ.emit(request.app.state.session_maker, "analysis", f"{su.display_name}: запрошен пересчёт ({'один источник' if source_id else 'все источники'}), поставлено {n}", source_id=source_id, details={"queued": n})
     return {"queued": n}
+
+
+@router.get("/journal")
+async def journal(level: str = Query("", max_length=40), kind: str = Query("", max_length=16), source_id: uuid.UUID | None = None, q: str = Query("", max_length=100),
+                  before: int | None = Query(None, ge=1), limit: int = Query(100, ge=1, le=300), su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Журнал базы уязвимостей (загрузки, расчёты и их ход, решения, аудит, ошибки). Кольцевой, до 10 МБ. Новые записи первыми; `before` — продолжение (id последней полученной записи)."""
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+    from ..models import VdbJournal as JM  # noqa: PLC0415
+
+    cond = []
+    if level:
+        cond.append(JM.level.in_([x for x in level.split(",") if x in VJ.LEVELS]))
+    if kind:
+        cond.append(JM.kind == kind)
+    if source_id:
+        cond.append(JM.source_id == source_id)
+    if q.strip():
+        cond.append(JM.message.ilike(f"%{q.strip()}%"))
+    if before:
+        cond.append(JM.id < before)
+    rows = (await db.execute(select(JM).where(*cond).order_by(JM.id.desc()).limit(limit + 1))).scalars().all()
+    names = {str(i): n for i, n in (await db.execute(select(KscSource.id, KscSource.name))).all()}
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    counts = dict((await db.execute(select(JM.level, func.count()).where(JM.at >= since).group_by(JM.level))).all())
+    return {"items": [{"id": r.id, "at": _iso(r.at), "level": r.level, "kind": r.kind, "kind_ru": VJ.KINDS.get(r.kind, r.kind), "source": names.get(str(r.source_id), "") if r.source_id else "",
+                       "vdb_key": r.vdb_key, "message": r.message, "details": r.details} for r in rows[:limit]],
+            "next_before": rows[limit - 1].id if len(rows) > limit else None, "bytes": await VJ.total_bytes(db), "limit_bytes": VJ.LIMIT_BYTES, "counts_24h": counts,
+            "kinds": [{"key": k, "label": v} for k, v in VJ.KINDS.items()]}
+
+
+@router.post("/audit/run")
+async def audit_run(request: Request, source_id: uuid.UUID, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+    """Аудит применения баз уязвимостей к источнику: охват, согласованность, контрольная сверка выборки с пересчётом, покрытие компьютеров. Только чтение; итог пишется в журнал."""
+    from ..vdb import audit as VA  # noqa: PLC0415
+
+    if not su.can_use_source(source_id):
+        raise HTTPException(status_code=403, detail="Нет доступа к этому источнику KSC")
+    if await db.get(KscSource, source_id) is None:
+        raise HTTPException(status_code=404, detail="Источник не найден")
+    res = await VA.run(db, source_id)
+    bad = [c for c in res["checks"] if c["status"] in ("warn", "error")]
+    await VJ.emit(request.app.state.session_maker, "audit", f"{su.display_name}: аудит применения — ошибок {res['counts']['error']}, замечаний {res['counts']['warn']}, в порядке {res['counts']['ok']}",
+                  level="error" if res["counts"]["error"] else "warn" if res["counts"]["warn"] else "info", source_id=source_id, details={"problems": [{"check": c["key"], "status": c["status"], "detail": c["detail"][:300]} for c in bad]})
+    return res
 
 
 class SourceIn(BaseModel):
@@ -672,13 +736,29 @@ class MappingIn(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
-async def _recheck(db: AsyncSession, su: SessionUser, product_key: str) -> None:
-    """Пересчёт находок только по уязвимостям названного продукта (до 3000): быстро и без нагрузки на память; остальное сверит фоновая служба по отпечатку данных."""
-    if not su.current_source_id:
-        return
-    keys = (await db.execute(select(VdbAffected.vuln_key).where(VdbAffected.product_key == product_key).distinct().limit(3000))).scalars().all()
-    if keys:
-        await analyze(db, su.current_source_id, keys=list(keys))
+async def _fresh_sources(db: AsyncSession) -> list[uuid.UUID]:
+    """Источники KSC, подготовленные результаты которых актуальны до этого изменения."""
+    from ..models import VdbAnalysis  # noqa: PLC0415
+    from ..vdb import hostext as HX  # noqa: PLC0415
+
+    ids = (await db.execute(select(VdbAnalysis.source_id).where(VdbAnalysis.status == "ok"))).scalars().all()
+    return [i for i in ids if (await HX.state(db, i))["state"] == "fresh"]
+
+
+async def _recheck(db: AsyncSession, product_key: str, fresh: list[uuid.UUID]) -> int:
+    """Решение по сопоставлению касается уязвимостей одного продукта (до 3000): они пересчитываются сразу у каждого актуального источника, и ревизия подтверждается без полного пересчёта
+    всей базы (часы на большой). Если уязвимостей больше — подтверждения нет, остальное доведёт фоновая служба. Возвращает число пересчитанных уязвимостей."""
+    from ..models import VdbAnalysis  # noqa: PLC0415
+
+    keys = (await db.execute(select(VdbAffected.vuln_key).where(VdbAffected.product_key == product_key).distinct().limit(3001))).scalars().all()
+    complete = len(keys) <= 3000
+    for sid in fresh:
+        if keys:
+            await analyze(db, sid, keys=list(keys[:3000]))
+        if complete:
+            await db.execute(update(VdbAnalysis).where(VdbAnalysis.source_id == sid).values(rev=await store.analysis_rev(db, sid), built_at=utcnow()))
+    await db.commit()
+    return min(len(keys), 3000)
 
 
 @router.get("/mappings")
@@ -689,27 +769,31 @@ async def mappings(su: SessionUser = Depends(require_user), db: AsyncSession = D
 
 
 @router.post("/mappings", status_code=201)
-async def add_mapping(body: MappingIn, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+async def add_mapping(body: MappingIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     """Решение администратора: считать продукт из базы уязвимостей (производитель + название) продуктом каталога либо исключить ложное совпадение. Сохраняется при обновлении базы и приложения."""
+    fresh = await _fresh_sources(db)
     m = VdbMapping(vendor_key=norm(body.vendor_key), product_key=norm(body.product), catalog_key=body.catalog_key, action=body.action, note=body.note, created_by=su.display_name)
     db.add(m)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="vdb.mapping.add", target_type="vdb_mapping", target_id=str(m.id), details={"product": m.product_key, "catalog": m.catalog_key, "action": m.action})
     await db.flush()
     await db.commit()
-    await _recheck(db, su, m.product_key)          # затронутые решением уязвимости пересчитываются сразу, полный пересчёт по всему каталогу — фоновая служба
+    n = await _recheck(db, m.product_key, fresh)          # затронутые решением уязвимости пересчитываются сразу
+    await VJ.emit(request.app.state.session_maker, "decision", f"{su.display_name}: {'исключено совпадение' if m.action == 'exclude' else 'продукт сопоставлен'} «{m.product_key}» → {m.catalog_key}; пересчитано уязвимостей {n}",
+                  details={"mapping": str(m.id), "action": m.action, "vendor": m.vendor_key, "product": m.product_key, "catalog": m.catalog_key, "sources_rechecked": len(fresh)})
     return {"id": str(m.id)}
 
 
 @router.delete("/mappings/{mid}", status_code=204)
-async def delete_mapping(mid: uuid.UUID, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+async def delete_mapping(mid: uuid.UUID, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     pk = (await db.execute(select(VdbMapping.product_key).where(VdbMapping.id == mid))).scalar_one_or_none()
+    fresh = await _fresh_sources(db)
     r = await db.execute(delete(VdbMapping).where(VdbMapping.id == mid))
     if not r.rowcount:
         raise HTTPException(status_code=404, detail="Решение не найдено")
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="vdb.mapping.delete", target_type="vdb_mapping", target_id=str(mid))
     await db.commit()
-    if pk:
-        await _recheck(db, su, pk)
+    n = await _recheck(db, pk, fresh) if pk else 0
+    await VJ.emit(request.app.state.session_maker, "decision", f"{su.display_name}: решение по сопоставлению снято ({pk or mid}); пересчитано уязвимостей {n}", details={"mapping": str(mid), "product": pk, "sources_rechecked": len(fresh)})
 
 
 @router.get("/suggest-products")
