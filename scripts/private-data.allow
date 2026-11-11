@@ -77,3 +77,11 @@ python.org
 nginx.org
 nodejs.org
 npmjs.com
+
+# официальные фиды OVAL дистрибутивов (каталог фидов базы уязвимостей)
+canonical.com
+redhat.com
+almalinux.org
+rockylinux.org
+oracle.com
+suse.com
