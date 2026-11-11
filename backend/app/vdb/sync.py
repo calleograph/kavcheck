@@ -178,6 +178,8 @@ class VdbSync:
                     continue
                 if r.key in self._running or r.status == "running" or await JOBS.is_live("vdb_sync", r.key):
                     continue
+                if r.key == "oval" and r.requested_at is None and not any(isinstance(f, dict) and f.get("url") for f in (r.settings or {}).get("feeds") or []):
+                    continue                                        # плановая загрузка OVAL без заданных фидов бессмысленна: ошибка каждые 30 минут не нужна, ручной запуск объяснит причину
                 wait = timedelta(minutes=30) if r.status == "error" else timedelta(hours=max(1, r.interval_hours))       # после ошибки — повтор через 30 минут, а не через сутки
                 due = r.requested_at is not None or (r.enabled and (r.last_started_at is None or now - _utc(r.last_started_at) >= wait))
                 if due and (r.enabled or r.requested_at is not None):

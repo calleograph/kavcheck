@@ -138,7 +138,7 @@ function EnableAll({ items, onChanged }: { items: VdbSourceInfo[]; onChanged: ()
     <div className="mt-sm"><button className="btn primary" onClick={go} aria-busy={busy}><Icon name="upload" />Включить все источники и загрузить</button></div></div>{toast}</div>;
 }
 
-const CHANNEL_NAME: Record<string, string> = { feeds: "ленты JSON 2.0", api: "API", archives: "архивы экосистем", site: "сайт bdu.fstec.ru", file: "файл, загруженный вручную", cisa: "cisa.gov", github: "GitHub cisagov/kev-data", supplement: "дополнения" };
+const CHANNEL_NAME: Record<string, string> = { oval: "фиды OVAL", feeds: "ленты JSON 2.0", api: "API", archives: "архивы экосистем", site: "сайт bdu.fstec.ru", file: "файл, загруженный вручную", cisa: "cisa.gov", github: "GitHub cisagov/kev-data", supplement: "дополнения" };
 const YEARS: [number, string][] = [[1, "текущий год"], [2, "2 года"], [3, "3 года"], [5, "5 лет"], [10, "10 лет"], [30, "всё (с 2002 года)"]];
 const ECO_MB: Record<string, number> = { Debian: 75, Ubuntu: 755, Alpine: 4, "Red Hat": 26, AlmaLinux: 6, "Rocky Linux": 5, SUSE: 46, openSUSE: 21, Linux: 56, Go: 12, PyPI: 35, npm: 209, Maven: 10, NuGet: 3, Packagist: 10, RubyGems: 5, "crates.io": 3 };
 const COMMON_ECO = ["Debian", "Ubuntu", "Alpine", "Red Hat", "AlmaLinux", "Rocky Linux", "SUSE", "openSUSE", "Linux", "Go", "PyPI", "npm", "Maven", "NuGet", "Packagist", "RubyGems", "crates.io"];

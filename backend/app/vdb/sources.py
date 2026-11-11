@@ -586,8 +586,7 @@ async def _oval_feeds(ctx: RunCtx) -> None:
 
     feeds = [f for f in (ctx.settings.get("feeds") or []) if isinstance(f, dict) and f.get("url") and f.get("name")]
     if not feeds:
-        await ctx.progress("фиды OVAL не заданы в настройках источника")
-        return
+        raise FetchError("Фиды OVAL не заданы: добавьте адрес фида (OVAL дистрибутива: Ubuntu, Debian, Red Hat…) в настройках источника и сохраните. Пока фидов нет, загружать нечего")
     cur = dict(ctx.cursor or {})
     done: dict = dict(cur.get("feeds") or {})
     for i, f in enumerate(feeds):
@@ -611,7 +610,7 @@ async def _oval_feeds(ctx: RunCtx) -> None:
 
 
 async def run_oval(ctx: RunCtx) -> None:
-    await run_channels(ctx, [("feeds", INFO["oval"]["channels"][0], _oval_feeds)])
+    await run_channels(ctx, [("oval", INFO["oval"]["channels"][0], _oval_feeds)])
 
 
 SOURCES: dict[str, Callable[[RunCtx], Awaitable[None]]] = {"kev": run_kev, "bdu": run_bdu, "nvd": run_nvd, "osv": run_osv, "eol": run_eol, "oval": run_oval}
