@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth.deps import SessionUser, get_db, require_analyst, require_user
+from ..auth.deps import ALL_SOURCES, SessionUser, get_db, require_analyst, require_user
 from ..ksc import versions
 from ..search import any_field
 from ..models import AuditCheck, KscSource, ReportJob, ReportTemplate, utcnow
@@ -125,6 +125,16 @@ async def list_jobs(source_only: bool = True, offset: int = Query(0, ge=0), limi
     return {"items": [job_out(j) for j in out[:limit]]}
 
 
+def _page_source(request: Request, su: SessionUser) -> uuid.UUID | None:
+    """Источник экрана, с которого запущен отчёт (заголовок X-Source-Id), иначе — выбранный в сессии. Иначе отчёт по компьютеру строился бы по другой базе KSC,
+    где тот же идентификатор относится к другому компьютеру: защита, уязвимости и EOL оказываются пустыми."""
+    raw = request.headers.get("x-source-id") or ""
+    try:
+        return uuid.UUID(raw) if raw and raw != ALL_SOURCES else su.current_source_id
+    except ValueError:
+        return su.current_source_id
+
+
 @router.post("", status_code=201)
 async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     params = validate_params(body.kind, body.params)
@@ -148,9 +158,9 @@ async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends
         from ..services.sources import visible_sources  # noqa: PLC0415
 
         ids = body.source_ids or [s.id for s in await visible_sources(db, su)]
-        sources = await _sources(db, su, ids, su.current_source_id)
+        sources = await _sources(db, su, ids, _page_source(request, su))
     else:
-        sources = await _sources(db, su, body.source_ids if body.kind == "version_audit" else body.source_ids[:1], su.current_source_id)
+        sources = await _sources(db, su, body.source_ids if body.kind == "version_audit" else body.source_ids[:1], _page_source(request, su))
     job = await enqueue(request, db, su, kind=body.kind, title=body.title, params=params, sources=sources)
     return job_out(job)
 

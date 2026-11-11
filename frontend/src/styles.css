@@ -481,6 +481,14 @@ td .empty { padding: 28px 12px; }
   transition: opacity 140ms ease-out, transform 140ms ease-out, visibility 0s linear 140ms; }
 .dd.left .dd-panel { left: 0; right: auto; transform-origin: top left; }
 .dd.open .dd-panel { opacity: 1; transform: none; visibility: visible; pointer-events: auto; transition: opacity 180ms var(--ease-out), transform 260ms var(--ease-out), visibility 0s; }
+/* имя пользователя в верхней панели не выходит за край на средних ширинах: сокращается многоточием */
+.topbar .dd-btn { min-width: 0; max-width: 100%; }
+.topbar .dd-btn .uname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1180px) { .topbar .dd-btn .uname { max-width: 160px; } }
+/* закрытая панель не занимает место: иначе скрытое меню у правого края расширяет страницу (прокрутка по горизонтали на 1024 px) */
+.dd:not(.open) > .dd-panel { display: none; }
+.dd.open > .dd-panel { animation: dd-in 160ms var(--ease-out); }
+@keyframes dd-in { from { opacity: 0; transform: translateY(-4px) scale(.97); } to { opacity: 1; transform: none; } }
 .dd-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--ink); font: inherit; cursor: pointer; text-decoration: none; transition: background-color var(--t-fast); }
 .dd-item:hover, .dd-item:focus-visible, .dd-item.kb { background: var(--sunken); outline: none; color: var(--ink); }
 .dd-item.danger { color: var(--danger-text); } .dd-item.danger:hover { background: var(--danger-bg); }

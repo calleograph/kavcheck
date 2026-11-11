@@ -113,7 +113,7 @@ async def test_hosts_report(client, app):
     sw = list(wb["Установленное ПО"].iter_rows(values_only=True))
     assert len(sw) > 3 and {r[0] for r in sw[1:]} == {"ws-001", "ksc-server"}
     v = list(wb["Уязвимости"].iter_rows(values_only=True))
-    assert {r[5] for r in v[1:]} <= {"ws-001", "ksc-server"} and len(v) - 1 == m(pv, "vrows")
+    assert {r[0] for r in v[1:]} <= {"ws-001", "ksc-server"} and len(v) - 1 == m(pv, "vrows")                # первый столбец — компьютер
 
 
 async def test_protection_report_matches_page(client, app):
@@ -170,7 +170,7 @@ async def test_hosts_report_by_page_filter_without_selection_and_constructor_opt
     await _setup(client, app)
     full = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True})
     assert full["total"] >= 2 and all(r["name"].startswith("ws-") for r in full["items"]) and m(full, "hosts") == full["total"]
-    assert [t["id"] for t in full["doc"]["tables"]] == ["hosts"]                       # по условиям — только состояние защиты; ПО и уязвимости включаются явно (до 500 компьютеров)
+    assert [t["id"] for t in full["doc"]["tables"]] == ["hosts", "protection"]         # по условиям — только состояние защиты; ПО, уязвимости, EOL, события, аппаратная часть — явно (до 500 компьютеров)
     wide = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True, "sections": ["software", "protection"]})
     assert "software" in [t["id"] for t in wide["doc"]["tables"]]
     short = await preview(client, "quick_hosts", {"q": "ws-", "include_inactive": True, "detail": "summary"})

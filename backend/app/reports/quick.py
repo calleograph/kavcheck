@@ -52,6 +52,7 @@ class Ctx:
     org: dict = field(default_factory=dict)            # данные организации для шапки и подвала (настройки «Организация и оформление отчётов»)
     settings: object | None = None                     # настройки приложения (отчёт «Компоненты»: версии установленных частей)
     ad: object | None = None                           # служба просмотра AD (ad.service.AdService): отчёты по каталогу
+    features: dict = field(default_factory=dict)       # признаки состава источника (last_check.features): раздел без нужных объектов назван, а не показан нулями
     hier_cfg: object | None = None                     # настройки раздела «Иерархия» (правила очистки выгрузки)
 
 
@@ -305,7 +306,35 @@ async def _hosts_by_filter(client: SourceClient, p: dict, ctx: Ctx) -> list[int]
     raise KscError("too_many_rows", f"Под условия подходит больше {ctx.max_rows} компьютеров: сузьте условия или повысьте предел в «Администрирование → Общие настройки»")
 
 
+HOST_EXT_LIMIT = 50             # внешние базы — по каждому компьютеру, как в карточке; для большой выборки это слишком долго — явное примечание
+EVENT_DAYS = 30                 # как вкладка «События» карточки компьютера
+HOST_SECTIONS = ("software", "vulns", "protection", "eol", "events", "hardware")
+HOST_SECTION_TITLE = (("protection", "состояние защиты"), ("software", "установленное ПО"), ("vulns", "уязвимости"), ("eol", "EOL"), ("events", "события (30 суток)"), ("hardware", "аппаратная часть"))
+HOST_TABS = (("hosts", "Общие сведения"), ("protection", "Состояние защиты"), ("software", "Установленное ПО"), ("vulns", "Уязвимости"), ("eol", "EOL"),
+             ("events", "События безопасности"), ("hardware", "Аппаратная часть"))
+
+
+def _missing(ctx: Ctx, feature: str) -> list[str] | None:
+    """Объекты базы KSC, которых нет на этом источнике (проверка состава при подключении); None — раздел доступен."""
+    f = (ctx.features or {}).get(feature)
+    return f.get("missing") or [feature] if f and not f.get("ok", True) else None
+
+
+def _vuln_hosts(rows: list[dict]) -> dict[int, str]:
+    """Наивысший уровень опасности по каждому компьютеру (для сводки «по наивысшему уровню»)."""
+    worst: dict[int, str] = {}
+    for r in rows:
+        cur = worst.get(r["host_id"])
+        if cur is None or SEV_RANK[r["severity"]] > SEV_RANK[cur]:
+            worst[r["host_id"]] = r["severity"]
+    return worst
+
+
 async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
+    """Отчёт по компьютерам — тот же состав данных, что карточка компьютера: ПО, защита, уязвимости KSC и по внешним базам (как `services/hostvulns.merge`),
+    EOL, события за 30 суток, аппаратная часть. Недоступный раздел назван в примечании; его счётчики пустые, а не нулевые."""
+    from ..ksc import hardware as HW  # noqa: PLC0415
+
     ids = [int(i) for i in p.get("host_ids") or []][:500]
     by_filter = not ids
     if by_filter:
@@ -314,66 +343,172 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
             raise KscError("no_data", "По условиям не найдено ни одного компьютера")
     groups = await H.groups_map(client)
     recs = await _host_protection(client, ids, groups, ctx)
-    secs = set(p.get("sections") or (["protection"] if by_filter else ["software", "vulns", "protection"]))      # без явного выбора: по условиям — только защита, по выбранным — всё
-    if by_filter and len(ids) > 500 and secs & {"software", "vulns"}:
-        raise KscError("too_many_rows", f"Под условия подходит {len(ids)} компьютеров: разделы «Установленное ПО» и «Уязвимости» формируются не более чем для 500 — отключите их или сузьте условия")
+    secs = set(p.get("sections") or (["protection"] if by_filter else HOST_SECTIONS))
+    if by_filter and len(ids) > 500 and secs & {"software", "vulns", "eol", "events", "hardware"}:
+        raise KscError("too_many_rows", f"Под условия подходит {len(ids)} компьютеров: разделы, кроме защиты, формируются не более чем для 500 — отключите их или сузьте условия")
     bases_days, scan_days = int(p.get("bases_days") or 3), int(p.get("scan_days") or 30)
+    notes: list[str] = []
+    missing_ids = [i for i in ids if i not in recs]
+    if missing_ids:
+        notes.append(f"Не найдены в KSC: {len(missing_ids)} из выбранных компьютеров.")
+    names = {hid: recs[hid]["name"] for hid in recs}
     soft_rows: list[dict] = []
-    if "software" in secs:
-        for hid in ids:
-            if ctx.cancelled():
-                raise RuntimeError("cancelled")
+    vrows: list[dict] = []
+    eol_rows: list[dict] = []
+    ev_rows: list[dict] = []
+    hw_rows: list[dict] = []
+    avail = {"software": "software" in secs, "vulns": "vulns" in secs, "eol": "eol" in secs, "events": "events" in secs, "hardware": "hardware" in secs}
+    # --- уязвимости: KSC и внешние базы — так же, как карточка компьютера (по умолчанию внешние базы включены)
+    if avail["vulns"]:
+        miss = _missing(ctx, "vulnerabilities")
+        if miss:
+            avail["vulns"] = False
+            notes.append("Уязвимости KSC на этом источнике недоступны: в базе нет объектов " + ", ".join(miss) + ". Раздел не включён, а не равен нулю.")
+    ext_ok = avail["vulns"] and len(ids) <= HOST_EXT_LIMIT
+    if avail["vulns"] and not ext_ok:
+        notes.append(f"Внешние базы не включены: отчёт по {len(ids)} компьютерам (проверка выполняется по каждому, как в карточке, — до {HOST_EXT_LIMIT}). Уязвимости показаны по данным KSC.")
+    from ..api.vdb import host_ext_items  # noqa: PLC0415
+    from ..services import hostvulns as HV  # noqa: PLC0415
+
+    host_vulns: dict[int, list[dict]] = {}
+    if avail["vulns"]:
+        async with ctx.sm() as db:
+            for hid in ids:
+                if ctx.cancelled():
+                    raise RuntimeError("cancelled")
+                ksc = await V.on_host(client, hid)
+                ext = []
+                if ext_ok:
+                    ext, catalog = await host_ext_items(db, client, ctx.source_id, hid)
+                    if not catalog and hid == ids[0]:
+                        notes.append("Каталог программ источника ещё не построен: проверка по внешним базам не выполнялась.")
+                rows_h = HV.merge(ksc, ext)
+                host_vulns[hid] = rows_h
+                vrows += [{**r, "host_id": hid, "host": names.get(hid, str(hid)), "cve": ", ".join(k for k in r["keys"] if str(k).upper().startswith("CVE")),
+                           "sources_text": ", ".join(r["sources"]), "exploited_text": "да" if r["exploited"] else "",
+                           "patch": "исправление доступно" if (r.get("ksc") or {}).get("patches_available") else ""} for r in rows_h]
+                ctx.progress(f"уязвимости: компьютеров {len(host_vulns)}")
+    # --- программы, EOL, события, аппаратная часть — по каждому компьютеру
+    if avail["eol"]:
+        from ..eol import read as EOLR  # noqa: PLC0415
+        from ..models import EolState  # noqa: PLC0415
+
+        async with ctx.sm() as db:
+            eol_state = await db.get(EolState, ctx.source_id)
+            if eol_state is None or eol_state.computed_at is None:
+                avail["eol"] = False
+                notes.append("EOL для этого источника ещё не рассчитан (расчёт выполняется по расписанию). Раздел не включён, а не равен нулю.")
+            else:
+                for hid in ids:
+                    for f in await EOLR.host_items(db, ctx.source_id, hid):
+                        eol_rows.append({"host_id": hid, "host": names.get(hid, str(hid)), "kind_ru": f["kind_ru"], "title": f["title"], "version": f["version"], "status_ru": f["status_ru"],
+                                         "severity_ru": f["severity_ru"], "eol_from": f["eol_from"], "days_left": f["days_left"], "eol_label": f["eol_label"] or "", "link": f["link"] or ""})
+    for hid in ids:
+        if ctx.cancelled():
+            raise RuntimeError("cancelled")
+        if avail["software"]:
             for s in await client.run(q.SOFTWARE_ON_HOST, {"id": hid}, max_rows=20_000):
-                soft_rows.append({"host_id": hid, "name": recs[hid]["name"] if hid in recs else str(hid), "program": s.get("name") or "", "version": s.get("version") or "",
+                soft_rows.append({"host_id": hid, "name": names.get(hid, str(hid)), "program": s.get("name") or "", "version": s.get("version") or "",
                                   "publisher": s.get("publisher") or "", "install_date": s.get("install_date")})
             ctx.progress(f"программы: {len(soft_rows)}")
-    vul = await build_vulns(client, {**p, "host_ids": ids, "descr_ids": [], "cves": [], "vp_ids": [], "product_names": [], "include_inactive": True, "online_only": False, "q": "", "group_contains": ""},
-                            ctx) if "vulns" in secs else None
-    vrows = vul["tables"][0]["rows"] if vul else []
-    by_vuln: dict[int, Counter] = defaultdict(Counter)
-    for r in vrows:
-        by_vuln[r["host_id"]][r["severity"]] += 1
+        if avail["events"]:
+            for e in await EV.all_rows(client, days=EVENT_DAYS, types=[], host_id=hid, max_rows=ctx.max_rows):
+                ev_rows.append({"host_id": hid, "host": names.get(hid, str(hid)), "at": e["at"], "type_ru": e["type_title"], "threat": e["threat"] or "",
+                                "target": (f"{e['attacker'] or '?'} → порт {e['port']} ({e['protocol']})" if e["type"] == "attack" else e["object"]) or "", "product": e["product"] or "",
+                                "ip": e["ip"] or ""})
+        if avail["hardware"] and not _missing(ctx, "hardware"):
+            hw = HW.finish(HW.summarize(await client.run(q.HW_HOST, {"id": hid}, max_rows=2000)))
+            r = recs.get(hid) or {}
+            linux = "linux" in str(r.get("platform") or r.get("os") or "").lower()
+            probs = HW.evaluate(hw, ctx.hw_cfg, names.get(hid, "")) if linux and hw["known"] and ctx.hw_cfg is not None else []      # ключи: title, level_ru
+            hw_rows.append({"host_id": hid, "host": names.get(hid, str(hid)), "line": hw["line"], "cores": hw.get("cores"), "ram_mb": hw.get("ram_mb"), "disk_total_gb": hw.get("disk_total_gb"),
+                            "virtual": "да" if hw.get("virtual") else "нет", "problems": "; ".join(x["title"] for x in probs)})
+    # --- строки по компьютерам
     soft_n = Counter(r["host_id"] for r in soft_rows)
-    rows, missing = [], [i for i in ids if i not in recs]
+    vuln_n = Counter(r["host_id"] for r in vrows)
+    eol_n = Counter(r["host_id"] for r in eol_rows)
+    ev_n = Counter(r["host_id"] for r in ev_rows)
+    hw_by = {r["host_id"]: r for r in hw_rows}
+    worst = _vuln_hosts(vrows)
+    rows, prot_rows = [], []
     for hid in ids:
         r = recs.get(hid)
         if r is None:
             continue
         pr = P.problems(r, ctx.now, bases_days=bases_days, scan_days=scan_days)
         av = r["av"] or {}
-        c = by_vuln.get(hid, Counter())
-        rows.append({**host_part(r, p, ctx), "ksc_status": r["ksc_status"] or "—", "reasons": "; ".join(P.STATUS_MASK[b] for b in P.STATUS_MASK if r["mask"] & b),
-                     "problems": "; ".join(P.PROBLEMS[x][0] for x in pr) or "защита в порядке", "problems_n": len(pr), "av": av.get("product") or "нет", "av_build": av.get("build") or "",
-                     "rtp": r["rtp_label"] or av.get("state_label") or "—", "bases": av.get("bases"), "last_full_scan": r["last_full_scan"], "agent": r["agent_build"],
-                     "software": soft_n.get(hid, 0) if "software" in secs else None, "v_critical": c["critical"], "v_high": c["high"], "v_warning": c["warning"], "v_total": sum(c.values()),
-                     "is_slave": r["is_slave"]})
+        vc = Counter(x["severity"] for x in host_vulns.get(hid, []))
+        rtp = r["rtp_label"] or av.get("state_label") or "—"
+        prot = {"host_id": hid, "host": r["name"], "problems": "; ".join(P.PROBLEMS[x][0] for x in pr) or "защита в порядке", "av": av.get("product") or "нет",
+                "av_build": av.get("build") or "", "rtp": rtp, "bases": av.get("bases"), "last_full_scan": r["last_full_scan"], "agent": r["agent_build"],
+                "ksc_status": r["ksc_status"] or "—", "reasons": "; ".join(P.STATUS_MASK[b] for b in P.STATUS_MASK if r["mask"] & b), "problems_n": len(pr)}
+        prot_rows.append(prot)
+        rows.append({**host_part(r, p, ctx), "ksc_status": r["ksc_status"] or "—", "reasons": prot["reasons"], "problems": prot["problems"], "problems_n": len(pr),
+                     "av": prot["av"], "av_build": prot["av_build"], "rtp": rtp, "bases": av.get("bases"), "last_full_scan": r["last_full_scan"], "agent": r["agent_build"],
+                     "software": soft_n.get(hid, 0) if avail["software"] else None,
+                     "v_critical": vc["critical"] if avail["vulns"] else None, "v_high": vc["high"] if avail["vulns"] else None,
+                     "v_warning": vc["warning"] if avail["vulns"] else None, "v_total": sum(vc.values()) if avail["vulns"] else None,
+                     "eol_n": eol_n.get(hid, 0) if avail["eol"] else None, "events_n": ev_n.get(hid, 0) if avail["events"] else None,
+                     "hardware": hw_by[hid]["line"] if hid in hw_by else None, "is_slave": r["is_slave"]})
     on = sum(1 for r in rows if r["online_raw"] is True)
-    notes = ["Состояние защиты — по последним отчётам Агентов администрирования в KSC; время — UTC.",
-             "Уязвимости — подтверждённые KSC (vapm); проверка версий по условию пользователя — отдельный отчёт."]
-    if missing:
-        notes.append(f"Не найдены в KSC: {len(missing)} из выбранных компьютеров.")
+    base_notes = ["Состояние защиты — по последним отчётам Агентов администрирования в KSC; время — UTC.",
+                  "Уязвимости — как в карточке компьютера: подтверждённые KSC и потенциальные по внешним базам (не подтверждены KSC); «Подтверждено KSC» и «Подтверждено внешней базой» различаются в таблице.",
+                  "Счётчики уязвимостей — по объединённому списку, как в карточке."]
+    notes = base_notes + notes
     conds = [{"label": "Компьютеры", "text": ", ".join(r["name"] for r in rows[:10]) + (f" и ещё {len(rows) - 10}" if len(rows) > 10 else "")},
-             {"label": "Разделы", "text": ", ".join({"software": "установленное ПО", "vulns": "уязвимости", "protection": "состояние защиты"}[s] for s in ("software", "vulns", "protection") if s in secs)},
+             {"label": "Разделы", "text": ", ".join(label for key, label in HOST_SECTION_TITLE if key == "protection" or avail.get(key))},
              {"label": "Источник KSC", "text": ctx.source_name}, {"label": "Порог баз / полной проверки", "text": f"{bases_days} / {scan_days} сут"}]
     metrics = [metric("hosts", "Компьютеров в отчёте", len(rows)), metric("online", "В сети сейчас", on, f"не в сети: {sum(1 for r in rows if r['online_raw'] is False)}; нет данных: {sum(1 for r in rows if r['online_raw'] is None)}"),
                metric("problems", "С проблемами защиты", sum(1 for r in rows if r["problems_n"]), "", "danger" if any(r["problems_n"] for r in rows) else "ok")]
-    if "software" in secs:
+    if avail["software"]:
         metrics.append(metric("software", "Установленных программ (записей)", len(soft_rows)))
-    if vul is not None:
-        metrics += [metric("vhosts", "Компьютеров с уязвимостями", len({r["host_id"] for r in vrows}), "уникальных"), metric("vrows", "Обнаружений уязвимостей", len(vrows), "компьютер × уязвимость × программа")]
-    tables = [{"id": "hosts", "title": "Компьютеры", "columns": [col("name", "Компьютер"), col("ip", "IP-адрес", "mono"), col("os", "ОС"), col("group", "Группа администрирования"),
-                                                                  col("last_connected", "Последнее подключение к KSC (UTC)", "date"), col("active", "Связь за период"), col("online", "В сети сейчас"),
-                                                                  col("ksc_status", "Статус KSC"), col("problems", "Проблемы защиты"), col("av", "Защитный продукт"), col("av_build", "Версия", "mono"),
-                                                                  col("rtp", "Постоянная защита"), col("bases", "Базы (UTC)", "date"), col("last_full_scan", "Полная проверка (UTC)", "date"),
-                                                                  col("agent", "Агент", "mono"), col("software", "Программ", "num"), col("v_critical", "Критических", "num"), col("v_high", "Высоких", "num"),
-                                                                  col("v_warning", "Предупреждений", "num"), col("v_total", "Уязвимостей", "num"), col("reasons", "Причины статуса KSC")], "rows": rows}]
-    if "software" in secs:
+    if avail["vulns"]:
+        metrics += [metric("vhosts", "Компьютеров с уязвимостями", len(worst), "уникальных"), metric("vrows", "Уязвимостей в объединённом списке", len(vrows), "строка: уязвимость × программа × источник")]
+    if avail["eol"]:
+        metrics.append(metric("eolhosts", "Компьютеров с EOL", len(eol_n), "программы или ОС без поддержки или с её окончанием"))
+    if avail["events"]:
+        metrics.append(metric("events", f"Событий за {EVENT_DAYS} сут", len(ev_rows)))
+    host_cols = [col("name", "Компьютер"), col("ip", "IP-адрес", "mono"), col("os", "ОС"), col("group", "Группа администрирования"),
+                 col("last_connected", "Последнее подключение к KSC (UTC)", "date"), col("active", "Связь за период"), col("online", "В сети сейчас"),
+                 col("ksc_status", "Статус KSC"), col("problems", "Проблемы защиты"), col("av", "Защитный продукт"), col("av_build", "Версия", "mono"),
+                 col("rtp", "Постоянная защита"), col("bases", "Базы (UTC)", "date"), col("last_full_scan", "Полная проверка (UTC)", "date"),
+                 col("agent", "Агент", "mono"), col("software", "Программ", "num"), col("v_critical", "Критических", "num"), col("v_high", "Высоких", "num"),
+                 col("v_warning", "Предупреждений", "num"), col("v_total", "Уязвимостей", "num"), col("eol_n", "EOL", "num"), col("events_n", "Событий (30 сут)", "num"),
+                 col("hardware", "Аппаратная часть"), col("reasons", "Причины статуса KSC")]
+    tables = [{"id": "hosts", "title": "Компьютеры", "columns": host_cols, "rows": rows}]
+    tables.append({"id": "protection", "title": "Состояние защиты", "columns": [col("host", "Компьютер"), col("problems", "Проблемы защиты"), col("av", "Защитный продукт"),
+                                                                        col("av_build", "Версия", "mono"), col("rtp", "Постоянная защита"), col("bases", "Базы (UTC)", "date"),
+                                                                        col("last_full_scan", "Полная проверка (UTC)", "date"), col("agent", "Агент", "mono"), col("ksc_status", "Статус KSC"),
+                                                                        col("reasons", "Причины статуса KSC")], "rows": prot_rows})
+    if avail["software"]:
         tables.append({"id": "software", "title": "Установленное ПО", "columns": [col("name", "Компьютер"), col("program", "Программа"), col("version", "Версия", "mono"), col("publisher", "Производитель"),
                                                                                   col("install_date", "Установлена", "date")], "rows": soft_rows})
-    if vul is not None:
-        tables.append({**vul["tables"][0], "id": "vulns", "title": "Уязвимости"})
-    return {"title": f"Компьютеры: {rows[0]['name']}" if len(rows) == 1 else f"Компьютеры: {len(rows)}", "subtitle": "Состояние, защита, установленное ПО и уязвимости", "conditions": conds,
-            "metrics": metrics, "severity": vul["severity"] if vul else None, "notes": notes, "tables": tables}
+    if avail["vulns"]:
+        tables.append({"id": "vulns", "title": "Уязвимости", "columns": [col("host", "Компьютер"), col("severity_ru", "Опасность", "sev"), col("kla_id", "Уязвимость (KLA)", "mono"),
+                                                                       col("cve", "CVE", "mono"), col("product", "Программа"), col("version", "Версия", "mono"), col("verdict_ru", "Достоверность"),
+                                                                       col("basis", "Основание"), col("sources_text", "Источники"), col("exploited_text", "Эксплуатируется"), col("patch", "Исправление")],
+                       "rows": vrows, "note": "Одна строка — уязвимость на компьютере (программа и версия). Потенциальные — найдены по внешним базам по установленной версии, KSC их не подтвердил."})
+    if avail["eol"]:
+        tables.append({"id": "eol", "title": "EOL", "columns": [col("host", "Компьютер"), col("kind_ru", "Вид"), col("title", "Программа или ОС"),
+                                                                                            col("version", "Версия", "mono"), col("status_ru", "Поддержка"), col("severity_ru", "Критичность"),
+                                                                                            col("eol_from", "Окончание поддержки", "date"), col("days_left", "Дней до окончания", "num"),
+                                                                                            col("eol_label", "Продукт в каталоге EOL"), col("link", "Ссылка")], "rows": eol_rows,
+                       "note": "Данные — как в карточке компьютера (расчёт EOL по источнику)."})
+    if avail["events"]:
+        tables.append({"id": "events", "title": "События безопасности", "columns": [col("host", "Компьютер"), col("at", "Время (UTC)", "date"), col("type_ru", "Событие"), col("threat", "Угроза"),
+                                                                                  col("target", "Объект или цель"), col("product", "Программа"), col("ip", "IP-адрес", "mono")], "rows": ev_rows,
+                       "note": f"События за {EVENT_DAYS} сут — как на вкладке карточки компьютера."})
+    if avail["hardware"]:
+        tables.append({"id": "hardware", "title": "Аппаратная часть", "columns": [col("host", "Компьютер"), col("line", "Сводка"), col("cores", "Ядер CPU", "num"), col("ram_mb", "ОЗУ, МБ", "num"),
+                                                                              col("disk_total_gb", "Диски, ГБ", "num"), col("virtual", "Виртуальная машина"), col("problems", "Недостаточно ресурсов")], "rows": hw_rows,
+                       "note": "Данные инвентаризации Агента. «Нет данных» — Агент не передал сведения; это не означает отсутствия оборудования."})
+    sev = None
+    if avail["vulns"]:
+        sev = {"title": "Компьютеры по наивысшему уровню опасности (сумма = затронуто компьютеров)",
+               "levels": [{"key": k, "label": SEV_RU[k], "value": sum(1 for v in worst.values() if v == k), "hint": f"уязвимостей {sum(1 for r in vrows if r['severity'] == k)}"} for k in ("critical", "high", "warning")]}
+    tabs = [{"id": tid, "title": title} for tid, title in HOST_TABS if any(t["id"] == tid for t in tables)]
+    return {"title": f"Компьютеры: {rows[0]['name']}" if len(rows) == 1 else f"Компьютеры: {len(rows)}", "subtitle": "Состояние, защита, программы, уязвимости, EOL, события и аппаратная часть",
+            "conditions": conds, "metrics": metrics, "severity": sev, "notes": notes, "tables": tables, "tabs": tabs}
 
 
 # ------------------------------------------------------------------------------------------------ состояние защиты
@@ -577,7 +712,7 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
 
 
 # Таблицы, которые входят только в подробный отчёт: построчные перечни (обнаружения, компьютеры, устройства, события). В кратком остаются сводные таблицы и показатели.
-DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "software", "vulns"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
+DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "protection", "software", "vulns", "eol", "events", "hardware"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
                  "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}, "quick_pentest": {"hosts", "ports", "hits", "skipped"}, "quick_hunt": {"coverage"}, "quick_bi": {"rows"}, "quick_hier": {"rows"}, "quick_ad": {"rows"}, "quick_admin": {"rows"}}
 
 

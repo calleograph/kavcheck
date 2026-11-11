@@ -211,7 +211,7 @@ class Runner:
 
         watcher = asyncio.create_task(watch())
         ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), exclude_slaves=rcfg.exclude_slave_servers, max_rows=rcfg.max_rows,
-                        progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"], sm=self._sm, source_id=src.id, org=org, hw_cfg=hw, settings=self._cfg)
+                        progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"], sm=self._sm, source_id=src.id, org=org, hw_cfg=hw, settings=self._cfg, features=(src.last_check or {}).get("features") or {})
         ctx.hier_cfg = hier
         if job.kind == "quick_ad":
             from ..ad.service import AdService  # noqa: PLC0415

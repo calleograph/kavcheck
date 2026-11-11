@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type Host, type HostVulnsAll } from "../api";
+import { api, type ApiError, type EolFinding, type Host, type HostVulnsAll } from "../api";
 import { HostVulnsTable } from "../components/HostVulnsTable";
 import { HardwareTab, HwProblems, useHardware } from "../components/HostHardware";
 import { NoSource, type Ctx } from "../App";
@@ -16,7 +16,7 @@ import { EventList, type EvFilter } from "./EventsPage";
 import { ProblemBadges } from "./ProtectionPage";
 import { fmt, fmtDate, num } from "../util";
 import { HostZones, ZoneSelect } from "../components/ZoneBits";
-import { HostEol } from "../components/EolBits";
+import { EolTable } from "../components/EolBits";
 
 const DAYS = [1, 3, 7, 14, 30];
 type Activity = "all" | "active" | "inactive";
@@ -97,13 +97,13 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
   );
 }
 
-type HostTab = "software" | "vulns" | "events" | "hardware";
+type HostTab = "software" | "vulns" | "eol" | "events" | "hardware";
 
 export function HostPage({ ctx }: { ctx: Ctx }) {
   const { hostId } = useParams();
   const [sp, setSp] = useSearchParams();
   const rawTab = sp.get("tab") === "vdb" ? "vulns" : sp.get("tab");                     // прежняя вкладка «Внешние базы» объединена с «Уязвимостями»
-  const tab = (["software", "vulns", "events", "hardware"].includes(rawTab ?? "") ? rawTab : "software") as HostTab;
+  const tab = (["software", "vulns", "eol", "events", "hardware"].includes(rawTab ?? "") ? rawTab : "software") as HostTab;
   const [vulns, setVulns] = useState<HostVulnsAll | null>(null);
   const [vErr, setVErr] = useState("");
   const [evGroup, setEvGroup] = useState<EvFilter>(""); const [evThreat, setEvThreat] = useState(""); const [report, setReport] = useState(false);
@@ -117,6 +117,13 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
     api.hosts.vulns(id, false).then((r) => { if (live) setVulns((cur) => cur ?? r); }).catch((e) => { if (live) setVErr((e as ApiError).message); });
     api.hosts.vulns(id).then((r) => { if (live) { setVulns(r); setVErr(""); } }).catch((e) => { if (live) setVulns((cur) => (cur ? { ...cur, notes: [...cur.notes, `Проверка по внешним базам не выполнена: ${(e as ApiError).message}`], external_checked: true } : cur)); });
     return () => { live = false; };
+  }, [ctx.current, hostId]);
+  const [eol, setEol] = useState<EolFinding[] | null>(null);            // EOL по источнику: готовые результаты (расчёт в фоне), KSC не опрашивается
+  const [eolErr, setEolErr] = useState("");
+  useEffect(() => {
+    setEol(null); setEolErr("");
+    if (!ctx.current || !hostId) return;
+    api.eol.host(ctx.current.id, Number(hostId)).then((r) => setEol(r.items)).catch((e) => setEolErr((e as ApiError).message));
   }, [ctx.current, hostId]);
   const hwq = useHardware(Number(hostId), !!ctx.current && !!hostId);      // одна выборка из KSC для строки «Сведения», предупреждений и вкладки
   const [d, setD] = useState<Awaited<ReturnType<typeof api.hosts.one>> | null>(null);
@@ -157,7 +164,6 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
             <div className={`alert flat ${st.status === "критический" ? "error" : "warn"}`}><Icon name="alert" />
               <div className="alert-body"><b>Причины статуса «{st.status}»</b><ul className="reasons">{st.reasons.map((r) => <li key={r}>{r}</li>)}</ul></div></div>)}
           {hwq.d && <HwProblems d={hwq.d} />}
-          {ctx.current && <HostEol sourceId={ctx.current.id} hostId={h.host_id} />}
           <div className="card flush">
             <div className="card-head"><h2>Продукты Kaspersky</h2></div>
             {!d.kaspersky.length ? <Empty icon="shieldPulse" title="Нет сведений о продуктах">Агент не передавал данные о защитных продуктах, или объект v_akpub_hst_prdstate недоступен.</Empty> : (
@@ -168,7 +174,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       </div>
       <div className="mt">
         <Tabs<HostTab> label="Сведения о компьютере" value={tab} onChange={(t) => setSp((p) => { if (t === "software") p.delete("tab"); else p.set("tab", t); return p; }, { replace: true })}
-          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: vulns && !vulns.external_checked ? "Уязвимости (идёт проверка по внешним базам)" : "Уязвимости", count: vulns?.counts.total }, { id: "events", label: "События безопасности" }, { id: "hardware", label: "Аппаратная часть", ...(hwq.d && hwq.d.problems.length ? { count: hwq.d.problems.length } : {}) }]} />
+          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: vulns && !vulns.external_checked ? "Уязвимости (идёт проверка по внешним базам)" : "Уязвимости", count: vulns?.counts.total }, { id: "eol", label: "EOL", count: eol?.length }, { id: "events", label: "События безопасности" }, { id: "hardware", label: "Аппаратная часть", ...(hwq.d && hwq.d.problems.length ? { count: hwq.d.problems.length } : {}) }]} />
       </div>
       {tab === "software" && <>
         <div className="section-head"><span className="muted small">Программ: {num(d.software.length)}</span><div className="spacer" />
@@ -185,6 +191,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       {tab === "vulns" && (vErr ? <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{vErr}</div></div>
         : !vulns ? <div className="card"><SkelRows rows={4} cols={5} /></div>
           : <><HostVulnsTable data={vulns} hostId={h.host_id} onMore={async (off) => (await api.hosts.vulns(h.host_id, vulns.external_checked, off)).groups} /><p className="muted small mt-sm"><Link to={`/vulnerabilities/hosts/${h.host_id}`}>Сводка уязвимостей KSC</Link> — счётчики по уровням опасности.</p></>)}
+      {tab === "eol" && <EolTable items={eol} err={eolErr} />}
       {tab === "hardware" && <HardwareTab d={hwq.d} err={hwq.err} />}
       {tab === "events" && <><p className="muted small">События обнаружения за 30 суток: новые сверху.</p><EventList ctx={ctx} days={30} hostId={h.host_id} group={evGroup} threat={evThreat} onGroup={setEvGroup} onThreat={setEvThreat} /></>}
     </section>

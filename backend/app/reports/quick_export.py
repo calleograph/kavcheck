@@ -269,6 +269,10 @@ def _host_card(d: dict, esc=html.escape) -> str:
 
 
 def render_html(doc: dict) -> str:
+    if doc.get("tabs"):                                      # отчёт по компьютерам: вкладки как в карточке (общие сведения, защита, ПО, уязвимости, EOL, события, аппаратная часть)
+        from .tabs_html import render as render_tabs  # noqa: PLC0415
+
+        return render_tabs(doc)
     if doc.get("hunt"):                                      # CVE Hunt: компактный перечень затронутых компьютеров
         from .hunt_html import render as render_hunt  # noqa: PLC0415
 

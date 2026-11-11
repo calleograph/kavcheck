@@ -240,7 +240,7 @@ class QuickHosts(QuickScope):
     host_ids: list[int] = Field(default_factory=list, max_length=500)
     os_contains: MaskText = None
     inactive_only: bool = False
-    sections: list[Literal["software", "vulns", "protection"]] = Field(default_factory=list)     # пусто: по выбранным — все разделы, по условиям страницы — только защита
+    sections: list[Literal["software", "vulns", "protection", "eol", "events", "hardware"]] = Field(default_factory=list)     # пусто: по выбранным — все разделы, по условиям страницы — только защита
     bases_days: int = Field(default=3, ge=1, le=90)
     scan_days: int = Field(default=30, ge=1, le=365)
 

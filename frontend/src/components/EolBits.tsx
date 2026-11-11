@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type EolFinding, type EolStatus } from "../api";
+import { type EolFinding, type EolStatus } from "../api";
 import { fmtDate, num, plural } from "../util";
+import { Empty } from "./ui";
 
 export const EOL_STATUS_TEXT: Record<EolStatus, string> = { eol: "EOL: поддержка закончилась", extended: "Только расширенная поддержка", upcoming: "Поддержка скоро закончится", unknown: "Нет данных", undetermined: "Не удалось определить EOL" };
 const TONE: Record<EolStatus, string> = { eol: "err", extended: "warn", upcoming: "accent", unknown: "", undetermined: "" };
@@ -35,18 +35,17 @@ export function DeviceLink({ sourceId, hostId, name }: { sourceId: string; hostI
   return <Link to={deviceLink(sourceId, hostId)} className="strong-link">{name}</Link>;
 }
 
-/** Блок карточки компьютера: программы и ОС без поддержки производителя (готовые результаты EOL, KSC не опрашивается). */
-export function HostEol({ sourceId, hostId }: { sourceId: string; hostId: number }) {
-  const [items, setItems] = useState<EolFinding[] | null>(null);
-  useEffect(() => { setItems(null); api.eol.host(sourceId, hostId).then((r) => setItems(r.items)).catch(() => setItems([])); }, [sourceId, hostId]);
-  if (items === null || items.length === 0) return null;                 // нет проблем или сопоставление ещё не рассчитано — блок не показывается
+/** Вкладка «EOL» карточки компьютера: программы и ОС без поддержки производителя (готовые результаты EOL, KSC не опрашивается). */
+export function EolTable({ items, err }: { items: EolFinding[] | null; err?: string }) {
+  if (err) return <div className="alert error" role="alert"><div className="alert-body">{err}</div></div>;
+  if (items === null) return <div className="card"><span className="spin sm" role="status" aria-label="Загрузка" /></div>;
+  if (!items.length) return <div className="card"><Empty icon="clock" title="Нет программ и ОС с окончанием поддержки">Все известные программы и ОС компьютера ещё поддерживаются, либо расчёт EOL для источника не выполнялся (Администрирование → EOL и пользователи).</Empty></div>;
   return (
     <div className="card flush">
-      <div className="card-head"><h2>EOL: поддержка закончилась или заканчивается</h2></div>
+      <div className="card-head"><h2>Поддержка закончилась или заканчивается</h2><Link className="small" to="/eol">Раздел EOL</Link></div>
       <div className="table-scroll"><table className="table compact"><thead><tr><th>Критичность</th><th>Программа или ОС</th><th>Поддержка</th></tr></thead>
-        <tbody>{items.map((f) => <tr key={`${f.kind}${f.subject}${f.version}`}><td><EolSev f={f} /></td><td><strong>{f.title}</strong>{f.kind === "app" && <span className="sub mono small">{f.version}</span>}<span className="sub small">{f.eol_label}, ветка {f.eol_release}</span></td>
+        <tbody>{items.map((f) => <tr key={`${f.kind}${f.subject}${f.version}`}><td><EolSev f={f} /></td><td><strong>{f.title}</strong>{f.kind === "app" && <span className="sub mono small">{f.version}</span>}<span className="sub small">{f.kind_ru}</span></td>
           <td><EolBadge s={f.status} short /><EolDates f={f} /></td></tr>)}</tbody></table></div>
-      <p className="muted small pad-x"><Link to="/eol">Раздел EOL</Link></p>
     </div>
   );
 }
