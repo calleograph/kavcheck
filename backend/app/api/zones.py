@@ -544,7 +544,8 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
     if su.is_zone:                                  # ответственному — без технических причин (адреса, учётные записи, тексты ошибок SQL): их разбирает администратор
         notes = []
         fr = {**fr, "errors": [{"source": "KSC", "error": "часть данных не обновилась, причину видит администратор"}] if fr["errors"] else []}
-    return {"zone": info, "stats": stat, "activity_days": days, "total": total, "offset": offset, "limit": limit, "items": items,
+    top = await db.get(ZcDashboard, (zid, "top")) if (all_ok or su.is_zone) and not source_id else None      # приоритеты считаются по всем источникам: при ограниченном доступе не показываются
+    return {"top": {"items": top.payload.get("items", []), "built_at": top.built_at} if top is not None else None, "zone": info, "stats": stat, "activity_days": days, "total": total, "offset": offset, "limit": limit, "items": items,
             "sources": [{"id": str(s.id), "name": s.name} for s in srcs], "notes": notes, "fetched_at": fr["data_at"], "conflicts": conflicts, "ext_included": ext, "freshness": fr,
             "ext_cap": (await request.app.state.settings_svc.get(db, "zonecache")).ext_per_host}
 

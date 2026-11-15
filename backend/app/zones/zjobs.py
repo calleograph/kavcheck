@@ -280,6 +280,12 @@ class ZoneCache:
                 await SN.recompute_membership(bc, s)
                 await SN.retriage(self.sm, s.id, None)
             await ZR.refresh_dashboards(self.sm, None, default_days=days, data_at=await self._data_at())
+            try:                                              # приоритеты — дополнение к сводке: их сбой не делает расчёт зон неудачным
+                await ZR.refresh_top(self.sm, None, default_days=days, breathe=bc.res.breathe)
+            except (MemoryPressure, RuntimeError):
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("Сбой расчёта «Что исправить в первую очередь»")
             return errors
         touched: set[str] = set()
         for i, s in enumerate(srcs):
@@ -316,6 +322,13 @@ class ZoneCache:
                 await ZR.refresh_dashboards(self.sm, zones, default_days=days, data_at=await self._data_at(zone=kind == "zone"), duration_ms=int((time.monotonic() - t0) * 1000))
         if kind == "all" and errors and len(errors) == len(srcs):
             raise KscError("generic", "; ".join(errors)[:400])
+        self._prog = ("что исправить в первую очередь", 99)
+        try:                                              # приоритеты — дополнение к сводке: их сбой не делает расчёт зон неудачным
+            await ZR.refresh_top(self.sm, None if kind == "all" else sorted(touched | {zone_id or ""} - {""}), default_days=days, breathe=bc.res.breathe)
+        except (MemoryPressure, RuntimeError):
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("Сбой расчёта «Что исправить в первую очередь»")
         return errors
 
     async def _data_at(self, zone: bool = False) -> datetime | None:

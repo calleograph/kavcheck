@@ -2,7 +2,7 @@ import { FilterBar } from "../components/FilterBar";
 import { useEffect, useMemo, useState } from "react";
 import { CompactList } from "../components/CompactList";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type HostState, type ProblemKey, type ZoneDash, type ZoneHost, type ZoneHostCard, type ZoneVulnRow, type ZoneOverview, type TriageRow } from "../api";
+import { api, type ApiError, type HostState, type ProblemKey, type ZoneDash, type ZoneTopItem, type ZoneHost, type ZoneHostCard, type ZoneVulnRow, type ZoneOverview, type TriageRow } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Charts } from "./zoneCharts";
 import { OnlineBadge } from "../components/Common";
@@ -149,11 +149,11 @@ export function ZoneView({ ctx, zid, portal = false }: { ctx: Ctx; zid: string; 
   const reveal = () => window.requestAnimationFrame(() => document.getElementById("zone-hosts")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   const pick = (k: (typeof PARAMS)[number], v: string) => { setF({ [k]: f[k] === v ? "" : v }); if (f[k] !== v) reveal(); };
   const people = useMemo(() => (zone?.contacts ?? []).filter((c) => c.enabled), [zone]);
-  if (list.error && list.initial) return <section><PageHead title="Зона ответственности" back={<Link to="/zones" className="btn ghost mini"><Icon name="arrowL" size={15} />{portal ? "Мои зоны" : "Все зоны"}</Link>} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div></section>;
+  if (list.error && list.initial) return <section><PageHead title="Зона ответственности" back={<Link to={portal ? "/?list=1" : "/zones"} className="btn ghost mini"><Icon name="arrowL" size={15} />{portal ? "Мои зоны" : "Все зоны"}</Link>} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div></section>;
   const reportParams = { zone_ids: [zid], categories: DEFAULT_ZONE_CATS, level: "technical", include_inactive: f.activity !== "active", hosts: report === "sel" ? sel.ids : [] };
   return (
     <section>
-      <PageHead back={<Link to="/zones" className="btn ghost mini"><Icon name="arrowL" size={15} />{portal ? "Мои зоны" : "Все зоны"}</Link>} title={zone?.name ?? "Зона ответственности"}
+      <PageHead back={<Link to={portal ? "/?list=1" : "/zones"} className="btn ghost mini"><Icon name="arrowL" size={15} />{portal ? "Мои зоны" : "Все зоны"}</Link>} title={zone?.name ?? "Зона ответственности"}
         lede={zone ? <>{zone.purpose || zone.description || "Описание не задано"}</> : undefined}>
         <DataStamp fr={d?.freshness} />
         {canRefresh && <RefreshButton fr={d?.freshness} onClick={startRefresh} busy={qbusy} />}
@@ -184,6 +184,7 @@ export function ZoneView({ ctx, zid, portal = false }: { ctx: Ctx; zid: string; 
         <div className="meter"><span className="l">Поддержка скоро закончится</span><span className="v">{num(st.eol.upcoming)}</span><span className="t">устройств{!portal && <> · <Link to="/eol">раздел EOL</Link></>}</span></div>
       </div>}
       {st && <Charts st={st} f={f} pick={pick} ext={ext} />}
+      {d?.top && d.top.items.length > 0 && <ZoneTop items={d.top.items} at={d.top.built_at} picked={product} onPick={(p) => { setProduct(product === p ? "" : p); if (product !== p) reveal(); }} />}
       {st && ext && d?.ext_cap ? <p className="muted small mt-sm">Показатели потенциальных совпадений с внешними базами учитывают все совпадения; в списке компьютера сохранены до {d.ext_cap} самых опасных (сначала из каталога CISA KEV).</p> : null}
       {st && (st.excluded > 0 || st.accepted > 0 || st.review > 0) && <p className="muted small mt-sm">Решения специалистов: ложных и неактуальных обнаружений исключено <b>{num(st.excluded)}</b>, принятых рисков <b>{num(st.accepted)}</b> (учитываются отдельно), ждут проверки <b>{num(st.review)}</b>. Исходные сведения не удаляются.</p>}
 
@@ -202,11 +203,11 @@ export function ZoneView({ ctx, zid, portal = false }: { ctx: Ctx; zid: string; 
           {d && d.sources.length > 1 && <label className="field">Источник KSC<select value={f.source_id} onChange={(e) => setF({ source_id: e.target.value })}><option value="">Все источники</option>{d.sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
           <label className="check" title="Потенциальные совпадения с NVD, БДУ ФСТЭК, OSV и CISA KEV по каталогу программ"><input type="checkbox" className="switch" checked={ext} onChange={(e) => setExt(e.target.checked)} />Внешние базы</label>
         </>}
-        moreActive={[cve, product, f.problem, f.triage, f.online, f.source_id, ext ? "1" : ""].filter(Boolean).length}
+        moreActive={[cve, product, f.problem, f.triage !== "attention" ? f.triage : "", f.online, f.source_id, ext ? "1" : ""].filter(Boolean).length}
         chips={[...(q ? [{ id: "q", label: `Компьютер: ${q}`, onRemove: () => setQ("") }] : []), ...(cve ? [{ id: "cve", label: `Уязвимость: ${cve}`, onRemove: () => setCve("") }] : []), ...(product ? [{ id: "prod", label: `Программа: ${product}`, onRemove: () => setProduct("") }] : []),
           ...(f.severity ? [{ id: "sev", label: `Критичность: ${{ critical: "критическая", high: "высокая", warning: "предупреждение" }[f.severity] ?? f.severity}`, onRemove: () => setF({ severity: "" }) }] : []),
-          ...(f.problem ? [{ id: "prob", label: `Проблема: ${st?.problems.find((p) => p.key === f.problem)?.title ?? f.problem}`, onRemove: () => setF({ problem: "" }) }] : []), ...(f.triage ? [{ id: "tri", label: `Обработка: ${f.triage === "all" ? "все" : "ждут проверки"}`, onRemove: () => setF({ triage: "" }) }] : []),
-          ...(f.activity ? [{ id: "act", label: `Связь: ${f.activity === "all" ? "все" : "без связи"}`, onRemove: () => setF({ activity: "" }) }] : []), ...(f.online ? [{ id: "onl", label: `В сети: ${f.online === "yes" ? "да" : "нет"}`, onRemove: () => setF({ online: "" }) }] : []),
+          ...(f.problem ? [{ id: "prob", label: `Проблема: ${st?.problems.find((p) => p.key === f.problem)?.title ?? f.problem}`, onRemove: () => setF({ problem: "" }) }] : []), ...(f.triage !== "attention" ? [{ id: "tri", label: `Обработка: ${f.triage === "all" ? "все" : "ждут проверки"}`, onRemove: () => setF({ triage: "" }) }] : []),
+          ...(f.activity !== "active" ? [{ id: "act", label: `Связь: ${f.activity === "all" ? "все" : "без связи"}`, onRemove: () => setF({ activity: "" }) }] : []), ...(f.online ? [{ id: "onl", label: `В сети: ${f.online === "yes" ? "да" : "нет"}`, onRemove: () => setF({ online: "" }) }] : []),
           ...(f.source_id && d ? [{ id: "src", label: `Источник: ${d.sources.find((s) => s.id === f.source_id)?.name ?? ""}`, onRemove: () => setF({ source_id: "" }) }] : []), ...(ext ? [{ id: "ext", label: "Внешние базы", onRemove: () => setExt(false) }] : [])]}
         onReset={reset} count={{ n: list.initial ? null : list.total, noun: ["компьютер", "компьютера", "компьютеров"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
         report={canReport ? { onClick: () => setReport("all"), disabled: list.initial || !list.total, title: sel.count ? "Отчёт по отмеченным компьютерам — кнопка в панели выбора внизу" : "Отчёт по всем компьютерам списка с текущими фильтрами" } : null} />
@@ -248,6 +249,22 @@ export function ZoneView({ ctx, zid, portal = false }: { ctx: Ctx; zid: string; 
 }
 
 // ------------------------------------------------------------------------------------------------ карточка компьютера
+/** «Что исправить в первую очередь»: программы с критическими уязвимостями на наибольшем числе компьютеров зоны (готовый расчёт worker); выбор строки — отбор компьютеров по программе. */
+function ZoneTop({ items, at, picked, onPick }: { items: ZoneTopItem[]; at: string; picked: string; onPick: (product: string) => void }) {
+  return (
+    <section className="card zone-top" aria-labelledby="zone-top-h">
+      <div className="card-head"><h3 id="zone-top-h">Что исправить в первую очередь</h3><span className="muted small">программы с критическими уязвимостями на большинстве компьютеров; расчёт {fmt(at)}</span></div>
+      <div className="table-scroll"><table className="table compact">
+        <thead><tr><th>Программа</th><th className="num" title="Активных компьютеров с критическими уязвимостями программы">Компьютеры</th><th className="num hide-sm" title="Различных критических уязвимостей">Критические</th><th className="num" title="Из них в каталоге CISA KEV (используются в атаках)">CISA KEV</th></tr></thead>
+        <tbody>{items.map((r) => <tr key={r.product} aria-current={picked === r.product ? "true" : undefined}>
+          <td><button type="button" className="link-btn strong-link" onClick={() => onPick(r.product)} title="Показать эти компьютеры в списке ниже">{r.product}</button></td>
+          <td className="num">{num(r.hosts)}</td><td className="num hide-sm">{num(r.critical)}</td><td className="num">{r.kev ? <span className="badge err">{num(r.kev)}</span> : <span className="muted">0</span>}</td></tr>)}</tbody>
+      </table></div>
+      <p className="muted small">Обновление этих программ закрывает больше всего критических уязвимостей зоны; уязвимости из каталога CISA KEV уже используются в атаках. Учтены решения специалистов (исключённые и принятые риски не входят).</p>
+    </section>
+  );
+}
+
 function HostDrawer({ ctx, zid, sid, hid, onClose, onTriage, refreshKey }: { ctx: Ctx; zid: string; sid: string; hid: number; onClose: () => void; onTriage: (t: TriageTarget[]) => void; refreshKey: number }) {
   const [h, setH] = useState<ZoneHostCard | null>(null); const [err, setErr] = useState("");
   const [tab, setTab] = useState<"ksc" | "ext" | "done">("ksc");

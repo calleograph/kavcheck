@@ -199,3 +199,32 @@ async def test_external_potential_is_separate_from_confirmed_and_respects_triage
     assert "Потенциальные (внешние)" in wb.sheetnames and "Исключённые" not in wb.sheetnames
     rows = list(wb["Потенциальные (внешние)"].iter_rows(values_only=True))
     assert any("CVE-2099-2" in str(c) for r in rows[1:] for c in r)
+
+
+async def test_zone_top_products_match_detections_and_respect_decisions(client, app):
+    """«Что исправить в первую очередь» совпадает с прямым подсчётом по обнаружениям активных компьютеров зоны и не учитывает исключённое специалистом."""
+    from sqlalchemy import select, update
+
+    from app.models import ZcDetection, ZcHost, ZcHostZone, ZcSource
+    from app.zones import zread as ZR
+
+    _sid, _runner, _z_srv, z_arm = await setup(client, app)
+    top = (await dash(client, z_arm))["top"]
+    assert top is not None and top["items"], "приоритеты рассчитываются вместе с зонами"
+    async with app.state.session_maker() as db:
+        rows = (await db.execute(select(ZcDetection.prod, ZcDetection.host_id, ZcDetection.vuln_key).join(ZcSource, (ZcSource.source_id == ZcDetection.source_id) & (ZcSource.gen == ZcDetection.gen))
+                                 .join(ZcHostZone, (ZcHostZone.source_id == ZcDetection.source_id) & (ZcHostZone.gen == ZcDetection.gen) & (ZcHostZone.host_id == ZcDetection.host_id))
+                                 .join(ZcHost, (ZcHost.source_id == ZcDetection.source_id) & (ZcHost.gen == ZcDetection.gen) & (ZcHost.host_id == ZcDetection.host_id))
+                                 .where(ZcHostZone.zone_id == z_arm, ZcHost.days_since.is_not(None), ZcHost.days_since <= 30, ZcDetection.severity == 3, ZcDetection.bucket == "current", ZcDetection.origin == "ksc"))).all()
+    want = {}
+    for p, h, v in rows:
+        want.setdefault(p, (set(), set()))[0].add(h)
+        want[p][1].add(v)
+    got = {r["product"]: (r["hosts"], r["critical"]) for r in top["items"]}
+    assert got == {p: (len(h), len(v)) for p, (h, v) in want.items() if p}                                     # синтетика: активные компьютеры зоны, только KSC
+    first = top["items"][0]["product"]
+    async with app.state.session_maker() as db:
+        await db.execute(update(ZcDetection).where(ZcDetection.prod == first).values(bucket="excluded"))
+        await db.commit()
+    await ZR.refresh_top(app.state.session_maker, [z_arm], default_days=30)
+    assert first not in {r["product"] for r in (await dash(client, z_arm))["top"]["items"]}

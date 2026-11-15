@@ -1911,3 +1911,6 @@ tr[aria-current="true"] > td { background: var(--accent-soft); }
   .portal-brand span { display: none; }
   .portal-nav a { gap: 0; } .portal-nav a svg { display: none; }
 }
+.zone-top { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+.zone-top .card-head h3 { margin: 0; }
+.zone-top p { margin: 0; }

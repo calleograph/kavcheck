@@ -1,5 +1,5 @@
 import { lazy, useCallback, useEffect, useState } from "react";
-import { Link, Navigate, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type Job, type Me } from "../api";
 import { UserMenu, type Ctx } from "../App";
 import { Icon, Mark } from "../components/Icons";
@@ -35,8 +35,8 @@ export default function PortalApp({ me, version, onLogout, onTheme }: { me: Me; 
           <Route path="/" element={<PortalHome />} />
           <Route path="/zones" element={<Navigate to="/" replace />} />
           <Route path="/zones/:zid" element={<PortalZone ctx={ctx} />} />
-          <Route path="/reports" element={<PortalReports />} />
-          <Route path="/reports/:jobId" element={<PortalReports />} />
+          <Route path="/reports" element={<PortalReports email={me.user.email ?? ""} />} />
+          <Route path="/reports/:jobId" element={<PortalReports email={me.user.email ?? ""} />} />
           <Route path="/appearance" element={<AppearancePage me={me} onTheme={onTheme} />} />
           <Route path="/security" element={<SecurityPage me={me} onLogout={onLogout} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
@@ -48,12 +48,13 @@ export default function PortalApp({ me, version, onLogout, onTheme }: { me: Me; 
 
 /** Мои зоны: одна зона — сразу её панель; несколько — карточки с главными показателями. */
 function PortalHome() {
+  const [sp] = useSearchParams();
   const [rows, setRows] = useState<ZoneRow[] | null>(null); const [err, setErr] = useState("");
   const [fetched, setFetched] = useState<string | null>(null);
   useEffect(() => { api.zones.overview({}).then((r) => { setRows(r.items); setFetched(r.fetched_at ?? null); }).catch((e) => setErr((e as ApiError).message)); }, []);
   if (err) return <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>;
   if (!rows) return <SkelRows rows={3} cols={4} />;
-  if (rows.length === 1) return <Navigate to={`/zones/${rows[0].id}`} replace />;
+  if (rows.length === 1 && !sp.get("list")) return <Navigate to={`/zones/${rows[0].id}`} replace />;
   return (
     <section>
       <PageHead title="Мои зоны ответственности" lede={`Компьютеры, за которые вы отвечаете: уязвимости, состояние защиты, EOL. Данные подготовлены сервером${fetched ? ` (срез ${fmt(fetched)})` : ""}; отчёты — в браузер или себе на почту.`} />
@@ -84,7 +85,7 @@ function PortalZone({ ctx }: { ctx: Ctx }) {
 const FMT: [string, string][] = [["xlsx", "Excel"], ["pdf", "PDF"], ["html", "HTML"]];
 
 /** Мои отчёты: сформированные мной отчёты по своим зонам — скачать или отправить себе на почту. */
-function PortalReports() {
+function PortalReports({ email }: { email: string }) {
   const { jobId } = useParams();
   const navigate = useNavigate();
   const [items, setItems] = useState<Job[] | null>(null); const [err, setErr] = useState(""); const [busy, setBusy] = useState("");
@@ -96,6 +97,8 @@ function PortalReports() {
   return (
     <section>
       <PageHead title="Мои отчёты" lede="Отчёты по вашим зонам, которые вы формировали. Новый отчёт — кнопкой «Отчёт по зоне» на странице зоны (можно выбрать категории проблем, уровень и отдельные компьютеры)." />
+      {email ? <p className="muted small">«Себе на почту» — Excel и PDF на {email}.</p>
+        : <div className="alert info" role="status"><Icon name="info" /><div className="alert-body">В вашей учётной записи каталога не указана почта, поэтому отправка себе недоступна: скачивайте отчёты в браузере или попросите администратора каталога заполнить адрес.</div></div>}
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       {!items ? <SkelRows rows={4} cols={2} /> : !items.length ? <Empty icon="file" title="Отчётов пока нет" action={<button className="btn" onClick={() => navigate("/")}>К моим зонам</button>}>Сформируйте отчёт на странице своей зоны.</Empty> : (
         <div className="table-scroll"><table className="table">
@@ -103,7 +106,7 @@ function PortalReports() {
           <tbody>{items.map((j) => <tr key={j.id} aria-current={jobId === j.id ? "true" : undefined}>
             <td>{j.title || "Отчёт по зоне"}<span className="sub">{fmt(j.finished_at ?? j.created_at)}{j.summary?.hosts != null ? `; компьютеров: ${num(Number(j.summary.hosts))}` : ""}</span>
               {j.status === "done" && <div className="row portal-files">{FMT.map(([k, l]) => <a key={k} className="btn" href={api.reports.downloadUrl(j.id, k as "xlsx")} download><Icon name="download" size={14} />{l}</a>)}
-                <button className="btn" onClick={() => mail(j)} aria-busy={busy === j.id} disabled={!!busy}><Icon name="mail" size={14} />Себе на почту</button></div>}</td>
+                <button className="btn" onClick={() => mail(j)} aria-busy={busy === j.id} disabled={!!busy || !email}><Icon name="mail" size={14} />Себе на почту</button></div>}</td>
             <td>{j.status === "done" ? <span className="badge ok">готов</span> : j.status === "failed" ? <span className="badge err" title={j.error ?? ""}>ошибка</span> : <span className="badge">{j.progress || "формируется…"}</span>}</td></tr>)}</tbody>
         </table></div>)}
       {toast}

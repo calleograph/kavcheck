@@ -49,6 +49,7 @@ class UserOut(BaseModel):
     role: str
     is_admin: bool
     local: bool
+    email: str = ""                      # адрес из каталога: куда уходит «Себе на почту» (пусто — кнопка недоступна)
 
 
 class MeOut(BaseModel):

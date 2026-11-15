@@ -1,5 +1,5 @@
 // Клиент REST API. Сессия — HttpOnly cookie; CSRF-токен хранится только в памяти; выбранный источник — в сессии (и дублируется заголовком).
-export interface User { id: string; username: string; display_name: string; role: "admin" | "analyst" | "viewer" | "zone"; is_admin: boolean; local: boolean }
+export interface User { id: string; username: string; display_name: string; role: "admin" | "analyst" | "viewer" | "zone"; is_admin: boolean; local: boolean; email?: string }
 export interface Me { user: User; csrf_token: string; must_change_password: boolean; current_source_id: string | null; site_name: string; activity_days: number; must_enroll_totp: boolean; totp_enabled: boolean; second_factor: string | null; secure_cookie: boolean; theme: string | null; default_theme: string; quick?: QuickPrefs | null }
 export interface QuickPrefs { items?: string[]; reports?: string[]; hidden?: string[] }
 export interface SourceRef { id: string; name: string; host: string; port: number; database: string; is_active: boolean; last_check_at: string | null; last_check_ok: boolean | null; ksc_version: string | null; features: Record<string, boolean | null> }
@@ -246,7 +246,8 @@ export interface ZoneHost { source_id: string; source: string; host_id: number; 
   max_sev: "" | "critical" | "high" | "warning"; max_sev_ru: string; max_sev_basis: "" | "ksc" | "ext"; ksc: HostCounts; ext: { total: number; critical: number; high: number; warning: number; kev: number; confirmed: number; accepted: number; excluded: number };
   problems: { key: ProblemKey; title: string }[]; state: HostState; summary: string; zones: string[]; zone_conflict: boolean; zone_pinned: boolean }
 export interface ZoneInfo { id: string; name: string; description: string; purpose: string; priority: number; enabled: boolean; activity_days: number | null; contacts: ZoneContact[] }
-export interface ZoneDash { zone: ZoneInfo; stats: ZoneStats & { bars: unknown; eol: ZoneEol | null }; activity_days: number; total: number; offset: number; limit: number; items: ZoneHost[]; sources: { id: string; name: string }[]; notes: string[]; fetched_at: string | null; conflicts: number; ext_included: boolean; freshness: Freshness; ext_cap?: number }
+export interface ZoneTopItem { product: string; hosts: number; critical: number; kev: number }
+export interface ZoneDash { top?: { items: ZoneTopItem[]; built_at: string } | null; zone: ZoneInfo; stats: ZoneStats & { bars: unknown; eol: ZoneEol | null }; activity_days: number; total: number; offset: number; limit: number; items: ZoneHost[]; sources: { id: string; name: string }[]; notes: string[]; fetched_at: string | null; conflicts: number; ext_included: boolean; freshness: Freshness; ext_cap?: number }
 export interface TriageDecision { id: string; scope: "host" | "product" | "zone"; scope_ru: string; status: TriageStatus; stored_status: TriageStatus; status_ru: string; stored_status_ru: string; reason: string; reason_ru: string; comment: string; by: string; at: string | null;
   review_until: string | null; recheck: boolean; recheck_reason: string; expired: boolean; version: string; product: string }
 export type TriageStatus = "review" | "confirmed" | "false_positive" | "obsolete" | "risk_accepted";

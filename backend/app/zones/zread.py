@@ -394,6 +394,51 @@ async def refresh_dashboards(sm: async_sessionmaker, zone_ids: list[str] | None,
     return n
 
 
+TOP_N = 5
+
+
+async def top_products(db: AsyncSession, zone_id: str, *, default_days: int, zone_days: dict[str, int], limit: int = TOP_N) -> list[dict]:
+    """«Что исправить в первую очередь»: программы с текущими критическими уязвимостями (подтверждёнными KSC или источником внешних баз) на активных компьютерах зоны —
+    сколько компьютеров затронуто, сколько различных критических уязвимостей и сколько из них в каталоге CISA KEV. Решения специалистов учтены (только `bucket = current`).
+    Тяжело на крупных зонах (чтение обнаружений по компьютерам) — считается в worker после расчёта зон (`refresh_top`), страница читает готовое."""
+    H, Dt = ZcHost, ZcDetection
+    x = X(zone_col=ZcHostZone.zone_id, zone_days=zone_days, default_days=default_days)
+    hs = select(H.source_id, H.gen, H.host_id).select_from(_joined()).where(_scope(zone_id, None), x.active, or_(H.k_crit > 0, H.e_crit > 0)).subquery()
+    det = select(Dt.prod, Dt.source_id, Dt.host_id, Dt.vuln_key, Dt.flags).join(hs, and_(Dt.source_id == hs.c.source_id, Dt.gen == hs.c.gen, Dt.host_id == hs.c.host_id)) \
+        .where(Dt.bucket == "current", Dt.severity == 3, Dt.prod != "", or_(Dt.origin == "ksc", Dt.flags.op("&")(2) == 2)).subquery()
+    per_host = select(det.c.prod, det.c.source_id, det.c.host_id).group_by(det.c.prod, det.c.source_id, det.c.host_id).subquery()
+    hosts = dict((await db.execute(select(per_host.c.prod, func.count()).group_by(per_host.c.prod))).all())
+    if not hosts:
+        return []
+    kev = func.count(func.distinct(case((det.c.flags.op("&")(1) == 1, det.c.vuln_key))))
+    vul = {p: (int(c), int(k)) for p, c, k in (await db.execute(select(det.c.prod, func.count(func.distinct(det.c.vuln_key)), kev).group_by(det.c.prod))).all()}
+    rows = [{"product": p, "hosts": int(n), "critical": vul.get(p, (0, 0))[0], "kev": vul.get(p, (0, 0))[1]} for p, n in hosts.items()]
+    rows.sort(key=lambda r: (-r["hosts"], -r["kev"], -r["critical"], r["product"].lower()))
+    return rows[:limit]
+
+
+async def refresh_top(sm: async_sessionmaker, zone_ids: list[str] | None, *, default_days: int, breathe=None) -> int:
+    """Пересчитать «Что исправить в первую очередь» по зонам (по умолчанию — все, кроме «Без ответственного»): своя строка сводки вида `top`, по транзакции на зону.
+    Ошибка по зоне оставляет прежний результат."""
+    n = 0
+    async with sm() as db:
+        zd = await zone_days_map(db)
+        ids = [z for z in (zone_ids if zone_ids is not None else [str(z) for z in (await db.execute(select(Zone.id))).scalars()]) if z and z != UNASSIGNED]
+    for zid in ids:
+        if breathe is not None:
+            await breathe("что исправить в первую очередь")
+        async with sm() as db:
+            items = await top_products(db, zid, default_days=default_days, zone_days=zd)
+            cur = await db.get(ZcDashboard, (zid, "top"))
+            if cur is None:
+                db.add(ZcDashboard(zone_id=zid, kind="top", payload={"items": items}, built_at=utcnow(), status="ok"))
+            else:
+                cur.payload, cur.built_at, cur.status, cur.error = {"items": items}, utcnow(), "ok", None
+            await db.commit()
+            n += 1
+    return n
+
+
 async def read_dashboard(db: AsyncSession, zone_id: str) -> ZcDashboard | None:
     return await db.get(ZcDashboard, (zone_id, "default"))
 

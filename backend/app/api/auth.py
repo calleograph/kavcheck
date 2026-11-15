@@ -25,7 +25,7 @@ async def _me(request: Request, db: AsyncSession, su: SessionUser) -> MeOut:
     general = await request.app.state.settings_svc.get(db, "general")
     look = await request.app.state.settings_svc.get(db, "appearance")
     u = await db.get(User, su.user_id)
-    return MeOut(user=UserOut(id=su.user_id, username=su.username, display_name=su.display_name, role=su.role, is_admin=su.is_admin, local=su.local),
+    return MeOut(user=UserOut(id=su.user_id, username=su.username, display_name=su.display_name, role=su.role, is_admin=su.is_admin, local=su.local, email=(u.email or "") if u else ""),
                  csrf_token=su.csrf, must_change_password=su.must_change, current_source_id=str(su.current_source_id) if su.current_source_id else None, site_name=general.site_name,
                  activity_days=general.activity_days, must_enroll_totp=su.must_totp, totp_enabled=bool(u and u.totp_enabled), second_factor=su.second_factor,
                  secure_cookie=request.app.state.settings.secure_cookie(request.headers.get("x-forwarded-proto")), theme=u.theme if u else None, default_theme=look.default_theme, quick=u.quick_prefs if u else None)
