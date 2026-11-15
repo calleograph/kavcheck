@@ -218,8 +218,11 @@ class Runner:
             from ..services.ldap_store import LdapStore  # noqa: PLC0415
 
             ctx.ad = AdService(LdapStore(self._svc), self._svc)
-        if job.kind in ("quick_eol", "quick_devices", "quick_overview"):
+        if job.kind in ("quick_eol", "quick_devices", "quick_overview", "quick_sessions"):
             ctx.source_ids = [uuid.UUID(str(x)) for x in (job.source_ids or [str(job.source_id)])]
+        if job.kind == "quick_sessions":
+            ctx.settings = self._svc
+            ctx.client_for = lambda s: SourceClient(conn_params(s, self._svc.decrypt(s.password_enc, f"source.{s.id}")), concurrency=self._cfg.ksc_concurrency, name=s.name)
         if job.kind == "quick_overview":
             async def records_for(s: KscSource):                                    # у каждого источника свой клиент и своё чтение; ошибка источника попадает в отчёт отдельной строкой
                 from ..ksc import hosts as H  # noqa: PLC0415
@@ -232,7 +235,7 @@ class Runner:
             ctx.records_for = records_for
         try:
             zone = (job.params or {}).get("zone") or ""
-            if zone and job.kind not in ("quick_eol", "quick_devices", "quick_overview"):
+            if zone and job.kind not in ("quick_eol", "quick_devices", "quick_overview", "quick_sessions"):
                 from ..services.sources import SourceRegistry  # noqa: PLC0415
                 from ..zones.reporter import ZoneData  # noqa: PLC0415
 
@@ -288,7 +291,8 @@ class Runner:
         params = {k: v for k, v in (job.params or {}).items() if not k.startswith("_") and k != "active_days"}
         try:
             async with self._sm() as db:
-                doc = await self._zones.zone_doc(db, zone_ids=params["zone_ids"], params=params, source_ids=job.source_ids or None, refresh=bool(params.get("refresh_data")),
+                doc = await self._zones.zone_doc(db, zone_ids=params["zone_ids"], params=params, source_ids=job.source_ids or None, refresh=bool(params.get("refresh_data")) and not (job.params or {}).get("_portal"),
+                                                 hide_other_zones=bool((job.params or {}).get("_portal")), public=bool((job.params or {}).get("_portal")),
                                                  progress=lambda t: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._set(job.id, progress=t[:300]))), cancelled=lambda: flag["cancel"])
             if job.title and job.title != quick.KIND_TITLE.get(job.kind):
                 doc["title"] = job.title

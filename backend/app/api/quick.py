@@ -28,7 +28,7 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_admin)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_admin|quick_sessions)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
@@ -49,6 +49,23 @@ async def maybe_source(request: Request, su: SessionUser = Depends(require_user)
 
 @router.post("/preview")
 async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depends(require_user), src: KscSource | None = Depends(maybe_source), db: AsyncSession = Depends(get_db)):
+    if su.is_zone:                                     # портал ответственного: только отчёт по своим зонам, из подготовленных данных (без чтения KSC)
+        if body.kind != "quick_zone":
+            raise HTTPException(status_code=403, detail="Ответственному за зону доступен отчёт по своей зоне")
+        try:
+            params = AuditParamsZone.model_validate(body.params).model_dump()
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
+        if not set(params["zone_ids"]) <= su.zone_ids:
+            raise HTTPException(status_code=404, detail="Зона не найдена")
+        params["refresh_data"] = False
+        from .zones import zd  # noqa: PLC0415
+
+        try:
+            doc = await zd(request).zone_doc(db, zone_ids=params["zone_ids"], params=params, source_ids=None, allowed=lambda s: True, allow_build=False, limit_hosts=3000, hide_other_zones=True, public=True)
+        except KscError as exc:
+            raise HTTPException(status_code=409, detail=exc.message) from None
+        return _answer(doc, doc.get("data_at") or doc.get("generated_at"))
     if src is None and body.kind not in quick.NO_KSC:
         raise HTTPException(status_code=409, detail={"code": "no_source", "message": "Источник KSC не выбран."})
     if body.kind == "version_audit":
@@ -78,6 +95,27 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
                 raise HTTPException(status_code=409, detail=exc.message) from None
             raise _ksc(exc) from None
         return _answer(doc, doc.get("data_at") or doc.get("generated_at"))
+    if body.kind == "quick_sessions":                  # живой запрос к KSC по выбранным источникам (по умолчанию — режим страницы: один или «Все источники»)
+        import uuid  # noqa: PLC0415
+
+        from ..models import KscSource as KS  # noqa: PLC0415
+        from ..services.sources import visible_sources  # noqa: PLC0415
+
+        try:
+            params = QUICK_PARAMS[body.kind].model_validate(body.params).model_dump()
+            ids = [uuid.UUID(x) for x in body.source_ids] or ([s.id for s in await visible_sources(db, su)] if request.headers.get("x-source-id") == "all" else [src.id])
+        except (ValidationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:300]) from None
+        if any(not su.can_use_source(i) for i in ids):
+            raise HTTPException(status_code=403, detail="Нет доступа к этому источнику KSC")
+        general = await request.app.state.settings_svc.get(db, "general")
+        ctx = quick.Ctx(source_name=src.name, activity_days=int(general.activity_days), sm=request.app.state.session_maker, source_id=src.id, source_ids=ids,
+                        settings=request.app.state.settings_svc, client_for=request.app.state.sources.client)
+        try:
+            doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
+        except KscError as exc:
+            raise _ksc(exc) from None
+        return _answer(doc, ctx.now)
     if body.kind in ("quick_eol", "quick_devices"):      # данные из PostgreSQL: KSC не нужен; источников может быть несколько («Все источники»)
         import uuid  # noqa: PLC0415
 

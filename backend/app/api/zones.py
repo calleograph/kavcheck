@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth.deps import SessionUser, get_db, require_admin, require_analyst, require_user
 from ..ksc import protection as P
 from ..ksc.driver import KscError
-from ..models import KscSource, MailOutbox, ReportSchedule, VulnTriage, ZcDashboard, ZcHostZone, ZcJob, ZcSource, Zone, ZoneContact, ZonePin, ZoneRule
+from ..models import KscSource, MailOutbox, ReportSchedule, VulnTriage, ZcDashboard, ZcHostZone, ZcJob, ZcSource, Zone, ZoneAccess, ZoneContact, ZonePin, ZoneRule
 from ..search import any_field, matcher
 from ..services import mail as M
 from ..services.audit import write_audit
@@ -77,6 +77,12 @@ class ContactIn(BaseModel):
     enabled: bool = True
 
 
+class AccessIn(BaseModel):
+    kind: Literal["user", "group"]
+    value: str = Field(min_length=2, max_length=500)          # учётная запись: логин, DOMAIN\логин или UPN; группа: DN (CN=…,OU=…,DC=…)
+    label: str = Field(default="", max_length=300)
+
+
 class ZoneIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=4000)
@@ -86,6 +92,22 @@ class ZoneIn(BaseModel):
     enabled: bool = True
     rules: list[RuleIn] = Field(default_factory=list, max_length=5000)
     contacts: list[ContactIn] = Field(default_factory=list, max_length=200)
+    access: list[AccessIn] | None = Field(default=None, max_length=200)       # доступ к порталу ответственного; None — не менять (CSV и старые клиенты)
+
+
+def _clean_access(items: list[AccessIn]) -> list[dict]:
+    out, seen = [], set()
+    for i, a in enumerate(items, 1):
+        v = a.value.strip().lower()
+        if a.kind == "group" and ("=" not in v or "," not in v):
+            raise HTTPException(status_code=422, detail=f"Доступ {i}: для группы нужен DN (CN=…,DC=…) — выберите группу поиском по каталогу")
+        if a.kind == "user" and (" " in v or "=" in v):
+            raise HTTPException(status_code=422, detail=f"Доступ {i}: учётная запись — логин, DOMAIN\\логин или UPN (логин@домен)")
+        if (a.kind, v) in seen:
+            continue
+        seen.add((a.kind, v))
+        out.append({"kind": a.kind, "value": v, "label": a.label.strip()[:300]})
+    return out
 
 
 def _clean_zone(body: ZoneIn) -> tuple[list[tuple[str, str, str]], list[dict]]:
@@ -105,11 +127,12 @@ def _clean_zone(body: ZoneIn) -> tuple[list[tuple[str, str, str]], list[dict]]:
     return rules, contacts
 
 
-def _zone_out(z: Zone, rules: list[ZoneRule], contacts: list[ZoneContact]) -> dict:
+def _zone_out(z: Zone, rules: list[ZoneRule], contacts: list[ZoneContact], access: list | None = None) -> dict:
     return {"id": str(z.id), "name": z.name, "description": z.description, "purpose": z.purpose, "priority": z.priority, "activity_days": z.activity_days, "enabled": z.enabled,
             "updated_at": z.updated_at, "updated_by": z.updated_by,
             "rules": [{"id": str(r.id), "kind": r.kind, "kind_ru": ZM.KIND_TITLE[r.kind], "value": r.value, "note": r.note} for r in sorted(rules, key=lambda r: r.position)],
-            "contacts": [{"id": str(c.id), "name": c.name, "position": c.position, "email": c.email, "role": c.role, "enabled": c.enabled} for c in sorted(contacts, key=lambda c: c.created_at)]}
+            "contacts": [{"id": str(c.id), "name": c.name, "position": c.position, "email": c.email, "role": c.role, "enabled": c.enabled} for c in sorted(contacts, key=lambda c: c.created_at)],
+            "access": [{"id": str(a.id), "kind": a.kind, "value": a.value, "label": a.label} for a in sorted(access or [], key=lambda a: (a.kind, a.value))]}
 
 
 async def _load_zone(db: AsyncSession, zid: uuid.UUID) -> dict:
@@ -118,7 +141,8 @@ async def _load_zone(db: AsyncSession, zid: uuid.UUID) -> dict:
         raise HTTPException(status_code=404, detail="Зона не найдена")
     rules = (await db.execute(select(ZoneRule).where(ZoneRule.zone_id == zid))).scalars().all()
     cons = (await db.execute(select(ZoneContact).where(ZoneContact.zone_id == zid))).scalars().all()
-    return _zone_out(z, list(rules), list(cons))
+    acc = (await db.execute(select(ZoneAccess).where(ZoneAccess.zone_id == zid))).scalars().all()
+    return _zone_out(z, list(rules), list(cons), list(acc))
 
 
 # ------------------------------------------------------------------------------------------------ администрирование зон
@@ -127,8 +151,9 @@ async def list_admin(su: SessionUser = Depends(require_admin), db: AsyncSession 
     zs = (await db.execute(select(Zone).order_by(Zone.priority, Zone.name))).scalars().all()
     nr = dict((await db.execute(select(ZoneRule.zone_id, func.count()).group_by(ZoneRule.zone_id))).all())
     nc = dict((await db.execute(select(ZoneContact.zone_id, func.count()).group_by(ZoneContact.zone_id))).all())
+    na = dict((await db.execute(select(ZoneAccess.zone_id, func.count()).group_by(ZoneAccess.zone_id))).all())
     return {"items": [{"id": str(z.id), "name": z.name, "description": z.description, "purpose": z.purpose, "priority": z.priority, "enabled": z.enabled, "rules": nr.get(z.id, 0),
-                       "contacts": nc.get(z.id, 0), "updated_at": z.updated_at} for z in zs]}
+                       "contacts": nc.get(z.id, 0), "access": na.get(z.id, 0), "updated_at": z.updated_at} for z in zs]}
 
 
 @admin_router.get("/{zid}")
@@ -162,6 +187,10 @@ async def _write_zone(db: AsyncSession, z: Zone, body: ZoneIn, rules, contacts, 
     for em, cur in old.items():
         if em not in keep:
             await db.delete(cur)
+    if body.access is not None:                          # доступ к порталу: заменяется целиком, только если передан
+        await db.execute(sa_delete(ZoneAccess).where(ZoneAccess.zone_id == z.id))
+        for a in _clean_access(body.access):
+            db.add(ZoneAccess(zone_id=z.id, kind=a["kind"], value=a["value"], label=a["label"], created_by=actor))
 
 
 @admin_router.post("", status_code=201)
@@ -388,7 +417,7 @@ def _host_out(h: dict) -> dict:
 async def _scope(db: AsyncSession, su: SessionUser) -> tuple[list[uuid.UUID], bool, list[KscSource]]:
     """Источники, доступные пользователю: (идентификаторы, доступны ли все активные, сами источники)."""
     allv = (await db.execute(select(KscSource).where(KscSource.is_active.is_(True)).order_by(KscSource.position, KscSource.name))).scalars().all()
-    mine = [s for s in allv if su.can_use_source(s.id)]
+    mine = allv if su.is_zone else [s for s in allv if su.can_use_source(s.id)]          # ответственному за зону — все источники, но только компьютеры его зон (проверяется по зоне)
     return [s.id for s in mine], len(mine) == len(allv), mine
 
 
@@ -416,6 +445,8 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
     """Все зоны с показателями из подготовленных данных (без обращения к KSC): компьютеры, активные, онлайн, проблемные, критические, проблемы защиты; ответственные."""
     zdata = zd(request)
     infos = await zdata.zones_info(db)
+    if su.is_zone:                                   # портал ответственного: только свои зоны
+        infos = [z for z in infos if z["id"] in su.zone_ids]
     sids, all_ok, srcs = await _scope(db, su)
     general = await request.app.state.settings_svc.get(db, "general")
     zdays = await ZR.zone_days_map(db)
@@ -437,7 +468,7 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
     eol = (await request.app.state.cache.get(("eol-zones", tuple(sorted(map(str, eol_sids or [])))), 60, lambda: EOLR.zone_counts(db, eol_sids)))[0] if eol_on else {}       # раз в минуту: не агрегировать итоги EOL при каждом открытии
     rows = []
     unassigned = {"id": UNASSIGNED, "name": "Без ответственного", "description": "Компьютеры, не подошедшие ни одной зоне", "purpose": "", "priority": 0, "contacts": [], "enabled": True, "activity_days": None}
-    for z in infos + [unassigned]:
+    for z in infos + ([] if su.is_zone else [unassigned]):
         st = stats.get(z["id"]) or ZR._empty_stats()  # noqa: SLF001
         rows.append({"id": z["id"], "name": z["name"], "description": z["description"], "purpose": z["purpose"], "enabled": z["enabled"],
                      "stats": {k: st[k] for k in ("total", "active", "online", "critical", "other_vulns", "protection", "ok", "state", "inactive")},
@@ -453,11 +484,15 @@ async def overview(request: Request, q_: str = Query("", alias="q", max_length=2
            "problems": lambda r: r["problem_hosts"], "critical": lambda r: r["stats"]["critical"], "protection": lambda r: r["stats"]["protection"]}[sort]
     rows.sort(key=key, reverse=desc if sort != "name" else not desc)
     rows.sort(key=lambda r: r["id"] == UNASSIGNED)             # «Без ответственного» — всегда последней
-    tot = await ZR.totals(db, sids)
+    tot = {} if su.is_zone else (await request.app.state.cache.get(("zone-totals", tuple(sorted(map(str, sids)))), 60, lambda: ZR.totals(db, sids)))[0]   # уникальные компьютеры по всем источникам — секунды на больших базах: раз в минуту
     states = await ZR.source_states(db, sids)
     job = await _active_job(db, None)
     dsample = next(iter(dashes.values()), None)
     fr = _freshness(states, dsample, job, [str(i) for i in sids])
+    if su.is_zone:                                   # итоги и источники всей инфраструктуры ответственному не показываются
+        n = sum(r["stats"]["total"] for r in rows)
+        return {"items": rows, "totals": {"zones": len(rows), "hosts": n, "unique_hosts": n, "unassigned": 0, "conflicts": 0}, "sources": [], "activity_days": general.activity_days, "notes": [],
+                "fetched_at": fr["data_at"], "freshness": {**fr, "sources": [], "errors": []}, "eol_missing": [], "portal": True}
     return {"items": rows, "totals": {"zones": len(infos), "hosts": tot["unique_hosts"], "unique_hosts": tot["unique_hosts"], "unassigned": (stats.get(UNASSIGNED) or {}).get("total", 0), "conflicts": tot["conflicts"]},
             "sources": [s.name for s in srcs], "activity_days": general.activity_days, "notes": list(dict.fromkeys(n for ns in await _notes(db, sids) for n in ns)), "fetched_at": fr["data_at"], "freshness": fr, "eol_missing": eol_missing}
 
@@ -474,6 +509,8 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
     и сортировкой в SQL. KSC не опрашивается, расчёт не запускается."""
     if zid != UNASSIGNED:
         _uid(zid)
+    if su.is_zone and zid not in su.zone_ids:
+        raise HTTPException(status_code=404, detail="Зона не найдена")
     zdata = zd(request)
     info = next((z for z in await zdata.zones_info(db) if z["id"] == zid), None) if zid != UNASSIGNED else \
         {"id": UNASSIGNED, "name": "Без ответственного", "description": "Компьютеры, не подошедшие ни одной зоне. Добавьте для них сети или группы в нужной зоне либо закрепите вручную.", "purpose": "", "priority": 0, "contacts": [], "enabled": True, "activity_days": None}
@@ -504,6 +541,9 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
     states = await ZR.source_states(db, sids)
     fr = _freshness(states, dash, await _active_job(db, zid), [str(i) for i in sids])
     notes = list(dict.fromkeys(n for ns in await _notes(db, sids) for n in ns))
+    if su.is_zone:                                  # ответственному — без технических причин (адреса, учётные записи, тексты ошибок SQL): их разбирает администратор
+        notes = []
+        fr = {**fr, "errors": [{"source": "KSC", "error": "часть данных не обновилась, причину видит администратор"}] if fr["errors"] else []}
     return {"zone": info, "stats": stat, "activity_days": days, "total": total, "offset": offset, "limit": limit, "items": items,
             "sources": [{"id": str(s.id), "name": s.name} for s in srcs], "notes": notes, "fetched_at": fr["data_at"], "conflicts": conflicts, "ext_included": ext, "freshness": fr,
             "ext_cap": (await request.app.state.settings_svc.get(db, "zonecache")).ext_per_host}
@@ -544,20 +584,23 @@ async def host_card(zid: str, source_id: str, host_id: int, request: Request, ex
         sid = uuid.UUID(source_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Компьютер не найден") from None
-    if not su.can_use_source(sid):
+    if su.is_zone:
+        if zid not in su.zone_ids:
+            raise HTTPException(status_code=404, detail="Компьютер не найден")
+    elif not su.can_use_source(sid):
         raise HTTPException(status_code=403, detail="Нет доступа к источнику")
     src = await db.get(KscSource, sid)
     h = await ZR.load_host(db, sid, host_id, source_name=src.name if src else "")
-    if h is None:
+    if h is None or (su.is_zone and zid not in h["zones"]):           # портал: только компьютер своей зоны
         raise HTTPException(status_code=404, detail="Компьютер не найден среди доступных источников")
     if not ext:
         h["rows"]["ext"] = {"current": [], "accepted": [], "excluded": []}
     infos = {z["id"]: z for z in await zd(request).zones_info(db)}
-    zs = [{"id": z, "name": infos[z]["name"], "contacts": [c for c in infos[z]["contacts"] if c["role"] != "cc"]} for z in h["zones"] if z in infos]
+    zs = [{"id": z, "name": infos[z]["name"], "contacts": [c for c in infos[z]["contacts"] if c["role"] != "cc"]} for z in h["zones"] if z in infos and (not su.is_zone or z in su.zone_ids)]
     av = h["av"] or {}
     prot = [{"key": k, "title": P.PROBLEMS[k][0], "detail": R._detail(h, k, 3, 30)} for k in h["problems"]]  # noqa: SLF001
     rows = {o: {b: [{k: v for k, v in r.items() if k not in ("zones",)} for r in rs] for b, rs in h["rows"][o].items()} for o in ("ksc", "ext")}
-    return {**_host_out(h), "zones_info": zs, "candidates": [{"id": z, "name": infos[z]["name"] if z in infos else z} for z in h["zone_candidates"]], "zone_via": h["zone_via"], "protection": prot,
+    return {**_host_out(h), "zones_info": zs, "candidates": [] if su.is_zone else [{"id": z, "name": infos[z]["name"] if z in infos else z} for z in h["zone_candidates"]], "zone_via": h["zone_via"], "protection": prot,
             "av": {"product": av.get("product"), "build": av.get("build"), "state": av.get("state_label"), "bases": av.get("bases"), "rtp": h["rtp_label"], "last_full_scan": h["last_full_scan"], "agent": h["agent_build"],
                    "ksc_status": h["ksc_status"]}, "rows": rows}
 

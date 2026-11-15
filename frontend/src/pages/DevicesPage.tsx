@@ -15,6 +15,7 @@ import { OwnerBlock, OwnerSub } from "../components/OwnerBlock";
 import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import BiPeople from "./people/BiPeople";
 import KscUsers from "./people/KscUsers";
+import SessionsNow from "./people/SessionsNow";
 import Matches from "./people/Matches";
 import { fmt, fmtDate, num, plural } from "../util";
 
@@ -27,7 +28,7 @@ function UserChip({ u }: { u: DevUser }) {
     {who(u)}{KIND[u.kind] ? <i> ({KIND[u.kind]})</i> : null}</span>;
 }
 
-type Tab = "devices" | "ksc" | "bi" | "match";
+type Tab = "devices" | "now" | "ksc" | "bi" | "match";
 
 /** Раздел «Устройства и пользователи»: устройства KSC, пользователи KSC, сотрудники и устройства BI с историей принадлежности, сопоставление BI и KSC. */
 export default function DevicesPage({ ctx }: { ctx: Ctx }) {
@@ -37,16 +38,17 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
   if (!ctx.current) return <NoSource ctx={ctx} />;
   const people = !!bi?.can_people && bi.items.length > 0;
   const raw = (sp.get("tab") ?? (sp.get("person") || sp.get("bidev") ? "bi" : "devices")) as Tab;
-  const tab: Tab = (raw === "bi" || raw === "match") && !people ? "devices" : (["devices", "ksc", "bi", "match"] as Tab[]).includes(raw) ? raw : "devices";
+  const tab: Tab = (raw === "bi" || raw === "match") && !people ? "devices" : (["devices", "now", "ksc", "bi", "match"] as Tab[]).includes(raw) ? raw : "devices";
   const go = (t: Tab) => setSp((p) => { p.set("tab", t); ["person", "bidev"].forEach((k) => p.delete(k)); return p; });
   const card = sp.get("card");
   return (
     <section>
       <PageHead title="Устройства и пользователи" lede="Устройства KSC с пользователями, зонами и EOL; пользователи KSC; сотрудники и владельцы устройств по BI-выгрузкам с историей принадлежности." />
-      <Tabs label="Разделы" value={tab} onChange={go} items={[{ id: "devices", label: "Устройства" }, { id: "ksc", label: "Пользователи KSC" },
+      <Tabs label="Разделы" value={tab} onChange={go} items={[{ id: "devices", label: "Устройства" }, { id: "now", label: "Сейчас в системе" }, { id: "ksc", label: "Пользователи KSC" },
         ...(people ? [{ id: "bi" as Tab, label: "Пользователи BI" }, { id: "match" as Tab, label: "Сопоставление BI и KSC" }] : [])]} />
       <div className="mt-sm">
         {tab === "devices" && <DeviceList ctx={ctx} />}
+        {tab === "now" && <SessionsNow ctx={ctx} />}
         {tab === "ksc" && <KscUsers ctx={ctx} />}
         {tab === "bi" && bi && <BiPeople ctx={ctx} summary={bi} />}
         {tab === "match" && <Matches ctx={ctx} />}

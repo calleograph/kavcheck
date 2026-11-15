@@ -24,9 +24,9 @@ from ..ksc import vulns as V
 from ..ksc.driver import KscError, SourceClient
 from ..search import any_field, matcher
 
-QUICK_KINDS = ("quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_ad", "quick_admin")
+QUICK_KINDS = ("quick_sessions", "quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_ad", "quick_admin")
 NO_KSC = ("quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_ad", "quick_admin")          # строятся без источника KSC (своя внутренняя база)
-KIND_TITLE = {"quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры", "quick_pentest": "Результаты Pentest", "quick_hunt": "Результаты целевого поиска уязвимостей", "quick_bi": "Владельцы устройств (BI)", "quick_hier": "Иерархия. Предприятие", "quick_ad": "Active Directory", "quick_admin": "Администрирование"}
+KIND_TITLE = {"quick_sessions": "Сейчас в системе", "quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры", "quick_pentest": "Результаты Pentest", "quick_hunt": "Результаты целевого поиска уязвимостей", "quick_bi": "Владельцы устройств (BI)", "quick_hier": "Иерархия. Предприятие", "quick_ad": "Active Directory", "quick_admin": "Администрирование"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
 ONLINE_RU = {True: "в сети", False: "не в сети", None: "нет данных"}
@@ -54,6 +54,7 @@ class Ctx:
     ad: object | None = None                           # служба просмотра AD (ad.service.AdService): отчёты по каталогу
     features: dict = field(default_factory=dict)       # признаки состава источника (last_check.features): раздел без нужных объектов назван, а не показан нулями
     hier_cfg: object | None = None                     # настройки раздела «Иерархия» (правила очистки выгрузки)
+    client_for: Callable | None = None                 # источник → клиент KSC (отчёты по нескольким источникам с живым запросом: «Сейчас в системе»)
     light: bool = False                                # предпросмотр: только быстрые разделы (без чтения ПО, уязвимостей, событий и оборудования по каждому компьютеру); полный состав — в файле
 
 
@@ -721,6 +722,10 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
         from .quick_eol import build_eol  # noqa: PLC0415
 
         BUILDERS[kind] = build_eol
+    if kind == "quick_sessions" and kind not in BUILDERS:
+        from .quick_sessions import build_sessions  # noqa: PLC0415
+
+        BUILDERS[kind] = build_sessions
     if kind == "quick_devices" and kind not in BUILDERS:
         from .quick_devices import build_devices  # noqa: PLC0415
 

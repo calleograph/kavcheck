@@ -36,6 +36,31 @@ def _ids(srcs: list[KscSource], source_id: str) -> list[uuid.UUID]:
     return [one]
 
 
+SESSIONS_NOTE = ("Список берётся из KSC в момент запроса: пользователи в ТЕКУЩЕМ списке вошедших (KSC обновляет его при синхронизации Агента администрирования, обычно за минуты). "
+                 "«В сети» — компьютер виден KSC сейчас. Время входа KSC не хранит. Служебные и системные учётные записи по умолчанию скрыты.")
+
+
+@router.get("/sessions")
+async def sessions_now(request: Request, q: str = Query("", max_length=400), host: str = Query("", max_length=400), online: bool = True, show_service: bool = False,
+                       source_ids: str = Query("", max_length=2000), limit: int = Query(500, ge=1, le=2000),
+                       su: SessionUser = Depends(require_user), srcs: list[KscSource] = Depends(source_scope), db: AsyncSession = Depends(get_db)):
+    """Кто вошёл в систему сейчас — живой запрос к KSC по выбранным источникам (по умолчанию — к доступным в текущем режиме: один или «Все источники»).
+    `q` — логин, UPN или имя пользователя (маски `*`, несколько значений через запятую); `host` — компьютер или IP; `online` — только компьютеры в сети."""
+    from ..devices import sessions as SN  # noqa: PLC0415
+
+    pick = [x for x in (v.strip() for v in source_ids.split(",")) if x]
+    chosen = [s for s in srcs if not pick or str(s.id) in pick]
+    if pick and len(chosen) != len(set(pick)):
+        raise HTTPException(status_code=403, detail="Нет доступа к одному из выбранных источников KSC")
+    usable = [s for s in chosen if supported(s)]
+    cfg = await request.app.state.settings_svc.get(db, "devices")
+    rows, states = await SN.fetch_many(usable, request.app.state.sources.client, user_q=q, host_q=host, online_only=online, show_service=show_service,
+                                       masks=list(cfg.service_masks), top=limit)  # type: ignore[attr-defined]
+    states += [{"source_id": str(s.id), "source": s.name, "rows": 0, "more": False, "error": "в базе этого KSC нет списков пользователей устройств"} for s in chosen if s not in usable]
+    return {"items": rows, "total": len(rows), "sources": states, "more": any(x["more"] for x in states), "fetched_at": datetime.now(timezone.utc), "note": SESSIONS_NOTE,
+            "choices": [{"id": str(s.id), "name": s.name} for s in srcs]}
+
+
 @router.get("")
 async def devices(request: Request, q: str = Query("", max_length=400), zone: str = Query("", max_length=40), os_q: str = Query("", max_length=120, alias="os"), user: str = Query("", max_length=120),
                   eol: str = Query("", pattern=r"^(any|eol|none)?$"), source_id: str = Query("", max_length=40), all_hosts: bool = False, show_service: bool = False,

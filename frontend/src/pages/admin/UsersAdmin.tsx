@@ -8,7 +8,7 @@ import { useToast } from "../../components/Toast";
 import { Empty, Segmented, SkelRows, MaskHint } from "../../components/ui";
 import { fmt } from "../../util";
 
-const ROLE: Record<string, [string, string]> = { admin: ["Администратор", "accent"], analyst: ["Аналитик", ""], viewer: ["Просмотр", "outline"] };
+const ROLE: Record<string, [string, string]> = { admin: ["Администратор", "accent"], analyst: ["Аналитик", ""], viewer: ["Просмотр", "outline"], zone: ["Ответственный за зону", "outline"] };
 const RIGHTS: [string, boolean, boolean, boolean][] = [
   ["Программы, компьютеры, уязвимости, состояние защиты, события", true, true, true],
   ["Просмотр и выгрузка готовых отчётов", true, true, true],

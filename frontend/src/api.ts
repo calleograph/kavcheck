@@ -1,5 +1,5 @@
 // Клиент REST API. Сессия — HttpOnly cookie; CSRF-токен хранится только в памяти; выбранный источник — в сессии (и дублируется заголовком).
-export interface User { id: string; username: string; display_name: string; role: "admin" | "analyst" | "viewer"; is_admin: boolean; local: boolean }
+export interface User { id: string; username: string; display_name: string; role: "admin" | "analyst" | "viewer" | "zone"; is_admin: boolean; local: boolean }
 export interface Me { user: User; csrf_token: string; must_change_password: boolean; current_source_id: string | null; site_name: string; activity_days: number; must_enroll_totp: boolean; totp_enabled: boolean; second_factor: string | null; secure_cookie: boolean; theme: string | null; default_theme: string; quick?: QuickPrefs | null }
 export interface QuickPrefs { items?: string[]; reports?: string[]; hidden?: string[] }
 export interface SourceRef { id: string; name: string; host: string; port: number; database: string; is_active: boolean; last_check_at: string | null; last_check_ok: boolean | null; ksc_version: string | null; features: Record<string, boolean | null> }
@@ -66,7 +66,11 @@ export interface EvSummary { days: number; unit: "hour" | "day"; types: { key: s
   top_threats: { kind: "threat" | "attack"; name: string; n: number; hosts: number; last: string | null }[]; fetched_at: string; unsupported?: string[] }
 export interface SecEvent { host_known: boolean; event_id: number; at: string | null; type: string; type_title: string; severity: number | null; host_id: number | null; host: string; ip: string; product: string; threat: string; object: string; user: string; threat_kind: string; attacker: string; protocol: string; port: string }
 export interface Job { id: string; source_id: string | null; source_ids: string[]; source_name: string; kind: "software_hosts" | "hosts" | "version_audit" | QuickKind; title: string; params: ReportParams & Partial<AuditParams> & Record<string, unknown>; status: "queued" | "running" | "done" | "failed" | "cancelled"; progress: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null; data_fetched_at: string | null; rows: number | null; summary: (Summary & Partial<AuditSummary> & Partial<QuickDoc>) | null; error: string | null }
-export type QuickKind = "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_ad" | "quick_admin";
+export interface SessionRow { login: string; domain: string; upn: string; user_name: string; kind: string; local: boolean; host_id: number; host: string; fqdn: string; ip: string; os: string; group: string;
+  online: boolean | null; last_connected: string | null; source_id: string; source: string }
+export interface SessionsNow { items: SessionRow[]; total: number; more: boolean; fetched_at: string; note: string; sources: { source_id: string; source: string; rows: number; more: boolean; error: string }[];
+  choices: { id: string; name: string }[] }
+export type QuickKind = "quick_sessions" | "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_ad" | "quick_admin";
 
 export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "offline" | "unknown" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
@@ -222,8 +226,9 @@ export type ZoneRuleKind = "net" | "exclude" | "group" | "name";
 export type ContactRole = "responsible" | "cc" | "group";
 export interface ZoneRuleT { id?: string; kind: ZoneRuleKind; kind_ru?: string; value: string; note: string }
 export interface ZoneContact { id?: string; name: string; position: string; email: string; role: ContactRole; enabled: boolean }
-export interface ZoneFull { id: string; name: string; description: string; purpose: string; priority: number; activity_days: number | null; enabled: boolean; updated_at?: string; updated_by?: string | null; rules: ZoneRuleT[]; contacts: ZoneContact[] }
-export interface ZoneBrief { id: string; name: string; description: string; purpose: string; priority: number; enabled: boolean; rules: number; contacts: number; updated_at: string }
+export interface ZoneFull { id: string; name: string; description: string; purpose: string; priority: number; activity_days: number | null; enabled: boolean; updated_at?: string; updated_by?: string | null; rules: ZoneRuleT[]; contacts: ZoneContact[]; access?: ZoneAccessT[] }
+export interface ZoneAccessT { kind: "user" | "group"; value: string; label: string }
+export interface ZoneBrief { id: string; name: string; description: string; purpose: string; priority: number; enabled: boolean; rules: number; contacts: number; access?: number; updated_at: string }
 export type HostState = "critical" | "vulns" | "protection" | "potential" | "ok";
 export interface ZoneStats { total: number; in_scope: number; inactive: number; active: number; online: number; offline: number; online_unknown: number; critical: number; other_vulns: number; any_vulns: number; protection: number; potential: number; ok: number;
   state: Record<HostState, number>; severity: { critical: number; high: number; warning: number; none: number }; vulns: { critical: number; high: number; warning: number }; problems: { key: ProblemKey; title: string; hosts: number }[]; excluded: number; accepted: number; review: number }
@@ -618,6 +623,7 @@ export const api = {
   },
   devices: {
     list: (p: Record<string, string | number | boolean | undefined | null>) => req<DevicesPage>("GET", `/devices${qs(p)}`),
+    sessions: (p: Record<string, string | number | boolean | undefined | null>) => req<SessionsNow>("GET", `/devices/sessions${qs(p)}`),
     status: () => req<DevicesStatus>("GET", "/devices/status"),
     poll: () => req<{ queued: number }>("POST", "/devices/poll"),
     card: (sid: string, hid: number, showService = false) => req<DeviceCard>("GET", `/devices/${sid}/${hid}${qs({ show_service: showService })}`),
@@ -663,6 +669,7 @@ export const api = {
     get: (id: string) => req<Job>("GET", `/reports/${id}`),
     rows: (id: string, p: { offset: number; limit: number; q?: string; source?: string; program?: string; sort?: string; desc?: boolean }) => req<Page<SoftwareRow & Host & AuditResultRow>>("GET", `/reports/${id}/rows${qs(p)}`),
     downloadUrl: (id: string, fmt: "csv" | "xlsx" | "html" | "pdf") => `/api/v1/reports/${id}/download/${fmt}`,
+    mail: (id: string, formats: string[]) => req<{ sent: boolean; to: string; files: string[] }>("POST", `/reports/${id}/mail`, { formats }),
     cancel: (id: string) => req<Job>("POST", `/reports/${id}/cancel`),
     rerun: (id: string) => req<Job>("POST", `/reports/${id}/rerun`),
     remove: (id: string) => req<void>("DELETE", `/reports/${id}`),

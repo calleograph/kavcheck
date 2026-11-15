@@ -136,7 +136,7 @@ class ZoneData:
                  "contacts": cons.get(z.id, [])} for z in zs]
 
     async def zone_doc(self, db: AsyncSession, *, zone_ids: list[str], params: dict, source_ids: list[str] | None = None, allowed=None, recipients: str = "", refresh: bool = False,
-                       progress=lambda _t: None, cancelled=lambda: False, hide_other_zones: bool = False, limit_hosts: int | None = None, allow_build: bool = True) -> dict:
+                       progress=lambda _t: None, cancelled=lambda: False, hide_other_zones: bool = False, limit_hosts: int | None = None, allow_build: bool = True, public: bool = False) -> dict:
         unassigned = UNASSIGNED in zone_ids
         ids = [z for z in zone_ids if z != UNASSIGNED]
         general = await self.svc.get(db, "general")
@@ -147,6 +147,8 @@ class ZoneData:
         if params.get("hosts"):        # отчёт по выбранным компьютерам «источник:идентификатор»
             pick = set(params["hosts"])
             parts = [{**x, "hosts": [h for h in x["hosts"] if f"{h['source_id']}:{h['host_id']}" in pick]} for x in parts]
+        if public:                     # портал ответственного: без технических примечаний источников (тексты ошибок KSC, адреса) — их разбирает администратор
+            parts = [{**x, "notes": []} for x in parts]
         names = None if hide_other_zones else {z["id"]: z["name"] for z in await self.zones_info(db)}
         doc = R.build_zone_doc(parts, info, params=p, org=await self.org(db), generated_at=datetime.now(timezone.utc), selection=ids, unassigned=unassigned,
                                base_url=(await self.svc.get(db, "smtp")).base_url, zone_names=names)

@@ -111,7 +111,7 @@ function ZoneCount({ z, n, label, q = "", tone = "" }: { z: string; n: number; l
 // ------------------------------------------------------------------------------------------------ дашборд зоны
 const PARAMS = ["state", "severity", "problem", "q", "online", "activity", "triage", "cve", "product", "source_id"] as const;
 
-function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
+export function ZoneView({ ctx, zid, portal = false }: { ctx: Ctx; zid: string; portal?: boolean }) {
   const [sp, setSp] = useSearchParams();
   const f = Object.fromEntries(PARAMS.map((k) => [k, sp.get(k) ?? ""])) as Record<(typeof PARAMS)[number], string>;
   if (!f.activity) f.activity = "active"; if (!f.triage) f.triage = "attention";
@@ -123,6 +123,7 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
   const [triage, setTriage] = useState<{ targets: TriageTarget[] } | null>(null);
   const sel = useRowSel<string>();
   const canReport = ctx.me.user.role !== "viewer";
+  const canRefresh = ctx.me.user.role === "analyst" || ctx.me.user.is_admin;      // обновление из KSC и решения по уязвимостям — не для портала ответственного
   const setF = (kv: Partial<Record<(typeof PARAMS)[number], string>>) => setSp((p) => { for (const [k, v] of Object.entries(kv)) { if (v) p.set(k, v); else p.delete(k); } return p; }, { replace: true });
   useEffect(() => { const t = window.setTimeout(() => { if (q !== f.q || cve !== f.cve || product !== f.product) setF({ q, cve, product }); }, 350); return () => window.clearTimeout(t); }, [q, cve, product]); // eslint-disable-line react-hooks/exhaustive-deps
   const [forced, setForced] = useState(0);
@@ -148,14 +149,14 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
   const reveal = () => window.requestAnimationFrame(() => document.getElementById("zone-hosts")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   const pick = (k: (typeof PARAMS)[number], v: string) => { setF({ [k]: f[k] === v ? "" : v }); if (f[k] !== v) reveal(); };
   const people = useMemo(() => (zone?.contacts ?? []).filter((c) => c.enabled), [zone]);
-  if (list.error && list.initial) return <section><PageHead title="Зона ответственности" back={<Link to="/zones" className="btn ghost mini"><Icon name="arrowL" size={15} />Все зоны</Link>} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div></section>;
+  if (list.error && list.initial) return <section><PageHead title="Зона ответственности" back={<Link to="/zones" className="btn ghost mini"><Icon name="arrowL" size={15} />{portal ? "Мои зоны" : "Все зоны"}</Link>} /><div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div></section>;
   const reportParams = { zone_ids: [zid], categories: DEFAULT_ZONE_CATS, level: "technical", include_inactive: f.activity !== "active", hosts: report === "sel" ? sel.ids : [] };
   return (
     <section>
-      <PageHead back={<Link to="/zones" className="btn ghost mini"><Icon name="arrowL" size={15} />Все зоны</Link>} title={zone?.name ?? "Зона ответственности"}
+      <PageHead back={<Link to="/zones" className="btn ghost mini"><Icon name="arrowL" size={15} />{portal ? "Мои зоны" : "Все зоны"}</Link>} title={zone?.name ?? "Зона ответственности"}
         lede={zone ? <>{zone.purpose || zone.description || "Описание не задано"}</> : undefined}>
         <DataStamp fr={d?.freshness} />
-        {canReport && <RefreshButton fr={d?.freshness} onClick={startRefresh} busy={qbusy} />}
+        {canRefresh && <RefreshButton fr={d?.freshness} onClick={startRefresh} busy={qbusy} />}
         {canReport && <button className="btn primary" onClick={() => setReport("all")} disabled={list.initial}><Icon name="file" />Отчёт по зоне</button>}
         {canAdmin && zid !== "none" && <Link className="btn" to={`/admin?tab=zones&zone=${zid}`}><Icon name="edit" />Настройки зоны</Link>}
       </PageHead>
@@ -163,7 +164,7 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
         {people.length ? people.map((c) => <span key={c.email}>{c.name || c.email}{c.position ? `, ${c.position}` : ""}<span className="p-role">{c.role === "responsible" ? "" : c.role === "cc" ? "копия" : "рассылка"} {c.name ? c.email : ""}</span></span>)
           : zid === "none" ? <span className="muted">Компьютеры, не подошедшие ни одной зоне</span> : <span className="warn-text">Ответственные не назначены — рассылка этой зоне не уйдёт</span>}
       </div>}
-      <FreshnessNotes fr={d?.freshness} canRefresh={canReport} onRefresh={startRefresh} busy={qbusy} zoneMode />
+      <FreshnessNotes fr={d?.freshness} canRefresh={canRefresh} onRefresh={startRefresh} busy={qbusy} zoneMode />
       {qerr && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{qerr}</div></div>}
       {d?.notes.map((n) => <div key={n} className="alert info"><Icon name="info" /><div className="alert-body">{n}</div></div>)}
       {d?.conflicts ? <div className="alert warn"><Icon name="alert" /><div className="alert-body">Спорных компьютеров в зоне: <b>{d.conflicts}</b> — они подходят и другим зонам, поэтому показаны в каждой.{canAdmin ? <> <Link to="/admin?tab=zones&view=conflicts">Разобрать</Link></> : null}</div></div> : null}
@@ -180,7 +181,7 @@ function ZoneView({ ctx, zid }: { ctx: Ctx; zid: string }) {
       {st?.eol && <div className="meters dense zone-eol">
         <div className="meter"><span className="l">EOL: поддержка закончилась</span><span className={`v ${st.eol.eol ? "bad-text" : ""}`}>{num(st.eol.eol)}</span><span className="t">устройств; программ и ОС: {num(st.eol.items)} (ОС: {num(st.eol.os)})</span></div>
         <div className="meter"><span className="l">Только расширенная поддержка</span><span className={`v ${st.eol.extended ? "warn-text" : ""}`}>{num(st.eol.extended)}</span><span className="t">устройств; платная или по договору</span></div>
-        <div className="meter"><span className="l">Поддержка скоро закончится</span><span className="v">{num(st.eol.upcoming)}</span><span className="t">устройств · <Link to="/eol">раздел EOL</Link></span></div>
+        <div className="meter"><span className="l">Поддержка скоро закончится</span><span className="v">{num(st.eol.upcoming)}</span><span className="t">устройств{!portal && <> · <Link to="/eol">раздел EOL</Link></>}</span></div>
       </div>}
       {st && <Charts st={st} f={f} pick={pick} ext={ext} />}
       {st && ext && d?.ext_cap ? <p className="muted small mt-sm">Показатели потенциальных совпадений с внешними базами учитывают все совпадения; в списке компьютера сохранены до {d.ext_cap} самых опасных (сначала из каталога CISA KEV).</p> : null}
@@ -252,7 +253,7 @@ function HostDrawer({ ctx, zid, sid, hid, onClose, onTriage, refreshKey }: { ctx
   const [tab, setTab] = useState<"ksc" | "ext" | "done">("ksc");
   const [hist, setHist] = useState<string | null>(null);
   const [pick, setPick] = useState<string[]>([]);
-  const canSet = ctx.me.user.role !== "viewer";
+  const canSet = ctx.me.user.role === "analyst" || ctx.me.user.is_admin;
   useEffect(() => { setH(null); api.zones.host(zid, sid, hid).then(setH).catch((e) => setErr((e as ApiError).message)); }, [zid, sid, hid, refreshKey]);
   const zoneId = h?.zones_info[0]?.id; const zoneName = h?.zones_info[0]?.name;
   const target = (r: ZoneVulnRow, origin: "ksc" | "ext"): TriageTarget => ({ source_id: sid, host_id: hid, host_name: h?.name ?? "", vuln_key: (origin === "ksc" ? r.kla_id : r.vuln_key) ?? "", origin, product: r.product ?? "", version: r.installed_version, zone_id: zoneId, zone_name: zoneName });
@@ -262,7 +263,7 @@ function HostDrawer({ ctx, zid, sid, hid, onClose, onTriage, refreshKey }: { ctx
   const rk = (r: ZoneVulnRow, o: string) => `${o}:${(o === "ksc" ? r.kla_id : r.vuln_key) ?? ""}:${r.product ?? ""}:${r.installed_version}`;
   const link = (r: ZoneVulnRow, o: "ksc" | "ext") => {
     const key = o === "ext" ? r.vuln_key : (r.cve_list?.[0] ?? (r.cve ? r.cve.split(", ")[0] : ""));
-    return key ? <Link to={`/vdb?v=${encodeURIComponent(key)}`} className="mono strong-link" title="Открыть описание и источники сведений">{o === "ext" ? r.vuln_key : r.kla_id}</Link> : <span className="mono">{r.kla_id}</span>;
+    return key && ctx.me.user.role !== "zone" ? <Link to={`/vdb?v=${encodeURIComponent(key)}`} className="mono strong-link" title="Открыть описание и источники сведений">{o === "ext" ? r.vuln_key : r.kla_id}</Link> : <span className="mono">{r.kla_id}</span>;
   };
   const table = (items: ZoneVulnRow[], o: "ksc" | "ext") => (
     <div className="table-scroll"><table className="table compact">
@@ -291,9 +292,9 @@ function HostDrawer({ ctx, zid, sid, hid, onClose, onTriage, refreshKey }: { ctx
         </div>
         <p className="small">{h.summary}.</p>
         {h.protection.length > 0 && <div className="card flush"><div className="card-head"><h3>Проблемы защиты</h3></div><ul className="rows">{h.protection.map((p) => <li key={p.key}><div className="r-main"><b>{p.title}</b><span className="muted small"> — {p.detail}</span></div></li>)}</ul></div>}
-        <OwnerBlock sid={sid} hid={hid} activityDays={ctx.me.activity_days} />
+        {ctx.me.user.role !== "zone" && <OwnerBlock sid={sid} hid={hid} activityDays={ctx.me.activity_days} />}
         <p className="muted small">Защитный продукт: {h.av.product ? `${h.av.product} ${h.av.build ?? ""}, ${h.av.state ?? ""}` : "не найден"}; базы: {fmtDate(h.av.bases)}; полная проверка: {fmtDate(h.av.last_full_scan)}; статус KSC: {h.av.ksc_status ?? "—"}.
-          {" "}<Link to={`/vulnerabilities/hosts/${h.host_id}`}>Страница компьютера в разделе «Уязвимости»</Link></p>
+          {ctx.me.user.role !== "zone" && <>{" "}<Link to={`/vulnerabilities/hosts/${h.host_id}`}>Страница компьютера в разделе «Уязвимости»</Link></>}</p>
         <Tabs label="Обнаружения" value={tab} onChange={setTab} items={[{ id: "ksc", label: "Подтверждены KSC", count: h.rows.ksc.current.length }, { id: "ext", label: "Потенциальные (внешние базы)", count: h.rows.ext.current.length }, { id: "done", label: "Обработанные", count: done.length }]} />
         <div className="mt-sm">
           {tab !== "done" && (list.length ? table(list, tab) : <Empty icon="checkCircle" title="Нет обнаружений">{tab === "ksc" ? "KSC не сообщает о действующих уязвимостях на этом компьютере (с учётом решений специалистов)." : "Совпадений с внешними базами не найдено или внешние базы не включены в фильтр."}</Empty>)}
@@ -301,7 +302,7 @@ function HostDrawer({ ctx, zid, sid, hid, onClose, onTriage, refreshKey }: { ctx
           {tab === "done" && (done.length ? <div className="table-scroll"><table className="table compact"><thead><tr><th>Опасность</th><th>Уязвимость</th><th>Программа</th><th>Решение</th><th>Основание</th><th>Кто и когда</th></tr></thead>
             <tbody>{done.map(({ r, o }, i) => <tr key={i}><td><span className={`sev ${SEV_CLASS[r.severity]}`}>{SEV_RU[r.severity]}</span></td><td>{link(r, o)}<span className="sub">{o === "ext" ? "внешние базы" : "KSC"}</span></td><td className="small">{r.product}<span className="sub mono">{r.installed_version}</span></td>
               <td><TriageBadge d={r.triage} /><span className="sub">{r.triage?.scope_ru}</span></td><td className="small">{r.triage?.reason_ru}<span className="sub">{r.triage?.comment}</span></td><td className="small nowrap">{r.triage?.by}<span className="sub">{fmt(r.triage?.at)}</span>
-                {canSet && <button type="button" className="link-btn small" onClick={() => onTriage([target(r, o)])}> изменить</button>} <button type="button" className="link-btn small" onClick={() => r.triage && setHist(r.triage.id)}>история</button></td></tr>)}</tbody></table></div>
+                {canSet && <button type="button" className="link-btn small" onClick={() => onTriage([target(r, o)])}> изменить</button>} {canSet && <button type="button" className="link-btn small" onClick={() => r.triage && setHist(r.triage.id)}>история</button>}</td></tr>)}</tbody></table></div>
             : <Empty icon="info" title="Решений по этому компьютеру нет">Ложные срабатывания, неактуальные уязвимости и принятые риски появятся здесь.</Empty>)}
         </div>
       </>)}

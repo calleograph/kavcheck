@@ -88,6 +88,12 @@ FROM dbo.v_akpub_host h LEFT JOIN dbo.v_akpub_adm_group g ON g.nId = h.nGroup
 WHERE {{where}}
 ORDER BY {{order}}
 OFFSET %(offset)s ROWS FETCH NEXT %(limit)s ROWS ONLY"""
+# «кто вошёл сейчас»: пользователи в ТЕКУЩЕМ списке вошедших (bActual <> 0), с компьютером; отбор — в {where} (только параметры), без ведомых серверов
+SESSIONS_NOW = f"""SELECT {HOST_COLS}, g.wstrName AS group_name, u.wstrSamAccountName AS login, u.wstrUserPrincipalName AS upn, u.wstrDisplayName AS user_display,
+       u.nHostId AS local_host
+FROM dbo.hst_user_visited v JOIN dbo.ak_users u ON u.nId = v.nUser JOIN dbo.v_akpub_host h ON h.nId = v.nHost LEFT JOIN dbo.v_akpub_adm_group g ON g.nId = h.nGroup
+WHERE v.bActual <> 0 AND h.bIsSlaveServer = 0{{where}}
+ORDER BY u.wstrSamAccountName, h.wstrDisplayName, v.nHost, v.nUser OFFSET %(offset)s ROWS FETCH NEXT %(limit)s ROWS ONLY"""
 HOSTS_COUNT = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h LEFT JOIN dbo.v_akpub_adm_group g ON g.nId = h.nGroup WHERE {where}"
 HOST_ONE = f"SELECT {HOST_COLS}, g.wstrName AS group_name FROM dbo.v_akpub_host h LEFT JOIN dbo.v_akpub_adm_group g ON g.nId = h.nGroup WHERE h.nId = %(id)s"
 SOFTWARE_ON_HOST = ("SELECT a.nId AS install_id, a.nProductId AS product_id, a.wstrDisplayName AS name, a.wstrBuild AS version, a.wstrPublisher AS publisher, "

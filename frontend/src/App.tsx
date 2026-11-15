@@ -23,6 +23,7 @@ const ProductPage = lazy(() => import("./pages/ProductPage"));
 const EventsPage = lazy(() => import("./pages/EventsPage"));
 const ProtectionPage = lazy(() => import("./pages/ProtectionPage"));
 const ZonesPage = lazy(() => import("./pages/ZonesPage"));
+const PortalApp = lazy(() => import("./pages/PortalApp"));
 const ReportsPage = lazy(() => import("./pages/ReportsPage"));
 import { fmt, versionLabel } from "./util";
 
@@ -58,11 +59,11 @@ function usePopover() {
   return { open, setOpen, root, btn };
 }
 
-function UserMenu({ me, version, onLogout, onTheme }: { me: Me; version: string; onLogout: () => void; onTheme: (id: ThemeId | null) => void }) {
+export function UserMenu({ me, version, onLogout, onTheme }: { me: Me; version: string; onLogout: () => void; onTheme: (id: ThemeId | null) => void }) {
   const { open, setOpen, root, btn } = usePopover();
   const cur = isTheme(me.theme) ? me.theme : isTheme(me.default_theme) ? me.default_theme : DEFAULT_THEME;
   const navigate = useNavigate();
-  const roles: Record<string, string> = { admin: "Администратор", analyst: "Аналитик", viewer: "Просмотр" };
+  const roles: Record<string, string> = { admin: "Администратор", analyst: "Аналитик", viewer: "Просмотр", zone: "Ответственный за зону" };
   return (
     <div className={`dd ${open ? "open" : ""}`} ref={root}>
       <button ref={btn} type="button" className="dd-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
@@ -275,6 +276,7 @@ export default function App() {
   if (me === null) return <LoginPage onLogin={onLogin} />;
   if (me.must_change_password) return <ChangePasswordPage onDone={() => api.me().then((m) => { setCsrf(m.csrf_token); setMe(m); })} onLogout={logout} />;
   if (me.must_enroll_totp) return <main className="forced-shell"><SecurityPage me={me} forced onLogout={logout} onEnrolled={() => api.me().then((m) => { setCsrf(m.csrf_token); setMe(m); })} /></main>;
+  if (me.user.role === "zone") return <Suspense fallback={<div className="center"><span className="spin" role="status" aria-label="Загрузка" /></div>}><PortalApp me={me} version={version} onLogout={logout} onTheme={onTheme} /></Suspense>;
   const current = sources.find((s) => s.id === currentId) ?? null;
   const allOn = all && sources.length > 1;
   const setScope = (id: string) => { if (id === "all") onAll(true); else { onAll(false); void pick(id); } };

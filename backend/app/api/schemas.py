@@ -425,6 +425,14 @@ class QuickPentest(Params):
         return ok or ["critical"]
 
 
+class QuickSessions(Params):
+    """Кто вошёл в систему сейчас: условия вкладки «Сейчас в системе» (пользователь, компьютер, только в сети, служебные учётные записи, источники)."""
+    q: str = Field(default="", max_length=400)
+    host: str = Field(default="", max_length=400)
+    online_only: bool = True
+    show_service: bool = False
+
+
 class QuickOverview(Params):
     """Сводка инфраструктуры: условия главной страницы (период активности, показатель, источник)."""
     days: int = Field(default=30, ge=1, le=365)
@@ -432,11 +440,11 @@ class QuickOverview(Params):
     source_id: str = Field(default="", max_length=40)
 
 
-QUICK_PARAMS = {"quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_hier": QuickHier, "quick_ad": QuickAd, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
+QUICK_PARAMS = {"quick_sessions": QuickSessions, "quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_hier": QuickHier, "quick_ad": QuickAd, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
 
 
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_admin)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_admin|quick_sessions)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
@@ -468,7 +476,7 @@ class OverrideIn(BaseModel):
 
 class TemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_admin)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_admin|quick_sessions)$")
     params: dict
     shared: bool = True
 

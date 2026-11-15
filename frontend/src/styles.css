@@ -1875,3 +1875,39 @@ svg.hier-g { display: block; user-select: none; -webkit-user-select: none; }
 @media (max-width: 1320px) { .ad-grid { grid-template-columns: 320px minmax(0, 1fr); } .ad-side { grid-column: 2; } .ad-wide { grid-column: 2; } .ad-find { grid-row: span 2; } }
 @media (max-width: 860px) { .ad-grid { grid-template-columns: minmax(0, 1fr); } .ad-side, .ad-wide { grid-column: auto; } .ad-find { position: static; max-height: none; grid-row: auto; } .ad-dl { grid-template-columns: minmax(0, 1fr); gap: 0; } .ad-dl dt { margin-top: 6px; } }
 .hier-adwrap > .hier-main { min-height: 0; } .hier-adwrap > .hier-main .hier-tabs { border-bottom: 0; padding-bottom: 0; }
+
+/* ================================================================ портал ответственного за зону: та же верхняя панель без бокового меню */
+.portal { min-height: 100dvh; display: flex; flex-direction: column; }
+.portal-brand { display: flex; align-items: center; gap: 12px; min-width: 44px; min-height: 44px; color: var(--ink); text-decoration: none; }
+.portal-brand span { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.portal-brand b { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.portal-brand small { font-size: var(--fs-xs); color: var(--muted); }
+.portal-nav { display: flex; gap: 4px; margin-left: 16px; }
+.portal-nav a { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-radius: var(--radius); color: var(--muted); text-decoration: none; font-weight: 500; transition: color var(--t-fast), background-color var(--t-fast); }
+.portal-nav a:hover { color: var(--ink); background: var(--sunken); }
+.portal-nav a.on { color: var(--ink); background: var(--sunken); }
+.portal-nav a.on svg { color: var(--accent); }
+.portal-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 16px; }
+.portal-card { display: flex; flex-direction: column; gap: 12px; color: inherit; text-decoration: none; transition: border-color var(--t-fast), transform var(--t-fast); }
+.portal-card:hover { border-color: var(--accent); }
+.portal-card:active { transform: translateY(1px); }
+.portal-card h2 { font-size: var(--fs-lg); margin: 0; }
+.portal-desc { min-height: 2.6em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 0; }
+.portal-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.portal-nums > div { display: flex; flex-direction: column; gap: 4px; }
+.portal-nums b { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.portal-nums span { font-size: var(--fs-xs); color: var(--muted); }
+.portal-nums .bad b { color: var(--danger-text); } .portal-nums .warn b { color: var(--warn-text); }
+.portal-go { margin-top: auto; display: inline-flex; align-items: center; gap: 8px; color: var(--accent); font-weight: 500; }
+.topbar.portal-top > .spacer { display: block; flex: 1; }
+.portal-files { margin-top: 8px; gap: 8px; }
+tr[aria-current="true"] > td { background: var(--accent-soft); }
+@media (max-width: 720px) {
+  .portal-brand small { display: none; }
+  .portal-nav { margin-left: 0; }
+  .portal-nav a { padding: 0 8px; font-size: var(--fs-sm); }
+}
+@media (max-width: 480px) {
+  .portal-brand span { display: none; }
+  .portal-nav a { gap: 0; } .portal-nav a svg { display: none; }
+}

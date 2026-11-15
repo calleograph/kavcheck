@@ -65,6 +65,7 @@ class User(Base):
     totp_enabled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     quick_prefs: Mapped[dict | None] = mapped_column(JSONType)         # личная панель «Быстрый доступ»: избранное, порядок, выбранные отчёты (идентификаторы); None — стартовая конфигурация
     theme: Mapped[str | None] = mapped_column(String(16))               # выбранная тема оформления; None — тема по умолчанию системы (выбор не перезаписывается обновлениями)
+    upn: Mapped[str | None] = mapped_column(String(300))                       # userPrincipalName из каталога (при входе): учитывается в доступе к порталу зон
 
 
 class Session(Base):
@@ -705,6 +706,20 @@ class ZoneContact(Base):
     role: Mapped[str] = mapped_column(String(12), nullable=False, default="responsible")      # responsible | cc | group
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)               # рассылка конкретному получателю можно отключить
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+
+
+class ZoneAccess(Base):
+    """Доступ ответственных к порталу зоны: доменная учётная запись (логин, «DOMAIN\\логин» или UPN) или группа AD (DN; вложенные группы учитываются при входе).
+    Пользователь без роли по правилам доступа, но попавший сюда, входит в KAV Checker с ролью «Ответственный за зону» и видит только свои зоны."""
+    __tablename__ = "zone_access"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    zone_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("zones.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)                 # user | group
+    value: Mapped[str] = mapped_column(String(500), nullable=False)              # в нижнем регистре: логин / UPN или DN группы
+    label: Mapped[str] = mapped_column(String(300), nullable=False, default="")  # как показывать (ФИО, имя группы)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(300))
+    __table_args__ = (Index("ux_zone_access", "zone_id", "kind", "value", unique=True),)
 
 
 class ZonePin(Base):

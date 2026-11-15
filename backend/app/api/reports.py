@@ -7,11 +7,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import ValidationError
+from html import escape
+from typing import Literal
+
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth.deps import ALL_SOURCES, SessionUser, get_db, require_analyst, require_user
+from ..auth.deps import ALL_SOURCES, ROLE_RANK, SessionUser, get_db, require_analyst, require_user
 from ..ksc import versions
 from ..search import any_field
 from ..models import AuditCheck, KscSource, ReportJob, ReportTemplate, utcnow
@@ -36,6 +39,8 @@ def job_out(j: ReportJob) -> dict:
 
 
 def can_see(su: SessionUser, j: ReportJob) -> bool:
+    if su.is_zone:                                         # ответственный за зону — только свои отчёты по своим зонам
+        return j.created_by_id == su.user_id and j.kind == "quick_zone" and set((j.params or {}).get("zone_ids") or []) <= su.zone_ids
     if j.kind == "quick_admin":                           # таблицы администрирования: журналы, пользователи, лицензии — только администратор
         return su.is_admin
     if j.kind == "quick_devices" and (j.params or {}).get("view") == "users" and (j.params or {}).get("pd", True) and su.role == "viewer":
@@ -121,7 +126,7 @@ async def list_jobs(source_only: bool = True, offset: int = Query(0, ge=0), limi
                     db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(ReportJob).order_by(ReportJob.created_at.desc()).offset(offset).limit(limit * 3))).scalars().all()
     cur = str(su.current_source_id) if su.current_source_id else None
-    out = [j for j in rows if can_see(su, j) and (not source_only or not cur or cur in job_sources(j) or j.kind in quick.NO_KSC)]
+    out = [j for j in rows if can_see(su, j) and (su.is_zone or not source_only or not cur or cur in job_sources(j) or j.kind in quick.NO_KSC)]
     return {"items": [job_out(j) for j in out[:limit]]}
 
 
@@ -136,8 +141,17 @@ def _page_source(request: Request, su: SessionUser) -> uuid.UUID | None:
 
 
 @router.post("", status_code=201)
-async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     params = validate_params(body.kind, body.params)
+    if su.is_zone:                                         # портал ответственного: отчёт по своим зонам из подготовленных данных, по всем источникам, где есть компьютеры зоны
+        if body.kind != "quick_zone" or not set(params.get("zone_ids") or []) <= su.zone_ids:
+            raise HTTPException(status_code=403, detail="Ответственному за зону доступен отчёт по своей зоне")
+        params = {**params, "refresh_data": False, "_portal": True}
+        allsrc = (await db.execute(select(KscSource).where(KscSource.is_active.is_(True)))).scalars().all()
+        job = await enqueue(request, db, su, kind=body.kind, title=body.title, params=params, sources=list(allsrc))
+        return job_out(job)
+    if ROLE_RANK.get(su.role, 0) < ROLE_RANK["analyst"]:
+        raise HTTPException(status_code=403, detail="Нужны права аналитика")
     if body.kind == "quick_bi" and not (su.is_admin or su.all_sources):
         raise HTTPException(status_code=403, detail="Отчёты BI доступны аналитику и администратору с доступом ко всем источникам KSC")
     if body.kind == "quick_hier":
@@ -154,7 +168,7 @@ async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends
         raise HTTPException(status_code=403, detail="Отчёты администрирования доступны администратору")
     if body.kind in quick.NO_KSC:
         sources = []
-    elif body.kind in ("quick_zone", "quick_eol", "quick_devices", "quick_overview"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю
+    elif body.kind in ("quick_zone", "quick_eol", "quick_devices", "quick_overview", "quick_sessions"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю
         from ..services.sources import visible_sources  # noqa: PLC0415
 
         ids = body.source_ids or [s.id for s in await visible_sources(db, su)]
@@ -231,6 +245,48 @@ async def download(job_id: uuid.UUID, fmt: str, request: Request, su: SessionUse
     name = f"kavcheck_{j.kind}_{j.created_at:%Y%m%d_%H%M}.{fmt}"
     media = {"csv": "text/csv; charset=utf-8", "html": "text/html; charset=utf-8", "pdf": "application/pdf"}.get(fmt, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     return FileResponse(p, media_type=media, filename=name, content_disposition_type="attachment", headers={"X-Content-Type-Options": "nosniff"})
+
+
+class MailIn(BaseModel):
+    formats: list[Literal["xlsx", "pdf", "html", "csv"]] = Field(default_factory=lambda: ["xlsx"], min_length=1, max_length=4)
+
+
+MAIL_MAX_BYTES = 20 * 1024 * 1024        # вложения больше обычно отклоняет почтовый сервер: тогда — скачать в браузере
+
+
+@router.post("/{job_id}/mail")
+async def mail_job(job_id: uuid.UUID, body: MailIn, request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    """Отправить готовый отчёт себе на почту (адрес учётной записи из каталога). Только свои отчёты (или доступные по правам), только себе — чужие адреса не принимаются."""
+    from ..models import User  # noqa: PLC0415
+    from ..services import mail  # noqa: PLC0415
+
+    j = await _job(db, job_id, su)
+    if j.status != "done":
+        raise HTTPException(status_code=409, detail="Отчёт ещё не сформирован")
+    to = ((await db.get(User, su.user_id)).email or "").strip()
+    if not to:
+        raise HTTPException(status_code=409, detail="У вашей учётной записи в каталоге не указана почта: скачайте отчёт в браузере или попросите администратора заполнить адрес")
+    cfg = await request.app.state.settings_svc.get(db, "smtp")
+    err = mail.check_config(cfg)
+    if err:
+        raise HTTPException(status_code=409, detail=f"Отправка почты не настроена администратором ({err}): скачайте отчёт в браузере")
+    d = job_dir(request.app.state.settings, j.id)
+    mime = {"csv": "text/csv", "html": "text/html", "pdf": "application/pdf", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+    files = [(f"kavcheck_{j.kind}_{j.created_at:%Y%m%d_%H%M}.{f}", (d / f"report.{f}").read_bytes(), mime[f]) for f in dict.fromkeys(body.formats) if (d / f"report.{f}").exists()]
+    if not files:
+        raise HTTPException(status_code=409, detail="Файлы отчёта недоступны")
+    if sum(len(b) for _n, b, _m in files) > MAIL_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"Вложения больше {MAIL_MAX_BYTES >> 20} МБ — почтовый сервер их не примет: скачайте отчёт в браузере или выберите меньше форматов")
+    title = j.title or quick.KIND_TITLE.get(j.kind, "Отчёт")
+    text = f"{title}\nСформирован: {j.created_at:%d.%m.%Y %H:%M} UTC.\nФайлы отчёта — во вложении. Письмо отправлено по запросу: {su.display_name}."
+    html = f"<p><b>{escape(title)}</b></p><p>Сформирован: {j.created_at:%d.%m.%Y %H:%M} UTC.</p><p>Файлы отчёта — во вложении. Письмо отправлено по вашему запросу из KAV Checker.</p>"
+    res = await mail.send(cfg, mail.compose(cfg, to=[to], cc=[], subject=f"KAV Checker: {title}", text=text, html=html, attachments=files), [to])
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="report.mail", target_type="report", target_id=str(j.id), source_id=j.source_id,
+                details={"formats": [n.rsplit(".", 1)[-1] for n, _b, _m in files], "ok": res.ok, "error": res.error[:200]})
+    await db.commit()
+    if not res.ok:
+        raise HTTPException(status_code=502, detail=f"Письмо не отправлено: {res.error or 'почтовый сервер отклонил'}")
+    return {"sent": True, "to": to, "files": [n for n, _b, _m in files]}
 
 
 @router.post("/{job_id}/cancel")

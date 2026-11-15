@@ -207,6 +207,45 @@ async def test_directory_login_with_rules(client, app, monkeypatch):
     assert (await client.post("/api/v1/auth/login", json={"login": "EXAMPLE\\ivanov", "password": "wrong"}, headers=h)).status_code == 401
 
 
+async def test_zone_owner_without_access_rule_logs_into_the_portal_only(client, app, monkeypatch):
+    """Ни одна группа не разрешена правилами, но пользователь (или его группа, в том числе вложенная) назначен зоне — вход с ролью «zone» без источников KSC."""
+    from sqlalchemy import select
+
+    from app.auth import ldap as L
+    from app.models import Zone, ZoneAccess
+
+    ident = LdapIdentity(guid="g-2", dn="uid=petrov,ou=People,dc=example,dc=local", username="petrov", upn="petrov@example.local", display_name="Пётр Петров",
+                         email="p.petrov@example.local", groups=frozenset({"cn=srv-owners,ou=groups,dc=example,dc=local"}), connection_id="")
+
+    class FakeDir:
+        configs = [object()]
+
+        def authenticate(self, login, password, domain=""):
+            return ident
+
+    async def fake_directory(db):
+        return FakeDir()
+    monkeypatch.setattr(app.state.ldap, "directory", fake_directory)
+    h = {"Origin": "http://testserver"}
+    login_body = {"login": "EXAMPLE\\petrov", "password": "User-Test-Pass-1"}
+    assert (await client.post("/api/v1/auth/login", json=login_body, headers=h)).json()["detail"]["code"] == "no_role"     # не назначен — входа нет, как раньше
+    async with app.state.session_maker() as db:
+        z = Zone(id=__import__("uuid").uuid4(), name="Серверы")
+        db.add(z)
+        await db.flush()
+        db.add(ZoneAccess(zone_id=z.id, kind="group", value="cn=srv-owners,ou=groups,dc=example,dc=local", label="Srv-Owners"))
+        await db.commit()
+    r = await client.post("/api/v1/auth/login", json=login_body, headers=h)
+    assert r.status_code == 200, r.text
+    u = r.json()["user"]
+    assert u["role"] == "zone" and not u["is_admin"]
+    async with app.state.session_maker() as db:
+        row = (await db.execute(select(User).where(User.username == "petrov"))).scalar_one()
+        assert row.all_sources is False and row.source_ids == [] and row.upn == "petrov@example.local"
+    client.headers["X-CSRF-Token"] = r.json()["csrf_token"]
+    assert (await client.get("/api/v1/hosts")).status_code == 403
+
+
 async def test_sessions_expiry_proxy_and_password_change(client, app):
     from datetime import timedelta
 

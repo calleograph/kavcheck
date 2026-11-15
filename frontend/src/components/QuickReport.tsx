@@ -227,8 +227,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
     const a = document.createElement("a"); a.href = api.reports.downloadUrl(id, fmtKey as "xlsx"); a.download = ""; document.body.appendChild(a); a.click(); a.remove();
   }, []);
   // Один отчёт формирует все три файла, поэтому после первого скачивания остальные форматы берутся без повторного чтения KSC.
-  const make = async (fmtKey: string) => {
-    setMsg(""); setBusy(fmtKey);
+  const make = async (fmtKey: string, mail = false) => {
+    setMsg(""); setErr(""); setBusy(mail ? "mail" : fmtKey);
     try {
       let id = jobId && jobId.key === key ? jobId.id : "";
       if (!id) {
@@ -240,7 +240,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
         }
         if (j.status !== "done") { setJobId(null); throw new Error(j.error || "Отчёт не сформирован"); }
       }
-      download(id, fmtKey); setMsg("Файл сформирован и скачан.");
+      if (mail) { const r = await api.reports.mail(id, ["xlsx", "pdf"]); setMsg(`Отчёт (Excel и PDF) отправлен на ${r.to}.`); }
+      else { download(id, fmtKey); setMsg("Файл сформирован и скачан."); }
     } catch (e) { setMsg(""); setErr((e as Error).message); } finally { setBusy(""); }
   };
 
@@ -255,6 +256,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
       footer={canReport ? <div className="qr-actions">
         {FORMATS.map(([k, l], i) => <button key={k} className={`btn ${i === 0 ? "primary" : ""}`} disabled={!!busy || !data || !!data.unsupported || data.total === 0} onClick={() => make(k)}>
           {busy === k ? <span className="spin" /> : <Icon name="download" />}{l}</button>)}
+        <button className="btn" disabled={!!busy || !data || !!data.unsupported || data.total === 0} onClick={() => make("xlsx", true)} title="Excel и PDF — на адрес вашей учётной записи">
+          {busy === "mail" ? <span className="spin" /> : <Icon name="mail" />}Себе на почту</button>
         {jobId && jobId.key === key && <Link className="btn ghost" to={`/reports/${jobId.id}`} onClick={onClose}>Открыть в «Отчётах»</Link>}
       </div> : <span className="muted small">Выгрузка доступна аналитику и администратору.</span>}>
       <div className="qr">

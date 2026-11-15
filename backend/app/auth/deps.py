@@ -18,7 +18,7 @@ log = logging.getLogger("app.auth")
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _ALLOWED_WHILE_CHANGING = {"/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/auth/change-password"}
 _IP_RE = re.compile(r"^[0-9a-fA-F:.]{2,45}$")
-ROLE_RANK = {"viewer": 1, "analyst": 2, "admin": 3}
+ROLE_RANK = {"zone": 0, "viewer": 1, "analyst": 2, "admin": 3}          # zone — ответственный за зону: только портал своих зон (zones/portal.py)
 
 
 @dataclass(frozen=True)
@@ -36,13 +36,18 @@ class SessionUser:
     current_source_id: uuid.UUID | None
     must_totp: bool = False
     second_factor: str | None = None
+    zone_ids: frozenset[str] = frozenset()                 # роль «zone»: зоны, к которым допущен (пересчитываются на каждом запросе)
 
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"
 
+    @property
+    def is_zone(self) -> bool:
+        return self.role == "zone"
+
     def can_use_source(self, source_id: uuid.UUID) -> bool:
-        return self.is_admin or self.all_sources or str(source_id) in self.source_ids
+        return not self.is_zone and (self.is_admin or self.all_sources or str(source_id) in self.source_ids)       # ответственному за зону источники KSC не открываются
 
     @classmethod
     def build(cls, sid: str, s: Session, u: User) -> "SessionUser":
@@ -94,7 +99,15 @@ async def current_session(request: Request, db: AsyncSession = Depends(get_db)) 
     got = await request.app.state.sessions.get(db, sid)
     if got is None or sid is None:
         return None
-    return SessionUser.build(sid, got[0], got[1])
+    su = SessionUser.build(sid, got[0], got[1])
+    if su.is_zone:                                         # доступ к зонам — по текущим назначениям: снятие доступа действует сразу
+        from dataclasses import replace  # noqa: PLC0415
+
+        from ..zones.portal import zones_for  # noqa: PLC0415
+
+        u = got[1]
+        su = replace(su, zone_ids=frozenset(await zones_for(db, username=u.username, email=u.email or "", upn=u.upn or "", groups=u.ldap_groups or [])))
+    return su
 
 
 async def require_user(request: Request, su: SessionUser | None = Depends(current_session)) -> SessionUser:
@@ -104,6 +117,13 @@ async def require_user(request: Request, su: SessionUser | None = Depends(curren
         raise HTTPException(status_code=403, detail={"code": "password_change_required", "message": "Сначала смените пароль."})
     if su.must_totp and request.url.path not in _ALLOWED_WHILE_CHANGING and not request.url.path.startswith("/api/v1/auth/totp/"):
         raise HTTPException(status_code=403, detail={"code": "totp_enrollment_required", "message": "Сначала настройте двухфакторную аутентификацию."})
+    if su.is_zone:
+        from ..zones.portal import path_allowed  # noqa: PLC0415
+
+        if not path_allowed(request.url.path):
+            raise HTTPException(status_code=403, detail={"code": "zone_portal", "message": "Раздел недоступен: ваша учётная запись имеет доступ только к своим зонам ответственности."})
+        if not su.zone_ids and not request.url.path.startswith("/api/v1/auth/"):
+            raise HTTPException(status_code=403, detail={"code": "zone_portal_empty", "message": "Доступ к зонам снят администратором."})
     if request.method not in _SAFE_METHODS:
         if not _origin_ok(request):
             raise HTTPException(status_code=403, detail="Недопустимый Origin")

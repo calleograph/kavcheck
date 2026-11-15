@@ -149,8 +149,14 @@ class AuthService:
             raise AuthError.from_ldap("directory_unavailable", exc) from None
         decision = self._ldap.decide(await self._ldap.rules(db), ident)
         await self._record_success(db, login)          # пароль верен — это не перебор, даже если доступа нет
-        if decision.role is None:
-            raise AuthError("no_role", reason="no_access_rule", detail=f"ни одна группа пользователя не разрешена правилами доступа (подключение «{ident.connection}»)")
+        role, all_sources, source_ids = decision.role, decision.all_sources, sorted(decision.source_ids)
+        if role is None:                                   # правил нет — может быть, это ответственный за зону: вход только в портал своих зон, без источников KSC
+            from ..zones.portal import ROLE as ZONE_ROLE, zones_for  # noqa: PLC0415
+
+            if await zones_for(db, username=ident.username, email=ident.email or "", upn=ident.upn or "", groups=ident.groups):
+                role, all_sources, source_ids = ZONE_ROLE, False, []
+        if role is None:
+            raise AuthError("no_role", reason="no_access_rule", detail=f"ни одна группа пользователя не разрешена правилами доступа и не назначена ответственной за зону (подключение «{ident.connection}»)")
         conn_id = uuid.UUID(ident.connection_id) if ident.connection_id else None
         user = (await db.execute(select(User).where(User.ldap_guid == ident.guid))).scalar_one_or_none()
         if user is None:   # запись без GUID (созданная до 0.2.0) — только из того же подключения: одинаковое имя в другом домене — другой человек
@@ -158,13 +164,14 @@ class AuthService:
                                                         User.ldap_connection_id.is_(None) | (User.ldap_connection_id == conn_id)))).scalar_one_or_none()
         username = await self._username(db, ident, user)
         if user is None:
-            user = User(username=username, display_name=ident.display_name, auth_source="ldap", ldap_guid=ident.guid, role=decision.role, is_active=True)
+            user = User(username=username, display_name=ident.display_name, auth_source="ldap", ldap_guid=ident.guid, role=role, is_active=True)
             db.add(user)
         if user.is_active is False:                         # отключён администратором в KAV Checker (независимо от каталога)
             await db.commit()
             raise AuthError("account_disabled", reason="disabled_in_kavchecker")
-        user.username, user.display_name, user.email, user.ldap_guid, user.role = username, ident.display_name, ident.email, ident.guid, decision.role
-        user.all_sources, user.source_ids = decision.all_sources, sorted(decision.source_ids)
+        user.username, user.display_name, user.email, user.ldap_guid, user.role = username, ident.display_name, ident.email, ident.guid, role
+        user.all_sources, user.source_ids = all_sources, source_ids
+        user.upn = (ident.upn or "")[:300] or None
         user.ldap_connection_id = conn_id
         user.ldap_groups = sorted(ident.groups)[:1000]
         await db.commit()

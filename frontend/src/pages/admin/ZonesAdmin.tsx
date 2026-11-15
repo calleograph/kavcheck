@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, ApiError, type Composition, type Conflict, type ContactRole, type CsvPlan, type ZoneBrief, type ZoneContact, type ZoneFull, type ZoneRuleKind, type ZoneRuleT } from "../../api";
+import { api, ApiError, type Composition, type Conflict, type ContactRole, type CsvPlan, type ZoneBrief, type ZoneContact, type ZoneFull, type ZoneRuleKind, type ZoneRuleT, type ZoneAccessT } from "../../api";
 import { ConfirmDialog, Modal } from "../../components/Dialogs";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
@@ -52,10 +52,10 @@ export default function ZonesAdmin() {
           <Empty icon="grid" title="Зон пока нет" action={<><button className="btn primary" onClick={() => setEdit("new")}><Icon name="plus" />Создать зону</button><button className="btn" onClick={() => setCsv(true)}><Icon name="upload" />Импорт из CSV</button></>}>
             Зона — это группа компьютеров, объединённая сетями или группами KSC и закреплённая за ответственными. Название, число и смысл зон выбираете вы: департаменты, филиалы, площадки, проекты. Для десятков зон удобнее загрузить CSV.</Empty>
         ) : (
-          <table className="table"><thead><tr><th>Зона</th><th className="num">Приоритет</th><th className="num">Признаков</th><th className="num">Получателей</th><th className="hide-sm">Изменена</th><th /></tr></thead>
+          <table className="table"><thead><tr><th>Зона</th><th className="num">Приоритет</th><th className="num">Признаков</th><th className="num">Получателей</th><th className="num hide-sm">Портал</th><th className="hide-sm">Изменена</th><th /></tr></thead>
             <tbody>{items.map((z) => (
               <tr key={z.id}><td><button type="button" className="link-btn strong-link" onClick={() => open(z.id)}>{z.name}</button>{!z.enabled && <span className="badge outline"> выключена</span>}<span className="sub">{z.purpose || z.description}</span></td>
-                <td className="num">{z.priority}</td><td className="num">{z.rules}</td><td className="num">{z.contacts || <span className="warn-text">0</span>}</td><td className="small hide-sm">{fmt(z.updated_at)}</td>
+                <td className="num">{z.priority}</td><td className="num">{z.rules}</td><td className="num">{z.contacts || <span className="warn-text">0</span>}</td><td className="num hide-sm">{z.access || <span className="muted">—</span>}</td><td className="small hide-sm">{fmt(z.updated_at)}</td>
                 <td className="nowrap"><Link className="btn mini ghost" to={`/zones/${z.id}`}>Открыть</Link> <button className="btn mini" onClick={() => open(z.id)}><Icon name="edit" size={14} />Изменить</button> <button className="btn mini ghost icon" aria-label={`Удалить ${z.name}`} onClick={() => setDel(z)}><Icon name="trash" size={15} /></button></td></tr>))}</tbody></table>)}</div>)}
       {edit && <ZoneEditor zone={edit === "new" ? null : edit} onClose={() => setEdit(null)} onSaved={(z) => { setEdit(null); load(); show(`Зона «${z.name}» сохранена`); }} />}
       {csv && <CsvImport onClose={() => setCsv(false)} onDone={(msg) => { setCsv(false); load(); show(msg); }} />}
@@ -68,7 +68,7 @@ export default function ZonesAdmin() {
 
 // ------------------------------------------------------------------------------------------------ редактор зоны
 function ZoneEditor({ zone, onClose, onSaved }: { zone: ZoneFull | null; onClose: () => void; onSaved: (z: ZoneFull) => void }) {
-  const [f, setF] = useState<Omit<ZoneFull, "id">>(() => zone ? { ...zone } : { name: "", description: "", purpose: "", priority: 100, activity_days: null, enabled: true, rules: [], contacts: [] });
+  const [f, setF] = useState<Omit<ZoneFull, "id">>(() => zone ? { ...zone } : { name: "", description: "", purpose: "", priority: 100, activity_days: null, enabled: true, rules: [], contacts: [], access: [] });
   const [bulk, setBulk] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const [comp, setComp] = useState<Composition | null>(null); const [cbusy, setCbusy] = useState(false);
   const [testing, setTesting] = useState<string | null>(null); const [note, setNote] = useState("");
@@ -127,11 +127,37 @@ function ZoneEditor({ zone, onClose, onSaved }: { zone: ZoneFull | null; onClose
               <td><label className="check"><input type="checkbox" className="switch" checked={c.enabled} onChange={(e) => setC(i, { enabled: e.target.checked })} aria-label="Отправлять этому получателю" /></label></td>
               <td className="nowrap"><button className="btn mini" onClick={() => test(c)} disabled={!c.email.includes("@") || testing === c.email}>{testing === c.email ? <span className="spin" /> : "Тест"}</button> <button className="btn mini ghost icon" aria-label="Убрать получателя" onClick={() => set("contacts", f.contacts.filter((_, j) => j !== i))}><Icon name="close" size={14} /></button></td></tr>))}</tbody></table></div>}
         <div className="row"><button type="button" className="btn" onClick={() => set("contacts", [...f.contacts, { name: "", position: "", email: "", role: "responsible", enabled: true }])}><Icon name="plus" />Добавить получателя</button></div>
+
+        <PortalAccess value={f.access ?? []} onChange={(v) => set("access", v)} />
         {note && <div className="alert info" role="status"><Icon name="info" /><div className="alert-body">{note}</div></div>}
         {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       </div>
     </Modal>
   );
+}
+
+/** Кто входит в портал ответственного этой зоны доменной учётной записью: видит только панель своей зоны, её компьютеры и отчёты по ним. */
+function PortalAccess({ value, onChange }: { value: ZoneAccessT[]; onChange: (v: ZoneAccessT[]) => void }) {
+  const [login, setLogin] = useState(""); const [q, setQ] = useState(""); const [err, setErr] = useState("");
+  const [found, setFound] = useState<{ dn: string; name: string; connection: string }[] | null>(null);
+  const add = (a: ZoneAccessT) => { if (!value.some((x) => x.kind === a.kind && x.value.toLowerCase() === a.value.toLowerCase())) onChange([...value, a]); };
+  const find = async () => { setFound(null); setErr(""); try { const r = await api.admin.ldap.groups(q); setFound(r.items); if (r.errors.length) setErr(r.errors.join("; ")); } catch (x) { setErr((x as ApiError).message); } };
+  return <>
+    <h3>Портал ответственного</h3>
+    <p className="muted small">Указанные пользователи и участники групп каталога входят в KAV Checker своим доменным логином и паролем и видят только эту зону: панель, компьютеры, уязвимости и отчёты по ним (скачать или отправить себе на почту). Другие разделы, источники KSC и чужие зоны им недоступны. Снять назначение — значит закрыть доступ сразу, со следующего запроса.</p>
+    {value.length > 0 && <ul className="rows">{value.map((a, i) => <li key={`${a.kind}|${a.value}`} className="row">
+      <span className="badge outline">{a.kind === "group" ? "группа" : "пользователь"}</span><span className="r-main mono">{a.label && a.kind === "group" ? <>{a.label}<span className="sub">{a.value}</span></> : a.value}</span>
+      <button type="button" className="btn mini ghost icon" aria-label={`Убрать ${a.label || a.value}`} onClick={() => onChange(value.filter((_, j) => j !== i))}><Icon name="close" size={14} /></button></li>)}</ul>}
+    <div className="cols">
+      <label>Пользователь (логин, DOMAIN\логин или UPN)<span className="row group-find"><input className="mono" value={login} onChange={(e) => setLogin(e.target.value)} placeholder="ivanov@example.local" onKeyDown={(e) => { if (e.key === "Enter" && login.trim()) { e.preventDefault(); add({ kind: "user", value: login.trim(), label: "" }); setLogin(""); } }} />
+        <button type="button" className="btn" disabled={login.trim().length < 2} onClick={() => { add({ kind: "user", value: login.trim(), label: "" }); setLogin(""); }}><Icon name="plus" />Добавить</button></span></label>
+      <label>Группа каталога<span className="row group-find"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Найти по названию" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void find(); } }} />
+        <button type="button" className="btn" onClick={find} disabled={q.trim().length < 2}><Icon name="search" size={15} />Найти</button></span></label>
+    </div>
+    {found && <ul className="rows found-groups">{found.map((g) => <li key={g.dn}><button type="button" className="link-btn" onClick={() => { add({ kind: "group", value: g.dn, label: g.name }); setFound(null); setQ(""); }}>{g.name}</button><span className="sub mono">{g.dn}</span><span className="muted small">{g.connection}</span></li>)}
+      {!found.length && <li className="muted small">Ничего не найдено</li>}</ul>}
+    {err && <div className="alert warn" role="status"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
+  </>;
 }
 
 function CompositionView({ c }: { c: Composition }) {
