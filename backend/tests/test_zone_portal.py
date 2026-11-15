@@ -46,6 +46,8 @@ async def test_owner_sees_only_own_zone_and_nothing_else(client, app):
             await db.commit()
         assert (await dash(client, z_srv, activity="all"))["notes"] and (await dash(oc, z_srv, activity="all"))["notes"] == []
         assert (await oc.get(f"/api/v1/zones/{z_arm}")).status_code == 404                                                 # чужая зона
+        assert (await oc.get(f"/api/v1/zones/{z_arm}/refresh")).status_code == 404                                         # и ход её пересчёта
+        assert own["sources"] == []
         assert (await oc.get("/api/v1/zones/none")).status_code == 404                                                     # «без ответственного» — тоже чужое
         # компьютер своей зоны — да; компьютер чужой зоны (даже по адресу своей) — нет
         host = own["items"][0]
@@ -135,6 +137,9 @@ async def test_admin_assigns_portal_access_in_the_zone_editor(client, app):
     assert len((await client.put(f"/api/v1/admin/zones/{z_srv}", json=body)).json()["access"]) == 2
     from app.zones.portal import zones_for
     async with app.state.session_maker() as db:
-        assert await zones_for(db, username="petrov", email="", groups=[]) == [z_srv]                                     # «DOMAIN\\логин» совпадает с логином
+        assert await zones_for(db, username="petrov", email="", groups=[], netbios="EXAMPLE") == [z_srv]                  # «DOMAIN\\логин»: логин и домен подключения
+        assert await zones_for(db, username="petrov", groups=[], netbios="PARTNER") == []                                # однофамилец из другого каталога — нет
+        assert await zones_for(db, username="petrov", groups=[]) == []                                                   # домен неизвестен — нет
+        assert await zones_for(db, username="p.ivanova", email="petrov@example.local", groups=[], netbios="EXAMPLE") == []  # совпадение части адреса до «@» — не основание
         assert await zones_for(db, username="someone", groups=["CN=Srv-Owners,OU=Groups,DC=example,DC=local"]) == [z_srv]
         assert await zones_for(db, username="someone", groups=["cn=other,dc=example,dc=local"]) == []

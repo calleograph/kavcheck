@@ -277,6 +277,7 @@ async def test_overview_hosts_panel_matches_counts_and_paginates(client, app, mo
     assert srv["total"] == 1 and srv["items"][0]["host_id"] == 2
     found = (await client.get("/api/v1/overview/hosts", params={"metric": "total", "q": "pc10"})).json()
     assert found["total"] == 1
+    assert (await client.get("/api/v1/overview/hosts", params={"metric": "total", "q": "pc_10"})).json()["total"] == 0                 # «_» — буква, а не «любой символ» и не выбрасывается
     assert (await client.get("/api/v1/overview/hosts", params={"metric": "nope"})).status_code == 422
 
 

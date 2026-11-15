@@ -267,6 +267,9 @@ class Mailer:
                 await self.journal.emit("report", "mail_retry", level="warn", message=f"{row.zone_name}: {res.error[:200]}; повтор {row.next_attempt_at:%H:%M} UTC", data={"outbox": str(oid), "attempt": row.attempts})
                 return
             row.status, row.next_attempt_at = "failed", None
+            if row.body_path:                            # письмо не ушло: файл с вложениями не храним (повтор вручную соберёт письмо заново) — при сломанном SMTP диск не растёт
+                Path(row.body_path).unlink(missing_ok=True)
+                row.body_path = None
             await db.commit()
             await self.journal.emit("report", "mail_failed", level="error", message=f"{row.zone_name}: отчёт не отправлен — {res.error[:300]}", data={"outbox": str(oid), "attempts": row.attempts})
             await self._alert(smtp, row)

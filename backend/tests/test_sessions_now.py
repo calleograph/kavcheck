@@ -56,3 +56,11 @@ async def test_service_sessions_ahead_of_users_do_not_hide_them(monkeypatch):
     assert rows == [{"kind": "user"}] * 2 and more
     rows, more = await SN.fetch(Client(), top=5)
     assert len(rows) == 3 and not more
+
+
+def test_address_typed_as_user_still_filters():
+    from app.devices import sessions as SN
+
+    params: dict = {}
+    sql = SN.where("192.0.2.10", "", online_only=False, params=params)
+    assert "wstrSamAccountName LIKE" in sql and params

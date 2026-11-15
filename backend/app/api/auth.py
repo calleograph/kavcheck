@@ -11,7 +11,6 @@ from ..auth.deps import SessionUser, client_ip, current_session, get_db, require
 from ..auth.service import AuthError
 from ..config import origin_allowed
 from ..models import KscSource, User
-from ..security.passwords import verify_password
 from ..services import local_admin as la
 from ..services.audit import audit_now, write_audit
 from ..services.sources import source_out, visible_sources
@@ -190,7 +189,11 @@ async def change_password(request: Request, body: dict = Body(...), su: SessionU
         raise HTTPException(status_code=403, detail="Пароль доменной учётной записи меняется в каталоге.")
     user = await db.get(User, su.user_id)
     cur, new = str(body.get("current_password") or ""), str(body.get("new_password") or "")
-    if user is None or not user.password_hash or not verify_password(user.password_hash, cur):
+    try:                                                   # с тем же ограничением попыток, что и вход: украденная сессия не перебирает текущий пароль
+        ok = user is not None and await request.app.state.auth.verify_current(db, user, cur)
+    except AuthError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from None
+    if not ok:
         raise HTTPException(status_code=403, detail="Текущий пароль указан неверно.")
     try:
         la.validate_new_password(new, user.username, old=cur)

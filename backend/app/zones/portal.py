@@ -5,6 +5,8 @@
 и группам, сохранённым при входе: снятие доступа администратором действует сразу, без повторного входа."""
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,30 +19,36 @@ DENIED = ("/zones/options", "/zones/of-host")                           # слу
 
 
 def idents(username: str, email: str = "", upn: str = "") -> set[str]:
-    """Как администратор мог записать учётную запись: «логин», «DOMAIN\\логин», «логин@домен» (UPN или почта) — всё в нижнем регистре."""
-    out = set()
-    for v in (username, email, upn):
-        v = (v or "").strip().lower()
-        if v:
-            out |= {v, v.split("\\")[-1]}
-            if "@" in v:
-                out.add(v.split("@")[0])
-    return {x for x in out if x}
+    """Полные записи учётной записи в нижнем регистре: логин, UPN, почта. Часть адреса до «@» не используется — у разных людей она совпадает."""
+    return {v for v in ((x or "").strip().lower() for x in (username, email, upn)) if v}
 
 
-def _short(v: str) -> str:
-    return v.split("\\")[-1].split("@")[0]
-
-
-async def zones_for(db: AsyncSession, *, username: str, email: str = "", upn: str = "", groups=()) -> list[str]:
-    """Включённые зоны, к которым допущен пользователь (по учётной записи или группе AD, включая вложенные — они уже в списке групп при входе).
-    Учётная запись в доступе сравнивается полностью («DOMAIN\\логин», UPN, почта) либо по логину без домена — так, как её записал администратор."""
+async def zones_for(db: AsyncSession, *, username: str, email: str = "", upn: str = "", groups=(), netbios: str = "") -> list[str]:
+    """Включённые зоны, к которым допущен пользователь: группа каталога (включая вложенные — они уже в списке групп при входе) или учётная запись.
+    Учётная запись сравнивается полностью (логин, UPN, почта); «DOMAIN\\логин» — логин и NetBIOS-имя подключения, через которое вошёл пользователь
+    (`netbios`; неизвестно — такая запись не подходит, чтобы однофамилец из другого каталога не получил чужую зону)."""
     names = idents(username, email, upn)
-    shorts = {_short(n) for n in names}
+    login, nb = (username or "").strip().lower().split("\\")[-1], (netbios or "").strip().lower()
     grp = {str(g).strip().lower() for g in groups or [] if g}
+
+    def user_ok(value: str) -> bool:
+        if "\\" in value:
+            dom, _sep, who = value.partition("\\")
+            return bool(nb) and dom == nb and who == login
+        return value in names
+
     rows = (await db.execute(select(ZoneAccess.zone_id, ZoneAccess.kind, ZoneAccess.value).join(Zone, Zone.id == ZoneAccess.zone_id).where(Zone.enabled.is_(True)))).all()
-    out = {str(z) for z, kind, value in rows if (kind == "group" and value in grp) or (kind == "user" and (value in names or ("\\" in value and _short(value) in shorts)))}
-    return sorted(out)
+    return sorted({str(z) for z, kind, value in rows if (kind == "group" and value in grp) or (kind == "user" and user_ok(value))})
+
+
+async def netbios_of(db: AsyncSession, connection_id) -> str:
+    """NetBIOS-имя подключения каталога, через которое вошёл пользователь (для записей «DOMAIN\\логин»)."""
+    from ..models import LdapConnection  # noqa: PLC0415
+
+    if not connection_id:
+        return ""
+    c = await db.get(LdapConnection, connection_id if isinstance(connection_id, uuid.UUID) else uuid.UUID(str(connection_id)))
+    return (c.netbios or "") if c is not None else ""
 
 
 def path_allowed(path: str) -> bool:

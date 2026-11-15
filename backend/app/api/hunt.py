@@ -18,7 +18,7 @@ from ..hunt import service as HS
 from ..models import CatalogProduct, HuntHit, KscSource, PtHost, PtJob, VdbVuln, utcnow
 from ..pentest import read as R
 from ..pentest import service as S
-from ..search import any_of
+from ..search import any_of, column_like
 from ..services.audit import write_audit
 
 router = APIRouter(prefix="/hunt", tags=["hunt"])
@@ -103,8 +103,7 @@ async def suggest(q: str = Query("", max_length=100), su: SessionUser = Depends(
         return {"cves": [], "products": []}
     cond = any_of(q, VdbVuln.vuln_key, VdbVuln.title, VdbVuln.description, VdbVuln.products_text)
     cves = (await db.execute(select(VdbVuln.vuln_key, VdbVuln.title, VdbVuln.sev_rank, VdbVuln.exploited).where(cond).order_by(VdbVuln.exploited.desc(), VdbVuln.sev_rank.desc(), VdbVuln.published.desc()).limit(10))).all() if cond is not None else []
-    like = f"%{q.lower().replace('%', '').replace('_', '')}%"
-    cat = (await db.execute(select(CatalogProduct.source_id, CatalogProduct.key, CatalogProduct.name, func.max(CatalogProduct.hosts_active)).where(func.lower(CatalogProduct.search).like(like)).group_by(CatalogProduct.source_id, CatalogProduct.key, CatalogProduct.name)
+    cat = (await db.execute(select(CatalogProduct.source_id, CatalogProduct.key, CatalogProduct.name, func.max(CatalogProduct.hosts_active)).where(column_like(CatalogProduct.search, q)).group_by(CatalogProduct.source_id, CatalogProduct.key, CatalogProduct.name)
                             .order_by(func.max(CatalogProduct.hosts_active).desc()).limit(40))).all()
     prods, seen = [], set()
     for k, v in KB.KB.items():

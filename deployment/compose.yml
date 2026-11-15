@@ -144,6 +144,7 @@ services:
       postgres: { condition: service_healthy }
     environment:
       <<: *app-env
+      APP_MASTER_KEY: ""                # сканеру ключ не нужен (секретов в настройках Pentest нет), а он разбирает ответы чужих хостов
       MALLOC_ARENA_MAX: "2"
       PENTEST_DATA: /data/pentest
       PENTEST_IMPORT: /import

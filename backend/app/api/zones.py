@@ -546,7 +546,7 @@ async def dashboard(zid: str, request: Request, state: str = Query("", pattern="
         fr = {**fr, "errors": [{"source": "KSC", "error": "часть данных не обновилась, причину видит администратор"}] if fr["errors"] else []}
     top = await db.get(ZcDashboard, (zid, "top")) if (all_ok or su.is_zone) and not source_id else None      # приоритеты считаются по всем источникам: при ограниченном доступе не показываются
     return {"top": {"items": top.payload.get("items", []), "built_at": top.built_at} if top is not None else None, "zone": info, "stats": stat, "activity_days": days, "total": total, "offset": offset, "limit": limit, "items": items,
-            "sources": [{"id": str(s.id), "name": s.name} for s in srcs], "notes": notes, "fetched_at": fr["data_at"], "conflicts": conflicts, "ext_included": ext, "freshness": fr,
+            "sources": [] if su.is_zone else [{"id": str(s.id), "name": s.name} for s in srcs], "notes": notes, "fetched_at": fr["data_at"], "conflicts": conflicts, "ext_included": ext, "freshness": fr,
             "ext_cap": (await request.app.state.settings_svc.get(db, "zonecache")).ext_per_host}
 
 
@@ -570,12 +570,17 @@ async def refresh(zid: str, su: SessionUser = Depends(require_analyst), db: Asyn
 @router.get("/{zid}/refresh")
 async def refresh_state(zid: str, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     """Ход пересчёта зоны: активное задание (своё или общий расчёт) или последнее завершённое."""
+    if su.is_zone and zid not in su.zone_ids:
+        raise HTTPException(status_code=404, detail="Зона не найдена")
     job = await _active_job(db, zid)
     last = None
     if job is None:
         last = (await db.execute(select(ZcJob).where(ZcJob.kind == "zone", ZcJob.zone_id == zid).order_by(ZcJob.requested_at.desc()).limit(1))).scalars().first()
     dash = await ZR.read_dashboard(db, zid)
-    return {"job": ZJ.job_out(job) if job else None, "last": ZJ.job_out(last) if last else None, "data_at": dash.data_at if dash else None, "calculated_at": dash.built_at if dash else None}
+    out = {"job": ZJ.job_out(job) if job else None, "last": ZJ.job_out(last) if last else None, "data_at": dash.data_at if dash else None, "calculated_at": dash.built_at if dash else None}
+    if su.is_zone:                                   # ответственному — без текстов ошибок KSC и имён запустивших
+        out = {**out, **{k: ({**v, "error": None, "requested_by": None} if v else v) for k, v in (("job", out["job"]), ("last", out["last"]))}}
+    return out
 
 
 @router.get("/{zid}/hosts/{source_id}/{host_id}")

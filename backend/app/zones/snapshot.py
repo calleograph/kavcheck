@@ -9,6 +9,7 @@
 Расчёт безопасно повторяется с начала: до подмены поколения ничего видимого не меняется."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import defaultdict
@@ -421,7 +422,7 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
                 zs.stamp, zs.probe_stamp, zs.probe_at, zs.vdb_rev, zs.vdb_rev_now = stamp_now, stamp_now, utcnow(), vrev, vnow
             await db.commit()
         if not partial and cur:
-            await purge_gen(bc.sm, sid, cur)
+            purge_later(bc.sm, sid, cur)
         return {"hosts": n_hosts, "detections": total_det, "ext": ext_total, "agg_only": agg_only, "seconds": round(time.monotonic() - t0, 1), "stamp": stamp_now, "started": started,
                 "zones": sorted({z for _n, zs_ in hmeta.values() for z in (zs_ or [UNASSIGNED])})}
     except BaseException:
@@ -503,6 +504,24 @@ async def _swap_partial(db: AsyncSession, sid, cur: int, stage: int, hosts: set[
             await db.execute(delete(model).where(model.source_id == sid, model.gen == cur, model.host_id.in_(part)))
     for model in (ZcHost, ZcHostZone, ZcDetection):
         await db.execute(update(model).where(model.source_id == sid, model.gen == stage).values(gen=cur).execution_options(synchronize_session=False))
+
+
+PREV_KEEP_S = 1800                 # прежнее поколение живёт после подмены: отчёты и рассылки, начатые на нём, дочитывают свои порции (иначе — молча неполный отчёт)
+_LATER: set = set()
+
+
+def purge_later(sm: async_sessionmaker, sid, gen: int, delay: float | None = None) -> None:
+    """Удалить прежнее поколение через `PREV_KEEP_S`, если оно так и не стало снова текущим. Перезапуск процесса — хвост уберёт `recover_on_start`."""
+    async def run() -> None:
+        await asyncio.sleep(PREV_KEEP_S if delay is None else delay)
+        async with sm() as db:
+            zs = await db.get(ZcSource, sid)
+        if zs is None or zs.gen != gen:
+            await purge_gen(sm, sid, gen)
+
+    t = asyncio.get_running_loop().create_task(run())
+    _LATER.add(t)
+    t.add_done_callback(_LATER.discard)
 
 
 async def purge_gen(sm: async_sessionmaker, sid, gen: int) -> None:
@@ -626,8 +645,8 @@ async def retriage(sm: async_sessionmaker, sid, keys: set[str] | None = None) ->
     while True:
         async with sm() as db:
             q = select(ZcDetection).where(ZcDetection.source_id == sid, ZcDetection.gen == gen, ZcDetection.id > last)
-            if klist:
-                q = q.where(or_(*[ZcDetection.keys.like(f"%{k}%") for k in klist[:50]]))
+            if klist:                                                  # все ключи решения (массовое — до 200), а не первые 50
+                q = q.where(or_(*[ZcDetection.keys.like(f"%{k}%") for k in klist]))
             rows = (await db.execute(q.order_by(ZcDetection.id).limit(2000))).scalars().all()
             if not rows:
                 break

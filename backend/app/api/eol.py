@@ -143,7 +143,8 @@ async def products(q: str = Query("", max_length=200), category: str = Query("",
     if category:
         cond.append(P.category == category)
     if vendor:
-        cond.append(P.search.like(f"%:{vendor.lower().replace('%', '').replace('_', '')}:%"))                       # производитель — из идентификаторов CPE «cpe:2.3:a:<производитель>:…»
+        v = vendor.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")             # «palo_alto_networks» — как есть, без подстановочных символов
+        cond.append(P.search.like(f"%:{v}:%", escape="\\"))                       # производитель — из идентификаторов CPE «cpe:2.3:a:<производитель>:…»
     inst = (select(EolFinding.eol_product.label("p"), func.count().label("cnt"), func.coalesce(func.sum(EolFinding.hosts_active), 0).label("hosts")).where(EolFinding.source_id.in_(sids), EolFinding.eol_product != "",
             EolFinding.status.in_(R.PROBLEM_STATUSES)).group_by(EolFinding.eol_product).subquery())
     sup = (select(EolRelease.product.label("p"), func.count().label("n"), func.sum(case((func.coalesce(EolRelease.eol_from, date(9999, 1, 1)) > today, 1), else_=0)).label("supported")).group_by(EolRelease.product).subquery())

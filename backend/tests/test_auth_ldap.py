@@ -278,3 +278,26 @@ async def test_sessions_expiry_proxy_and_password_change(client, app):
     assert (await client.get("/api/v1/auth/me")).status_code == 401
     assert (await client.post("/api/v1/auth/login", json={"login": "admin", "password": "Admin-Passw0rd-123"}, headers={"Origin": "http://testserver"})).status_code == 401
     assert (await client.post("/api/v1/auth/login", json={"login": "admin", "password": "Strong-Secret-2026-x"}, headers={"Origin": "http://testserver"})).status_code == 200
+
+
+async def test_totp_guessing_is_locked_even_if_password_is_reentered(client, app):
+    """Верный пароль не сбрасывает счётчик неверных кодов: цикл «пароль → 5 кодов → пароль…» упирается в блокировку."""
+    await login(client, "admin", "Admin-Passw0rd-123")
+    secret = (await client.post("/api/v1/auth/totp/setup", json={"password": "Admin-Passw0rd-123"})).json()["secret"].replace(" ", "")
+    assert (await client.post("/api/v1/auth/totp/enable", json={"code": totp.code_at(secret)})).status_code == 200
+    await client.post("/api/v1/auth/logout")
+    client.headers.pop("X-CSRF-Token", None)
+    h = {"Origin": "http://testserver"}
+    codes = []
+    for _ in range(4):                                      # 4 захода по 5 неверных кодов = 20 попыток при пороге 10
+        ch = (await client.post("/api/v1/auth/login", json={"login": "admin", "password": "Admin-Passw0rd-123"}, headers=h)).json().get("challenge")
+        for _ in range(5):
+            if ch:
+                codes.append((await client.post("/api/v1/auth/login/totp", json={"challenge": ch, "code": "000001"}, headers=h)).status_code)
+    assert 429 in codes, codes
+
+
+async def test_fake_domain_prefix_does_not_bypass_login_lockout(client):
+    for i in range(10):
+        await client.post("/api/v1/auth/login", json={"login": f"d{i}\\admin", "password": "wrong-password"})
+    assert (await client.post("/api/v1/auth/login", json={"login": "admin", "password": "wrong-password"})).status_code == 429

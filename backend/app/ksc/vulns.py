@@ -48,8 +48,11 @@ async def products_aggregate(client: SourceClient, *, active_days: int | None, e
     return await client.run(q.VULN_PRODUCTS_AGG.format(where=where), params, max_rows=200_000)
 
 
+HOST_VULNS_CAP = 20_000      # уязвимостей KSC на компьютер; выдача ровно такой длины — «показаны не все» (вызывающий пишет примечание)
+
+
 async def on_host(client: SourceClient, host_id: int) -> list[dict]:
-    rows = await client.run(q.VULNS_ON_HOST, {"host": int(host_id)}, max_rows=5000)
+    rows = await client.run(q.VULNS_ON_HOST, {"host": int(host_id), "top": HOST_VULNS_CAP}, max_rows=HOST_VULNS_CAP)
     ids = sorted({int(r["descr_id"]) for r in rows})
     names: dict[int, dict[str, list[str]]] = {}
     for k in range(0, len(ids), 500):

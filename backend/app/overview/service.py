@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..licensing import pools as LP
 from ..ksc.hosts import ip_str
 from ..models import EolFinding, KscSource, LicenseOverride, LicenseRecord, LicenseState, ZcHost, ZcSource, utcnow
+from ..search import local_like
 from ..services.sources import find_overlaps
 
 DB_METRICS = {"crit_vuln": "Устройства с критическими уязвимостями", "eol_os": "Устройства с ОС, поддержка которой закончилась", "eol_apps": "Устройства с программами без поддержки"}
@@ -73,8 +74,9 @@ async def _db_hosts(db: AsyncSession, srcs: list[KscSource], metric: str, days: 
         base = select(*cols).select_from(H.__table__.join(sub, and_(H.source_id == sub.c.source_id, H.host_id == sub.c.host_id)))
     cond_all = cond
     if q:
-        needle = f"%{q.lower().replace('%', '').replace('_', '')}%"
-        cond_all = cond + [or_(func.lower(H.name).like(needle), H.search.like(needle))]
+        needle = local_like(q)                       # «web_01» ищется как есть (а не «web01»), «*» — маска; общие правила search.py
+        if needle is not None:
+            cond_all = cond + [or_(func.lower(H.name).like(needle, escape="\\"), H.search.like(needle, escape="\\"))]
     cnt = select(func.count()).select_from(base.where(*cond_all).order_by(None).subquery())
     total = int((await db.execute(cnt)).scalar_one())
     order = {"name": func.lower(H.name), "ip": H.ip_num, "os": func.lower(H.os), "last_connected": H.last_connected, "group": func.lower(H.name)}[sort]

@@ -212,16 +212,23 @@ async def test_zone_top_products_match_detections_and_respect_decisions(client, 
     top = (await dash(client, z_arm))["top"]
     assert top is not None and top["items"], "приоритеты рассчитываются вместе с зонами"
     async with app.state.session_maker() as db:
-        rows = (await db.execute(select(ZcDetection.prod, ZcDetection.host_id, ZcDetection.vuln_key).join(ZcSource, (ZcSource.source_id == ZcDetection.source_id) & (ZcSource.gen == ZcDetection.gen))
+        rows = (await db.execute(select(ZcDetection.prod, ZcDetection.host_id, ZcDetection.keys).join(ZcSource, (ZcSource.source_id == ZcDetection.source_id) & (ZcSource.gen == ZcDetection.gen))
                                  .join(ZcHostZone, (ZcHostZone.source_id == ZcDetection.source_id) & (ZcHostZone.gen == ZcDetection.gen) & (ZcHostZone.host_id == ZcDetection.host_id))
                                  .join(ZcHost, (ZcHost.source_id == ZcDetection.source_id) & (ZcHost.gen == ZcDetection.gen) & (ZcHost.host_id == ZcDetection.host_id))
                                  .where(ZcHostZone.zone_id == z_arm, ZcHost.days_since.is_not(None), ZcHost.days_since <= 30, ZcDetection.severity == 3, ZcDetection.bucket == "current", ZcDetection.origin == "ksc"))).all()
     want = {}
-    for p, h, v in rows:
+    for p, h, keys in rows:
         want.setdefault(p, (set(), set()))[0].add(h)
-        want[p][1].add(v)
+        want[p][1].update(k for k in keys.split() if k.startswith("CVE-"))                                        # уязвимость считается по CVE (KLA → её CVE)
     got = {r["product"]: (r["hosts"], r["critical"]) for r in top["items"]}
     assert got == {p: (len(h), len(v)) for p, (h, v) in want.items() if p}                                     # синтетика: активные компьютеры зоны, только KSC
+    from app.models import VdbVuln
+    one = sorted(next(iter(want.values()))[1])[0]
+    async with app.state.session_maker() as db:                                                                  # KEV — по каталогу и для обнаружений KSC
+        db.add(VdbVuln(vuln_key=one, exploited=True))
+        await db.commit()
+    await ZR.refresh_top(app.state.session_maker, [z_arm], default_days=30)
+    assert (await dash(client, z_arm))["top"]["items"][0]["kev"] == 1
     first = top["items"][0]["product"]
     async with app.state.session_maker() as db:
         await db.execute(update(ZcDetection).where(ZcDetection.prod == first).values(bucket="excluded"))

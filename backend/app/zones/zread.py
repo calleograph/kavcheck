@@ -4,6 +4,7 @@
 карточка — по одному компьютеру, отчёт — порциями по компьютерам зоны. Итоги совпадают с расчётом по свежим данным (`dataset.stats`): это проверяет тест на одном наборе."""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 from functools import reduce
@@ -20,6 +21,7 @@ from . import dataset as D
 from .snapshot import UNASSIGNED, unpack_record, unpack_row
 
 DEFAULT_BD, DEFAULT_SD = 3, 30
+log = logging.getLogger("app.zones.read")
 SEV_NAME = {3: "critical", 2: "high", 1: "warning", 0: ""}
 PROBLEM_KEYS = list(P.PROBLEMS)
 
@@ -400,19 +402,27 @@ TOP_N = 5
 async def top_products(db: AsyncSession, zone_id: str, *, default_days: int, zone_days: dict[str, int], limit: int = TOP_N) -> list[dict]:
     """«Что исправить в первую очередь»: программы с текущими критическими уязвимостями (подтверждёнными KSC или источником внешних баз) на активных компьютерах зоны —
     сколько компьютеров затронуто, сколько различных критических уязвимостей и сколько из них в каталоге CISA KEV. Решения специалистов учтены (только `bucket = current`).
+    Уязвимость считается по CVE: найденная и KSC (KLA с этими CVE), и внешними базами — один раз; KEV — по каталогу (`VdbVuln.exploited`), для обоих источников.
     Тяжело на крупных зонах (чтение обнаружений по компьютерам) — считается в worker после расчёта зон (`refresh_top`), страница читает готовое."""
+    from ..models import VdbVuln  # noqa: PLC0415
+
     H, Dt = ZcHost, ZcDetection
     x = X(zone_col=ZcHostZone.zone_id, zone_days=zone_days, default_days=default_days)
     hs = select(H.source_id, H.gen, H.host_id).select_from(_joined()).where(_scope(zone_id, None), x.active, or_(H.k_crit > 0, H.e_crit > 0)).subquery()
-    det = select(Dt.prod, Dt.source_id, Dt.host_id, Dt.vuln_key, Dt.flags).join(hs, and_(Dt.source_id == hs.c.source_id, Dt.gen == hs.c.gen, Dt.host_id == hs.c.host_id)) \
-        .where(Dt.bucket == "current", Dt.severity == 3, Dt.prod != "", or_(Dt.origin == "ksc", Dt.flags.op("&")(2) == 2)).subquery()
-    per_host = select(det.c.prod, det.c.source_id, det.c.host_id).group_by(det.c.prod, det.c.source_id, det.c.host_id).subquery()
-    hosts = dict((await db.execute(select(per_host.c.prod, func.count()).group_by(per_host.c.prod))).all())
-    if not hosts:
+    q = select(Dt.prod, Dt.source_id, Dt.host_id, Dt.origin, Dt.vuln_key, Dt.keys).join(hs, and_(Dt.source_id == hs.c.source_id, Dt.gen == hs.c.gen, Dt.host_id == hs.c.host_id)) \
+        .where(Dt.bucket == "current", Dt.severity == 3, Dt.prod != "", or_(Dt.origin == "ksc", Dt.flags.op("&")(2) == 2))
+    agg: dict[str, tuple[str, set, set]] = {}
+    for prod, sid, hid, origin, vkey, keys in (await db.execute(q)).all():
+        name = prod.strip()
+        ids = ({k for k in (keys or "").split() if k.startswith("CVE-")} or {vkey.upper()}) if origin == "ksc" else {vkey.upper()}
+        _n, hosts, vulns = agg.setdefault(name.lower(), (name, set(), set()))
+        hosts.add((sid, hid))
+        vulns |= ids
+    if not agg:
         return []
-    kev = func.count(func.distinct(case((det.c.flags.op("&")(1) == 1, det.c.vuln_key))))
-    vul = {p: (int(c), int(k)) for p, c, k in (await db.execute(select(det.c.prod, func.count(func.distinct(det.c.vuln_key)), kev).group_by(det.c.prod))).all()}
-    rows = [{"product": p, "hosts": int(n), "critical": vul.get(p, (0, 0))[0], "kev": vul.get(p, (0, 0))[1]} for p, n in hosts.items()]
+    allk = set().union(*(v for _n, _h, v in agg.values()))
+    kev = {k for (k,) in (await db.execute(select(VdbVuln.vuln_key).where(VdbVuln.exploited.is_(True)))).all()} & allk
+    rows = [{"product": n, "hosts": len(h), "critical": len(v), "kev": len(v & kev)} for n, h, v in agg.values()]
     rows.sort(key=lambda r: (-r["hosts"], -r["kev"], -r["critical"], r["product"].lower()))
     return rows[:limit]
 
@@ -427,15 +437,18 @@ async def refresh_top(sm: async_sessionmaker, zone_ids: list[str] | None, *, def
     for zid in ids:
         if breathe is not None:
             await breathe("что исправить в первую очередь")
-        async with sm() as db:
-            items = await top_products(db, zid, default_days=default_days, zone_days=zd)
-            cur = await db.get(ZcDashboard, (zid, "top"))
-            if cur is None:
-                db.add(ZcDashboard(zone_id=zid, kind="top", payload={"items": items}, built_at=utcnow(), status="ok"))
-            else:
-                cur.payload, cur.built_at, cur.status, cur.error = {"items": items}, utcnow(), "ok", None
-            await db.commit()
-            n += 1
+        try:
+            async with sm() as db:
+                items = await top_products(db, zid, default_days=default_days, zone_days=zd)
+                cur = await db.get(ZcDashboard, (zid, "top"))
+                if cur is None:
+                    db.add(ZcDashboard(zone_id=zid, kind="top", payload={"items": items}, built_at=utcnow(), status="ok"))
+                else:
+                    cur.payload, cur.built_at, cur.status, cur.error = {"items": items}, utcnow(), "ok", None
+                await db.commit()
+                n += 1
+        except Exception:  # noqa: BLE001 — сбой одной зоны оставляет её прежний список и не мешает остальным
+            log.exception("Сбой расчёта «Что исправить в первую очередь»", extra={"zone": zid})
     return n
 
 

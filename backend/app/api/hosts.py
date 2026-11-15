@@ -106,6 +106,8 @@ async def _host_vuln_rows(request: Request, db: AsyncSession, src: KscSource, ho
         else:
             try:
                 ksc_items = await V.on_host(client, host_id)
+                if len(ksc_items) >= V.HOST_VULNS_CAP:
+                    notes.append(f"Уязвимостей KSC на компьютере больше {V.HOST_VULNS_CAP}: показаны первые {V.HOST_VULNS_CAP}.")
             except KscError as exc:
                 notes.append(f"Данные об уязвимостях KSC получить не удалось ({exc.message}): показаны только результаты проверки по внешним базам.")
         ext_items, info = [], None

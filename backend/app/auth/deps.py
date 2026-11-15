@@ -103,10 +103,10 @@ async def current_session(request: Request, db: AsyncSession = Depends(get_db)) 
     if su.is_zone:                                         # доступ к зонам — по текущим назначениям: снятие доступа действует сразу
         from dataclasses import replace  # noqa: PLC0415
 
-        from ..zones.portal import zones_for  # noqa: PLC0415
+        from ..zones.portal import netbios_of, zones_for  # noqa: PLC0415
 
         u = got[1]
-        su = replace(su, zone_ids=frozenset(await zones_for(db, username=u.username, email=u.email or "", upn=u.upn or "", groups=u.ldap_groups or [])))
+        su = replace(su, zone_ids=frozenset(await zones_for(db, username=u.username, email=u.email or "", upn=u.upn or "", groups=u.ldap_groups or [], netbios=await netbios_of(db, u.ldap_connection_id))))
     return su
 
 

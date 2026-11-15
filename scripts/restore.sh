@@ -21,5 +21,8 @@ for kind in before_restore failed; do
   dc exec -T postgres psql -U "$POSTGRES_USER" -d postgres -tAc "SELECT datname FROM pg_database WHERE datname LIKE '${POSTGRES_DB}\\_${kind}\\_%' ORDER BY datname DESC OFFSET 2" 2>/dev/null \
     | tr -d '\r' | while read -r old; do [ -n "$old" ] && dc exec -T postgres psql -U "$POSTGRES_USER" -d postgres -tAc "DROP DATABASE \"$old\"" >/dev/null 2>&1 && info "Удалена старая отложенная база $old"; done
 done
+# копия могла быть снята до обновления: схема приводится к текущему коду (сама служба миграции при запуске не выполняет)
+if dc run --rm --no-deps backend alembic upgrade head >/dev/null 2>&1; then ok "Схема базы приведена к текущей версии (миграции применены)"
+else warn "Миграции после восстановления не применились: копия снята более новой версией или повреждена. Проверьте: ./scripts/ctl.sh migrate; прежняя база сохранена — её можно вернуть"; fi
 dc up -d >/dev/null
 ok "База восстановлена из $FILE; сервисы запущены. Прежняя база сохранена (см. журнал выше)."

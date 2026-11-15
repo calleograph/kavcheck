@@ -124,7 +124,7 @@ say "R7. Системная проверка файла службы"
 t "systemd-analyze разбирает файл службы без ошибок" bash -c "'$APP/scripts/updater.sh' print-unit --env '$ENVF' > '$W/unit.service' && systemd-analyze verify --user '$W/unit.service' 2>&1 | grep -viE 'ExecStart|not executable|Failed to|file' | grep -ci 'error' | grep -q '^0$'"
 
 say "R8. Исходная авария: помощник 0.6.1 падает на «UPD_PASS_ENV: unbound variable» под настоящим systemd; исправление помощника без обновления приложения"
-( while :; do echo "$(date +%T.%N) $(cd "$D/updater" && ls request.txt .request.running backup.log 2>/dev/null | tr '\n' ' ') hb=$(grep -o '"updater_api":[0-9]*' heartbeat.json 2>/dev/null)"; sleep 0.25; done ) >"$W/trace.log" 2>&1 & TRACE=$!
+( while :; do echo "$(date +%T.%N) $(cd "$D/updater" && ls request.txt ../state/updater/.request.running backup.log 2>/dev/null | tr '\n' ' ') hb=$(grep -o '"updater_api":[0-9]*' heartbeat.json 2>/dev/null)"; sleep 0.25; done ) >"$W/trace.log" 2>&1 & TRACE=$!
 git -C "$ROOT" archive v0.6.1 scripts | tar -x -C "$APP"; OLDSHA="$(sha256sum "$APP/scripts/updater.sh" | cut -d' ' -f1)"
 systemctl --user restart "$UNIT"; for _ in $(seq 1 30); do [ "$(ov | jq_ updater.available)" = True ] && break; sleep 1; done
 N0="$(systemctl --user show -p NRestarts --value "$UNIT")"
@@ -143,7 +143,7 @@ t "приложение и данные не затронуты (версия 0.
 for _ in $(seq 1 30); do [ "$(ov | jq_ updater.available)" = True ] && [ "$(ov | jq_ updater.state)" = idle ] && break; sleep 1; done
 N1="$(systemctl --user show -p NRestarts --value "$UNIT")"; RESP="$(api POST /admin/updates/backup)"; echo "backup: $RESP at $(date +%T.%N)" >> "$W/diag.log"
 for _ in $(seq 1 90); do grep -q 'backup завершён' "$D/updater/backup.log" 2>/dev/null && break; sleep 2; done
-{ echo "--- каталог обмена"; ls -la "$D/updater" 2>&1 | head -30; echo "--- request.txt"; cat "$D/updater/request.txt" 2>&1; echo "--- .request.running"; cat "$D/updater/.request.running" 2>&1; echo "--- report.json"; head -c 600 "$D/updater/report.json" 2>&1; echo "--- backup.log"; tail -n 15 "$D/updater/backup.log" 2>&1; echo "--- operation"; cat "$D/updater/operation.json" 2>&1; echo "--- журнал службы"; journalctl --user -u "$UNIT" --no-pager -n 70 2>&1; echo "--- starts.log"; cat "$D/updater/starts.log" 2>&1; echo "--- трассировка файлов обмена (время, файлы, API помощника)"; uniq -f1 "$W/trace.log" | tail -n 80; } >> "$W/diag.log"
+{ echo "--- каталог обмена"; ls -la "$D/updater" 2>&1 | head -30; echo "--- request.txt"; cat "$D/updater/request.txt" 2>&1; echo "--- .request.running"; cat "$D/state/updater/.request.running" 2>&1; echo "--- report.json"; head -c 600 "$D/updater/report.json" 2>&1; echo "--- backup.log"; tail -n 15 "$D/updater/backup.log" 2>&1; echo "--- operation"; cat "$D/updater/operation.json" 2>&1; echo "--- журнал службы"; journalctl --user -u "$UNIT" --no-pager -n 70 2>&1; echo "--- starts.log"; cat "$D/updater/starts.log" 2>&1; echo "--- трассировка файлов обмена (время, файлы, API помощника)"; uniq -f1 "$W/trace.log" | tail -n 80; } >> "$W/diag.log"
 kill "$TRACE" 2>/dev/null
 t "запрос из интерфейса после исправления выполнен: резервная копия создана, служба не перезапускалась" bash -c "grep -q 'backup завершён.*успешно' '$D/updater/backup.log' && [ '$(systemctl --user show -p NRestarts --value "$UNIT")' = '$N1' ]"
 # образ приложения в этом испытании — релиз 0.6.1 без кнопки «Обновить помощника»: запрос передаётся файлом в том же формате, что и новый backend

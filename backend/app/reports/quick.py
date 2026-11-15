@@ -378,6 +378,7 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     host_vc: dict[int, Counter] = {}                             # опасность по ВСЕМ уязвимостям компьютера (таблица может быть сокращена, счётчики — нет)
     vgroups: list[dict] = []                                     # полная сводка «компьютер × программа × версия»
     vcut: list[tuple[str, int, int]] = []                        # компьютеры, у которых построчный список сокращён: (имя, показано, всего)
+    capped_ksc: list[str] = []                                   # компьютеры, у которых KSC вернул уязвимостей больше предела выдачи
     vsev: Counter = Counter()
     vtotal = 0
     soft_by: dict[int, list[dict]] = {}
@@ -397,6 +398,8 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                 if ctx.cancelled():
                     raise RuntimeError("cancelled")
                 ksc = await V.on_host(client, hid)
+                if len(ksc) >= V.HOST_VULNS_CAP:
+                    capped_ksc.append(names.get(hid, str(hid)))
                 ext, info = await host_ext_items(db, client, ctx.source_id, hid, soft=soft_by.get(hid, []))
                 ext_info = ext_info or info
                 rows_h = HV.merge(ksc, ext)                          # отсортирован: самые важные первыми
@@ -414,6 +417,8 @@ async def build_hosts(client: SourceClient, p: dict, ctx: Ctx) -> dict:
                            "patch": "исправление доступно" if (r.get("ksc") or {}).get("patches_available") else ""} for r in rows_h[:per_host]]
                 del rows_h, ext
                 ctx.progress(f"уязвимости: компьютеров {len(host_vc)} из {len(ids)}, найдено {vtotal}")
+        if capped_ksc:
+            notes.append(f"У {len(capped_ksc)} компьютеров уязвимостей KSC больше {V.HOST_VULNS_CAP}: учтены первые {V.HOST_VULNS_CAP} (например {capped_ksc[0]}).")
         if vcut:
             notes.append(f"У {len(vcut)} компьютеров построчный список CVE в таблице «Уязвимости» сокращён до самых опасных (на компьютер — не более {vcut[0][1]}; например {vcut[0][0]}: {vcut[0][1]} из {vcut[0][2]}). "
                          "Счётчики в отчёте — по всем уязвимостям. Полная сводка по каждой программе и версии — в таблице «Уязвимости по программам»; полный список CVE одного компьютера — в его карточке или в отчёте только по этому компьютеру.")

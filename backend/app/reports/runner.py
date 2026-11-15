@@ -36,6 +36,8 @@ def job_dir(settings: Settings, job_id) -> Path:
     return Path(settings.reports_dir) / str(job_id)
 
 
+_BG: set = set()                                               # фоновые задачи, запущенные отчётами (построение каталога)
+
 class Runner:
     def __init__(self, session_maker: async_sessionmaker[AsyncSession], settings: Settings, settings_svc: SettingsService, journal: Journal):
         self._sm, self._cfg, self._svc, self._journal = session_maker, settings, settings_svc, journal
@@ -56,6 +58,10 @@ class Runner:
             return job
 
     async def _set(self, job_id, **values) -> None:
+        if "progress" in values:                                 # отметка хода для сторожа аренды (отчёты без запросов к KSC — BI, иерархия)
+            from ..services.jobs import touch_current  # noqa: PLC0415
+
+            touch_current()
         async with self._sm() as db:
             await db.execute(update(ReportJob).where(ReportJob.id == job_id).values(**values))
             await db.commit()
@@ -75,11 +81,12 @@ class Runner:
                 await self._leased(job)
 
     async def _leased(self, job: ReportJob) -> None:
-        from ..services.jobs import JOBS  # noqa: PLC0415
+        from ..services.jobs import CURRENT, JOBS  # noqa: PLC0415
 
         lease = await JOBS.acquire("report", str(job.id), "запуск")
         if lease is None:                                       # задание уже ведёт другой исполнитель
             return
+        token = CURRENT.set(lease)                              # ход выполнения отмечают запросы к KSC и RES.breathe: без этого долгий отчёт «зависал» по журналу, а через 6 ч терял аренду
         status, error = "success", None
         try:
             await self._run_job(job)
@@ -94,6 +101,7 @@ class Runner:
             status, error = "error", f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            CURRENT.reset(token)
             await lease.finish(status, error)
 
     async def _run_job(self, job: ReportJob) -> None:
@@ -353,18 +361,11 @@ class Runner:
                 if not await catalog_svc.catalog_ready(db, src.id) and any((it.get("kind") or "product") == "product" for it in items):
                     if self.catalog is None:
                         notes.append(f"{src.name}: каталог программ ещё не построен")
-                    else:
-                        await self._set(job.id, progress=f"{src.name}: построение каталога программ")
-                        await self.catalog.build(src.id, "нужен для отчёта")        # если каталог уже строит другой исполнитель, build вернётся сразу — ждём его завершения
-                        for _ in range(180):
-                            async with self._sm() as db3:
-                                if await catalog_svc.catalog_ready(db3, src.id):
-                                    break
-                            from ..services.jobs import JOBS  # noqa: PLC0415
-
-                            if not await JOBS.is_live("catalog", str(src.id)):
-                                break
-                            await asyncio.sleep(5)
+                    else:                                       # строить здесь нельзя: отчёт держит место интерактивной очереди и аренду, а каталог ждёт место фоновой — заняли бы очередь отчётов на часы
+                        t = asyncio.get_running_loop().create_task(self.catalog.build(src.id, "нужен для отчёта"))
+                        _BG.add(t)
+                        t.add_done_callback(_BG.discard)                   # ссылка нужна, иначе задачу может собрать сборщик мусора
+                        notes.append(f"{src.name}: каталог программ ещё не построен — построение запущено, повторите отчёт после его завершения (Администрирование → Каталог программ)")
                 async with self._sm() as db2:
                     resolved, missing = await catalog_svc.resolve_items(db2, src.id, items)
             try:

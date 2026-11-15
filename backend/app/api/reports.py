@@ -38,7 +38,8 @@ def job_out(j: ReportJob) -> dict:
             "started_at": j.started_at, "finished_at": j.finished_at, "data_fetched_at": j.data_fetched_at, "rows": j.rows, "summary": j.summary, "error": j.error}
 
 
-def can_see(su: SessionUser, j: ReportJob) -> bool:
+def can_see(su: SessionUser, j: ReportJob, hier=None) -> bool:
+    """hier — настройки группы «hier» (для отчётов иерархии и AD: доступ по ролям раздела; не переданы — такие отчёты не показываются)."""
     if su.is_zone:                                         # ответственный за зону — только свои отчёты по своим зонам
         return j.created_by_id == su.user_id and j.kind == "quick_zone" and set((j.params or {}).get("zone_ids") or []) <= su.zone_ids
     if j.kind == "quick_admin":                           # таблицы администрирования: журналы, пользователи, лицензии — только администратор
@@ -47,19 +48,24 @@ def can_see(su: SessionUser, j: ReportJob) -> bool:
         return False                                       # в отчёте — сотрудники по BI: роли «Просмотр» они не показываются и на странице
     if j.kind == "quick_bi":                              # сведения о сотрудниках BI: аналитик и администратор с доступом ко всем источникам
         return su.role in ("analyst", "admin") and (su.is_admin or su.all_sources)
-    if j.kind == "quick_hier":                            # структура организации: файл с ФИО и почтой — аналитик и администратор (доступ к разделу проверяется при создании)
-        return su.role in ("analyst", "admin")
-    if j.kind == "quick_ad":                              # учётные записи и группы AD: аналитик и администратор (доступ к вкладке проверяется при создании)
-        return su.role in ("analyst", "admin")
+    if j.kind in ("quick_hier", "quick_ad"):              # структура организации, учётные записи и группы AD: роли раздела из настроек — и при просмотре, не только при создании
+        from .ad import ad_allowed  # noqa: PLC0415
+        from .hier import allowed as hier_allowed  # noqa: PLC0415
+
+        return hier is not None and su.role in ("analyst", "admin") and (hier_allowed if j.kind == "quick_hier" else ad_allowed)(su, hier)
     if j.kind in ("quick_pentest", "quick_hunt"):          # результаты сканирования не принадлежат источнику KSC: права — аналитик и администратор
         return su.role in ("analyst", "admin")
     ids = job_sources(j)
     return bool(ids) and all(su.can_use_source(uuid.UUID(i)) for i in ids)
 
 
-async def _job(db: AsyncSession, job_id: uuid.UUID, su: SessionUser) -> ReportJob:
+async def _hier_cfg(request: Request | None, db: AsyncSession):
+    return await request.app.state.settings_svc.get(db, "hier") if request is not None else None
+
+
+async def _job(db: AsyncSession, job_id: uuid.UUID, su: SessionUser, request: Request | None = None) -> ReportJob:
     j = await db.get(ReportJob, job_id)
-    if j is None or not can_see(su, j):
+    if j is None or not can_see(su, j, await _hier_cfg(request, db) if j.kind in ("quick_hier", "quick_ad") else None):
         raise HTTPException(status_code=404, detail="Отчёт не найден")
     return j
 
@@ -122,11 +128,12 @@ def default_title(kind: str, params: dict) -> str:
 
 
 @router.get("")
-async def list_jobs(source_only: bool = True, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_user),
+async def list_jobs(request: Request, source_only: bool = True, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200), su: SessionUser = Depends(require_user),
                     db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(ReportJob).order_by(ReportJob.created_at.desc()).offset(offset).limit(limit * 3))).scalars().all()
     cur = str(su.current_source_id) if su.current_source_id else None
-    out = [j for j in rows if can_see(su, j) and (su.is_zone or not source_only or not cur or cur in job_sources(j) or j.kind in quick.NO_KSC)]
+    hier = await _hier_cfg(request, db)
+    out = [j for j in rows if can_see(su, j, hier) and (su.is_zone or not source_only or not cur or cur in job_sources(j) or j.kind in quick.NO_KSC)]
     return {"items": [job_out(j) for j in out[:limit]]}
 
 
@@ -180,8 +187,8 @@ async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends
 
 
 @router.get("/{job_id}")
-async def get_job(job_id: uuid.UUID, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    return job_out(await _job(db, job_id, su))
+async def get_job(job_id: uuid.UUID, request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    return job_out(await _job(db, job_id, su, request))
 
 
 _SEARCH_KEYS = {"name", "fqdn", "ip", "os", "app_name", "app_version", "group", "program", "host", "threat", "cve", "kla_id", "product", "installed_version", "problems", "av", "type_ru", "target", "user", "object"}
@@ -209,7 +216,7 @@ async def job_rows(job_id: uuid.UUID, request: Request, offset: int = Query(0, g
                    source: str = Query("", max_length=200), program: str = Query("", max_length=300), sort: str = Query("", max_length=40), desc: bool = False,
                    su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     """Строки отчёта: фильтры по тексту, источнику и программе, сортировка по столбцу — на сервере."""
-    j = await _job(db, job_id, su)
+    j = await _job(db, job_id, su, request)
     if j.status != "done":
         raise HTTPException(status_code=409, detail="Отчёт ещё не сформирован")
     p: Path = job_dir(request.app.state.settings, j.id) / "rows.jsonl"
@@ -236,7 +243,7 @@ async def job_rows(job_id: uuid.UUID, request: Request, offset: int = Query(0, g
 async def download(job_id: uuid.UUID, fmt: str, request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     if fmt not in ("csv", "xlsx", "html", "pdf"):
         raise HTTPException(status_code=404, detail="Формат: csv | xlsx | html | pdf")
-    j = await _job(db, job_id, su)
+    j = await _job(db, job_id, su, request)
     p: Path = job_dir(request.app.state.settings, j.id) / f"report.{fmt}"
     if j.status != "done" or not p.exists():
         raise HTTPException(status_code=409, detail="Файл отчёта недоступен")
@@ -260,7 +267,7 @@ async def mail_job(job_id: uuid.UUID, body: MailIn, request: Request, su: Sessio
     from ..models import User  # noqa: PLC0415
     from ..services import mail  # noqa: PLC0415
 
-    j = await _job(db, job_id, su)
+    j = await _job(db, job_id, su, request)
     if j.status != "done":
         raise HTTPException(status_code=409, detail="Отчёт ещё не сформирован")
     to = ((await db.get(User, su.user_id)).email or "").strip()
@@ -272,11 +279,12 @@ async def mail_job(job_id: uuid.UUID, body: MailIn, request: Request, su: Sessio
         raise HTTPException(status_code=409, detail=f"Отправка почты не настроена администратором ({err}): скачайте отчёт в браузере")
     d = job_dir(request.app.state.settings, j.id)
     mime = {"csv": "text/csv", "html": "text/html", "pdf": "application/pdf", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
-    files = [(f"kavcheck_{j.kind}_{j.created_at:%Y%m%d_%H%M}.{f}", (d / f"report.{f}").read_bytes(), mime[f]) for f in dict.fromkeys(body.formats) if (d / f"report.{f}").exists()]
-    if not files:
+    have = [f for f in dict.fromkeys(body.formats) if (d / f"report.{f}").exists()]
+    if not have:
         raise HTTPException(status_code=409, detail="Файлы отчёта недоступны")
-    if sum(len(b) for _n, b, _m in files) > MAIL_MAX_BYTES:
+    if sum((d / f"report.{f}").stat().st_size for f in have) > MAIL_MAX_BYTES:            # размер — до чтения: большой отчёт не грузится в память API
         raise HTTPException(status_code=413, detail=f"Вложения больше {MAIL_MAX_BYTES >> 20} МБ — почтовый сервер их не примет: скачайте отчёт в браузере или выберите меньше форматов")
+    files = [(f"kavcheck_{j.kind}_{j.created_at:%Y%m%d_%H%M}.{f}", (d / f"report.{f}").read_bytes(), mime[f]) for f in have]
     title = j.title or quick.KIND_TITLE.get(j.kind, "Отчёт")
     text = f"{title}\nСформирован: {j.created_at:%d.%m.%Y %H:%M} UTC.\nФайлы отчёта — во вложении. Письмо отправлено по запросу: {su.display_name}."
     html = f"<p><b>{escape(title)}</b></p><p>Сформирован: {j.created_at:%d.%m.%Y %H:%M} UTC.</p><p>Файлы отчёта — во вложении. Письмо отправлено по вашему запросу из KAV Checker.</p>"
@@ -290,8 +298,8 @@ async def mail_job(job_id: uuid.UUID, body: MailIn, request: Request, su: Sessio
 
 
 @router.post("/{job_id}/cancel")
-async def cancel(job_id: uuid.UUID, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
-    j = await _job(db, job_id, su)
+async def cancel(job_id: uuid.UUID, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+    j = await _job(db, job_id, su, request)
     if j.status == "queued":
         j.status, j.progress = "cancelled", "отменён до запуска"
     elif j.status == "running":
@@ -306,8 +314,8 @@ async def cancel(job_id: uuid.UUID, su: SessionUser = Depends(require_analyst), 
 @router.post("/{job_id}/rerun", status_code=201)
 async def rerun(job_id: uuid.UUID, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     """Повторить отчёт с теми же условиями и источниками."""
-    old = await _job(db, job_id, su)
-    sources = await _sources(db, su, [uuid.UUID(i) for i in job_sources(old)], None)
+    old = await _job(db, job_id, su, request)
+    sources = [] if old.kind in quick.NO_KSC else await _sources(db, su, [uuid.UUID(i) for i in job_sources(old)], None)     # Pentest, BI, иерархия…: без источника KSC
     job = await enqueue(request, db, su, kind=old.kind, title=old.title, params=dict(old.params or {}), sources=sources, audit_action="report.rerun", extra={"from": str(old.id)})
     return job_out(job)
 
@@ -316,7 +324,7 @@ async def rerun(job_id: uuid.UUID, request: Request, su: SessionUser = Depends(r
 async def delete_job(job_id: uuid.UUID, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     import shutil  # noqa: PLC0415
 
-    j = await _job(db, job_id, su)
+    j = await _job(db, job_id, su, request)
     if j.status == "running":
         raise HTTPException(status_code=409, detail="Сначала отмените формирование")
     shutil.rmtree(job_dir(request.app.state.settings, j.id), ignore_errors=True)

@@ -152,7 +152,7 @@ VULN_PRODUCTS_AGG = f"""SELECT COALESCE(vp.nId, 0) AS vp_id, COALESCE(vp.wstrNam
 JOIN dbo.v_akpub_host h ON h.nId = o.nHostId
 WHERE {{where}}
 GROUP BY COALESCE(vp.nId, 0), COALESCE(vp.wstrName, p.wstrDisplayName, N'')"""
-VULNS_ON_HOST = f"""SELECT TOP (5000) o.nId AS occurrence_id, d.nId AS descr_id, d.wstrPrimaryName AS kla_id, d.nKlSeverity AS severity, d.wstrDescriptionURL AS url,
+VULNS_ON_HOST = f"""SELECT TOP (%(top)s) o.nId AS occurrence_id, d.nId AS descr_id, d.wstrPrimaryName AS kla_id, d.nKlSeverity AS severity, d.wstrDescriptionURL AS url,
        vp.nId AS vp_id, vp.wstrName AS product, ev.strProductDisplVersion AS product_version, p.wstrDisplayName AS app_name, p.wstrDisplayVersion AS app_version,
        p.wstrPublisher AS publisher, o.tmDetectTime AS detected, o.bPatchesAvailable AS patches_available
 {VULN_FROM}

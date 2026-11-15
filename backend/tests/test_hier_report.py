@@ -92,6 +92,7 @@ async def test_preview_and_job_are_limited_to_allowed_roles(client, app):
     assert page.count('class="oc-c"') == 279 and "KAV Checker" in page
     assert (await client.get(f"/api/v1/reports/{rid}/download/pdf")).content[:5] == b"%PDF-" and (await client.get(f"/api/v1/reports/{rid}/download/xlsx")).content[:2] == b"PK"
     assert "Прямых подчинённых".encode() in (await client.get(f"/api/v1/reports/{rid}/download/csv")).content
+    assert (await client.post(f"/api/v1/reports/{rid}/rerun")).status_code == 201                                            # «Повторить» — и для отчётов без источника KSC
     await login(client, "viewer", "Viewer-Passw0rd-123")
     assert (await client.post("/api/v1/quick/preview", json={"kind": "quick_hier", "params": {}})).status_code == 403
     await login(client, "admin", "Admin-Passw0rd-123")
@@ -99,3 +100,6 @@ async def test_preview_and_job_are_limited_to_allowed_roles(client, app):
     await login(client, "analyst1", "Analyst-Passw0rd-123")
     assert (await client.post("/api/v1/quick/preview", json={"kind": "quick_hier", "params": {}})).status_code == 403            # роль убрана — отчёт недоступен так же, как раздел
     assert (await client.post("/api/v1/reports", json={"kind": "quick_hier", "params": {}})).status_code == 403
+    assert (await client.get(f"/api/v1/reports/{rid}")).status_code == 404                                                       # и готовый отчёт: просмотр, файлы, список
+    assert (await client.get(f"/api/v1/reports/{rid}/download/xlsx")).status_code == 404
+    assert rid not in {j["id"] for j in (await client.get("/api/v1/reports", params={"source_only": "false"})).json()["items"]}

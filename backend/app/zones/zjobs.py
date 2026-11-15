@@ -282,8 +282,10 @@ class ZoneCache:
             await ZR.refresh_dashboards(self.sm, None, default_days=days, data_at=await self._data_at())
             try:                                              # приоритеты — дополнение к сводке: их сбой не делает расчёт зон неудачным
                 await ZR.refresh_top(self.sm, None, default_days=days, breathe=bc.res.breathe)
-            except (MemoryPressure, RuntimeError):
+            except RuntimeError:
                 raise
+            except MemoryPressure:                          # нехватка памяти на дополнении не повод пересчитывать все источники: список обновится при следующем расчёте
+                log.warning("«Что исправить в первую очередь» отложено: мало памяти")
             except Exception:  # noqa: BLE001
                 log.exception("Сбой расчёта «Что исправить в первую очередь»")
             return errors
@@ -325,8 +327,10 @@ class ZoneCache:
         self._prog = ("что исправить в первую очередь", 99)
         try:                                              # приоритеты — дополнение к сводке: их сбой не делает расчёт зон неудачным
             await ZR.refresh_top(self.sm, None if kind == "all" else sorted(touched | {zone_id or ""} - {""}), default_days=days, breathe=bc.res.breathe)
-        except (MemoryPressure, RuntimeError):
+        except RuntimeError:
             raise
+        except MemoryPressure:                          # нехватка памяти на дополнении не повод пересчитывать все источники: список обновится при следующем расчёте
+            log.warning("«Что исправить в первую очередь» отложено: мало памяти")
         except Exception:  # noqa: BLE001
             log.exception("Сбой расчёта «Что исправить в первую очередь»")
         return errors
@@ -364,8 +368,8 @@ class ZoneCache:
                 zs.progress = None
             await db.commit()
             gens = (await db.execute(select(ZcHost.source_id, ZcHost.gen, ZcSource.gen).join(ZcSource, ZcSource.source_id == ZcHost.source_id, isouter=True).distinct())).all()
-        for sid, g, cur in gens:                                  # недозаписанные поколения прерванных расчётов: читатели их не видят, заданий в работе нет — удаляем
-            if g != (cur or 0):
+        for sid, g, cur in gens:                                  # недозаписанные поколения прерванных расчётов: читатели их не видят — удаляем,
+            if g != (cur or 0) and not await JOBS.is_live("zonecache", str(sid)):   # если только их прямо сейчас не строит другой worker
                 await SN.purge_gen(self.sm, sid, g)
 
     async def loop(self) -> None:

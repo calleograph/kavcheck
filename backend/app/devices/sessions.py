@@ -21,9 +21,7 @@ def where(user_q: str, host_q: str, *, online_only: bool, params: dict) -> str:
     """Отбор для SESSIONS_NOW: несколько значений через запятую или пробел — подходит любое; значения только параметрами."""
     parts = []
     conds = []
-    for i, t in enumerate(parse_query(user_q)[:MAX_TOKENS]):
-        if t.is_net:
-            continue
+    for i, t in enumerate(parse_query(user_q)[:MAX_TOKENS]):          # адрес в поле пользователя — тоже текст: пропуск снял бы отбор и показал всех
         params[f"u{i}"] = mssql_like(t.text)
         conds.append(f"u.wstrSamAccountName LIKE %(u{i})s OR u.wstrUserPrincipalName LIKE %(u{i})s OR u.wstrDisplayName LIKE %(u{i})s")
     if conds:

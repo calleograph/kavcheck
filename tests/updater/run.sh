@@ -153,7 +153,7 @@ if scn "17. Остановка помощника во время обновле
   printf 'id=aabbccddeeff0022\naction=update\ntarget=v0.2.0\nmode=\nby=tester\nat=%s\n' "$(date +%s)" > "$D/updater/request.txt"
   for _ in $(seq 1 60); do grep -q 'hang: migrate' "$S/calls.log" 2>/dev/null && break; sleep 1; done
   t "обновление дошло до миграции" grep -q '^stage=migrating' "$D/state/update.inprogress"
-  op="$(cat "$D/updater/.op.pid" 2>/dev/null)"; kill -9 -- "-$upid" 2>/dev/null; [ -n "$op" ] && kill -9 -- "-$op" 2>/dev/null; pkill -9 -f 'sleep 6001'; wait "$upid" 2>/dev/null
+  op="$(cat "$D/state/updater/.op.pid" 2>/dev/null)"; kill -9 -- "-$upid" 2>/dev/null; [ -n "$op" ] && kill -9 -- "-$op" 2>/dev/null; pkill -9 -f 'sleep 6001'; wait "$upid" 2>/dev/null
   t "в status.json остался «updating» (помощник убит)" grep -q '"state":"updating"' "$D/updater/status.json"
   ( cd "$W" && PATH="$SB/bin:$PATH" FAKE_STATE="$S" ENV_FILE="$W/.env" exec setsid "$W/scripts/updater.sh" run --env "$W/.env" >"$SB/updater2.log" 2>&1 ) & upid=$!
   for _ in $(seq 1 60); do [ ! -e "$D/state/update.inprogress" ] && grep -q '"state":"idle"' "$D/updater/status.json" 2>/dev/null && break; sleep 1; done
@@ -193,7 +193,7 @@ if scn "21. Пульс помощника независим от операци
   t "операция выполняется (состояние updating, процесс жив)" bash -c "python3 -c \"import json;o=json.load(open('$D/updater/operation.json'));h=json.load(open('$D/updater/heartbeat.json'));assert o['state']=='updating' and h['op_alive'] is True and o['op_id'] and o['phase']=='pulling'\""
   kill -9 "$upid"; sleep 7; c="$(hbts)"; sleep 6; d="$(hbts)"
   t "после аварийного завершения помощника пульс не поддерживается «осиротевшим» циклом" [ "$c" = "$d" ]
-  op="$(cat "$D/updater/.op.pid" 2>/dev/null)"; [ -n "$op" ] && kill -9 -- "-$op" 2>/dev/null; fin; fi
+  op="$(cat "$D/state/updater/.op.pid" 2>/dev/null)"; [ -n "$op" ] && kill -9 -- "-$op" 2>/dev/null; fin; fi
 
 if scn "22. Откат безопасен для схемы: прежняя версия не запускается на неизвестной ей ревизии базы"; then mk
   upd; B="$(ls "$D"/backups/*-pre-0.1.0.dump | head -1)"; echo r9 > "$S/dbrev"
@@ -226,10 +226,10 @@ if scn "25. Помощник в чистом окружении службы (к
 if scn "26. Авария помощника при обработке запроса: запрос не теряется молча, отчёт говорит об этом"; then mk
   ( cd "$W" && exec setsid env -i PATH="$SB/bin:/usr/local/bin:/usr/bin:/bin" HOME="$SB" KC_NO_SYSTEMD=1 "$W/scripts/updater.sh" run --env "$W/.env" >"$SB/updater.log" 2>&1 ) & upid=$!
   for _ in $(seq 1 30); do [ -f "$D/updater/heartbeat.json" ] && break; sleep 1; done
-  kill -9 "$upid"; sleep 1; printf 'id=aabbccddeeff0055\naction=update\ntarget=v0.2.0\nmode=\nby=tester\nat=%s\n' "$(date +%s)" > "$D/updater/.request.running"
+  kill -9 "$upid"; sleep 1; printf 'id=aabbccddeeff0055\naction=update\ntarget=v0.2.0\nmode=\nby=tester\nat=%s\n' "$(date +%s)" > "$D/state/updater/.request.running"
   ( cd "$W" && exec setsid env -i PATH="$SB/bin:/usr/local/bin:/usr/bin:/bin" HOME="$SB" KC_NO_SYSTEMD=1 "$W/scripts/updater.sh" run --env "$W/.env" >"$SB/updater2.log" 2>&1 ) & upid=$!
   for _ in $(seq 1 30); do [ "$(rj result)" = failed ] && break; sleep 1; done
-  t "отчёт: запрос не выполнен из-за аварии помощника" bash -c "[ '$(rj reason_code)' = interrupted ] && grep -q 'аварийно' '$D/updater/report.json'"; t "служебный файл запроса снят" bash -c "[ ! -e '$D/updater/.request.running' ]"
+  t "отчёт: запрос не выполнен из-за аварии помощника" bash -c "[ '$(rj reason_code)' = interrupted ] && grep -q 'аварийно' '$D/updater/report.json'"; t "служебный файл запроса снят" bash -c "[ ! -e '$D/state/updater/.request.running' ]"
   kill -TERM -- "-$upid" 2>/dev/null; wait "$upid" 2>/dev/null; fin; fi
 
 # --- 27–31: авария 0.6.1 («UPD_PASS_ENV: unbound variable»), доставка исправления помощника без обновления приложения, жизненный цикл запроса
@@ -292,7 +292,7 @@ if scn "30. Перезапуск службы во время обработки
   sup W; waitfor 20 '[ -f "$D/updater/heartbeat.json" ]'
   send aabbccddeeff0301 update 'target=v0.2.0
 '; waitfor 20 '[ "$(opj state)" = updating ]'
-  pkill_pid="$(cat "$D/updater/.op.pid" 2>/dev/null)"; hpid="$(python3 -c "import json;print(json.load(open('$D/updater/heartbeat.json'))['pid'])")"
+  pkill_pid="$(cat "$D/state/updater/.op.pid" 2>/dev/null)"; hpid="$(python3 -c "import json;print(json.load(open('$D/updater/heartbeat.json'))['pid'])")"
   kill -9 "$hpid"; kill -9 -- "-$pkill_pid" 2>/dev/null
   t "надзор перезапустил помощника" waitfor 20 '[ "$(cat "$SB/sup.count")" -ge 2 ] && [ -f "$D/updater/heartbeat.json" ]'
   t "число запусков за 10 минут есть в пульсе" waitfor 20 'python3 -c "import json,sys;sys.exit(0 if json.load(open(\"$D/updater/heartbeat.json\")).get(\"starts_10m\",0)>=2 else 1)"'

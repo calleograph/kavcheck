@@ -199,4 +199,4 @@ async def host_vulns(host_id: int, request: Request, su: SessionUser = Depends(r
     h = H.host_row(rows[0], groups, now)
     counts = {k: sum(1 for i in items if i["severity"] == k) for k in ("critical", "high", "warning")}
     return {"host": {k: h[k] for k in ("host_id", "name", "fqdn", "ip", "os", "os_version", "group", "last_connected", "days_since_connection", "activity")},
-            "items": items, "counts": counts, "total": len(items), "fetched_at": now}
+            "items": items, "counts": counts, "total": len(items), "truncated": len(items) >= V.HOST_VULNS_CAP, "fetched_at": now}

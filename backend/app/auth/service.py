@@ -120,26 +120,27 @@ class AuthService:
         login, domain = (login or "").strip(), (domain or "").strip()
         if not _LOGIN.match(login) or not password or len(password) > 512:
             raise AuthError("invalid_credentials", reason="bad_login_format")
-        await self._check_throttle(db, login)
         norm = login.split("\\")[-1].split("@")[0].lower()
+        key = norm                                      # счётчик неудач — по логину без домена: «a\\jsmith», «b\\jsmith» не обходят блокировку для jsmith
+        await self._check_throttle(db, key)
         local = (await db.execute(select(User).where(User.auth_source == "local", func.lower(User.username) == norm))).scalar_one_or_none()
         if local is not None and local.password_hash and "\\" not in login and "@" not in login and not domain:
             if verify_password(local.password_hash, password):
                 if not local.is_active:
                     raise AuthError("account_disabled")
-                await self._record_success(db, login)
+                await self._record_success(db, key)
                 return await self.second_factor(db, local, groups=[])
-            await self._record_failure(db, login)
+            await self._record_failure(db, key)
             raise AuthError("invalid_credentials")
         directory = await self._ldap.directory(db)
         if not directory.configs:
-            await self._record_failure(db, login)
+            await self._record_failure(db, key)
             raise AuthError("invalid_credentials" if local is None else "not_configured", reason="ldap_not_configured")
         try:
             ident = await asyncio.to_thread(directory.authenticate, login, password, domain)
         except ldapmod.LdapError as exc:
             if exc.code in ("invalid_credentials", "user_not_found", "ambiguous_user", "bad_login"):
-                await self._record_failure(db, login)
+                await self._record_failure(db, key)
                 raise AuthError.from_ldap("invalid_credentials", exc) from None
             if exc.code in ("choose_domain", "unknown_domain"):
                 raise AuthError.from_ldap("choose_domain", exc) from None
@@ -148,12 +149,12 @@ class AuthService:
             log.error("Ошибка каталога при входе", extra={"ldap_code": exc.code})
             raise AuthError.from_ldap("directory_unavailable", exc) from None
         decision = self._ldap.decide(await self._ldap.rules(db), ident)
-        await self._record_success(db, login)          # пароль верен — это не перебор, даже если доступа нет
+        await self._record_success(db, key)          # пароль верен — это не перебор, даже если доступа нет
         role, all_sources, source_ids = decision.role, decision.all_sources, sorted(decision.source_ids)
         if role is None:                                   # правил нет — может быть, это ответственный за зону: вход только в портал своих зон, без источников KSC
-            from ..zones.portal import ROLE as ZONE_ROLE, zones_for  # noqa: PLC0415
+            from ..zones.portal import ROLE as ZONE_ROLE, netbios_of, zones_for  # noqa: PLC0415
 
-            if await zones_for(db, username=ident.username, email=ident.email or "", upn=ident.upn or "", groups=ident.groups):
+            if await zones_for(db, username=ident.username, email=ident.email or "", upn=ident.upn or "", groups=ident.groups, netbios=await netbios_of(db, ident.connection_id)):
                 role, all_sources, source_ids = ZONE_ROLE, False, []
         if role is None:
             raise AuthError("no_role", reason="no_access_rule", detail=f"ни одна группа пользователя не разрешена правилами доступа и не назначена ответственной за зону (подключение «{ident.connection}»)")
@@ -218,7 +219,8 @@ class AuthService:
             await db.delete(ch)
             await db.commit()
             raise AuthError("totp_expired")
-        await self._check_throttle(db, user.username)
+        tkey = f"totp:{user.id}"                         # свой счётчик: верный пароль его не сбрасывает, иначе цикл «пароль → 5 кодов» перебирал бы код без блокировки
+        await self._check_throttle(db, tkey)
         ch.attempts += 1
         await db.commit()
         if ch.attempts > CHALLENGE_ATTEMPTS:
@@ -227,12 +229,12 @@ class AuthService:
             raise AuthError("totp_expired")
         ok, backup = await self.check_code(db, user, code)
         if not ok:
-            await self._record_failure(db, user.username)
+            await self._record_failure(db, tkey)
             raise AuthError("invalid_code")
         await db.delete(ch)
         user.last_login_at = utcnow()
         await db.commit()
-        await self._record_success(db, user.username)
+        await self._record_success(db, tkey)
         return LoginResult(user, second_factor="backup_code" if backup else "totp")
 
     def decrypt_totp(self, user: User) -> str:
