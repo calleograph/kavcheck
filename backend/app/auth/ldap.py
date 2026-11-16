@@ -132,6 +132,20 @@ def classify_bind(result: dict | None) -> str:
     return "unknown"
 
 
+AD_SUBCODES = {"525": "пользователь не найден", "52e": "неверный пароль", "52f": "ограничение учётной записи", "530": "вход запрещён в это время", "531": "вход запрещён с этого компьютера",
+               "532": "пароль истёк", "533": "учётная запись отключена", "701": "срок действия учётной записи истёк", "773": "нужно сменить пароль", "775": "учётная запись заблокирована"}
+
+
+def bind_detail(result: dict | None) -> str:
+    """Для журнала администратора: код LDAP и подкод AD («LDAP 49 invalidCredentials; AD 530: вход запрещён в это время»); текст сообщения DC не пишется."""
+    result = result or {}
+    sub = re.search(r"data ([0-9a-f]{3})", str(result.get("message", "")).lower())
+    parts = [f"LDAP {result.get('result', '?')} {result.get('description', '')}".strip()]
+    if sub:
+        parts.append(f"AD {sub.group(1)}: {AD_SUBCODES.get(sub.group(1), 'неизвестный подкод')}")
+    return "; ".join(parts)
+
+
 def _tls(cfg: LdapConfig):
     from ldap3 import Tls  # noqa: PLC0415
 
@@ -172,7 +186,7 @@ def _connection(cfg: LdapConfig, user: str, password: str):
     except OSError as exc:
         raise _transport_error(exc) from None
     if not ok:
-        raise LdapError(classify_bind(conn.result))
+        raise LdapError(classify_bind(conn.result), bind_detail(conn.result))
     return conn
 
 
@@ -286,7 +300,7 @@ def _verify(cfg: LdapConfig, svc, entry: dict, login: str, password: str) -> Lda
     try:
         _close(_connection(cfg, str(entry["dn"]), password))
     except LdapError as exc:
-        exc.detail = exc.detail or f"учётная запись {entry['dn']}"
+        exc.detail = f"{exc.detail}; учётная запись {entry['dn']}" if exc.detail else f"учётная запись {entry['dn']}"
         raise
     groups = _groups(svc, cfg, str(entry["dn"]), list(entry.get("attributes", {}).get("memberOf") or []))
     return LdapIdentity(**{**ident.__dict__, "groups": groups})

@@ -119,8 +119,8 @@ async def login_totp(body: TotpLoginIn, request: Request, response: Response, db
         result = await request.app.state.auth.complete_totp(db, body.challenge, body.code)
     except AuthError as exc:
         await audit_now(request.app.state.session_maker, actor_user_id=None, actor="(2FA)", action="auth.totp_failed", target_type="user", target_id="-",
-                        result="denied" if exc.code in ("throttled", "totp_expired") else "failure", details={"code": exc.code})
-        await request.app.state.journal.emit("auth", "totp_failed", level="warn", ip=ip, message=exc.message, data={"code": exc.code})
+                        result="denied" if exc.code in ("throttled", "totp_expired") else "failure", details={"code": exc.code, "reason": exc.reason, **({"detail": exc.detail[:500]} if exc.detail else {})})
+        await request.app.state.journal.emit("auth", "totp_failed", level="warn", ip=ip, message=f"{exc.message} Причина: {exc.detail or exc.reason}", data={"code": exc.code, "reason": exc.reason})
         raise _fail(exc) from None
     return await _open_session(request, response, db, result, ip=ip)
 
@@ -140,7 +140,7 @@ async def _open_session(request: Request, response: Response, db: AsyncSession, 
     write_audit(db, actor_user_id=user.id, actor=user.display_name, action="auth.login", target_type="user", target_id=str(user.id),
                 details={"login": user.username, "role": user.role, "local": user.auth_source == "local", "second_factor": result.second_factor, "must_totp": result.must_totp})
     await db.commit()
-    await request.app.state.journal.emit("auth", "login_ok", user=user.username, ip=ip, data={"role": user.role, "second_factor": result.second_factor})
+    await request.app.state.journal.emit("auth", "login_ok", user=user.username, ip=ip, data={"role": user.role, "second_factor": result.second_factor, "source": user.auth_source})
     response.set_cookie(settings.cookie_name, sid, httponly=True, secure=settings.secure_cookie(request.headers.get("x-forwarded-proto")), samesite="lax", path="/")
     response.headers["Cache-Control"] = "no-store"
     return await _me(request, db, su)

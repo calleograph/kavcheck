@@ -93,7 +93,7 @@ class AuthService:
     async def _check_throttle(self, db: AsyncSession, key: str) -> None:
         row = await db.get(LoginFailure, _h(key))
         if row and row.locked_until and row.locked_until > utcnow():
-            raise AuthError("throttled", retry_after=int((row.locked_until - utcnow()).total_seconds()))
+            raise AuthError("throttled", retry_after=int((row.locked_until - utcnow()).total_seconds()), reason="lockout", detail=f"неудачных попыток: {row.count}, блокировка до {row.locked_until:%H:%M:%S} UTC")
 
     async def _record_failure(self, db: AsyncSession, key: str) -> None:
         k, now = _h(key), utcnow()
@@ -127,11 +127,11 @@ class AuthService:
         if local is not None and local.password_hash and "\\" not in login and "@" not in login and not domain:
             if verify_password(local.password_hash, password):
                 if not local.is_active:
-                    raise AuthError("account_disabled")
+                    raise AuthError("account_disabled", reason="local_disabled", detail="локальная учётная запись отключена в KAV Checker")
                 await self._record_success(db, key)
                 return await self.second_factor(db, local, groups=[])
             await self._record_failure(db, key)
-            raise AuthError("invalid_credentials")
+            raise AuthError("invalid_credentials", reason="local_bad_password", detail="локальная учётная запись: пароль не подошёл")
         directory = await self._ldap.directory(db)
         if not directory.configs:
             await self._record_failure(db, key)
@@ -213,24 +213,28 @@ class AuthService:
         """Второй шаг входа: код из приложения или резервный код; не больше пяти попыток на одно подтверждение."""
         ch = await db.get(AuthChallenge, _th(token or ""))
         if ch is None or ch.kind != "totp" or ch.expires_at < utcnow():
-            raise AuthError("totp_expired")
+            raise AuthError("totp_expired", reason="challenge_missing_or_expired", detail="подтверждение не найдено или истекло")
         user = await db.get(User, ch.user_id)
         if user is None or not user.is_active or not user.totp_enabled:
             await db.delete(ch)
             await db.commit()
-            raise AuthError("totp_expired")
+            raise AuthError("totp_expired", reason="user_unavailable", detail="пользователь отключён или второй фактор выключен")
         tkey = f"totp:{user.id}"                         # свой счётчик: верный пароль его не сбрасывает, иначе цикл «пароль → 5 кодов» перебирал бы код без блокировки
-        await self._check_throttle(db, tkey)
+        try:
+            await self._check_throttle(db, tkey)
+        except AuthError as exc:
+            exc.detail = f"{user.username}: {exc.detail}"
+            raise
         ch.attempts += 1
         await db.commit()
         if ch.attempts > CHALLENGE_ATTEMPTS:
             await db.delete(ch)
             await db.commit()
-            raise AuthError("totp_expired")
+            raise AuthError("totp_expired", reason="too_many_attempts", detail=f"{user.username}: больше {CHALLENGE_ATTEMPTS} попыток на одно подтверждение")
         ok, backup = await self.check_code(db, user, code)
         if not ok:
             await self._record_failure(db, tkey)
-            raise AuthError("invalid_code")
+            raise AuthError("invalid_code", reason="bad_code", detail=f"{user.username}: {'резервный код' if totp.looks_like_backup(code) else 'код приложения'} не принят (попытка {ch.attempts} из {CHALLENGE_ATTEMPTS})")
         await db.delete(ch)
         user.last_login_at = utcnow()
         await db.commit()

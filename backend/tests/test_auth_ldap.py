@@ -5,6 +5,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from sqlalchemy import select
 
 from app.auth.ldap import LdapIdentity, parse_login
 from app.config import Settings
@@ -301,3 +302,25 @@ async def test_fake_domain_prefix_does_not_bypass_login_lockout(client):
     for i in range(10):
         await client.post("/api/v1/auth/login", json={"login": f"d{i}\\admin", "password": "wrong-password"})
     assert (await client.post("/api/v1/auth/login", json={"login": "admin", "password": "wrong-password"})).status_code == 429
+
+
+def test_bind_failure_detail_names_the_ad_subcode_for_the_journal():
+    from app.auth.ldap import bind_detail, classify_bind
+
+    r = {"result": 49, "description": "invalidCredentials", "message": "80090308: LdapErr: DSID-0C09044E, comment: AcceptSecurityContext error, data 530, v4563"}
+    assert classify_bind(r) == "account_restriction"
+    assert bind_detail(r) == "LDAP 49 invalidCredentials; AD 530: вход запрещён в это время"
+    assert "data 530" not in bind_detail(r)                              # текст сообщения DC в журнал не пишется
+    assert bind_detail({"result": 49, "description": "invalidCredentials", "message": "data 999"}).endswith("AD 999: неизвестный подкод")
+    assert bind_detail(None) == "LDAP ?"
+
+
+async def test_failed_logins_are_explained_in_the_journal(client, app):
+    from app.models import AuditLog
+
+    h = {"Origin": "http://testserver"}
+    for _ in range(11):
+        await client.post("/api/v1/auth/login", json={"login": "admin", "password": "wrong-password"}, headers=h)
+    async with app.state.session_maker() as db:
+        reasons = {(r.details or {}).get("reason") for r in (await db.execute(select(AuditLog).where(AuditLog.action == "auth.login_failed"))).scalars()}
+    assert {"local_bad_password", "lockout"} <= reasons, reasons
