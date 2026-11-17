@@ -63,7 +63,7 @@ export function UserMenu({ me, version, onLogout, onTheme }: { me: Me; version: 
   const { open, setOpen, root, btn } = usePopover();
   const cur = isTheme(me.theme) ? me.theme : isTheme(me.default_theme) ? me.default_theme : DEFAULT_THEME;
   const navigate = useNavigate();
-  const roles: Record<string, string> = { admin: "Администратор", analyst: "Аналитик", viewer: "Просмотр", zone: "Ответственный за зону" };
+  const roles: Record<string, string> = { admin: "Администратор", analyst: "Аналитик", security: "Специалист по ИБ", viewer: "Просмотр", zone: "Ответственный за зону" };
   return (
     <div className={`dd ${open ? "open" : ""}`} ref={root}>
       <button ref={btn} type="button" className="dd-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>

@@ -47,14 +47,14 @@ def can_see(su: SessionUser, j: ReportJob, hier=None) -> bool:
     if j.kind == "quick_devices" and (j.params or {}).get("view") == "users" and (j.params or {}).get("pd", True) and su.role == "viewer":
         return False                                       # в отчёте — сотрудники по BI: роли «Просмотр» они не показываются и на странице
     if j.kind == "quick_bi":                              # сведения о сотрудниках BI: аналитик и администратор с доступом ко всем источникам
-        return su.role in ("analyst", "admin") and (su.is_admin or su.all_sources)
+        return su.is_analyst and (su.is_admin or su.all_sources)
     if j.kind in ("quick_hier", "quick_ad"):              # структура организации, учётные записи и группы AD: роли раздела из настроек — и при просмотре, не только при создании
         from .ad import ad_allowed  # noqa: PLC0415
         from .hier import allowed as hier_allowed  # noqa: PLC0415
 
-        return hier is not None and su.role in ("analyst", "admin") and (hier_allowed if j.kind == "quick_hier" else ad_allowed)(su, hier)
+        return hier is not None and su.is_analyst and (hier_allowed if j.kind == "quick_hier" else ad_allowed)(su, hier)
     if j.kind in ("quick_pentest", "quick_hunt"):          # результаты сканирования не принадлежат источнику KSC: права — аналитик и администратор
-        return su.role in ("analyst", "admin")
+        return su.is_analyst
     ids = job_sources(j)
     return bool(ids) and all(su.can_use_source(uuid.UUID(i)) for i in ids)
 

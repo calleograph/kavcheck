@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
 
+from ..roles import ROLE_PATTERN
+
 from ..search import clean
 
 MaskText = Annotated[str | None, Field(max_length=200), AfterValidator(lambda v: v if v is None else clean(v))]     # текст поиска со звёздочкой: число звёздочек проверяется при приёме запроса
@@ -87,7 +89,7 @@ class UserIn(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     display_name: str = Field(default="", max_length=300)
     email: str | None = Field(default=None, max_length=320)
-    role: str = Field(default="viewer", pattern=r"^(admin|analyst|viewer)$")
+    role: str = Field(default="viewer", pattern=ROLE_PATTERN)
     password: str | None = None
     is_active: bool = True
     all_sources: bool = True
@@ -98,7 +100,7 @@ class UserIn(BaseModel):
 class UserPatch(BaseModel):
     display_name: str | None = Field(default=None, max_length=300)
     email: str | None = Field(default=None, max_length=320)
-    role: str | None = Field(default=None, pattern=r"^(admin|analyst|viewer)$")
+    role: str | None = Field(default=None, pattern=ROLE_PATTERN)
     password: str | None = None
     is_active: bool | None = None
     all_sources: bool | None = None

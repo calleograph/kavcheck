@@ -1,5 +1,8 @@
 // Клиент REST API. Сессия — HttpOnly cookie; CSRF-токен хранится только в памяти; выбранный источник — в сессии (и дублируется заголовком).
-export interface User { id: string; username: string; display_name: string; role: "admin" | "analyst" | "viewer" | "zone"; is_admin: boolean; local: boolean; email?: string }
+/** Аналитик и выше (отчёты, решения, BI); «Специалист по ИБ» и выше — запуск Pentest и CVE Hunt. */
+export const isAnalyst = (role: string) => role === "analyst" || role === "security" || role === "admin";
+export const isSecurity = (role: string) => role === "security" || role === "admin";
+export interface User { id: string; username: string; display_name: string; role: "admin" | "security" | "analyst" | "viewer" | "zone"; is_admin: boolean; local: boolean; email?: string }
 export interface Me { user: User; csrf_token: string; must_change_password: boolean; current_source_id: string | null; site_name: string; activity_days: number; must_enroll_totp: boolean; totp_enabled: boolean; second_factor: string | null; secure_cookie: boolean; theme: string | null; default_theme: string; quick?: QuickPrefs | null }
 export interface QuickPrefs { items?: string[]; reports?: string[]; hidden?: string[] }
 export interface SourceRef { id: string; name: string; host: string; port: number; database: string; is_active: boolean; last_check_at: string | null; last_check_ok: boolean | null; ksc_version: string | null; features: Record<string, boolean | null> }
@@ -218,7 +221,7 @@ export interface TotpStatus { available: boolean; policy: string; enabled: boole
 export interface LdapConn { id: string; name: string; enabled: boolean; is_primary: boolean; protocol: "ldaps" | "starttls"; host: string; port: number; url: string; ldap_version: number; timeout_s: number; base_dn: string; domain_dns: string; netbios: string; bind_dn: string; bind_password_set: boolean; login_attribute: string; display_name_attribute: string; email_attribute: string; user_filter: string; nested_groups: boolean; position: number; last_check_at: string | null; last_check_ok: boolean | null; created_at: string; updated_at: string | null }
 export interface CaCert { id: string; label: string; subject: string; issuer: string; serial: string; sha256: string; not_before: string; not_after: string; is_ca: boolean; self_signed: boolean; type: string; expired: boolean; expires_soon: boolean; added_by: string | null; created_at: string }
 export interface CertPreview { subject: string; issuer: string; serial: string; sha256: string; not_before: string; not_after: string; is_ca: boolean; self_signed: boolean; expired: boolean; not_yet_valid: boolean; type: string }
-export interface AccessRuleT { id: string; connection_id: string | null; connection: string; group_dn: string; role: User["role"]; all_sources: boolean; source_ids: string[]; note: string | null; created_at: string }
+export interface AccessRuleT { id: string; connection_id: string | null; connection: string; kind: "group" | "user"; group_dn: string; role: User["role"]; all_sources: boolean; source_ids: string[]; note: string | null; created_at: string }
 export interface LdapDiag extends DiagResult { server_certificate?: { subject: string; issuer: string; not_after: string; san: string[] }; test_user?: { display_name: string; username: string; email?: string | null; groups: string[]; role: string | null; sources?: string; rules?: string[]; disabled?: boolean } }
 
 // ---- зоны ответственности, рассылки, обработка уязвимостей
@@ -749,8 +752,8 @@ export const api = {
       addCert: (body: { pem?: string; data_base64?: string; label?: string; confirm_non_ca?: boolean }) => req<{ added: CertPreview[]; existing: CertPreview[] }>("POST", "/admin/ldap/certs", body),
       deleteCert: (id: string) => req<void>("DELETE", `/admin/ldap/certs/${id}`),
       rules: () => req<{ items: AccessRuleT[] }>("GET", "/admin/ldap/rules"),
-      createRule: (body: { connection_id: string | null; group_dn: string; role: string; all_sources: boolean; source_ids: string[]; note?: string | null }) => req<AccessRuleT>("POST", "/admin/ldap/rules", body),
-      updateRule: (id: string, body: { connection_id: string | null; group_dn: string; role: string; all_sources: boolean; source_ids: string[]; note?: string | null }) => req<AccessRuleT>("PUT", `/admin/ldap/rules/${id}`, body),
+      createRule: (body: { connection_id: string | null; kind: "group" | "user"; group_dn: string; role: string; all_sources: boolean; source_ids: string[]; note?: string | null }) => req<AccessRuleT>("POST", "/admin/ldap/rules", body),
+      updateRule: (id: string, body: { connection_id: string | null; kind: "group" | "user"; group_dn: string; role: string; all_sources: boolean; source_ids: string[]; note?: string | null }) => req<AccessRuleT>("PUT", `/admin/ldap/rules/${id}`, body),
       deleteRule: (id: string) => req<void>("DELETE", `/admin/ldap/rules/${id}`),
       checkUser: (login: string, password = "", domain = "") => req<DiagResult & { found: boolean; message?: string; display_name?: string; username?: string; email?: string | null; connection?: string; disabled?: boolean; groups?: string[]; role?: string | null; all_sources?: boolean; sources?: string[]; rules?: string[] }>("POST", "/admin/ldap/check-user", { login, password, domain }),
     },

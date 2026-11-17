@@ -720,7 +720,7 @@ def _triage_out(t: VulnTriage) -> dict:
 @triage_router.get("/meta")
 async def triage_meta(su: SessionUser = Depends(require_user)):
     return {"statuses": [{"key": k, "title": v} for k, v in T.STATUS_RU.items()], "reasons": [{"key": k, "title": v} for k, v in T.REASONS.items()], "scopes": [{"key": k, "title": v} for k, v in T.SCOPE_RU.items()],
-            "default_review_days": T.DEFAULT_REVIEW_DAYS, "can_wide": su.is_admin, "can_set": su.role in ("analyst", "admin")}
+            "default_review_days": T.DEFAULT_REVIEW_DAYS, "can_wide": su.is_admin, "can_set": su.is_analyst}
 
 
 @triage_router.post("")

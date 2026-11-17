@@ -4,7 +4,7 @@ import type { IconName } from "./components/Icons";
 import type { QuickScopeOpts } from "./components/QuickReport";
 import type { QuickKind } from "./api";
 
-export type Role = "viewer" | "analyst" | "admin";
+export type Role = "viewer" | "analyst" | "security" | "admin";
 export interface NavItem { to: string; label: string; icon: IconName; end?: boolean; roles?: Role[]; hier?: boolean }
 export interface NavGroup { id: string; label: string; icon: IconName; items: NavItem[] }
 
@@ -18,7 +18,7 @@ export const NAV_GROUPS: NavGroup[] = [
   { id: "sec", label: "Защита и уязвимости", icon: "shieldPulse", items: [
     { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" }, { to: "/vulnerabilities", label: "Уязвимости", icon: "bug" }, { to: "/vdb", label: "База уязвимостей", icon: "vault" },
     { to: "/eol", label: "EOL", icon: "clock" }, { to: "/events", label: "События безопасности", icon: "bell" },
-    { to: "/hunt", label: "CVE Hunt", icon: "search", roles: ["analyst", "admin"] }, { to: "/pentest", label: "Pentest", icon: "target", roles: ["analyst", "admin"] }] },
+    { to: "/hunt", label: "CVE Hunt", icon: "search", roles: ["analyst", "security", "admin"] }, { to: "/pentest", label: "Pentest", icon: "target", roles: ["analyst", "security", "admin"] }] },
   { id: "org", label: "Организация", icon: "sitemap", items: [
     { to: "/zones", label: "Зоны ответственности", icon: "grid" }, { to: "/hierarchy", label: "Иерархия предприятия", icon: "sitemap", hier: true }] },
 ];
@@ -72,7 +72,7 @@ export const FUNCTIONS: Fn[] = [
   { title: "Сопоставление BI и KSC", to: "/devices?tab=match", kw: "сопоставление bi ksc совпадения подтвердить расхождения владелец", icon: "branch", group: "Инфраструктура" },
   { title: "Сейчас в системе", to: "/devices?tab=now", kw: "кто залогинен вошёл сейчас сеанс текущий пользователь где работает онлайн", icon: "users", group: "Инфраструктура" },
   { title: "Пользователи KSC", to: "/devices?tab=ksc", kw: "пользователи ksc вход последний пользователь логин", icon: "users", group: "Инфраструктура" },
-  { title: "Active Directory: пользователи и группы", to: "/hierarchy?tab=ad", kw: "active directory ad домен учётная запись группы членство memberof участники группы пользователь домена логин upn dn", icon: "users", roles: ["analyst", "admin"], hier: true, group: "Организация" },
+  { title: "Active Directory: пользователи и группы", to: "/hierarchy?tab=ad", kw: "active directory ad домен учётная запись группы членство memberof участники группы пользователь домена логин upn dn", icon: "users", roles: ["analyst", "security", "admin"], hier: true, group: "Организация" },
   { title: "Импорт BI-выгрузки", to: "/admin?tab=sources", kw: "импорт bi выгрузка excel smb структура проверить запустить", icon: "upload", roles: ROLE_ADMIN, group: "Администрирование · Подключения и источники" },
   { title: "Новая проверка версий программ", to: "/reports", kw: "проверка версий устаревшие версии программ отчёт аудит", icon: "file", group: "Отчёты" },
   { title: "Моя тема оформления", to: "/appearance", kw: "тема оформления night glass grove aurora цвет", icon: "sun", group: "Личное" },
@@ -90,10 +90,10 @@ export const QUICK_ACTIONS: QuickAction[] = [
   { id: "problem-hosts", title: "Проблемные компьютеры", hint: "защита не работает", icon: "alert", to: "/protection?problem=rtp_off" },
   { id: "devices", title: "Устройства и владельцы", hint: "кто чем пользуется", icon: "users", to: "/devices" },
   { id: "zones", title: "Зоны ответственности", hint: "ответственные и состояние зон", icon: "grid", to: "/zones" },
-  { id: "pentest", title: "Результаты Pentest", hint: "задания и находки", icon: "target", to: "/pentest", roles: ["analyst", "admin"] },
+  { id: "pentest", title: "Результаты Pentest", hint: "задания и находки", icon: "target", to: "/pentest", roles: ["analyst", "security", "admin"] },
   { id: "bi-match", title: "Сопоставление BI и KSC", hint: "расхождения и решения", icon: "branch", to: "/devices?tab=match" },
   { id: "vulns", title: "Уязвимости", hint: "найденные KSC и их исправления", icon: "bug", to: "/vulnerabilities" },
-  { id: "hunt", title: "CVE Hunt", hint: "целевой поиск уязвимости", icon: "search", to: "/hunt", roles: ["analyst", "admin"] },
+  { id: "hunt", title: "CVE Hunt", hint: "целевой поиск уязвимости", icon: "search", to: "/hunt", roles: ["analyst", "security", "admin"] },
   { id: "events", title: "События безопасности", hint: "угрозы и обнаружения", icon: "bell", to: "/events" },
   { id: "eol", title: "EOL", hint: "ПО и ОС без поддержки", icon: "clock", to: "/eol" },
   { id: "hier", title: "Иерархия предприятия", hint: "структура и отчёты", icon: "sitemap", to: "/hierarchy", hier: true },
@@ -107,6 +107,7 @@ export const QUICK_ACTIONS: QuickAction[] = [
 export const DEFAULT_ITEMS: Record<Role, string[]> = {
   viewer: ["find-host", "find-software", "find-vuln", "protection", "problem-hosts", "vulns", "devices", "zones"],
   analyst: ["find-host", "find-software", "find-user", "find-vuln", "protection", "problem-hosts", "devices", "bi-match", "zones", "pentest"],
+  security: ["find-host", "find-software", "find-user", "find-vuln", "protection", "problem-hosts", "devices", "bi-match", "zones", "pentest", "hunt"],
   admin: ["find-host", "find-software", "find-user", "find-vuln", "protection", "problem-hosts", "devices", "bi-match", "zones", "pentest", "admin-sources", "admin-system"],
 };
 
@@ -121,19 +122,20 @@ export const QUICK_REPORTS: QuickReportDef[] = [
   { id: "r-soft", title: "Программы и их версии", hint: "где установлено, какие версии", icon: "layers", params: {}, options: {}, section: "/software", needsSource: true },
   { id: "r-devices", title: "Устройства и пользователи", hint: "кто и где работал", icon: "users", kind: "quick_devices", params: {}, options: { scope: false }, section: "/devices" },
   { id: "r-sessions", title: "Кто сейчас в системе", hint: "текущие входы по данным KSC", icon: "users", kind: "quick_sessions", params: { online_only: true }, options: { scope: false }, section: "/devices?tab=now" },
-  { id: "r-owners", title: "Устройства и владельцы (BI)", hint: "владельцы по выгрузке BI", icon: "users", kind: "quick_bi", params: { view: "owners" }, options: { scope: false, bi: true }, section: "/devices?tab=bi", roles: ["analyst", "admin"] },
-  { id: "r-bi-disc", title: "Расхождения BI и KSC", hint: "противоречия и неоднозначные", icon: "branch", kind: "quick_bi", params: { view: "discrepancies" }, options: { scope: false, bi: true }, section: "/devices?tab=match", roles: ["analyst", "admin"] },
+  { id: "r-owners", title: "Устройства и владельцы (BI)", hint: "владельцы по выгрузке BI", icon: "users", kind: "quick_bi", params: { view: "owners" }, options: { scope: false, bi: true }, section: "/devices?tab=bi", roles: ["analyst", "security", "admin"] },
+  { id: "r-bi-disc", title: "Расхождения BI и KSC", hint: "противоречия и неоднозначные", icon: "branch", kind: "quick_bi", params: { view: "discrepancies" }, options: { scope: false, bi: true }, section: "/devices?tab=match", roles: ["analyst", "security", "admin"] },
   { id: "r-eol", title: "EOL в инфраструктуре", hint: "ПО и ОС без поддержки", icon: "clock", kind: "quick_eol", params: {}, options: { scope: false, eol: true, zoneFilter: true }, section: "/eol" },
   { id: "r-events", title: "События безопасности", hint: "за 7 суток", icon: "bell", kind: "quick_events", params: { days: 7 }, options: { period: true, scope: false }, section: "/events", needsSource: true },
   { id: "r-overview", title: "Сводка инфраструктуры", hint: "показатели главной страницы", icon: "home", kind: "quick_overview", params: {}, options: { scope: false }, section: "/overview", needsSource: true },
-  { id: "r-hunt", title: "Результаты CVE Hunt", hint: "история заданий", icon: "search", kind: "quick_hunt", params: { view: "jobs" }, options: { scope: false }, section: "/hunt", roles: ["analyst", "admin"] },
-  { id: "r-pentest", title: "Результаты Pentest", hint: "задания и находки", icon: "target", kind: "quick_pentest", params: { view: "jobs" }, options: { scope: false }, section: "/pentest", roles: ["analyst", "admin"] },
+  { id: "r-hunt", title: "Результаты CVE Hunt", hint: "история заданий", icon: "search", kind: "quick_hunt", params: { view: "jobs" }, options: { scope: false }, section: "/hunt", roles: ["analyst", "security", "admin"] },
+  { id: "r-pentest", title: "Результаты Pentest", hint: "задания и находки", icon: "target", kind: "quick_pentest", params: { view: "jobs" }, options: { scope: false }, section: "/pentest", roles: ["analyst", "security", "admin"] },
   { id: "r-zones", title: "Зоны ответственности", hint: "состояние безопасности зон", icon: "grid", params: {}, options: {}, section: "/zones" },
-  { id: "r-hier", title: "Структура организации", hint: "готовые отчёты по иерархии", icon: "sitemap", params: {}, options: {}, section: "/hierarchy", roles: ["analyst", "admin"] },
+  { id: "r-hier", title: "Структура организации", hint: "готовые отчёты по иерархии", icon: "sitemap", params: {}, options: {}, section: "/hierarchy", roles: ["analyst", "security", "admin"] },
 ];
 export const DEFAULT_REPORTS: Record<Role, string[]> = {
   viewer: ["r-rtp", "r-bases", "r-vulns", "r-hosts", "r-devices", "r-eol"],
   analyst: ["r-rtp", "r-bases", "r-vulns", "r-soft", "r-owners", "r-bi-disc", "r-zones", "r-hunt", "r-pentest"],
+  security: ["r-rtp", "r-bases", "r-vulns", "r-soft", "r-owners", "r-bi-disc", "r-zones", "r-hunt", "r-pentest"],
   admin: ["r-rtp", "r-bases", "r-vulns", "r-soft", "r-owners", "r-bi-disc", "r-zones", "r-hunt", "r-pentest"],
 };
 

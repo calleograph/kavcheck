@@ -8,7 +8,7 @@ import { fmt, num } from "../../util";
 
 const STATUS: Record<string, [string, string]> = { ok: ["опубликован", "ok"], failed: ["не удался", "err"], rejected: ["не опубликован", "warn"], running: ["идёт сбор", "accent"] };
 const TRIGGER: Record<string, string> = { schedule: "по расписанию", manual: "вручную", upload: "загрузка файла" };
-const ROLES: [string, string][] = [["viewer", "Наблюдатель"], ["analyst", "Аналитик"], ["admin", "Администратор (всегда)"]];
+const ROLES: [string, string][] = [["viewer", "Просмотр"], ["analyst", "Аналитик"], ["security", "Специалист по ИБ"], ["admin", "Администратор (всегда)"]];
 const ZONES = ["UTC", "Europe/Moscow", "Europe/Kaliningrad", "Europe/Samara", "Asia/Yekaterinburg", "Asia/Omsk", "Asia/Novosibirsk", "Asia/Krasnoyarsk", "Asia/Irkutsk", "Asia/Yakutsk", "Asia/Vladivostok", "Asia/Magadan", "Asia/Kamchatka", "Europe/Minsk", "Asia/Almaty"];
 
 /** «Иерархия предприятия» (администрирование): источник адресной книги — уже настроенное подключение LDAPS; расписание, роли, правила очистки, названия подразделений, снимки. Правила действуют сразу, без повторного сбора. */

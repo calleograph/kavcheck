@@ -24,7 +24,7 @@ from .quick import Ctx, col, metric
 TITLE = {"licenses": "Лицензии", "journal": "Журнал событий", "audit": "Журнал действий", "users": "Пользователи KAV Checker", "components": "Компоненты", "bi_imports": "Журнал импорта BI"}
 LIC_STATE = {"active": "действует", "expiring": "скоро истекает", "expired": "истекла", "perpetual": "бессрочная", "unknown": "срок неизвестен"}
 LEVEL_RU = {"debug": "отладка", "info": "сведения", "warn": "предупреждение", "error": "ошибка"}
-ROLE_RU = {"admin": "Администратор", "analyst": "Аналитик", "viewer": "Просмотр"}
+ROLE_RU = {"admin": "Администратор", "security": "Специалист по ИБ", "analyst": "Аналитик", "viewer": "Просмотр"}
 RESULT_RU = {"success": "успех", "denied": "отказ", "error": "ошибка"}
 RANGE_RU = {"1h": "за час", "24h": "за сутки", "7d": "за 7 суток", "30d": "за 30 суток"}
 PAGE = 2000

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth import ldap as L
 from ..auth.deps import SessionUser, get_db, require_admin
 from ..auth.service import totp_required
+from ..roles import ROLE_PATTERN, ROLE_RU
 from ..models import AccessRule, CaCertificate, KscSource, LdapConnection, utcnow
 from ..security import certs
 from ..services.audit import write_audit
@@ -20,7 +21,7 @@ from ..services.ldap_store import cert_out, conn_out, rule_out
 from ..services.settings import SettingsError
 
 router = APIRouter(prefix="/admin/ldap", tags=["admin-ldap"])
-ROLE_RU = {"admin": "администратор", "analyst": "аналитик", "viewer": "просмотр"}
+
 
 
 def store(request: Request):
@@ -99,7 +100,7 @@ async def test(cid: uuid.UUID, request: Request, body: TestIn, su: SessionUser =
     if tu:
         ident = L.LdapIdentity(guid="", dn="", username=tu["username"], upn=None, display_name=tu["display_name"], email=tu.get("email"),
                                groups=frozenset(tu["groups"]), connection_id=str(c.id), connection=c.name)
-        d = st.decide(await st.rules(db), ident)
+        d = st.decide(await st.rules(db), ident, c.netbios or "")
         names = await st.source_names(db)
         tu["role"] = d.role
         tu["sources"] = "все" if d.all_sources else ", ".join(names.get(s, s) for s in d.source_ids) or "нет"
@@ -167,10 +168,17 @@ async def delete_cert(cert_id: uuid.UUID, su: SessionUser = Depends(require_admi
 
 
 # ------------------------------------------------------------------------------------------------ правила доступа
+async def _netbios(db: AsyncSession, connection_id: str | None) -> str:
+    from ..zones.portal import netbios_of  # noqa: PLC0415
+
+    return await netbios_of(db, connection_id)
+
+
 class RuleIn(BaseModel):
     connection_id: uuid.UUID | None = None
-    group_dn: str = Field(min_length=3, max_length=1000)
-    role: str = Field(pattern=r"^(admin|analyst|viewer)$")
+    kind: str = Field(default="group", pattern=r"^(group|user)$")
+    group_dn: str = Field(min_length=2, max_length=1000)      # группа — DN; учётная запись — логин, UPN, почта или DOMAIN\\логин
+    role: str = Field(pattern=ROLE_PATTERN)
     all_sources: bool = True
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
     note: str | None = Field(default=None, max_length=500)
@@ -185,12 +193,16 @@ async def rules(request: Request, su: SessionUser = Depends(require_admin), db: 
 async def _rule_apply(db: AsyncSession, r: AccessRule, body: RuleIn) -> None:
     if body.connection_id and await db.get(LdapConnection, body.connection_id) is None:
         raise HTTPException(status_code=422, detail="Подключение не найдено")
-    if "=" not in body.group_dn:
+    if body.kind == "group" and "=" not in body.group_dn:
         raise HTTPException(status_code=422, detail="Укажите DN группы, например CN=KAV-Admins,OU=Groups,DC=example,DC=local")
+    if body.kind == "user" and (len(body.group_dn.strip()) < 2 or "=" in body.group_dn or "*" in body.group_dn):
+        raise HTTPException(status_code=422, detail="Укажите учётную запись: логин, user@example.local или EXAMPLE\\логин (без масок)")
+    if body.kind == "user" and body.connection_id is None and "\\" not in body.group_dn and "@" not in body.group_dn:
+        raise HTTPException(status_code=422, detail="Логин без домена совпал бы с однофамильцем из другого каталога: выберите подключение или укажите user@example.local / EXAMPLE\\логин")
     for sid in body.source_ids:
         if await db.get(KscSource, sid) is None:
             raise HTTPException(status_code=422, detail="Источник KSC не найден")
-    r.connection_id, r.group_dn, r.role, r.all_sources = body.connection_id, body.group_dn.strip(), body.role, body.all_sources
+    r.connection_id, r.kind, r.group_dn, r.role, r.all_sources = body.connection_id, body.kind, body.group_dn.strip(), body.role, body.all_sources
     r.source_ids, r.note = [str(x) for x in body.source_ids], body.note
 
 
@@ -199,7 +211,7 @@ async def create_rule(request: Request, body: RuleIn, su: SessionUser = Depends(
     r = AccessRule(id=uuid.uuid4())
     await _rule_apply(db, r, body)
     db.add(r)
-    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="ldap.rule_create", target_type="ldap", target_id=str(r.id), details={"group": r.group_dn, "role": r.role})
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="ldap.rule_create", target_type="ldap", target_id=str(r.id), details={"kind": r.kind, "group": r.group_dn, "role": r.role})
     await db.commit()
     names = {str(c.id): c.name for c in await store(request).connections(db)}
     return rule_out(r, names)
@@ -211,7 +223,7 @@ async def update_rule(rule_id: uuid.UUID, request: Request, body: RuleIn, su: Se
     if r is None:
         raise HTTPException(status_code=404, detail="Правило не найдено")
     await _rule_apply(db, r, body)
-    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="ldap.rule_update", target_type="ldap", target_id=str(r.id), details={"group": r.group_dn, "role": r.role})
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="ldap.rule_update", target_type="ldap", target_id=str(r.id), details={"kind": r.kind, "group": r.group_dn, "role": r.role})
     await db.commit()
     names = {str(c.id): c.name for c in await store(request).connections(db)}
     return rule_out(r, names)
@@ -244,7 +256,7 @@ async def check_user(request: Request, body: dict[str, Any] = Body(...), su: Ses
     stages, ident = await asyncio.to_thread(d.diagnose_login, login, password, domain)
     out: dict[str, Any] = {"ok": False, "stages": stages, "found": ident is not None}
     if ident is not None:
-        dec = st.decide(await st.rules(db), ident)
+        dec = st.decide(await st.rules(db), ident, await _netbios(db, ident.connection_id))
         names = await st.source_names(db)
         srcs = "все" if dec.all_sources else ", ".join(names.get(s, s) for s in dec.source_ids) or "нет"
         stages.append({"stage": "access", "ok": dec.role is not None, "ms": 0, "message": f"Роль в KAV Checker: {ROLE_RU.get(dec.role, dec.role)}; источники: {srcs}." if dec.role

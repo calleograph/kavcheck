@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CompactList } from "../components/CompactList";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type VdbAffectedRow, type VdbCard, type VdbCategory, type VdbPlanRow, type VdbScore, type VdbCounts, type VdbSourceInfo, type VdbVulnRow } from "../api";
+import { api, isSecurity, type ApiError, type VdbAffectedRow, type VdbCard, type VdbCategory, type VdbPlanRow, type VdbScore, type VdbCounts, type VdbSourceInfo, type VdbVulnRow } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
 import { EolList } from "../components/EolList";
@@ -205,7 +205,7 @@ export function VdbCardPanel({ ctx, id, onClose, onReport }: { ctx: Ctx; id: str
   return (
     <Modal side wide title={c?.key ?? id} lede={c?.title} onClose={onClose}
       footer={c && canReport ? <><button className="btn primary" onClick={() => { onReport({ title: `Проверка инфраструктуры: ${c.key}`, keys: [c.key] }); onClose(); }}><Icon name="target" />Проверить инфраструктуру</button>
-        {/^CVE-\d{4}-\d{4,7}$/i.test(c.key) && <Link className="btn" to={`/hunt?tab=new&cve=${encodeURIComponent(c.key)}`} title="Целевой поиск этой CVE на компьютерах: данные KSC и сетевая проверка"><Icon name="search" />Найти в инфраструктуре</Link>}</> : undefined}>
+        {isSecurity(ctx.me.user.role) && /^CVE-\d{4}-\d{4,7}$/i.test(c.key) && <Link className="btn" to={`/hunt?tab=new&cve=${encodeURIComponent(c.key)}`} title="Целевой поиск этой CVE на компьютерах: данные KSC и сетевая проверка"><Icon name="search" />Найти в инфраструктуре</Link>}</> : undefined}>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       {!c && !err && <SkelRows rows={6} cols={2} />}
       {c && <div className="vdb-card">

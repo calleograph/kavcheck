@@ -72,7 +72,7 @@ async def devices(request: Request, q: str = Query("", max_length=400), zone: st
                                offset=offset, limit=limit)
     from ..bi.read import attach_owners  # noqa: PLC0415
 
-    await attach_owners(db, out["items"], pd=su.role in ("analyst", "admin"))       # владелец по BI под именем устройства: кому принадлежит
+    await attach_owners(db, out["items"], pd=su.is_analyst)       # владелец по BI под именем устройства: кому принадлежит
     out["all_sources"] = is_all(request)
     out["limits"] = LIMITS
     ready = {r for (r,) in (await db.execute(select(ZcSource.source_id).where(ZcSource.source_id.in_(sids), ZcSource.gen > 0))).all()}

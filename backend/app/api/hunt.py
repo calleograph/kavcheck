@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth.deps import SessionUser, get_db, require_analyst
+from ..auth.deps import SessionUser, get_db, require_analyst, require_security
 from ..hunt import criteria as C
 from ..hunt import kb as KB
 from ..hunt import results as RS
@@ -139,7 +139,7 @@ async def preview(body: PreviewIn, request: Request, su: SessionUser = Depends(r
 
 
 @router.post("/jobs", status_code=201)
-async def create(body: HuntIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+async def create(body: HuntIn, request: Request, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     s = await request.app.state.settings_svc.get(db, "pentest")
     try:
         crits = await HS.resolve(db, body.cves, [_prod(p) for p in body.products])
@@ -224,7 +224,7 @@ async def compare(job_id: uuid.UUID, su: SessionUser = Depends(require_analyst),
 
 
 @router.post("/jobs/{job_id}/repeat", status_code=201)
-async def repeat(job_id: uuid.UUID, request: Request, force: bool = False, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+async def repeat(job_id: uuid.UUID, request: Request, force: bool = False, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     """Повторная проверка с теми же критериями и областью; сравнение с прежней — `GET /hunt/jobs/{id}/compare`."""
     j = await _job(db, job_id)
     h = (j.options or {}).get("hunt", {})

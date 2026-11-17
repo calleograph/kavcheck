@@ -186,9 +186,14 @@ async def test_access_is_enforced_on_the_server_and_opening_is_audited(client, a
         assert (await db.execute(select(AuditLog).where(AuditLog.action == "hier.open"))).scalars().first() is not None              # открытие раздела — в журнале
         assert (await db.execute(select(AuditLog).where(AuditLog.action == "hier.upload"))).scalars().first() is not None
     await login(client, "viewer", "Viewer-Passw0rd-123")
+    assert (await client.get("/api/v1/hier/access")).json() == {"allowed": True, "admin": False}                                   # по умолчанию раздел открыт всем ролям
+    assert (await client.get("/api/v1/hier/data")).status_code == 200
+    assert (await client.post("/api/v1/hier/admin/run")).status_code == 403
+    await login(client, "admin", "Admin-Passw0rd-123")
+    await client.put("/api/v1/admin/settings/hier", json={"roles": ["analyst", "admin"]})
+    await login(client, "viewer", "Viewer-Passw0rd-123")
     assert (await client.get("/api/v1/hier/access")).json() == {"allowed": False, "admin": False}
     assert (await client.get("/api/v1/hier/data")).status_code == 403                                                              # прямой запрос без роли — отказ, данных нет
-    assert (await client.post("/api/v1/hier/admin/run")).status_code == 403
     await login(client, "analyst1", "Analyst-Passw0rd-123")
     r = await client.get("/api/v1/hier/data")
     assert r.status_code == 200 and not r.json()["can_admin"] and r.json()["snapshot"]["source_name"] == ""                          # аналитик видит структуру, но не подробности источника

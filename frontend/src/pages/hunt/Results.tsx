@@ -9,6 +9,7 @@ import { Empty, SkelRows, SortTh } from "../../components/ui";
 import { fmt, num } from "../../util";
 import { STATUS_TONE, isActive } from "../pentest/common";
 import { JobProgress, RunConsole } from "../pentest/RunLog";
+import { useCanRun } from "../../runAccess";
 
 const ST_TONE: Record<HuntStatus, string> = { confirmed: "err", probable: "warn", needs_check: "", failed: "" };
 const COLS: [string, string][] = [["host", "Компьютер"], ["user", "Пользователь"], ["zone", "Зона ответственности"], ["ip", "IP"], ["product", "Продукт"], ["version", "Версия"], ["status", "Результат"], ["basis", "Источник доказательства"]];
@@ -17,6 +18,7 @@ const KIND_RU: Record<string, string> = { banner: "Ответ сервиса", n
 
 /** Результат целевого поиска: главный список — компьютеры, соответствующие критериям; строка открывает боковую панель с подробностями и «Как определено». */
 export default function Results({ jobId, canReport, admin, activityDays, currentSource, go }: { jobId: string | null; canReport: boolean; admin: boolean; activityDays: number; currentSource: string | null; go: (tab: string, extra?: Record<string, string>) => void }) {
+  const canRun = useCanRun();
   const [job, setJob] = useState<HuntJob | null>(null); const [err, setErr] = useState("");
   const [status, setStatus] = useState("confirmed,probable,needs_check"); const [q, setQ] = useState(""); const [aq, setAq] = useState("");
   const [basis, setBasis] = useState(""); const [zone, setZone] = useState(""); const [crit, setCrit] = useState("");
@@ -32,7 +34,7 @@ export default function Results({ jobId, canReport, admin, activityDays, current
   const finishedKey = job ? `${job.status}:${job.findings_n}` : "";
   const list = useInfinite<HuntRow>(`hunt:${jobId}`, [jobId, status, aq, basis, zone, crit, sort, desc, finishedKey], (offset, limit) => api.hunt.results(jobId!, { status, q: aq, basis, zone, crit, sort, desc, offset, limit }) as unknown as Promise<Chunk<HuntRow>>, 50);
   const extra = list.extra as { counts?: Record<HuntStatus, number>; zones?: string[] } | null;
-  if (!jobId) return <Empty icon="target" title="Выберите задание" action={<button className="btn primary" onClick={() => go("new")}>Новое задание</button>}>Результаты появятся после запуска целевого поиска; прежние — на вкладке «История».</Empty>;
+  if (!jobId) return <Empty icon="target" title="Выберите задание" action={canRun ? <button className="btn primary" onClick={() => go("new")}>Новое задание</button> : undefined}>Результаты появятся после запуска целевого поиска; прежние — на вкладке «История».</Empty>;
   if (err && !job) return <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>;
   if (!job) return <SkelRows rows={5} cols={5} />;
   const running = isActive(job.status);
@@ -48,8 +50,8 @@ export default function Results({ jobId, canReport, admin, activityDays, current
         <div className="card-head"><div><h2>{job.title}</h2><p className="muted small">{job.created_by} · {fmt(job.created_at)} · {job.hunt.mode === "ksc" ? "по данным KSC" : job.hunt.mode === "network" ? "сетевая проверка" : "комбинированный режим"}{job.hunt.criteria.length > 1 ? ` · ${job.hunt.logic === "all" ? "все критерии" : "любой из критериев"}` : ""}</p></div><div className="spacer" />
           <span className={`badge ${STATUS_TONE[job.status]}`}>{job.status_ru}</span>
           {canReport && !running && <button className="btn mini primary" onClick={() => setReport(true)}><Icon name="file" size={15} />Сформировать отчёт</button>}
-          {!running && <button className="btn mini" onClick={() => void repeat()}><Icon name="refresh" size={15} />Повторить проверку</button>}
-          {running && <button className="btn mini" onClick={() => void api.hunt.cancel(job.id).then(load)}>Отменить</button>}</div>
+          {canRun && !running && <button className="btn mini" onClick={() => void repeat()}><Icon name="refresh" size={15} />Повторить проверку</button>}
+          {canRun && running && <button className="btn mini" onClick={() => void api.hunt.cancel(job.id).then(load)}>Отменить</button>}</div>
         {running && <JobProgress job={job} />}
         {job.error && <div className="alert error"><Icon name="alert" /><div className="alert-body">{job.error}</div></div>}
         {job.status === "partial" && <div className="alert warn"><Icon name="alert" /><div className="alert-body"><b>Задание завершено частично</b>: не удалось проверить адресов — {num(job.errors_n)}, неполных проверок — {num(job.incomplete_n)}. Результаты по остальным компьютерам сохранены.

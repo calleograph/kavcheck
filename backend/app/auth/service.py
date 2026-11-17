@@ -148,16 +148,17 @@ class AuthService:
                 raise AuthError.from_ldap(exc.code, exc) from None
             log.error("Ошибка каталога при входе", extra={"ldap_code": exc.code})
             raise AuthError.from_ldap("directory_unavailable", exc) from None
-        decision = self._ldap.decide(await self._ldap.rules(db), ident)
+        from ..zones.portal import ROLE as ZONE_ROLE, netbios_of, zones_for  # noqa: PLC0415
+
+        netbios = await netbios_of(db, ident.connection_id)
+        decision = self._ldap.decide(await self._ldap.rules(db), ident, netbios)
         await self._record_success(db, key)          # пароль верен — это не перебор, даже если доступа нет
         role, all_sources, source_ids = decision.role, decision.all_sources, sorted(decision.source_ids)
         if role is None:                                   # правил нет — может быть, это ответственный за зону: вход только в портал своих зон, без источников KSC
-            from ..zones.portal import ROLE as ZONE_ROLE, netbios_of, zones_for  # noqa: PLC0415
-
-            if await zones_for(db, username=ident.username, email=ident.email or "", upn=ident.upn or "", groups=ident.groups, netbios=await netbios_of(db, ident.connection_id)):
+            if await zones_for(db, username=ident.username, email=ident.email or "", upn=ident.upn or "", groups=ident.groups, netbios=netbios):
                 role, all_sources, source_ids = ZONE_ROLE, False, []
         if role is None:
-            raise AuthError("no_role", reason="no_access_rule", detail=f"ни одна группа пользователя не разрешена правилами доступа и не назначена ответственной за зону (подключение «{ident.connection}»)")
+            raise AuthError("no_role", reason="no_access_rule", detail=f"ни учётная запись, ни её группы не разрешены правилами доступа и не назначены ответственными за зону (подключение «{ident.connection}»)")
         conn_id = uuid.UUID(ident.connection_id) if ident.connection_id else None
         user = (await db.execute(select(User).where(User.ldap_guid == ident.guid))).scalar_one_or_none()
         if user is None:   # запись без GUID (созданная до 0.2.0) — только из того же подключения: одинаковое имя в другом домене — другой человек

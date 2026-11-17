@@ -12,7 +12,7 @@ from sqlalchemy.types import TypeDecorator
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 BigIntPK = BigInteger().with_variant(Integer(), "sqlite")
 
-ROLES = ("admin", "analyst", "viewer")
+ROLES = ("admin", "security", "analyst", "viewer")
 
 
 class UTCDateTime(TypeDecorator):
@@ -378,11 +378,12 @@ class CaCertificate(Base):
 
 
 class AccessRule(Base):
-    """Правило доступа по группе каталога: участникам группы (с учётом вложенности) — роль и источники KSC. Берётся старшая роль и объединение источников."""
+    """Правило доступа: группе каталога (с учётом вложенности) или отдельной учётной записи — роль и источники KSC. Берётся старшая роль и объединение источников."""
     __tablename__ = "access_rules"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     connection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("ldap_connections.id", ondelete="CASCADE"))   # None — любое подключение
-    group_dn: Mapped[str] = mapped_column(String(1000), nullable=False)
+    group_dn: Mapped[str] = mapped_column(String(1000), nullable=False)                  # kind=group — DN группы; kind=user — логин, UPN, почта или DOMAIN\\логин
+    kind: Mapped[str] = mapped_column(String(8), default="group", server_default="group", nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     all_sources: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     source_ids: Mapped[list | None] = mapped_column(JSONType)

@@ -41,11 +41,11 @@ STATUS_RU = IM.STATUS_RU
 
 
 def pd(su: SessionUser) -> bool:
-    return su.role in ("analyst", "admin")
+    return su.is_analyst
 
 
 async def require_people(su: SessionUser = Depends(require_user)) -> SessionUser:
-    if su.role not in ("analyst", "admin") or not (su.is_admin or su.all_sources):
+    if not su.is_analyst or not (su.is_admin or su.all_sources):
         raise HTTPException(status_code=403, detail="Сведения о сотрудниках BI доступны аналитику и администратору с доступом ко всем источникам KSC")
     return su
 
@@ -562,7 +562,7 @@ async def summary(su: SessionUser = Depends(require_user), db: AsyncSession = De
     for s in (await db.execute(select(BiSource).order_by(BiSource.name))).scalars():
         ok = await db.get(BiImport, s.last_import_id) if s.last_import_id else None
         out.append({"id": str(s.id), "name": s.name, "snapshot_at": ok.snapshot_at if ok else None, "last_ok_at": s.last_ok_at, "error": bool(s.last_error)})
-    return {"items": out, "can_people": su.role in ("analyst", "admin") and (su.is_admin or su.all_sources), "can_pd": pd(su)}
+    return {"items": out, "can_people": su.is_analyst and (su.is_admin or su.all_sources), "can_pd": pd(su)}
 
 
 @router.get("/people")
@@ -600,7 +600,7 @@ async def host(source_id: uuid.UUID, host_id: int, su: SessionUser = Depends(req
     """Блок «Владелец и история принадлежности» карточки компьютера KSC."""
     if not su.can_use_source(source_id):
         raise HTTPException(status_code=403, detail="Нет доступа к этому источнику KSC")
-    return {**await R.host_block(db, source_id, host_id, pd=pd(su)), "can_people": su.role in ("analyst", "admin") and (su.is_admin or su.all_sources), "can_decide": su.is_admin}
+    return {**await R.host_block(db, source_id, host_id, pd=pd(su)), "can_people": su.is_analyst and (su.is_admin or su.all_sources), "can_decide": su.is_admin}
 
 
 @router.get("/ksc-users")

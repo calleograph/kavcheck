@@ -195,7 +195,7 @@ async def overview_hosts(request: Request, metric: str = Query(..., max_length=2
 
     if metric in DB_METRICS:
         out = await _db_hosts(db, srcs, metric, days, q, sort, desc, offset, limit)
-        await attach_owners(db, out["items"], pd=su.role in ("analyst", "admin"))
+        await attach_owners(db, out["items"], pd=su.is_analyst)
         return out
     if metric not in C.METRICS:
         raise HTTPException(status_code=422, detail="Неизвестный показатель")
@@ -212,7 +212,7 @@ async def overview_hosts(request: Request, metric: str = Query(..., max_length=2
     items.sort(key=C.sort_key(sort), reverse=desc)
     page = [{"host_id": r["host_id"], "name": r["name"], "ip": r["ip"], "os": r["os"], "group": r["group"], "last_connected": r["last_connected"], "days_since_connection": r["days_since_connection"],
              "online": r.get("online"), "source_id": r["source_id"], "source": r["source"]} for r in items[offset:offset + limit]]
-    await attach_owners(db, page, pd=su.role in ("analyst", "admin"))                  # владелец по BI: к кому обращаться (например, по «Защита не работает»)
+    await attach_owners(db, page, pd=su.is_analyst)                  # владелец по BI: к кому обращаться (например, по «Защита не работает»)
     return {"items": page, "total": len(items), "offset": offset, "limit": limit, "title": C.METRICS[metric][0]}
 
 

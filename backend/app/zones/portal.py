@@ -23,19 +23,24 @@ def idents(username: str, email: str = "", upn: str = "") -> set[str]:
     return {v for v in ((x or "").strip().lower() for x in (username, email, upn)) if v}
 
 
+def user_value_matches(value: str, *, username: str, email: str = "", upn: str = "", netbios: str = "") -> bool:
+    """Запись «учётная запись» (логин, UPN, почта или DOMAIN\\логин) относится к этому пользователю. `DOMAIN\\логин` — только при совпадении NetBIOS-имени подключения,
+    через которое он вошёл (неизвестно — не подходит: однофамилец из другого каталога не должен получить чужой доступ). Часть адреса до «@» не используется."""
+    value = (value or "").strip().lower()
+    if "\\" in value:
+        dom, _sep, who = value.partition("\\")
+        return bool((netbios or "").strip()) and dom == netbios.strip().lower() and who == (username or "").strip().lower().split("\\")[-1]
+    return value in idents(username, email, upn)
+
+
 async def zones_for(db: AsyncSession, *, username: str, email: str = "", upn: str = "", groups=(), netbios: str = "") -> list[str]:
     """Включённые зоны, к которым допущен пользователь: группа каталога (включая вложенные — они уже в списке групп при входе) или учётная запись.
     Учётная запись сравнивается полностью (логин, UPN, почта); «DOMAIN\\логин» — логин и NetBIOS-имя подключения, через которое вошёл пользователь
     (`netbios`; неизвестно — такая запись не подходит, чтобы однофамилец из другого каталога не получил чужую зону)."""
-    names = idents(username, email, upn)
-    login, nb = (username or "").strip().lower().split("\\")[-1], (netbios or "").strip().lower()
     grp = {str(g).strip().lower() for g in groups or [] if g}
 
     def user_ok(value: str) -> bool:
-        if "\\" in value:
-            dom, _sep, who = value.partition("\\")
-            return bool(nb) and dom == nb and who == login
-        return value in names
+        return user_value_matches(value, username=username, email=email, upn=upn, netbios=netbios)
 
     rows = (await db.execute(select(ZoneAccess.zone_id, ZoneAccess.kind, ZoneAccess.value).join(Zone, Zone.id == ZoneAccess.zone_id).where(Zone.enabled.is_(True)))).all()
     return sorted({str(z) for z, kind, value in rows if (kind == "group" and value in grp) or (kind == "user" and user_ok(value))})

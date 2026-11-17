@@ -123,7 +123,7 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
             params = QUICK_PARAMS[body.kind].model_validate(body.params).model_dump()
             ids = [uuid.UUID(x) for x in body.source_ids] or [src.id]
             if body.kind == "quick_devices":
-                params["pd"] = su.role in ("analyst", "admin")             # сотрудник по BI — не для роли «Просмотр» (как на странице)
+                params["pd"] = su.is_analyst             # сотрудник по BI — не для роли «Просмотр» (как на странице)
         except (ValidationError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)[:300]) from None
         for sid in ids:

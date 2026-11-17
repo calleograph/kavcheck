@@ -18,7 +18,7 @@ log = logging.getLogger("app.auth")
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _ALLOWED_WHILE_CHANGING = {"/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/auth/change-password"}
 _IP_RE = re.compile(r"^[0-9a-fA-F:.]{2,45}$")
-ROLE_RANK = {"zone": 0, "viewer": 1, "analyst": 2, "admin": 3}          # zone — ответственный за зону: только портал своих зон (zones/portal.py)
+from ..roles import ROLE_RANK  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,20 @@ class SessionUser:
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"
+
+    @property
+    def rank(self) -> int:
+        return ROLE_RANK.get(self.role, 0)
+
+    @property
+    def is_analyst(self) -> bool:
+        """Аналитик и выше: отчёты, решения, сведения BI."""
+        return self.rank >= ROLE_RANK["analyst"]
+
+    @property
+    def is_security(self) -> bool:
+        """Специалист по ИБ и выше: запуск активных проверок (Pentest, CVE Hunt)."""
+        return self.rank >= ROLE_RANK["security"]
 
     @property
     def is_zone(self) -> bool:
@@ -136,6 +150,12 @@ async def require_user(request: Request, su: SessionUser | None = Depends(curren
 async def require_analyst(su: SessionUser = Depends(require_user)) -> SessionUser:
     if ROLE_RANK.get(su.role, 0) < ROLE_RANK["analyst"]:
         raise HTTPException(status_code=403, detail="Нужны права аналитика")
+    return su
+
+
+async def require_security(su: SessionUser = Depends(require_user)) -> SessionUser:
+    if not su.is_security:
+        raise HTTPException(status_code=403, detail="Нужны права специалиста по ИБ")
     return su
 
 

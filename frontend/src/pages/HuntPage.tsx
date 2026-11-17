@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type HuntHistoryRow, type Job } from "../api";
+import { api, isSecurity, type ApiError, type HuntHistoryRow, type Job } from "../api";
 import type { Ctx } from "../App";
 import { Icon } from "../components/Icons";
 import { QuickReportPanel } from "../components/QuickReport";
@@ -11,6 +11,7 @@ import { JOB_STATUS } from "./DashboardPage";
 import Results from "./hunt/Results";
 import Wizard from "./hunt/Wizard";
 import { STATUS_TONE } from "./pentest/common";
+import { RunAccess, useCanRun } from "../runAccess";
 
 type Tab = "new" | "results" | "history" | "reports";
 const TABS: { id: Tab; label: string }[] = [{ id: "new", label: "Новое задание" }, { id: "results", label: "Результаты" }, { id: "history", label: "История" }, { id: "reports", label: "Отчёты" }];
@@ -19,31 +20,36 @@ const TABS: { id: Tab; label: string }[] = [{ id: "new", label: "Новое за
 export default function HuntPage({ ctx }: { ctx: Ctx }) {
   const [sp] = useSearchParams();
   const nav = useNavigate();
-  const tab = (TABS.some((t) => t.id === sp.get("tab")) ? sp.get("tab") : sp.get("job") ? "results" : "new") as Tab;
+  const canRun = isSecurity(ctx.me.user.role);
+  const items = canRun ? TABS : TABS.filter((t) => t.id !== "new");
+  const tab = (items.some((t) => t.id === sp.get("tab")) ? sp.get("tab") : sp.get("job") || !canRun ? "results" : "new") as Tab;
   const job = sp.get("job");
   const go = useCallback((t: string, extra: Record<string, string> = {}) => { const n = new URLSearchParams(); n.set("tab", t); for (const [k, v] of Object.entries(extra)) n.set(k, v); nav(`/hunt?${n.toString()}`); }, [nav]);
   const prefill = { cves: (sp.get("cve") ?? "").split(",").map((x) => x.trim().toUpperCase()).filter(Boolean),
     product: sp.get("pname") ? { name: sp.get("pname")!, source_id: sp.get("psrc") ?? undefined, product_key: sp.get("pkey") ?? undefined, mode: (sp.get("pmode") as "any" | "below" | "exact" | "range" | "above" | null) ?? "any", below: sp.get("pbelow") ?? "", versions: sp.get("pver") ? sp.get("pver")!.split(",") : [] } : undefined };
   const canReport = ctx.me.user.role !== "viewer";
   return (
+    <RunAccess.Provider value={canRun}>
     <section>
       <PageHead title="CVE Hunt" lede="Целевой поиск уязвимостей: выберите CVE или программу, область и порты — и получите список компьютеров, которых это может касаться. Это не полный Pentest: проверяется только выбранное." />
-      <div className="pt-tabs"><Tabs<Tab> label="Разделы CVE Hunt" value={tab} onChange={(t) => go(t)} items={TABS} /></div>
+      <div className="pt-tabs"><Tabs<Tab> label="Разделы CVE Hunt" value={tab} onChange={(t) => go(t)} items={items} /></div>
       {tab === "new" && <Wizard key={sp.toString()} prefill={prefill} onCreated={(id) => go("results", { job: id })} />}
       {tab === "results" && <Results jobId={job} canReport={canReport} admin={ctx.me.user.is_admin} activityDays={ctx.me.activity_days} currentSource={ctx.current?.id ?? null} go={go} />}
       {tab === "history" && <History go={go} />}
       {tab === "reports" && <HuntReports />}
     </section>
+    </RunAccess.Provider>
   );
 }
 
 function History({ go }: { go: (t: string, e?: Record<string, string>) => void }) {
+  const canRun = useCanRun();
   const [report, setReport] = useState(false);
   const list = useInfinite<HuntHistoryRow>("hunt:history", [], (offset, limit) => api.hunt.jobs({ offset, limit }) as unknown as Promise<Chunk<HuntHistoryRow>>, 50);
   const items = list.initial ? null : list.items;
   if (list.error && list.initial) return <div className="alert error"><div className="alert-body">{list.error}</div></div>;
   if (!items) return <SkelRows rows={4} cols={5} />;
-  if (!items.length) return <Empty icon="history" title="Целевых проверок пока не было" action={<button className="btn primary" onClick={() => go("new")}>Новое задание</button>}>Здесь сохраняются критерии, область, результаты, журнал и отчёты каждой проверки; любую можно повторить.</Empty>;
+  if (!items.length) return <Empty icon="history" title="Целевых проверок пока не было" action={canRun ? <button className="btn primary" onClick={() => go("new")}>Новое задание</button> : undefined}>Здесь сохраняются критерии, область, результаты, журнал и отчёты каждой проверки; любую можно повторить.</Empty>;
   return (<>
     <div className="toolbar"><span className="muted small">{num(list.total)} {list.total === 1 ? "задание" : "заданий"}</span><div className="spacer" />
       <button type="button" className="btn mini" onClick={() => setReport(true)}><Icon name="file" size={15} />Сформировать отчёт</button></div>

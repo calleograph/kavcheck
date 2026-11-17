@@ -6,9 +6,10 @@ import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
 import { Empty, SkelRows, Tabs } from "../../components/ui";
 import { fmt, fmtDate } from "../../util";
+import { RoleGuide, RoleSelect } from "../../components/RoleGuide";
 
 type Tab = "connections" | "certs" | "rules" | "check";
-const ROLE: Record<string, string> = { admin: "Администратор", analyst: "Аналитик", viewer: "Просмотр" };
+const ROLE: Record<string, string> = { admin: "Администратор", security: "Специалист по ИБ", analyst: "Аналитик", viewer: "Просмотр" };
 
 /** Вход доменных пользователей по LDAPS: подключения (несколько доменов), доверенные сертификаты CA, правила доступа по группам,
  *  проверка входа пользователя тем же путём, что и настоящий вход. */
@@ -228,23 +229,24 @@ function Rules({ sources }: { sources: SourceRef[] }) {
   const names = Object.fromEntries(sources.map((s) => [s.id, s.name]));
   return (
     <>
-      <div className="row"><p className="muted small grow">Доменный пользователь входит, только если состоит (в том числе через вложенные группы) хотя бы в одной группе из правил. Действует старшая из подходящих ролей; источники KSC объединяются. Роль и источники обновляются при каждом входе.</p>
-        <button className="btn primary" onClick={() => setEdit({ role: "viewer", all_sources: true, source_ids: [], connection_id: null })}><Icon name="plus" />Добавить правило</button></div>
+      <div className="row"><p className="muted small grow">Доменный пользователь входит, только если его учётная запись или одна из его групп (в том числе вложенных) указана в правилах. Действует старшая из подходящих ролей; источники KSC объединяются. Роль и источники обновляются при каждом входе.</p>
+        <button className="btn primary" onClick={() => setEdit({ kind: "group", role: "viewer", all_sources: true, source_ids: [], connection_id: null })}><Icon name="plus" />Добавить правило</button></div>
+      <details className="mt"><summary>Что открывает каждая роль</summary><RoleGuide /></details>
       <div className="table-scroll">
         {!items ? <SkelRows rows={2} cols={4} /> : (
           <table className="table">
-            <thead><tr><th>Группа каталога</th><th>Роль</th><th>Источники KSC</th><th>Подключение</th><th><span className="sr-only">Действия</span></th></tr></thead>
+            <thead><tr><th>Кому</th><th>Роль</th><th>Источники KSC</th><th>Подключение</th><th><span className="sr-only">Действия</span></th></tr></thead>
             <tbody>{items.map((r) => (
-              <tr key={r.id}><td className="mono small">{r.group_dn}{r.note && <span className="sub">{r.note}</span>}</td><td><span className={`badge ${r.role === "admin" ? "err" : r.role === "analyst" ? "accent" : ""}`}>{ROLE[r.role]}</span></td>
+              <tr key={r.id}><td className="mono small">{r.kind === "user" ? <span className="badge outline">учётная запись</span> : <span className="badge outline">группа</span>} {r.group_dn}{r.note && <span className="sub">{r.note}</span>}</td><td><span className={`badge ${r.role === "admin" ? "err" : r.role === "analyst" || r.role === "security" ? "accent" : ""}`}>{ROLE[r.role]}</span></td>
                 <td className="small">{r.all_sources ? "все" : r.source_ids.map((s) => names[s] ?? "удалён").join(", ") || "—"}</td><td className="small">{r.connection}</td>
                 <td className="actions"><button className="btn mini ghost icon" onClick={() => setEdit(r)} aria-label="Изменить правило"><Icon name="edit" size={15} /></button>
                   <button className="btn mini ghost danger icon" onClick={() => setDel(r)} aria-label="Удалить правило"><Icon name="trash" size={15} /></button></td></tr>))}
-              {!items.length && <tr><td colSpan={5}><Empty icon="users" title="Правил нет">Без правил доменные пользователи войти не смогут. Добавьте группы администраторов, аналитиков и пользователей с правом просмотра.</Empty></td></tr>}
+              {!items.length && <tr><td colSpan={5}><Empty icon="users" title="Правил нет">Без правил доменные пользователи войти не смогут. Добавьте группы или отдельные учётные записи с нужными ролями.</Empty></td></tr>}
             </tbody>
           </table>)}
       </div>
       {edit && <RuleDialog value={edit} conns={conns} sources={sources} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
-      {del && <ConfirmDialog title="Удалить правило?" confirmLabel="Удалить" body={<p>Участники группы «{del.group_dn}» при следующем входе потеряют роль «{ROLE[del.role]}» (если нет других правил).</p>} onClose={() => setDel(null)} onConfirm={async () => { await api.admin.ldap.deleteRule(del.id); load(); }} />}
+      {del && <ConfirmDialog title="Удалить правило?" confirmLabel="Удалить" body={<p>{del.kind === "user" ? `Пользователь «${del.group_dn}»` : `Участники группы «${del.group_dn}»`} при следующем входе потеряют роль «{ROLE[del.role]}» (если нет других правил).</p>} onClose={() => setDel(null)} onConfirm={async () => { await api.admin.ldap.deleteRule(del.id); load(); }} />}
     </>
   );
 }
@@ -256,19 +258,23 @@ function RuleDialog({ value, conns, sources, onClose, onSaved }: { value: Partia
   const find = async () => { setFound(null); try { const r = await api.admin.ldap.groups(q); setFound(r.items); if (r.errors.length) setErr(r.errors.join("; ")); } catch (x) { setErr((x as ApiError).message); } };
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setBusy(true); setErr("");
-    const body = { connection_id: v.connection_id ?? null, group_dn: (v.group_dn ?? "").trim(), role: v.role ?? "viewer", all_sources: !!v.all_sources, source_ids: v.source_ids ?? [], note: v.note ?? null };
+    const body = { connection_id: v.connection_id ?? null, kind: v.kind ?? "group", group_dn: (v.group_dn ?? "").trim(), role: v.role ?? "viewer", all_sources: !!v.all_sources, source_ids: v.source_ids ?? [], note: v.note ?? null };
     try { if (v.id) await api.admin.ldap.updateRule(v.id, body); else await api.admin.ldap.createRule(body); onSaved(); } catch (x) { setErr((x as ApiError).message); setBusy(false); }
   };
   return (
     <Modal title={v.id ? "Правило доступа" : "Новое правило доступа"} onClose={onClose} wide>
       <form onSubmit={submit}>
+        <label>Кому выдаётся доступ<select value={v.kind ?? "group"} onChange={(e) => setV({ ...v, kind: e.target.value as "group" | "user", group_dn: "" })}><option value="group">Группе каталога (все её участники)</option><option value="user">Отдельному пользователю</option></select></label>
+        {v.kind === "user" ? <>
+          <label>Учётная запись<input className="mono" value={v.group_dn ?? ""} onChange={(e) => setV({ ...v, group_dn: e.target.value })} required placeholder="ivan.petrov, ivan.petrov@example.local или EXAMPLE\ivan.petrov" autoFocus /></label>
+          <p className="muted small">Логин без домена подходит только вместе с выбранным подключением (иначе доступ получил бы однофамилец из другого домена). Без масок «*».</p></> : <>
         <label>Группа каталога (DN)<input className="mono" value={v.group_dn ?? ""} onChange={(e) => setV({ ...v, group_dn: e.target.value })} required placeholder="CN=KAV-Admins,OU=Groups,DC=example,DC=local" autoFocus /></label>
         <div className="row group-find"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Найти группу в каталоге по названию" aria-label="Поиск группы" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void find(); } }} />
           <button type="button" className="btn" onClick={find} disabled={q.trim().length < 2}><Icon name="search" size={15} />Найти</button></div>
         {found && <ul className="rows found-groups">{found.map((g) => <li key={g.dn}><button type="button" className="link-btn" onClick={() => { setV({ ...v, group_dn: g.dn }); setFound(null); }}>{g.name}</button><span className="sub mono">{g.dn}</span><span className="muted small">{g.connection}</span></li>)}
-          {!found.length && <li className="muted small">Ничего не найдено</li>}</ul>}
+          {!found.length && <li className="muted small">Ничего не найдено</li>}</ul>}</>}
         <div className="cols">
-          <label>Роль<select value={v.role} onChange={(e) => setV({ ...v, role: e.target.value as AccessRuleT["role"] })}><option value="viewer">Просмотр</option><option value="analyst">Аналитик</option><option value="admin">Администратор</option></select></label>
+          <label>Роль<RoleSelect value={v.role ?? "viewer"} onChange={(role) => setV({ ...v, role })} /></label>
           <label>Подключение<select value={v.connection_id ?? ""} onChange={(e) => setV({ ...v, connection_id: e.target.value || null })}><option value="">Любое</option>{conns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
         </div>
         <label className="check"><input type="checkbox" className="switch" checked={!!v.all_sources} onChange={(e) => setV({ ...v, all_sources: e.target.checked })} />Все источники KSC</label>

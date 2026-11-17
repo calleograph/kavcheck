@@ -85,7 +85,7 @@ async def protection(request: Request, problem: str = Query("", pattern=PROBLEM_
     await zone_labels(db, src, page)
     from ..bi.read import owners_for  # noqa: PLC0415
 
-    owners = await owners_for(db, src.id, [int(h["host_id"]) for h in page], pd=su.role in ("analyst", "admin"))         # владелец по BI: кому писать о неисправной защите
+    owners = await owners_for(db, src.id, [int(h["host_id"]) for h in page], pd=su.is_analyst)         # владелец по BI: кому писать о неисправной защите
     for h in page:
         h["owner"] = owners.get(int(h["host_id"]))
     return {"items": page, "total": len(items), "offset": offset, "limit": limit, "summary": summary}

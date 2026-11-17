@@ -2,7 +2,7 @@ import { FilterBar } from "../components/FilterBar";
 import { useEffect, useMemo, useState } from "react";
 import { CompactList } from "../components/CompactList";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type HostState, type ProblemKey, type ZoneDash, type ZoneTopItem, type ZoneHost, type ZoneHostCard, type ZoneVulnRow, type ZoneOverview, type TriageRow } from "../api";
+import { api, isAnalyst, type ApiError, type HostState, type ProblemKey, type ZoneDash, type ZoneTopItem, type ZoneHost, type ZoneHostCard, type ZoneVulnRow, type ZoneOverview, type TriageRow } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Charts } from "./zoneCharts";
 import { OnlineBadge } from "../components/Common";
@@ -123,7 +123,7 @@ export function ZoneView({ ctx, zid, portal = false }: { ctx: Ctx; zid: string; 
   const [triage, setTriage] = useState<{ targets: TriageTarget[] } | null>(null);
   const sel = useRowSel<string>();
   const canReport = ctx.me.user.role !== "viewer";
-  const canRefresh = ctx.me.user.role === "analyst" || ctx.me.user.is_admin;      // обновление из KSC и решения по уязвимостям — не для портала ответственного
+  const canRefresh = isAnalyst(ctx.me.user.role);      // обновление из KSC и решения по уязвимостям — не для портала ответственного
   const setF = (kv: Partial<Record<(typeof PARAMS)[number], string>>) => setSp((p) => { for (const [k, v] of Object.entries(kv)) { if (v) p.set(k, v); else p.delete(k); } return p; }, { replace: true });
   useEffect(() => { const t = window.setTimeout(() => { if (q !== f.q || cve !== f.cve || product !== f.product) setF({ q, cve, product }); }, 350); return () => window.clearTimeout(t); }, [q, cve, product]); // eslint-disable-line react-hooks/exhaustive-deps
   const [forced, setForced] = useState(0);
@@ -270,7 +270,7 @@ function HostDrawer({ ctx, zid, sid, hid, onClose, onTriage, refreshKey }: { ctx
   const [tab, setTab] = useState<"ksc" | "ext" | "done">("ksc");
   const [hist, setHist] = useState<string | null>(null);
   const [pick, setPick] = useState<string[]>([]);
-  const canSet = ctx.me.user.role === "analyst" || ctx.me.user.is_admin;
+  const canSet = isAnalyst(ctx.me.user.role);
   useEffect(() => { setH(null); api.zones.host(zid, sid, hid).then(setH).catch((e) => setErr((e as ApiError).message)); }, [zid, sid, hid, refreshKey]);
   const zoneId = h?.zones_info[0]?.id; const zoneName = h?.zones_info[0]?.name;
   const target = (r: ZoneVulnRow, origin: "ksc" | "ext"): TriageTarget => ({ source_id: sid, host_id: hid, host_name: h?.name ?? "", vuln_key: (origin === "ksc" ? r.kla_id : r.vuln_key) ?? "", origin, product: r.product ?? "", version: r.installed_version, zone_id: zoneId, zone_name: zoneName });

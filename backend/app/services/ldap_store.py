@@ -17,7 +17,7 @@ from ..security import certs
 from .settings import SettingsError, SettingsService
 
 log = logging.getLogger("app.ldap")
-ROLE_RANK = {"viewer": 1, "analyst": 2, "admin": 3}
+from ..roles import ROLE_RANK  # noqa: E402
 _HOST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 _ATTR = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,62}$")
 _DOMAIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$")
@@ -110,7 +110,7 @@ def cert_out(c: CaCertificate) -> dict:
 
 def rule_out(r: AccessRule, names: dict[str, str]) -> dict:
     return {"id": str(r.id), "connection_id": str(r.connection_id) if r.connection_id else None, "connection": names.get(str(r.connection_id), "любое") if r.connection_id else "любое",
-            "group_dn": r.group_dn, "role": r.role, "all_sources": r.all_sources, "source_ids": [str(x) for x in (r.source_ids or [])], "note": r.note, "created_at": r.created_at}
+            "kind": r.kind, "group_dn": r.group_dn, "role": r.role, "all_sources": r.all_sources, "source_ids": [str(x) for x in (r.source_ids or [])], "note": r.note, "created_at": r.created_at}
 
 
 class LdapStore:
@@ -200,8 +200,15 @@ class LdapStore:
         return added, existing
 
     @staticmethod
-    def decide(rules: list[AccessRule], ident: LdapIdentity) -> "Decision":
-        matched = [r for r in rules if (r.connection_id is None or str(r.connection_id) == ident.connection_id) and r.group_dn.strip().lower() in ident.groups]
+    def decide(rules: list[AccessRule], ident: LdapIdentity, netbios: str = "") -> "Decision":
+        from ..zones.portal import user_value_matches  # noqa: PLC0415
+
+        def hit(r: AccessRule) -> bool:
+            if r.kind == "user":
+                return user_value_matches(r.group_dn, username=ident.username, email=ident.email or "", upn=ident.upn or "", netbios=netbios)
+            return r.group_dn.strip().lower() in ident.groups
+
+        matched = [r for r in rules if (r.connection_id is None or str(r.connection_id) == ident.connection_id) and hit(r)]
         if not matched:
             return Decision(None, False, frozenset(), [])
         role = max((r.role for r in matched), key=lambda x: ROLE_RANK.get(x, 0))

@@ -7,8 +7,9 @@ import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
 import { Empty, Segmented, SkelRows, MaskHint } from "../../components/ui";
 import { fmt } from "../../util";
+import { RoleGuide, RoleSelect } from "../../components/RoleGuide";
 
-const ROLE: Record<string, [string, string]> = { admin: ["Администратор", "accent"], analyst: ["Аналитик", ""], viewer: ["Просмотр", "outline"], zone: ["Ответственный за зону", "outline"] };
+const ROLE: Record<string, [string, string]> = { admin: ["Администратор", "accent"], analyst: ["Аналитик", ""], security: ["Специалист по ИБ", "accent"], viewer: ["Просмотр", "outline"], zone: ["Ответственный за зону", "outline"] };
 const RIGHTS: [string, boolean, boolean, boolean][] = [
   ["Программы, компьютеры, уязвимости, состояние защиты, события", true, true, true],
   ["Просмотр и выгрузка готовых отчётов", true, true, true],
@@ -118,8 +119,9 @@ export default function UsersAdmin({ ctx }: { ctx: Ctx }) {
             </div>
             <div className="cols">
               <label>Электронная почта<input type="email" value={edit.email ?? ""} onChange={(e) => setEdit({ ...edit, email: e.target.value })} /></label>
-              <label>Роль<select value={edit.role} onChange={(e) => setEdit({ ...edit, role: e.target.value as AdminUser["role"] })} disabled={edit.id === ctx.me.user.id}><option value="admin">Администратор</option><option value="analyst">Аналитик</option><option value="viewer">Просмотр</option></select></label>
+              <label>Роль<RoleSelect value={edit.role ?? "viewer"} onChange={(role) => setEdit({ ...edit, role })} disabled={edit.id === ctx.me.user.id} /></label>
             </div>
+            <details><summary>Что открывает каждая роль</summary><RoleGuide /></details>
             {edit.auth_source !== "ldap" && <>
               <label>{edit.isNew ? "Пароль" : "Новый пароль"}<input type="password" value={edit.password ?? ""} onChange={(e) => setEdit({ ...edit, password: e.target.value })} autoComplete="new-password" minLength={12} required={!!edit.isNew} /><span className="help">{edit.isNew ? "" : "Пусто — не менять. "}Не короче 12 символов, минимум два вида символов</span></label>
               <label className="check"><input type="checkbox" className="switch" checked={!!edit.must_change_password} onChange={(e) => setEdit({ ...edit, must_change_password: e.target.checked })} />Потребовать смену пароля при входе</label>
