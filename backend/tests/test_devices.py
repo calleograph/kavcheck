@@ -182,3 +182,27 @@ async def test_devices_report_follows_page_filters_with_full_user_lists(client, 
     assert [c["key"] for c in cols["columns"]] == ["name", "users_now"]
     job = await client.post("/api/v1/reports", json={"kind": "quick_devices", "title": "Устройства", "params": {"zone": "z1"}, "source_ids": [str(a.id)]})
     assert job.status_code == 201, job.text
+
+
+async def test_sessions_are_bounded_by_polls(app):
+    """Сеанс: вход между прошлым и текущим опросом, выход — когда пользователь пропал из списка вошедших; бывший в списке до начала наблюдений — начало неизвестно."""
+    from app.devices import users as U  # noqa: PLC0415
+    from app.devices.read import sessions  # noqa: PLC0415
+    from app.models import DeviceSession, DeviceUser, KscSource  # noqa: PLC0415
+
+    t = [datetime(2026, 11, 1, h, tzinfo=timezone.utc) for h in (8, 9, 10, 11)]
+    async with app.state.session_maker() as db:
+        k = KscSource(name="S", host="sql.example.local", database="KAV", username="ro")
+        db.add(k)
+        await db.flush()
+        for key in ("a.user", "b.user"):
+            db.add(DeviceUser(source_id=k.id, host_id=1, user_key=key, login=key, domain="example", kind="user", resolved=True, first_seen_at=t[0], last_seen_at=t[0], last_session_at=t[0]))
+        await U.track_sessions(db, k.id, {(1, "a.user")}, set(), t[0], None, first=True, retention_days=90)
+        await U.track_sessions(db, k.id, {(1, "a.user"), (1, "b.user")}, {(1, "a.user")}, t[1], t[0], first=False, retention_days=90)
+        await U.track_sessions(db, k.id, {(1, "b.user")}, {(1, "a.user"), (1, "b.user")}, t[2], t[1], first=False, retention_days=90)
+        await db.commit()
+        s = {x.user_key: x for x in (await db.execute(select(DeviceSession))).scalars()}
+        assert s["a.user"].start_after is None and s["a.user"].ended_at == t[2] and s["a.user"].last_active_at == t[1]
+        assert s["b.user"].start_after == t[0] and s["b.user"].started_at == t[1] and s["b.user"].ended_at is None
+        out = await sessions(db, k.id, 1)
+        assert [(x["login"], x["open"]) for x in out["sessions"]] == [("b.user", True), ("a.user", False)]

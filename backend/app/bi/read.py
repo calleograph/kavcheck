@@ -133,10 +133,21 @@ async def host_block(db: AsyncSession, ksc_sid: uuid.UUID, host_id: int, *, pd: 
     ms = (await db.execute(select(BiMatch).where(BiMatch.ksc_source_id == ksc_sid, BiMatch.host_id == host_id))).scalars().all()
     linked = [m for m in ms if m.level in LINKED]
     cards = [c for m in linked if (c := await device_card(db, m.device_id, pd=pd, can_source=lambda s: s == ksc_sid))]
-    bi, _ = await _src_names(db)
+    bi, ksc = await _src_names(db)
+    moved = set()
+    if not cards:                                  # прежняя или устаревшая запись KSC устройства, сопоставленного сейчас с другой записью: владелец тот же, с пояснением
+        for m in ms:
+            if m.level not in ("history", "stale") or m.device_id in moved:
+                continue
+            now = (await db.execute(select(BiMatch).where(BiMatch.device_id == m.device_id, BiMatch.level.in_(LINKED)).limit(1))).scalars().first()
+            if now is not None and (c := await device_card(db, m.device_id, pd=pd, can_source=lambda s: s == ksc_sid)):
+                c["via"] = {"host_id": now.host_id, "host_name": now.host_name, "ksc_source_id": str(now.ksc_source_id), "ksc_source": ksc.get(now.ksc_source_id, ""),
+                            "same_source": now.ksc_source_id == ksc_sid, "why": (m.note or (m.signals or [""])[0])}
+                cards.append(c)
+                moved.add(m.device_id)
     cands = []
     for m in ms:
-        if m.level not in LINKED and m.level != "rejected":
+        if m.level not in LINKED and m.level != "rejected" and m.device_id not in moved:
             dev = await db.get(BiDevice, m.device_id)
             cands.append({"device_id": m.device_id, "name": dev.name if dev else "", "source": bi[dev.source_id].name if dev and dev.source_id in bi else "", "level": m.level,
                           "level_ru": LEVEL_RU.get(m.level, m.level), "signals": m.signals})
@@ -153,17 +164,19 @@ async def owners_for(db: AsyncSession, ksc_sid: uuid.UUID, host_ids: list[int], 
     if not host_ids:
         return out
     for i in range(0, len(host_ids), 1000):
+        elsewhere = exists(select(1).where(BiMatch.device_id == BiDevice.id, BiMatch.level.in_(LINKED)).correlate(BiDevice))
         q = (select(BiMatch.host_id, BiPerson.full_name, BiPerson.email, BiPerson.department, BiOwner.present, BiDevice.present, BiOwner.last_seen_at, BiMatch.level, BiDevice.owners_now)
              .join(BiDevice, BiDevice.id == BiMatch.device_id).join(BiOwner, BiOwner.device_id == BiDevice.id).join(BiPerson, BiPerson.id == BiOwner.person_id)
-             .where(BiMatch.ksc_source_id == ksc_sid, BiMatch.host_id.in_(host_ids[i:i + 1000]), BiMatch.level.in_(LINKED)))
+             .where(BiMatch.ksc_source_id == ksc_sid, BiMatch.host_id.in_(host_ids[i:i + 1000]),
+                    or_(BiMatch.level.in_(LINKED), and_(BiMatch.level.in_(("history", "stale")), elsewhere))))     # прежняя запись KSC сопоставленного устройства — тот же владелец
         rank: dict[int, tuple] = {}
         for hid, name, email, dept, op, dp, last, level, n_now in (await db.execute(q)).all():
             st = state(op, dp)
-            k = ({"current": 0, "past": 2, "unknown": 1}[st], -last.timestamp())
+            k = (level not in LINKED, {"current": 0, "past": 2, "unknown": 1}[st], -last.timestamp())
             if hid not in rank or k < rank[hid]:
                 rank[hid] = k
                 out[int(hid)] = {"name": name or (email if pd else ""), "email": email if pd else "", "department": dept, "state": st, "state_ru": STATE_RU[st], "level": level,
-                                 "multi": st == "current" and n_now > 1, "seen_at": last}
+                                 "multi": st == "current" and n_now > 1, "seen_at": last, "old_record": level not in LINKED}
     return out
 
 

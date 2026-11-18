@@ -144,11 +144,20 @@ def parse_date(v: object, tz: ZoneInfo) -> tuple[datetime | None, bool]:
     return d.astimezone(timezone.utc), True
 
 
+_DUP = re.compile(r"~~.*$")                                  # «MSK-WS059~~917459» — служебный суффикс выгрузки при повторе имени: то же устройство
+
+
 def short_name(name: str) -> str:
-    n = name.strip().lower().replace("ё", "е")
+    n = _DUP.sub("", name.strip().lower().replace("ё", "е"))
     if "\\" in n:
         n = n.rsplit("\\", 1)[1]
     return n if IPV4.match(n) else n.split(".", 1)[0]
+
+
+def pick_name(names: list[str]) -> tuple[str, list[str]]:
+    """Одно устройство под несколькими написаниями («WS-1, ws-1.example.local, WS-1~~42»): основное — короткое имя без суффикса, иначе FQDN; остальные — псевдонимы."""
+    rank = sorted(names, key=lambda n: ("~~" in n, "." in n and not IPV4.match(n.strip())))
+    return rank[0], [n for n in names if n != rank[0]]
 
 
 def is_generic(name: str, generic: list[str]) -> bool:
@@ -225,11 +234,12 @@ def parse_row(values: dict[str, object], prof: dict, tz: ZoneInfo, snapshot_at: 
     if r["device_uid"]:
         names = [r["device_name"]]
     else:
-        uniq: dict[str, str] = {}
+        uniq: dict[str, list[str]] = {}
         for n in items(get("device_name")):
-            if n.lower() not in NULLS:
-                uniq.setdefault(short_name(n), n)                         # «WS-1, ws-1.example.local» — одно устройство
-        names = list(uniq.values())
+            if n.lower() not in NULLS and n not in uniq.setdefault(short_name(n), []):
+                uniq[short_name(n)].append(n)                             # «WS-1, ws-1.example.local, WS-1~~42» — одно устройство
+        picked = {k: pick_name(v) for k, v in uniq.items()}
+        names = [n for n, _a in picked.values()]
         if not names:
             if pk and text(get("device_name")):                          # только «Нет» и подобные метки
                 return [], "", [*warns, {"code": "no_device", "field": "device_name"}]
@@ -239,6 +249,7 @@ def parse_row(values: dict[str, object], prof: dict, tz: ZoneInfo, snapshot_at: 
     out = []
     for i, name in enumerate(names):
         x = dict(r, device_name=name)
+        aliases = [] if r["device_uid"] else picked[short_name(name)][1]
         if split:
             if len(split["\0os"]) == len(names):
                 x["os"] = "" if split["\0os"][i].lower() in NULLS else split["\0os"][i]
@@ -250,7 +261,8 @@ def parse_row(values: dict[str, object], prof: dict, tz: ZoneInfo, snapshot_at: 
         x["short"] = short_name(name) if name else ""
         x["dkey"] = ("u:" + x["device_uid"].lower()) if x["device_uid"] else ("g:" + pk + ":" + name.lower()) if x["generic"] else ("n:" + x["short"])
         x["pkey"] = pk
-        body = dict(x)
+        body = dict(x)                                                     # псевдонимы — вне отпечатка: их появление не создаёт новую версию записи
+        x["aliases"] = aliases
         x["flags"] = flags
         x["rhash"] = hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
         x["rkey"] = hashlib.sha1(f"{x['dkey']}|{pk}".encode()).hexdigest()

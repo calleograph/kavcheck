@@ -12,7 +12,8 @@ export interface SourceFull extends SourceRef { overlaps?: { other: string; othe
   sync?: { status: "empty" | "building" | "ready" | "failed"; built_at: string | null; finished_at: string | null; error: string | null } | null }
 export interface Product { product_id: number; name: string; version: string; publisher: string; platform: string; first_seen: string | null; upstream_version: string; installs: number; hosts: number }
 export interface Page<T> { items: T[]; total: number; offset: number; limit: number }
-export interface Host { zone?: string; host_id: number; name: string; fqdn: string; ip: string; os: string; os_version: string; platform: string; group: string; last_connected: string | null; last_visible: string | null; online?: boolean | null; days_since_connection: number | null; activity: string; linux_release: string; rtp_state_label?: string; ksc_status?: { status: string; reasons: string[] } | null; protection?: { problems: ProblemKey[]; bases_days: number; scan_days: number } | null; last_av_update?: string | null; last_full_scan?: string | null; install_date?: string | null; install_id?: number }
+export interface HostUser { login: string; now: boolean; at: string | null }
+export interface Host { zone?: string; owner?: BiOwnerBrief | null; user?: HostUser | null; host_id: number; name: string; fqdn: string; ip: string; os: string; os_version: string; platform: string; group: string; last_connected: string | null; last_visible: string | null; online?: boolean | null; days_since_connection: number | null; activity: string; linux_release: string; rtp_state_label?: string; ksc_status?: { status: string; reasons: string[] } | null; protection?: { problems: ProblemKey[]; bases_days: number; scan_days: number } | null; last_av_update?: string | null; last_full_scan?: string | null; install_date?: string | null; install_id?: number }
 export interface Branch { branch: string | null; installs: number; hosts: number; packages_count: number; versions: string[]; packages: { product_id: number; name: string; version: string; publisher: string; platform: string; compared_version: string }[] }
 export interface Grouped { rule: { key: string; name: string; name_like: string; name_regex: string; branch_regex: string | null }; branches: Branch[]; products: number; installs: number; hosts: number; fetched_at: string }
 export interface ReportParams { product_ids?: number[]; rule?: string | null; branches?: string[]; name_like?: string | null; name_regex?: string | null; min_version?: string | null; max_version?: string | null; below_version?: string | null; platform?: string | null; group_contains?: string | null; active_days?: number | null; include_inactive?: boolean; inactive_only?: boolean; q?: string | null; os_contains?: string | null }
@@ -286,7 +287,10 @@ export interface DevUser { login: string; domain: string; resolved: boolean; kin
 export interface DeviceRow { source_id: string; source: string; host_id: number; name: string; ip: string; os: string; group: string; zones: string[]; last_connected: string | null; active: boolean; online: boolean | null; eol: number; eol_crit: number; eol_level: "" | "eol" | "extended" | "upcoming"; current: DevUser[]; last_user: DevUser | null; week: DevUser[]; week_n: number; history: DevUser[]; owner?: BiOwnerBrief | null }
 export type DevicesPage = { total: number; items: DeviceRow[]; all_sources: boolean; limits: string; not_ready: string[] };
 export interface DevicesStatus { enabled: boolean; interval_minutes: number; hide_service: boolean; limits: string; items: { source_id: string; source: string; supported: boolean; polled_at: string | null; first_poll_at: string | null; rows_seen: number; error: string | null; queued: boolean }[] }
-export interface DeviceCard { source_id: string; source: string; host_id: number; name: string; ip: string; os: string; group: string; zones: string[]; last_connected: string | null; active: boolean; online: boolean | null; current: DevUser[]; last_user: DevUser | null; week: DevUser[]; history: DevUser[]; hidden_service: number; eol: EolFinding[]; limits: string }
+export interface DeviceCard { source_id: string; source: string; host_id: number; name: string; ip: string; os: string; group: string; zones: string[]; last_connected: string | null; active: boolean; online: boolean | null; current: DevUser[]; last_user: DevUser | null; week: DevUser[]; history: DevUser[]; hidden_service: number; eol: EolFinding[]; limits: string;
+  sessions: DevSession[]; observed_since: string | null; polled_at: string | null }
+/** Сеанс по наблюдениям: вход — между start_after и started_at (start_after пуст — до начала наблюдений), выход — между last_active_at и ended_at. */
+export interface DevSession { login: string; domain: string; start_after: string | null; started_at: string; ended_at: string | null; last_active_at: string; open: boolean }
 
 /** «Техническое состояние» (GET /admin/tech): сводка из готовых замеров; у каждого блока — время измерения. */
 export type TechLevel = "ok" | "warn" | "bad" | "unknown";
@@ -427,7 +431,8 @@ export interface BiOwnerRow { person: BiPerson; state: BiState; state_ru: string
 export interface BiDeviceCard { id: number; source_id: string; source: string; name: string; names: { name: string; until: string }[]; generic: boolean; os: string; os_family: string; personal: boolean | null;
   av: { uses?: boolean | null; other?: string; origin?: string[] }; present: boolean; first_seen_at: string; last_seen_at: string; snapshot_at: string | null; owner: BiOwnerRow | null; owners: BiOwnerRow[];
   versions: { first_seen_at: string; last_seen_at: string; row: number; first_import: BiImportRef | null; last_import: BiImportRef | null; attrs: Record<string, unknown>; flags: string[] }[];
-  matches: BiMatchRow[]; issues: { code: string; text: string }[]; ksc_state: "linked" | "candidates" | "none"; ksc_state_ru: string }
+  matches: BiMatchRow[]; issues: { code: string; text: string }[]; ksc_state: "linked" | "candidates" | "none"; ksc_state_ru: string;
+  via?: { host_id: number; host_name: string; ksc_source_id: string; ksc_source: string; same_source: boolean; why: string } }
 export interface BiHostBlock { devices: BiDeviceCard[]; candidates: { device_id: number; name: string; source: string; level: string; level_ru: string; signals: string[] }[]; note: string; bi_sources: number; can_people: boolean; can_decide: boolean }
 export interface BiPersonRow extends BiPerson { source: string; devices: Record<BiState, string[]> }
 export interface BiPersonCard extends BiPerson { source: string; account_created: string | null; note: string;
@@ -442,7 +447,7 @@ export interface BiBulkPlan { action: "confirm" | "reject" | "reset"; n: number;
 export interface BiBulkOp { id: string; status: "running" | "done" | "failed"; action: string; total: number; done: number; changed: number; skipped: { reason: string; text: string; n: number }[]; error: string | null }
 export interface KscUserRow { login: string; domain: string; hosts: number; host_names: string[]; last_session_at: string | null; now: boolean; bi_person: { id: number; name: string; department: string } | null }
 export type BiPage<T, X = object> = { items: T[]; total: number } & X & Record<string, unknown>;
-export interface BiOwnerBrief { name: string; email: string; department: string; state: BiState; state_ru: string; level: string; multi: boolean; seen_at: string }
+export interface BiOwnerBrief { name: string; email: string; department: string; state: BiState; state_ru: string; level: string; multi: boolean; seen_at: string; old_record?: boolean }
 
 export const api = {
   login: (login: string, password: string, domain = "") => req<Me | { totp_required: true; challenge: string }>("POST", "/auth/login", { login, password, domain }),

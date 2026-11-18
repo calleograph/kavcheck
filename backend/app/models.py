@@ -1129,6 +1129,22 @@ class DeviceUser(Base):
     __table_args__ = (Index("ix_dev_users_login", "login"), Index("ix_dev_users_host", "source_id", "host_id", "last_seen_at"))
 
 
+class DeviceSession(Base):
+    """Сеанс пользователя по наблюдениям KAV Checker: KSC не хранит время входа и выхода, поэтому границы — между двумя опросами списка вошедших.
+    Вход — между start_after (предыдущий опрос, пользователя не было) и started_at (первый опрос, где он в списке); start_after пуст — сеанс шёл уже до начала наблюдений.
+    Выход — между last_active_at (последний опрос в списке) и ended_at (первый опрос, где его нет); ended_at пуст — сеанс продолжается."""
+    __tablename__ = "dev_sessions"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ksc_sources.id", ondelete="CASCADE"), nullable=False)
+    host_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    start_after: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    last_active_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    __table_args__ = (Index("ix_dev_sessions_host", "source_id", "host_id", "started_at"), Index("ix_dev_sessions_open", "source_id", "ended_at"))
+
+
 # ------------------------------------------------------------------------------------------------ главная: лицензии и ежедневные срезы
 class LicenseState(Base):
     """Состояние чтения лицензий по источнику KSC (читает worker): когда, чем закончилось, какие таблицы и столбцы найдены (для диагностики администратором)."""
@@ -1540,6 +1556,7 @@ class BiDevice(Base):
     name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     short: Mapped[str] = mapped_column(String(300), nullable=False, default="")                # короткое имя в нижнем регистре (сопоставление с KSC)
     names: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)                # прежние имена: [{name, first, last}]
+    aliases: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)              # другие написания в той же ячейке выгрузки (FQDN, «имя~~N»): для точного сравнения с KSC
     generic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)              # условное имя: с KSC по имени не сопоставляется
     os: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     os_family: Mapped[str] = mapped_column(String(8), nullable=False, default="")              # windows | linux | mac | ""

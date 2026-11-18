@@ -128,6 +128,7 @@ async def card(source_id: str, host_id: int, su: SessionUser = Depends(require_u
             "zones": [zn.get(str(z), str(z)) for z in d.get("zones") or []], "last_connected": row.last_connected, "active": row.active, "online": row.online,
             "current": [R.user_out(u) for u in vis if u.session_now], "last_user": next((R.user_out(u) for u in vis if u.last_session_at), None),
             "week": [R.user_out(u) for u in vis if u.kind == "user" and R.seen_week_py(u, cut)], "history": [R.user_out(u) for u in vis if not u.session_now][:200],
-            "hidden_service": sum(1 for u in us if u.kind != "user") if not show_service else 0, "eol": await EOLR.host_items(db, sid, host_id), "limits": LIMITS}
+            "hidden_service": sum(1 for u in us if u.kind != "user") if not show_service else 0, "eol": await EOLR.host_items(db, sid, host_id), "limits": LIMITS,
+            **await R.sessions(db, sid, host_id)}
 
 

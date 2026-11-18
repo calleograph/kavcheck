@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type EolFinding, type Host, type HostVulnsAll } from "../api";
+import { api, type ApiError, type DeviceCard, type EolFinding, type Host, type HostVulnsAll } from "../api";
 import { HostVulnsTable } from "../components/HostVulnsTable";
 import { HardwareTab, HwProblems, useHardware } from "../components/HostHardware";
 import { NoSource, type Ctx } from "../App";
@@ -8,7 +8,8 @@ import { ActivityBadge, Fetched, OnlineBadge } from "../components/Common";
 import { ListFoot, VirtualRows, staticList, useInfinite, useKept, type Chunk } from "../components/Infinite";
 import { Icon } from "../components/Icons";
 import { FilterBar, ReportButton } from "../components/FilterBar";
-import { OwnerBlock } from "../components/OwnerBlock";
+import { OwnerBlock, OwnerSub } from "../components/OwnerBlock";
+import { SessionsTable, UserChip, UserSub, UsersKv } from "../components/HostPeople";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { maskMatcher } from "../mask";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint, BackLink } from "../components/ui";
@@ -80,7 +81,7 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
               <SortTh k="group" label="Группа" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><SortTh k="last_connected" label="Подключение к KSC" sort={sort} desc={desc} onSort={onSort} className="hide-sm" /><th>Связь</th><th>Онлайн</th></tr></thead>
             <tbody>
               <VirtualRows list={list} colSpan={8} estimate={46} row={(h) => (
-                <tr className={sel.has(h.host_id) ? "sel" : ""}><td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}{h.zone && <span className="sub zone-sub" title="Зона ответственности">{h.zone}</span>}</td><td className="mono nowrap hide-sm">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
+                <tr className={sel.has(h.host_id) ? "sel" : ""}><td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td><td><Link to={`/hosts/${h.host_id}`}>{h.name}</Link>{h.fqdn && h.fqdn !== h.name && <span className="sub">{h.fqdn}</span>}{h.zone && <span className="sub zone-sub" title="Зона ответственности">{h.zone}</span>}<OwnerSub o={h.owner} compact /><UserSub u={h.user} /></td><td className="mono nowrap hide-sm">{h.ip || "—"}</td><td className="hide-sm">{h.os}{h.os_version && <span className="sub">{h.os_version}</span>}</td><td className="small hide-sm">{h.group}</td>
                   <td className="nowrap hide-sm">{fmt(h.last_connected)}</td><td><ActivityBadge days={h.days_since_connection} activityDays={eff} /></td><td><OnlineBadge online={h.online} seen={h.last_visible} /></td></tr>)} />
               {!list.items.length && !list.loading && <tr><td colSpan={8}><Empty icon="monitor" title="Компьютеров не найдено">Измените поиск или фильтр связи с KSC.</Empty></td></tr>}
             </tbody>
@@ -97,13 +98,13 @@ export default function HostsPage({ ctx }: { ctx: Ctx }) {
   );
 }
 
-type HostTab = "software" | "vulns" | "eol" | "events" | "hardware";
+type HostTab = "software" | "vulns" | "eol" | "events" | "hardware" | "sessions";
 
 export function HostPage({ ctx }: { ctx: Ctx }) {
   const { hostId } = useParams();
   const [sp, setSp] = useSearchParams();
   const rawTab = sp.get("tab") === "vdb" ? "vulns" : sp.get("tab");                     // прежняя вкладка «Внешние базы» объединена с «Уязвимостями»
-  const tab = (["software", "vulns", "eol", "events", "hardware"].includes(rawTab ?? "") ? rawTab : "software") as HostTab;
+  const tab = (["software", "vulns", "eol", "events", "hardware", "sessions"].includes(rawTab ?? "") ? rawTab : "software") as HostTab;
   const [vulns, setVulns] = useState<HostVulnsAll | null>(null);
   const [vErr, setVErr] = useState("");
   const [evGroup, setEvGroup] = useState<EvFilter>(""); const [evThreat, setEvThreat] = useState(""); const [report, setReport] = useState(false);
@@ -126,6 +127,13 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
     api.eol.host(ctx.current.id, Number(hostId)).then((r) => setEol(r.items)).catch((e) => setEolErr((e as ApiError).message));
   }, [ctx.current, hostId]);
   const hwq = useHardware(Number(hostId), !!ctx.current && !!hostId);      // одна выборка из KSC для строки «Сведения», предупреждений и вкладки
+  const [people, setPeople] = useState<DeviceCard | null>(null);         // пользователи и сеансы — по наблюдениям KAV Checker, KSC не опрашивается
+  const [peopleErr, setPeopleErr] = useState("");
+  useEffect(() => {
+    setPeople(null); setPeopleErr("");
+    if (!ctx.current || !hostId) return;
+    api.devices.card(ctx.current.id, Number(hostId)).then(setPeople).catch((e) => setPeopleErr((e as ApiError).message));
+  }, [ctx.current, hostId]);
   const [d, setD] = useState<Awaited<ReturnType<typeof api.hosts.one>> | null>(null);
   const [err, setErr] = useState("");
   const [filter, setFilter] = useState("");
@@ -142,6 +150,9 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
   const swList = staticList(`host-sw:${h.host_id}:${filter}`, sw);
   const facts: [string, React.ReactNode][] = [["FQDN", h.fqdn || "—"], ["IP-адрес", <span className="mono">{h.ip || "—"}</span>], ["Операционная система", `${h.os} ${h.os_version}`.trim() || "—"], ["Дистрибутив Linux", h.linux_release ? <span className="mono">{h.linux_release}</span> : "—"],
     ["Аппаратная часть", hwq.d ? (hwq.d.hw.known ? <span className={hwq.d.problems.length ? "warn-text" : ""}>{hwq.d.hw.line}{hwq.d.hw.virtual ? " (ВМ)" : ""}</span> : <span className="muted">Нет данных</span>) : hwq.err ? <span className="muted">Нет данных</span> : <span className="muted">…</span>],
+    ["Сейчас в системе", people ? (people.current.length ? people.current.map((u, i) => <span key={i} className="block"><UserChip u={u} /></span>)
+      : people.last_user ? <span>никого · последний: <UserChip u={people.last_user} /> <span className="muted small">{fmt(people.last_user.last_session_at)}</span></span> : <span className="muted">нет наблюдений</span>)
+      : <span className="muted">{peopleErr ? "нет данных" : "…"}</span>],
     ["Группа администрирования", h.group || "—"], ["Подключение к KSC", fmt(h.last_connected)], ["Последняя видимость", fmt(h.last_visible)], ["Обновление антивирусных баз", fmt(h.last_av_update)],
     ["Полная проверка", fmt(h.last_full_scan)], ["Постоянная защита", h.rtp_state_label || "—"], ["Идентификатор в KSC", <span className="mono">{h.host_id}</span>]];
   const st = h.ksc_status;
@@ -174,7 +185,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
       </div>
       <div className="mt">
         <Tabs<HostTab> label="Сведения о компьютере" value={tab} onChange={(t) => setSp((p) => { if (t === "software") p.delete("tab"); else p.set("tab", t); return p; }, { replace: true })}
-          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: vulns && !vulns.external_checked ? "Уязвимости (идёт проверка по внешним базам)" : vulns?.ext && ["none", "stalled"].includes(vulns.ext.state) ? "Уязвимости (внешние базы не подготовлены)" : "Уязвимости", count: vulns?.counts.total }, { id: "eol", label: "EOL", count: eol?.length }, { id: "events", label: "События безопасности" }, { id: "hardware", label: "Аппаратная часть", ...(hwq.d && hwq.d.problems.length ? { count: hwq.d.problems.length } : {}) }]} />
+          items={[{ id: "software", label: "Установленное ПО", count: d.software.length }, { id: "vulns", label: vulns && !vulns.external_checked ? "Уязвимости (идёт проверка по внешним базам)" : vulns?.ext && ["none", "stalled"].includes(vulns.ext.state) ? "Уязвимости (внешние базы не подготовлены)" : "Уязвимости", count: vulns?.counts.total }, { id: "eol", label: "EOL", count: eol?.length }, { id: "events", label: "События безопасности" }, { id: "hardware", label: "Аппаратная часть", ...(hwq.d && hwq.d.problems.length ? { count: hwq.d.problems.length } : {}) }, { id: "sessions", label: "Пользователи и сеансы", count: people?.sessions.length }]} />
       </div>
       {tab === "software" && <>
         <div className="section-head"><span className="muted small">Программ: {num(d.software.length)}</span><div className="spacer" />
@@ -193,6 +204,9 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
           : <><HostVulnsTable data={vulns} hostId={h.host_id} onMore={async (off) => (await api.hosts.vulns(h.host_id, vulns.external_checked, off)).groups} /><p className="muted small mt-sm"><Link to={`/vulnerabilities/hosts/${h.host_id}`}>Сводка уязвимостей KSC</Link> — счётчики по уровням опасности.</p></>)}
       {tab === "eol" && <EolTable items={eol} err={eolErr} />}
       {tab === "hardware" && <HardwareTab d={hwq.d} err={hwq.err} />}
+      {tab === "sessions" && (peopleErr ? <p className="muted">Пользователи: {peopleErr}</p> : !people ? <div className="card"><SkelRows rows={4} cols={3} /></div>
+        : <div className="split even"><div className="card"><h2>Пользователи</h2><UsersKv d={people} />{people.hidden_service > 0 && <p className="muted small">Скрыто служебных и системных учётных записей: {people.hidden_service}.</p>}</div>
+          <div className="card"><h2>Сеансы</h2><SessionsTable d={people} /></div></div>)}
       {tab === "events" && <><p className="muted small">События обнаружения за 30 суток: новые сверху.</p><EventList ctx={ctx} days={30} hostId={h.host_id} group={evGroup} threat={evThreat} onGroup={setEvGroup} onThreat={setEvThreat} /></>}
     </section>
   );

@@ -101,7 +101,10 @@ export function OwnerBlock({ sid, hid, activityDays }: { sid: string; hid: numbe
     <section className="own-block" aria-labelledby={`own-${sid}-${hid}`}>
       <div className="own-title"><h3 className="h3" id={`own-${sid}-${hid}`}>Владелец и история принадлежности</h3>
         {b.can_people && b.devices.length > 0 && <ReportButton onClick={() => setReport(b.devices[0].id)} title="Отчёт: история принадлежности этого устройства" />}</div>
-      {b.devices.map((d) => <BiDeviceView key={d.id} d={d} canPeople={b.can_people} showKsc={false} />)}
+      {b.devices.map((d) => <div key={d.id}>
+        {d.via && <p className="muted small">Это прежняя запись KSC того же устройства: сейчас оно сопоставлено с {d.via.same_source ? <Link to={`/hosts/${d.via.host_id}`}>{d.via.host_name}</Link> : <b>{d.via.host_name}</b>}
+          {d.via.same_source ? "" : ` (${d.via.ksc_source})`}. Владелец показан по этому устройству.{d.via.why ? ` ${d.via.why}.` : ""}</p>}
+        <BiDeviceView d={d} canPeople={b.can_people} showKsc={false} /></div>)}
       {!b.devices.length && <p className="muted small">{b.note}.
         {b.candidates.length > 0 && <> Возможные устройства BI: {b.candidates.map((c) => `${c.name} (${c.source}) — ${c.level_ru.toLowerCase()}`).join("; ")}.{b.can_decide && <> <Link to="/devices?tab=match">Решить в «Сопоставлении BI и KSC»</Link>.</>}</>}</p>}
       {report !== null && <QuickReportPanel kind="quick_bi" title="Отчёт: история принадлежности" lede="Связи устройства с сотрудниками по выгрузкам BI" options={{ scope: false, bi: true }}
@@ -111,8 +114,12 @@ export function OwnerBlock({ sid, hid, activityDays }: { sid: string; hid: numbe
 }
 
 /** Владелец по BI под именем компьютера: текущий, иначе последний известный с пометкой. */
-export function OwnerSub({ o }: { o?: BiOwnerBrief | null }) {
+export function OwnerSub({ o, compact = false }: { o?: BiOwnerBrief | null; compact?: boolean }) {
   if (!o) return null;
+  if (compact)                                   // строка списка: только кто; состояние и основание — в подсказке
+    return <span className="owner-sub" title={[o.state_ru, o.department, o.email, o.level === "auto" ? "сопоставление предполагаемое" : "", o.old_record ? "владелец по актуальной записи KSC этого устройства" : ""].filter(Boolean).join(" · ")}>
+      <span className="muted">владелец: </span>{o.multi ? "несколько" : o.name}{o.state !== "current" && <span className="muted"> (прежний)</span>}</span>;
   return <span className="owner-sub" title={`${o.state_ru}${o.level === "auto" ? " · сопоставление предполагаемое" : ""}`}>{o.multi ? "владельцы: несколько" : o.name}{o.department && <span className="muted"> · {o.department}</span>}
-    {o.email && <> · <a href={`mailto:${o.email}`}>{o.email}</a></>}{o.state !== "current" && <span className="muted"> ({o.state_ru.toLowerCase()})</span>}</span>;
+    {o.email && <> · <a href={`mailto:${o.email}`}>{o.email}</a></>}{o.state !== "current" && <span className="muted"> ({o.state_ru.toLowerCase()})</span>}
+    {o.old_record && <span className="muted"> · по актуальной записи KSC</span>}</span>;
 }

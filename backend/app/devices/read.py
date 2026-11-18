@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, exists, func, or_, select, tuple_, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import DeviceUser, EolHostStat, ZcHost, ZcHostZone, ZcSource, Zone
+from ..models import DevicesState, DeviceSession, DeviceUser, EolHostStat, ZcHost, ZcHostZone, ZcSource, Zone
 from ..netsearch import parse
 from ..search import any_of, column_like, local_like
 
@@ -125,3 +125,14 @@ def seen_week_py(u: DeviceUser, cut: datetime) -> bool:
 def user_out(u: DeviceUser) -> dict:
     return {"login": u.login if u.resolved else "", "domain": u.domain, "resolved": u.resolved, "kind": u.kind, "now": u.session_now, "last_session_at": u.last_session_at, "first_seen_at": u.first_seen_at,
             "initial": u.initial}
+
+
+async def sessions(db: AsyncSession, sid: uuid.UUID, host_id: int, *, limit: int = 200) -> dict:
+    """Сеансы пользователей компьютера по наблюдениям (новые сверху): вход и выход — интервалы между опросами, а не точное время из системы."""
+    S, U = DeviceSession, DeviceUser
+    rows = (await db.execute(select(S, U.login, U.domain, U.last_session_at).join(U, and_(U.source_id == S.source_id, U.host_id == S.host_id, U.user_key == S.user_key))
+                             .where(S.source_id == sid, S.host_id == host_id).order_by(S.started_at.desc(), S.id.desc()).limit(limit))).all()
+    st = await db.get(DevicesState, sid)
+    return {"sessions": [{"login": login, "domain": domain, "start_after": s.start_after, "started_at": s.started_at, "ended_at": s.ended_at, "open": s.ended_at is None,
+                          "last_active_at": (last or s.last_active_at) if s.ended_at is None else s.last_active_at} for s, login, domain, last in rows],
+            "observed_since": st.first_poll_at if st else None, "polled_at": st.polled_at if st else None}

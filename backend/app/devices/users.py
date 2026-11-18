@@ -14,11 +14,11 @@ import re
 import time
 from datetime import timedelta, timezone
 
-from sqlalchemy import delete, select, tuple_, update
+from sqlalchemy import delete, insert, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..ksc import queries as q
-from ..models import DevicesState, DeviceUser, KscSource, utcnow
+from ..models import DevicesState, DeviceSession, DeviceUser, KscSource, utcnow
 from ..search import matcher
 
 log = logging.getLogger("app.devices")
@@ -67,6 +67,7 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
     async with sm() as db:
         st = await db.get(DevicesState, sid)
         first = st is None or st.first_poll_at is None
+        prev_poll = None if st is None else st.polled_at
         if st is None:
             st = DevicesState(source_id=sid, first_poll_at=started)
             db.add(st)
@@ -76,6 +77,7 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
     async with sm() as db:                                # кто числился «вошёл сейчас» до опроса: после опроса те, кого в списке вошедших не застали, помечаются вышедшими
         active_before = {(int(h), k) for h, k in (await db.execute(select(DeviceUser.host_id, DeviceUser.user_key).where(DeviceUser.source_id == sid, DeviceUser.session_now.is_(True)))).all()}
     seen_active: set[tuple[int, str]] = set()
+    user_active: set[tuple[int, str]] = set()             # сеансы ведутся только для пользователей (служебные и системные сеансы есть на каждом компьютере постоянно)
     after, seen_rows, touched, written = 0, 0, 0, 0
     stale = started - timedelta(hours=12)                 # без изменений строка переписывается раз в 12 часов (для срока хранения), а не при каждом опросе: писать сотни тысяч строк ежечасно незачем
     while True:
@@ -96,6 +98,7 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
             else:
                 a["actual"] = a["actual"] or actual
         seen_active |= {k for k, a in agg.items() if a["actual"]}
+        user_active |= {k for k, a in agg.items() if a["actual"] and a["kind"] == "user" and a["resolved"]}
         hosts = sorted({h for h, _ in agg})
         async with sm() as db:
             have = {(u.host_id, u.user_key): u for u in (await db.execute(select(DeviceUser).where(DeviceUser.source_id == sid, DeviceUser.host_id.in_(hosts)))).scalars()}
@@ -124,8 +127,24 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
         for i in range(0, len(gone), 2000):
             await db.execute(update(DeviceUser).where(DeviceUser.source_id == sid, tuple_(DeviceUser.host_id, DeviceUser.user_key).in_(gone[i:i + 2000])).values(session_now=False))
         await db.execute(delete(DeviceUser).where(DeviceUser.source_id == sid, DeviceUser.last_seen_at < started - timedelta(days=retention_days)))
+        await track_sessions(db, sid, user_active, active_before, started, prev_poll, first=first, retention_days=retention_days)
         st = await db.get(DevicesState, sid)
         st.polled_at, st.duration_ms, st.rows_seen, st.users_n, st.error, st.error_at, st.requested_at = started, int((time.monotonic() - t0) * 1000), seen_rows, touched, None, None, None
         await db.commit()
     return {"rows": seen_rows, "users": touched, "written": written, "seconds": round(time.monotonic() - t0, 1), "initial": first}
 
+
+
+async def track_sessions(db: AsyncSession, sid, active: set[tuple[int, str]], active_before: set[tuple[int, str]], now, prev_poll, *, first: bool, retention_days: int) -> None:
+    """Границы сеансов по двум соседним опросам: появился в списке вошедших — сеанс начат (между прошлым и этим опросом), пропал — завершён.
+    Был в списке ещё до начала ведения сеансов (первый опрос, обновление версии) — начало неизвестно."""
+    open_ = {(int(h), k): i for i, h, k in (await db.execute(select(DeviceSession.id, DeviceSession.host_id, DeviceSession.user_key)
+                                                                 .where(DeviceSession.source_id == sid, DeviceSession.ended_at.is_(None)))).all()}
+    ended = [i for k, i in open_.items() if k not in active]
+    for j in range(0, len(ended), 2000):                  # последний опрос, где пользователь ещё был в списке, — предыдущий
+        await db.execute(update(DeviceSession).where(DeviceSession.id.in_(ended[j:j + 2000])).values(ended_at=now, last_active_at=prev_poll or now))
+    new = [{"source_id": sid, "host_id": h, "user_key": k, "start_after": None if first or (h, k) in active_before or prev_poll is None else prev_poll,
+            "started_at": now, "last_active_at": now} for h, k in sorted(active - open_.keys())]
+    for j in range(0, len(new), 2000):
+        await db.execute(insert(DeviceSession), new[j:j + 2000])
+    await db.execute(delete(DeviceSession).where(DeviceSession.source_id == sid, DeviceSession.ended_at < now - timedelta(days=retention_days)))

@@ -263,11 +263,13 @@ async def publish(db: AsyncSession, src: BiSource, imp: BiImport, p: Parsed, sna
     # устройства
     devs: dict[str, dict] = {}
     owners_now: dict[str, set] = defaultdict(set)
+    aliases: dict[str, list] = defaultdict(list)
     for r in recs:
         devs[r["dkey"]] = r
+        aliases[r["dkey"]] += [a for a in r.get("aliases", ()) if a not in aliases[r["dkey"]]]
         if r["pkey"]:
             owners_now[r["dkey"]].add(r["pkey"])
-    D_CMP = ("name", "short", "generic", "os", "os_family", "personal", "av", "owners_now", "present", "names", "search")
+    D_CMP = ("name", "short", "generic", "os", "os_family", "personal", "av", "owners_now", "present", "names", "search", "aliases")
     loaded = await _load(db, (BiDevice.id, BiDevice.dkey, *(getattr(BiDevice, c) for c in D_CMP)), (BiDevice.source_id == sid,))
     have_d = {x[1]: (x[0], x[2], x[11]) for x in loaded}
     old_d = {x[0]: dict(zip(D_CMP, x[2:])) for x in loaded}
@@ -275,17 +277,17 @@ async def publish(db: AsyncSession, src: BiSource, imp: BiImport, p: Parsed, sna
     for k, r in devs.items():
         av = {"uses": r["av_uses"], "other": r["av_other"], "origin": r["origin"]}
         v = {"name": r["device_name"][:300], "short": r["short"][:300], "generic": r["generic"], "os": r["os"][:200], "os_family": PR.os_family(r["os"]), "personal": r["personal"], "av": av,
-             "owners_now": len(owners_now[k]), "last_seen_at": snap, "last_import_id": iid, "present": True}
+             "owners_now": len(owners_now[k]), "last_seen_at": snap, "last_import_id": iid, "present": True, "aliases": aliases[k][:10]}
         if k in have_d:
             i, old, names = have_d[k]
             names = list(names or [])
             if old and old != v["name"]:                                 # переименование (только при устойчивом идентификаторе): прежнее имя остаётся в истории и поиске
                 names.append({"name": old, "until": snap.isoformat(timespec="seconds")})
             v["names"] = names[-20:]
-            v["search"] = " ".join([v["name"], *(n["name"] for n in v["names"])]).lower()[:1500]
+            v["search"] = " ".join([v["name"], *v["aliases"], *(n["name"] for n in v["names"])]).lower()[:1500]
             upd.append({"id": i, **v})
         else:
-            new.append({"source_id": sid, "dkey": k[:700], **v, "names": [], "search": v["name"].lower(), "first_seen_at": snap})
+            new.append({"source_id": sid, "dkey": k[:700], **v, "names": [], "search": " ".join([v["name"], *v["aliases"]]).lower()[:1500], "first_seen_at": snap})
     await _save(db, BiDevice, upd, old_d, snap, iid)
     did = {k: i for k, (i, _n, _ns) in have_d.items()} | await _insert(db, BiDevice, new, "dkey")
     # связи «устройство × сотрудник»

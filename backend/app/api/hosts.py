@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, current_source, get_db, require_user
@@ -10,7 +11,7 @@ from ..ksc import hosts as H
 from ..ksc import protection as P
 from ..ksc import queries as q
 from ..ksc.driver import KscError
-from ..models import KscSource
+from ..models import DeviceUser, KscSource
 from .vulns import unsupported
 
 router = APIRouter(prefix="/hosts", tags=["hosts"])
@@ -19,6 +20,24 @@ router = APIRouter(prefix="/hosts", tags=["hosts"])
 
 def _ksc(exc: KscError) -> HTTPException:
     return HTTPException(status_code=502 if exc.code in ("connect", "auth", "query") else 422, detail={"code": exc.code, "message": exc.message})
+
+
+async def people_of(db: AsyncSession, sid, items: list[dict], *, pd: bool) -> None:
+    """Кто за компьютером: владелец по BI (owner) и пользователь по спискам вошедших KSC (user — сейчас в системе, иначе последний замеченный в сеансе)."""
+    from ..bi.read import owners_for  # noqa: PLC0415
+
+    ids = [int(it["host_id"]) for it in items]
+    owners = await owners_for(db, sid, ids, pd=pd)
+    seen: dict[int, DeviceUser] = {}
+    if ids:
+        for u in (await db.execute(select(DeviceUser).where(DeviceUser.source_id == sid, DeviceUser.host_id.in_(ids), DeviceUser.kind == "user", DeviceUser.resolved.is_(True),
+                                                            DeviceUser.last_session_at.is_not(None))
+                                   .order_by(DeviceUser.session_now.desc(), DeviceUser.last_session_at.desc()))).scalars():
+            seen.setdefault(int(u.host_id), u)
+    for it in items:
+        u = seen.get(int(it["host_id"]))
+        it["owner"] = owners.get(int(it["host_id"]))
+        it["user"] = {"login": f"{u.domain}\\{u.login}" if u.domain else u.login, "now": u.session_now, "at": u.last_session_at} if u else None
 
 
 @router.get("")
@@ -57,6 +76,7 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
     from .zones import zone_labels  # noqa: PLC0415
 
     await zone_labels(db, src, items)
+    await people_of(db, src.id, items, pd=su.is_analyst)
     return {"items": items, "total": total, "hidden": hidden, "offset": offset, "limit": limit, "activity_days": active_days, "fetched_at": now}
 
 

@@ -77,7 +77,7 @@ export function GlobalSearch({ sourceId, role, hier, page = false }: { sourceId:
     if (term.length >= 2 || cat) {
       if (!cat) { const f = fnHits(); if (f.length) g.push({ title: "Разделы, настройки и действия", hits: f }); }
       if (!cat) { const r = repHits(); if (r.length) g.push({ title: "Отчёты", hits: r }); }
-      if ((!cat || cat === "hosts") && sourceId && term.length >= 2) g.push({ title: CATS.hosts, hits: [...hosts.map((h) => ({ key: `h${h.host_id}`, icon: "monitor" as IconName, title: h.name, sub: [h.ip, h.os, h.group].filter(Boolean).join(" · "), to: `/hosts/${h.host_id}` })),
+      if ((!cat || cat === "hosts") && sourceId && term.length >= 2) g.push({ title: CATS.hosts, hits: [...hosts.map((h) => ({ key: `h${h.host_id}`, icon: "monitor" as IconName, title: h.name, sub: [h.ip, h.os, h.owner && !h.owner.multi ? `владелец: ${h.owner.name}` : "", h.user ? `${h.user.now ? "сейчас" : "был"}: ${h.user.login}` : "", h.group].filter(Boolean).join(" · "), to: `/hosts/${h.host_id}` })),
         { key: "hall", icon: "search", title: `Все компьютеры с «${term}»`, to: `/hosts?activity=all&q=${enc}`, strong: false }] });
       if ((!cat || cat === "software") && sourceId && term.length >= 2) g.push({ title: CATS.software, hits: [...products.map((p) => ({ key: `p${p.key}`, icon: "layers" as IconName, title: p.name, sub: [p.publisher, p.latest_version && `новейшая ${p.latest_version}`].filter(Boolean).join(" · "), to: `/software/p/${encodeURIComponent(p.key)}` })),
         { key: "pall", icon: "search", title: `Все программы с «${term}»`, to: `/software?q=${enc}` }] });

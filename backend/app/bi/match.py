@@ -10,7 +10,10 @@
   главного признака активности, см. docs/ksc/DEVICES.md). Актуальной считается запись, активная за период (по умолчанию 30 дней): единственная — сразу, при нескольких — с более
   поздним подключением, если разница не меньше порога (по умолчанию 3 дня) и данные источников свежи. Давно не подключавшиеся записи (stale) не мешают. Нет активных — «актуальный
   компьютер KSC не найден» (inactive); даты в будущем, почти равные даты, устаревший срез данных — ручное решение с объяснением. Подтверждённые связи автоматически не переключаются:
-  связь по правилу при переходе компьютера обновляется с сохранением прежней (history), подтверждённая администратором — только предложением «переход между KSC»."""
+  связь по правилу при переходе компьютера обновляется с сохранением прежней (history), подтверждённая администратором — только предложением «переход между KSC».
+* Вход владельца (0.32.0). Учётная запись из списков вошедших KSC совпадает с почтой владельца по BI, имя совпадает (в том числе FQDN или «имя~~N» из той же ячейки),
+  запись KSC актуальна и однозначна — связь подтверждается правилом RULE_LOGIN без ручного решения. Тот же признак выбирает запись при ничьей дат, а подтверждение
+  администратора переносит на новую запись того же компьютера (прежняя остаётся «прежним соответствием»)."""
 from __future__ import annotations
 
 import hashlib
@@ -32,6 +35,10 @@ LINKED = ("auto", "confirmed")
 MANUAL = ("confirmed", "rejected", "manual")          # manual — автоподтверждение отменено администратором: пара больше не подтверждается правилом, решение — вручную
 RULE = "правило: точное совпадение имени"
 RULE_NOTE = "Подтверждено автоматически по правилу точного совпадения имени и активности (однозначная актуальная запись KSC; физическая идентичность устройства этим не доказана)"
+RULE_LOGIN = "правило: имя и вход владельца"
+RULE_LOGIN_NOTE = ("Подтверждено автоматически: имя совпадает, запись KSC актуальна, и на этом компьютере работал владелец по BI — его учётная запись в списках вошедших KSC "
+                   "совпадает с рабочей почтой")
+RULES = (RULE, RULE_LOGIN)                            # связи, установленные правилом: пересматриваются при каждом расчёте
 DEFAULT_DAYS = 30                                     # период активности, суток
 DEFAULT_MARGIN = 3                                    # записи, активные в пределах периода, различаются по дате подключения не меньше чем на столько суток, чтобы выбрать позднюю
 KEEP = MANUAL + ("history",)                          # строки, которые пересчёт не удаляет
@@ -88,6 +95,16 @@ async def ksc_index(db: AsyncSession, gens: dict, shorts: set[str], fqdns: set[s
                 if h["fqdn"] and h["fqdn"] in fqdns:
                     by_fqdn[h["fqdn"]].append(h)
     return by_short, by_fqdn, hosts
+
+
+def spellings(d: dict) -> list[str]:
+    """Имя устройства BI и другие написания из той же ячейки выгрузки (FQDN, «имя~~N»)."""
+    return [d["name"], *(d.get("aliases") or ())]
+
+
+def exact_of(d: dict, h: dict) -> bool:
+    """Полное имя совпадает: одно из написаний BI равно имени компьютера KSC или (для написания с доменом) его FQDN."""
+    return any(norm_name(n) == norm_name(h["name"]) or ("." in n and norm_name(n) == h["fqdn"]) for n in spellings(d))
 
 
 def fmt_d(t) -> str:
@@ -149,6 +166,18 @@ def pick_current(hosts: list[dict], now, days: int, margin_days: int, built: dic
             return {"verdict": "old_data", "winner": None, "short": r, "reason": r}
     return {"verdict": "latest", "winner": a, "short": f"активен на нескольких источниках KSC, на {lbl(a)} подключение позже ({fmt_d(a['last'])}, на {lbl(b)} — {fmt_d(b['last'])})",
             "reason": f"активны несколько записей ({listing}); подключение на {lbl(a)} позже не менее чем на {dn(margin_days)}, данные источников свежи"}
+
+
+def by_login(pick: dict, hosts: list[dict], worked, names: dict) -> dict:
+    """Ничья по датам подключения (активны несколько записей с близкими датами): актуальна та единственная, где работал владелец по BI."""
+    if pick["verdict"] != "tie":
+        return pick
+    hits = [h for h in hosts if h["act"] == "active" and worked(h)]
+    if len(hits) != 1:
+        return pick
+    w = hits[0]
+    return {"verdict": "login", "winner": w, "short": f"из нескольких активных записей владелец по BI работал только на записи в «{names.get(w['sid'], '?')}»",
+            "reason": f"{pick['reason']}; выбрана запись, на которой замечен вход владельца"}
 
 
 def other_reason(h: dict, w: dict | None, days: int, names: dict, *, src: bool = False) -> str:
@@ -217,7 +246,7 @@ def decide(dev: dict, cands: list[dict], owner_locals: set[str], logins_of, same
             return "conflict", [*sig, f"ОС различается: BI — {OS_RU[fb]}, KSC — {OS_RU[fk]}"]
         sig.append(f"семейство ОС совпадает ({OS_RU[fb]})")
         strong = True
-    if "." in dev["name"] and dev["name"].lower() == h["fqdn"]:
+    if h["fqdn"] and any("." in n and norm_name(n) == h["fqdn"] for n in spellings(dev)):
         sig.append("полное имя (FQDN) совпадает")
         strong = True
     if owner_locals & logins_of(h):
@@ -252,19 +281,20 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
         if stamp == src.match_stamp and not force:
             return None
         auto_exact, days, margin = settings_of(src)
-        devs = [dict(id=i, name=n, short=s, names=ns or [], os_family=f, av=av or {}) for i, n, s, ns, f, av in (await db.execute(
-            select(BiDevice.id, BiDevice.name, BiDevice.short, BiDevice.names, BiDevice.os_family, BiDevice.av).where(BiDevice.source_id == bi_source_id, BiDevice.generic.is_(False)))).all()]
+        devs = [dict(id=i, name=n, short=s, names=ns or [], aliases=al or [], os_family=f, av=av or {}) for i, n, s, ns, al, f, av in (await db.execute(
+            select(BiDevice.id, BiDevice.name, BiDevice.short, BiDevice.names, BiDevice.aliases, BiDevice.os_family, BiDevice.av)
+            .where(BiDevice.source_id == bi_source_id, BiDevice.generic.is_(False)))).all()]
         locals_: dict[int, set] = defaultdict(set)
         for d, email in (await db.execute(select(BiOwner.device_id, BiPerson.email).join(BiPerson, BiPerson.id == BiOwner.person_id).where(BiOwner.source_id == bi_source_id, BiPerson.email != ""))).all():
             locals_[int(d)].add(email.split("@", 1)[0].lower())
         kept = list((await db.execute(select(BiMatch).where(BiMatch.bi_source_id == bi_source_id, BiMatch.level.in_(KEEP)))).scalars())
-        prior = {m.device_id: m for m in kept if m.level == "confirmed" and m.decided_by == RULE}      # связи по правилу пересматриваются каждый раз, но не переключаются без явной причины
+        prior = {m.device_id: m for m in kept if m.level == "confirmed" and m.decided_by in RULES}      # связи по правилу пересматриваются каждый раз, но не переключаются без явной причины
         manual = {(m.device_id, m.ksc_source_id, m.host_id): m for m in kept if m.level in MANUAL and m.id not in {p.id for p in prior.values()}}
         history = {(m.device_id, m.ksc_source_id, m.host_id): m for m in kept if m.level == "history"}
         names, built = await ksc_meta(db, gens)
         shorts = {d["short"] for d in devs if d["short"]} | {short_name(x["name"]) for d in devs for x in d["names"]}
         want = {(s_, h_) for _d, s_, h_ in manual} | {(m.ksc_source_id, m.host_id) for m in prior.values()}
-        by_short, by_fqdn, hosts = await ksc_index(db, gens, shorts, {d["name"].lower() for d in devs if "." in d["name"]}, want)
+        by_short, by_fqdn, hosts = await ksc_index(db, gens, shorts, {norm_name(n) for d in devs for n in spellings(d) if "." in n}, want)
         for h in hosts.values():
             h["act"] = classify_host(h, now, days)
         confirmed = {k[0] for k, m in manual.items() if m.level == "confirmed"}
@@ -273,7 +303,7 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
         for d in devs:
             seen, out, uni = set(), [], []
             for nm in [d["short"], *(short_name(x["name"]) for x in d["names"])]:
-                for h in by_short.get(nm, []) + (by_fqdn.get(d["name"].lower(), []) if "." in d["name"] else []):
+                for h in by_short.get(nm, []) + [x for n in spellings(d) if "." in n for x in by_fqdn.get(norm_name(n), [])]:
                     k = (h["sid"], h["hid"])
                     if k not in seen:
                         seen.add(k)
@@ -295,6 +325,7 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
                                                                                                          DeviceUser.resolved.is_(True)))).all():
                     logins[(s, int(hid))].add(login.lower())
         rows, n = [], defaultdict(int)
+        relinked: dict[int, str] = {}                                   # подтверждения администратора, перенесённые на новую запись KSC: id → пояснение в истории
         bi_names = Counter(norm_name(d["name"]) for d in devs)                     # точное совпадение — только если имя единственное и среди устройств BI источника
         taken = {(s_, int(h_)): dv for s_, h_, dv in (await db.execute(select(BiMatch.ksc_source_id, BiMatch.host_id, BiMatch.device_id).where(BiMatch.level == "confirmed"))).all()}
         for d in devs:
@@ -303,17 +334,28 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
             pr = prior.get(did)
             pk = (pr.ksc_source_id, pr.host_id) if pr is not None else None
             lg = lambda h: logins[(h["sid"], h["hid"])]                       # noqa: E731
+            worked = lambda h: bool(locals_[did] & lg(h))                       # noqa: E731  владелец по BI работал на компьютере (логин KSC = почта)
             if did in confirmed:                                            # подтверждено администратором: не переключается; при явном переходе — только предложение
                 n["confirmed"] += 1
                 mk = next((m for k, m in manual.items() if k[0] == did and m.level == "confirmed"), None)
                 cur = hosts.get((mk.ksc_source_id, mk.host_id)) if mk else None
-                pick = pick_current(uni, now, days, margin, built, names)
+                pick = by_login(pick_current(uni, now, days, margin, built, names), out, worked, names)
                 w = pick["winner"]
                 if cur is not None and w is not None and (w["sid"], w["hid"]) != (cur["sid"], cur["hid"]) and w in out and taken.get((w["sid"], w["hid"]), did) == did:
-                    exact = norm_name(d["name"]) in (norm_name(w["name"]), w["fqdn"] if "." in d["name"] else "\0")
-                    rows.append(row_of(d, w, bi_source_id, now, "candidate", [f"возможный переход между источниками KSC: подтверждённая запись {other_reason(cur, w, days, names, src=True)}",
-                                                                              f"на источнике «{names.get(w['sid'], '?')}» — {pick['short']}"], [], "moved" if exact else "short"))
-                    n["moved"] += 1
+                    exact = exact_of(d, w)
+                    where = "новая запись того же компьютера в KSC" if w["sid"] == cur["sid"] else "переход между источниками KSC"
+                    was = f"подтверждённая запись «{cur['name']}» {other_reason(cur, w, days, names, src=True)}"
+                    level, sig = decide(d, [w], locals_[did], lg, 1, f"{'Точное совпадение имени' if exact else 'Совпадает короткое имя'}, {pick['short']}")
+                    if worked(w) and level == "auto" and pick["verdict"] in ("single", "latest", "login"):     # владелец работает на новой записи: связь переносится, прежняя — в историю
+                        row = row_of(d, w, bi_source_id, now, "confirmed", [*sig, f"{where}: {was}"], issues(d, w, locals_[did], lg(w)), "exact" if exact else "short")
+                        row.update(decided_by=RULE_LOGIN, decided_at=now, note=RULE_LOGIN_NOTE)
+                        rows.append(row)
+                        relinked[mk.id] = f"Прежнее соответствие: {was}; связь перенесена на «{w['name']}» («{names.get(w['sid'], '?')}») — там работает владелец по BI"
+                        n["relinked"] += 1
+                    else:
+                        rows.append(row_of(d, w, bi_source_id, now, "candidate", [f"возможная {where}: {was}", f"на источнике «{names.get(w['sid'], '?')}» — {pick['short']}"], [],
+                                           "moved" if exact else "short"))
+                        n["moved"] += 1
                 continue
             if not out:
                 if pr is not None:                                          # компьютер больше не найден: связь по правилу остаётся в истории
@@ -322,7 +364,7 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
                                  "name_match": pr.name_match, "host_last_connected": pr.host_last_connected, "activity": pr.activity})
                 n["none"] += 1
                 continue
-            pick = pick_current(uni, now, days, margin, built, names)
+            pick = by_login(pick_current(uni, now, days, margin, built, names), out, worked, names)
             w = pick["winner"]
             keep_prior = forced = False
             done_key = None                                                 # пара уже записана как «прежнее соответствие» — второй строкой не дублируется
@@ -343,27 +385,32 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
                     done_key = pk
             wk = (w["sid"], w["hid"]) if w is not None else None
             if w is not None and wk in {(h["sid"], h["hid"]) for h in out}:
-                exact = norm_name(d["name"]) in (norm_name(w["name"]), w["fqdn"] if "." in d["name"] else "\0")
+                exact = exact_of(d, w)
                 lead = f"{'Точное совпадение имени' if exact else 'Совпадает короткое имя'}, {'прежняя связь сохранена: данных для смены недостаточно (' + pick['short'] + ')' if forced else pick['short']}"
                 level, sig = decide(d, [w], locals_[did], lg, 1, lead)
-                if pick["verdict"] == "latest" and not forced:
+                if pick["verdict"] in ("latest", "login") and not forced:
                     sig.append(pick["reason"])                              # у единственной активной записи основание уже названо первой строкой
-                clean = (pick["verdict"] in ("single", "latest") and level in ("auto", "candidate") and bi_names[norm_name(d["name"])] == 1 and taken.get(wk, did) == did)
+                clean = (pick["verdict"] in ("single", "latest", "login") and level in ("auto", "candidate") and bi_names[norm_name(d["name"])] == 1 and taken.get(wk, did) == did)
                 nm = ("exact" if clean else "exact_dup") if exact else "short"
                 iss = issues(d, w, locals_[did], logins[wk]) if level == "auto" or nm == "exact" or keep_prior else []
                 if nm == "exact" and any(i["code"] == "os" for i in iss):
                     nm = "exact_dup"                                        # известный признак различия (ОС) — только ручное решение
-                by_rule = (nm == "exact" and auto_exact) or (keep_prior and level != "conflict")
+                # имя, однозначная актуальная запись и вход владельца — связь установлена (без включённого автоподтверждения и при совпадении только короткого имени)
+                own = (level == "auto" and worked(w) and clean and not any(i["code"] == "os" for i in iss))
+                by_rule = (nm == "exact" and auto_exact) or (keep_prior and level != "conflict") or own
                 row = row_of(d, w, bi_source_id, now, "confirmed" if by_rule else level, sig, iss, nm)
                 if by_rule:
-                    row.update(decided_by=RULE, decided_at=now, note=RULE_NOTE)
+                    by_login_ = worked(w) and level == "auto"
+                    row.update(decided_by=RULE_LOGIN if by_login_ else RULE, decided_at=now, note=RULE_LOGIN_NOTE if by_login_ else RULE_NOTE)
                     n["auto_confirmed"] += 1
                 else:
                     n[level] += 1
                 rows.append(row)
                 for h in out:
                     if (h["sid"], h["hid"]) not in (wk, done_key):
-                        rows.append(row_of(d, h, bi_source_id, now, "stale", [other_reason(h, w, days, names)], [], "exact" if norm_name(d["name"]) in (norm_name(h["name"]), h["fqdn"] if "." in d["name"] else "\0") else "short"))
+                        why = (f"активна, но вход владельца по BI замечен на другой записи («{names.get(w['sid'], '?')}»)" if pick["verdict"] == "login" and h["act"] == "active"
+                               else other_reason(h, w, days, names))
+                        rows.append(row_of(d, h, bi_source_id, now, "stale", [why], [], "exact" if exact_of(d, h) else "short"))
                         n["stale_rows"] += 1
                 continue
             if w is not None:                                               # актуальна запись, отклонённая администратором для этого устройства: прочие — устаревшие
@@ -373,11 +420,11 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
                 continue
             if pick["verdict"] in ("none_active", "no_data"):               # актуального компьютера нет: ничего не подтверждается, причина — в основании
                 for h in out:
-                    rows.append(row_of(d, h, bi_source_id, now, "inactive", [pick["reason"]], [], "exact" if norm_name(d["name"]) in (norm_name(h["name"]), h["fqdn"] if "." in d["name"] else "\0") else "short"))
+                    rows.append(row_of(d, h, bi_source_id, now, "inactive", [pick["reason"]], [], "exact" if exact_of(d, h) else "short"))
                 n["inactive"] += 1
                 continue
             for h in out:                                                   # tie / old_data / dubious: спорные записи — на ручное решение, остальные устарели
-                exact = norm_name(d["name"]) in (norm_name(h["name"]), h["fqdn"] if "." in d["name"] else "\0")
+                exact = exact_of(d, h)
                 if h["act"] in ("active", "future"):
                     rows.append(row_of(d, h, bi_source_id, now, "ambiguous", [pick["reason"]], [], "exact_dup" if exact else "short"))
                 else:
@@ -388,7 +435,9 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
         await xact_lock(db, f"bi-match:{bi_source_id}")
         if lease is not None:
             await lease.fence(db)
-        await db.execute(delete(BiMatch).where(BiMatch.bi_source_id == bi_source_id, or_(BiMatch.level.notin_(KEEP), and_(BiMatch.level == "confirmed", BiMatch.decided_by == RULE))))
+        await db.execute(delete(BiMatch).where(BiMatch.bi_source_id == bi_source_id, or_(BiMatch.level.notin_(KEEP), and_(BiMatch.level == "confirmed", BiMatch.decided_by.in_(RULES)))))
+        for mid, note in relinked.items():
+            await db.execute(update(BiMatch).where(BiMatch.id == mid).values(level="history", note=note[:500], updated_at=now))
         key = lambda r: (r["device_id"], r["ksc_source_id"], r["host_id"])         # noqa: E731
         rows = [r for r in rows if not (r["level"] in ("stale", "inactive") and key(r) in history)]       # устаревшая запись с прежней связью остаётся «прежним соответствием»
         gone = [history[key(r)].id for r in rows if key(r) in history and r["level"] != "history"]
@@ -402,6 +451,10 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
             await db.execute(insert(BiMatch), rows[i:i + CHUNK])
         for (dv, s, hid), m in manual.items():                           # решения администратора сохраняются; обновляются расхождения, дата и состояние активности
             h = hosts.get((s, hid))
+            if m.id in relinked:
+                if h is not None:
+                    await db.execute(update(BiMatch).where(BiMatch.id == m.id).values(host_last_connected=h["last"], activity=h["act"]))
+                continue
             if m.level == "confirmed" and dv in dev_by_id:
                 await db.execute(update(BiMatch).where(BiMatch.id == m.id).values(issues=issues(dev_by_id[dv], h, locals_[dv], logins[(s, hid)]) if h else [{"code": "gone", "text": "Компьютер больше не найден в данных KSC"}],
                                                                                  host_name=(h["name"] if h else m.host_name)[:300], updated_at=now,

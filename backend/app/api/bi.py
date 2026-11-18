@@ -383,7 +383,7 @@ async def decide(body: DecideIn, su: SessionUser = Depends(require_admin), db: A
     m = (await db.execute(select(BiMatch).where(BiMatch.device_id == body.device_id, BiMatch.ksc_source_id == body.ksc_source_id, BiMatch.host_id == body.host_id))).scalars().first()
     before = m.level if m else ""
     if body.decision == "reset":
-        if m is not None and m.level == "confirmed" and m.decided_by == M.RULE:
+        if m is not None and m.level == "confirmed" and m.decided_by in M.RULES:
             m.level, m.decided_by, m.decided_at, m.note, m.updated_at = "manual", su.display_name[:300], utcnow(), "автоподтверждение отменено администратором", utcnow()   # правило больше не подтвердит эту пару
         elif m is not None and m.level in M.MANUAL:
             await db.delete(m)
@@ -514,7 +514,7 @@ async def _bulk_run(app, op: dict, ids: list[int], body: BulkIn, su: SessionUser
                 taken = {(k, h): d for k, h, d in (await db.execute(select(BiMatch.ksc_source_id, BiMatch.host_id, BiMatch.device_id).where(BiMatch.level == "confirmed"))).all()}
                 for m in (await db.execute(select(BiMatch).where(BiMatch.id.in_(ids[i:i + 200])))).scalars():     # перечитано под блокировкой: идемпотентно
                     if body.action == "reset":
-                        if m.level == "confirmed" and m.decided_by == M.RULE:
+                        if m.level == "confirmed" and m.decided_by in M.RULES:
                             m.level, m.decided_by, m.decided_at, m.note, m.updated_at = "manual", su.display_name[:300], now, "автоподтверждение отменено администратором", now
                         elif m.level in M.MANUAL:
                             await db.delete(m)

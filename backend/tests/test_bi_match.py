@@ -57,7 +57,7 @@ async def test_matching_levels_never_merge_on_name_alone(app, tmp_path):
     await M.run(app.state.session_maker, sid)
     lv = await levels(app, sid)
     assert ("WS-001", "auto") in lv                                      # имя единственное + ОС совпадает
-    assert ("WS-002", "ambiguous") in lv and await count(app, sid, "WS-002") == 2                # одно имя в двух KSC — не объединять, даже при совпавшей учётной записи
+    assert ("WS-002", "confirmed") in lv and ("WS-002", "stale") in lv and await count(app, sid, "WS-002") == 2   # одно имя в двух KSC, даты близки: выбирает вход владельца (0.32.0)
     assert ("srv-app01", "conflict") in lv                               # BI: Linux, KSC: Windows — противоречие
     assert ("MAC-007", "candidate") in lv                                # у KSC нет ОС: только имя — требует подтверждения
     assert ("ws-777", "candidate") in lv                                 # у BI нет ОС
@@ -67,7 +67,7 @@ async def test_matching_levels_never_merge_on_name_alone(app, tmp_path):
         assert blk["devices"] == [] and blk["candidates"][0]["level"] == "candidate" and "не подтверждено" in blk["note"]
         blk = await R.host_block(db, k1, 1, pd=False)
         assert blk["devices"][0]["owner"]["person"]["name"] == "Иванов Иван Иванович" and blk["devices"][0]["owner"]["person"]["email"] == ""     # почта скрыта без прав
-        assert (await R.owners_for(db, k1, [1, 2, 4], pd=True)).keys() == {1}
+        assert (await R.owners_for(db, k1, [1, 2, 4], pd=True)).keys() == {1, 2}     # WS-002 — по входу владельца
     _ = k2
 
 
@@ -77,7 +77,7 @@ async def test_user_corroboration_and_av_discrepancies(app, tmp_path):
     await run(app, sid, xlsx(tmp_path / "f.xlsx", [*BASE[:2]]))
     await M.run(app.state.session_maker, sid)
     lv = await levels(app, sid)
-    iss1 = lv[("WS-001", "auto")]                                         # ОС у KSC нет, но учётная запись KSC совпадает с почтой сотрудника
+    iss1 = lv[("WS-001", "confirmed")]                                    # ОС у KSC нет, но учётная запись KSC совпадает с почтой сотрудника: связь установлена правилом входа владельца
     assert any(i["code"] == "av_missing" for i in iss1)                   # BI «использует антивирус», KSC — продукта нет: показываем расхождение, показатели не меняем
     iss2 = lv[("WS-002", "auto")]
     assert {i["code"] for i in iss2} >= {"av_broken", "user"}
@@ -217,3 +217,29 @@ async def test_service_fixed_and_variable_names_unavailable_smb_and_retention(ap
         s.fail_n = 9
         assert not SV.due(s, utcnow()) or s.next_run_at <= utcnow()
     _ = uuid
+
+
+async def test_cell_spellings_and_owner_login_relink_admin_decision(app, tmp_path):
+    """«WS-274, ws-274.example.local, WS-274~~917459» — одно устройство; вход владельца на новой записи KSC того же компьютера переносит подтверждение администратора (0.32.0)."""
+    k = await ksc(app, "KSC", [(1, "WS-274", "Windows 11", True, False, "ws-274.example.local", 10), (2, "ws-274.example.local", "Windows 11", True, False, "ws-274.example.local", 1)],
+                  users=[(1, "a.petrova"), (2, "a.petrova")])
+    sid = await source(app)
+    await run(app, sid, xlsx(tmp_path / "f.xlsx", [row("Петрова Анна Сергеевна", "a.petrova@example.local", "Бухгалтерия", "WS-274, ws-274.example.local, WS-274~~917459")]))
+    async with app.state.session_maker() as db:
+        from app.models import BiDevice  # noqa: PLC0415
+        devs = (await db.execute(select(BiDevice).where(BiDevice.source_id == sid))).scalars().all()
+        assert [(d.name, d.aliases) for d in devs] == [("WS-274", ["ws-274.example.local", "WS-274~~917459"])]
+        db.add(BiMatch(device_id=devs[0].id, bi_source_id=sid, ksc_source_id=k, host_id=1, host_name="WS-274", level="confirmed", decided_by="admin", decided_at=utcnow()))
+        await db.commit()
+    await M.run(app.state.session_maker, sid, force=True)
+    async with app.state.session_maker() as db:
+        ms = {m.host_id: m for m in (await db.execute(select(BiMatch).where(BiMatch.bi_source_id == sid))).scalars()}
+        assert ms[2].level == "confirmed" and ms[2].decided_by == M.RULE_LOGIN and ms[2].name_match == "exact"       # FQDN из той же ячейки — точное совпадение
+        assert ms[1].level == "history" and "перенесена" in ms[1].note
+        blk = await R.host_block(db, k, 1, pd=True)                      # прежняя запись: владелец тот же, с пояснением, где устройство сейчас
+        assert blk["devices"][0]["owner"]["person"]["name"] == "Петрова Анна Сергеевна" and blk["devices"][0]["via"]["host_id"] == 2
+        own = await R.owners_for(db, k, [1, 2], pd=True)
+        assert own[2]["old_record"] is False and own[1]["old_record"] is True
+    await M.run(app.state.session_maker, sid, force=True)              # повторный расчёт не меняет результат
+    async with app.state.session_maker() as db:
+        assert {(m.host_id, m.level) for m in (await db.execute(select(BiMatch).where(BiMatch.bi_source_id == sid))).scalars()} == {(1, "history"), (2, "confirmed")}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, type ApiError, type DevicesStatus, type DevUser, type DeviceCard, type DeviceRow } from "../api";
+import { api, type ApiError, type DevicesStatus, type DeviceCard, type DeviceRow } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { CompactList } from "../components/CompactList";
 import { Modal } from "../components/Dialogs";
@@ -12,6 +12,7 @@ import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { ZoneField } from "../components/ZoneBits";
 import { OwnerBlock, OwnerSub } from "../components/OwnerBlock";
+import { SessionsTable, UserChip, UsersKv, who } from "../components/HostPeople";
 import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import BiPeople from "./people/BiPeople";
 import KscUsers from "./people/KscUsers";
@@ -19,14 +20,6 @@ import SessionsNow from "./people/SessionsNow";
 import Matches from "./people/Matches";
 import { fmt, fmtDate, num, plural } from "../util";
 
-const who = (u: DevUser) => (u.resolved ? (u.domain ? `${u.domain}\\${u.login}` : u.login) : "учётная запись не сопоставлена в KSC");
-const KIND: Record<string, string> = { user: "", service: "служебная", system: "системная" };
-
-/** Один пользователь: имя и пометка; «сейчас» выделено. */
-function UserChip({ u }: { u: DevUser }) {
-  return <span className={`user-chip ${u.now ? "now" : ""} ${u.resolved ? "" : "muted"}`} title={u.now ? "в списке вошедших при последнем опросе" : u.last_session_at ? `замечен в сеансе ${fmt(u.last_session_at)}` : "входил ранее; даты в KSC нет"}>
-    {who(u)}{KIND[u.kind] ? <i> ({KIND[u.kind]})</i> : null}</span>;
-}
 
 type Tab = "devices" | "now" | "ksc" | "bi" | "match";
 
@@ -157,12 +150,10 @@ function CardModal({ id, service, onClose, ctx }: { id: string; service: boolean
         </dl>
         {d.source_id === ctx.current?.id && <p className="small"><Link to={`/hosts/${d.host_id}`}>Открыть полную карточку компьютера (данные KSC)</Link></p>}
         <h3 className="h3">Пользователи</h3>
-        <dl className="kv">
-          <div><dt>Вошли сейчас</dt><dd>{d.current.length ? d.current.map((u, i) => <span key={i} className="block"><UserChip u={u} /></span>) : "никого (по последнему опросу)"}</dd></div>
-          <div><dt>Последний замеченный в сеансе</dt><dd>{d.last_user ? <><UserChip u={d.last_user} /> <span className="muted small">наблюдение {fmt(d.last_user.last_session_at)}</span></> : "не наблюдался: KSC не хранит последнего пользователя, наблюдения только за время работы KAV Checker"}</dd></div>
-          <div><dt>За 7 суток ({d.week.length})</dt><dd>{d.week.length ? d.week.map((u, i) => <span key={i} className="block"><UserChip u={u} /></span>) : "—"}</dd></div>
-          <div><dt>Входили ранее ({d.history.length})</dt><dd>{d.history.length ? <CompactList items={d.history} max={8} render={(u) => <UserChip u={u} />} /> : "—"}</dd></div>
-        </dl>
+        <UsersKv d={d} />
+        <h3 className="h3">Сеансы</h3>
+        <SessionsTable d={d} max={10} />
+        {d.source_id === ctx.current?.id && d.sessions.length > 10 && <p className="small"><Link to={`/hosts/${d.host_id}?tab=sessions`}>Все сеансы ({d.sessions.length})</Link></p>}
         <OwnerBlock sid={d.source_id} hid={d.host_id} activityDays={ctx.me.activity_days} />
         {d.hidden_service > 0 && <p className="muted small">Скрыто служебных и системных учётных записей: {d.hidden_service}.</p>}
         <p className="muted small">{d.limits}</p>

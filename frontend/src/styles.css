@@ -1465,7 +1465,7 @@ tr.xrow:hover > td { background: var(--surface-2); }
 
 /* ---------------------------------------------------------------------------------------------- BI: владелец и история принадлежности */
 .own-block { margin: 14px 0 6px; padding-top: 12px; border-top: 1px solid var(--line); }
-.own-title { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin-bottom: 6px; } .own-title .h3 { margin: 0; }
+.own-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; margin-bottom: 8px; } .own-title .h3 { margin: 0; }
 .own + .own { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .own-head { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: flex-start; justify-content: space-between; }
 .own-now { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
