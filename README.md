@@ -37,6 +37,7 @@ sudo ./scripts/install.sh       # готовые образы релиза, ми
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | установка, reverse proxy, переменные .env |
 | [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) | источники KSC, пользователи, роли и второй фактор, разделы, проверки версий, журналы |
+| [docs/KSC_WINDOWS_SQL.md](docs/KSC_WINDOWS_SQL.md) | подготовка SQL Server на Windows-сервере KSC: доступ на чтение, порт, сетевой экран, алиас клиента, откат |
 | [docs/LDAP.md](docs/LDAP.md) | LDAPS: подключения, вход по короткому имени, сертификаты CA, правила доступа, диагностика |
 | [docs/UPDATE_AND_BACKUP.md](docs/UPDATE_AND_BACKUP.md) | обновление из GitHub, откат, резервное копирование и восстановление |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | компоненты, данные, безопасность |

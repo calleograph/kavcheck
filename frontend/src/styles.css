@@ -579,11 +579,21 @@ td .empty { padding: 28px 12px; }
 .login { min-height: 100dvh; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); background: var(--surface); }
 .login-art { position: relative; overflow: hidden; background: var(--chrome); color: var(--chrome-ink); padding: 44px 48px; display: flex; flex-direction: column; gap: 24px; }
 .login-art .side-brand { padding: 0; height: auto; font-size: 18px; }
-.login-art h1 { color: var(--chrome-ink-strong); font-size: 34px; line-height: 1.12; letter-spacing: -.03em; max-width: 15ch; margin-top: auto; }
-.login-art p { color: var(--chrome-muted); max-width: 44ch; font-size: 15px; }
-.login-bars { display: flex; flex-direction: column; gap: 10px; margin-bottom: 4px; }
-.login-bars .spectrum-track { height: 10px; }
-.login-bars .sp-seg { animation: sp-grow 900ms var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms + var(--r, 0) * 120ms); }
+.login-art h1 { color: var(--chrome-ink-strong); font-size: 40px; line-height: 1.1; letter-spacing: -.03em; max-width: 12ch; margin-top: auto; }
+.login-art h1 .w { display: inline-block; overflow: hidden; vertical-align: top; padding-bottom: 4px; margin-bottom: -4px; }
+.login-art h1 .w > span { display: inline-block; animation: word-up 800ms var(--ease-out) both; animation-delay: calc(var(--i, 0) * 120ms + 100ms); }
+.login-art p.login-line { color: var(--chrome-muted); max-width: 44ch; min-height: 72px; font-size: var(--fs-lg); line-height: 1.5; animation: line-in 500ms var(--ease-out) both; }
+.login-flow { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.login-flow button { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; width: 100%; min-height: 44px; padding: 0; border: 0; background: none; color: var(--chrome-muted);
+  font: 500 var(--fs-sm)/1.35 var(--sans); text-align: left; cursor: pointer; transition: color var(--t-fast); }
+.login-flow button:hover, .login-flow button.on { color: var(--chrome-ink-strong); }
+.login-flow button:focus-visible { outline: 2px solid var(--chrome-accent); outline-offset: 4px; border-radius: 4px; }
+.flow-bar { position: relative; display: block; width: 100%; height: 4px; border-radius: 2px; background: var(--chrome-line); overflow: hidden; }
+.flow-bar::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--chrome-accent); transform: scaleX(0); transform-origin: left; }
+.login-flow button.on .flow-bar::after { animation: flow-fill 5000ms linear forwards; }
+@keyframes word-up { from { transform: translateY(110%); } to { transform: none; } }
+@keyframes line-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes flow-fill { to { transform: scaleX(1); } }
 .login-form { display: grid; place-items: center; padding: 40px 24px; background: transparent; }      /* рисунок темы виден и на странице входа */
 .login-card { width: min(380px, 100%); display: flex; flex-direction: column; }
 .login-card h2 { font-size: var(--fs-2xl); letter-spacing: -.02em; margin-bottom: 6px; }
@@ -597,7 +607,7 @@ td .empty { padding: 28px 12px; }
   .login { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .login-art { padding: 22px 20px; gap: 12px; }
   .login-art h1 { font-size: 24px; margin-top: 8px; max-width: none; }
-  .login-art p, .login-bars { display: none; }
+  .login-art p, .login-flow { display: none; }
   .login-form { place-items: start center; padding: 28px 16px; }
 }
 
@@ -659,7 +669,9 @@ button.action-row { width: calc(100% + 20px); border: 0; background: none; text-
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   /* без перемещений и масштаба: остаются только смена прозрачности и цвета, которые сообщают о состоянии */
-  .spectrum.intro .sp-seg, .login-bars .sp-seg { animation: fade-in 200ms ease-out both; animation-delay: 0s; }
+  .spectrum.intro .sp-seg { animation: fade-in 200ms ease-out both; animation-delay: 0s; }
+  .login-art h1 .w > span, .login-art p.login-line { animation: fade-in 200ms ease-out both; animation-delay: 0s; }
+  .login-flow button.on .flow-bar::after { animation: none; transform: none; }
   .modal { animation: fade-in 160ms ease-out both; } .closing .modal { animation: fade-out 120ms ease-in both; }
   .dock { animation: none; } .toast { animation: fade-in 160ms ease-out both; } .toast.out { animation: fade-out 140ms ease-in both; }
   .dd-panel, .dd.open .dd-panel { transform: none; }

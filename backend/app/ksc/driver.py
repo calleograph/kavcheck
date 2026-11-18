@@ -80,7 +80,7 @@ def connect(p: ConnParams):
     except pymssql.OperationalError as exc:
         msg = _sanitize(exc)
         code = "auth" if "Login failed" in msg or "18456" in msg else "connect"
-        raise KscError(code, "Вход на SQL Server отклонён: проверьте имя пользователя и пароль" if code == "auth" else f"SQL Server недоступен: {explain(msg, p)}") from None
+        raise KscError(code, "Вход на SQL Server отклонён: проверьте имя пользователя и пароль. Если они верны — SQL Server на Windows мог остаться в режиме «только Windows-аутентификация» (тот же отказ); см. docs/KSC_WINDOWS_SQL.md" if code == "auth" else f"SQL Server недоступен: {explain(msg, p)}") from None
     except Exception as exc:  # noqa: BLE001
         raise KscError("connect", f"Не удалось подключиться: {type(exc).__name__}: {_sanitize(exc)}") from None
     cur = conn.cursor()

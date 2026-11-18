@@ -3,8 +3,15 @@ import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api, ApiError, type Me } from "../api";
 import { Icon, Mark } from "../components/Icons";
 
-/** Декоративный мотив «спектр версий» на экране входа: абстрактные полосы без чисел и данных. */
-const BARS = [[5, 3, 2, 1.2, .6], [2.5, 4, 1.5, 1], [6, 2, 1.8], [3, 3, 2.2, 1, .8], [1.6, 5, 2]];
+/** Путь данных на витрине входа: смена этапа раз в STEP_MS, этап можно выбрать вручную. */
+const STEPS = [
+  { name: "Агенты Kaspersky", text: "Агенты Kaspersky сообщают, какие программы и каких версий стоят на каждом компьютере." },
+  { name: "Версии программ", text: "Версии приводятся к единому виду: видно, где устарели и где у одного продукта разные сборки." },
+  { name: "Уязвимости и EOL", text: "Сверка с базами уязвимостей и сроками поддержки: что уязвимо и что уже не поддерживается." },
+  { name: "План исправления", text: "С чего начать: самые опасные уязвимости и компьютеры, где их закрыть быстрее всего." },
+];
+const STEP_MS = 5000;
+const TITLE = "Центр управления уязвимостями".split(" ");
 
 export default function LoginPage({ onLogin }: { onLogin: (m: Me) => void }) {
   const [login, setLogin] = useState("");
@@ -20,6 +27,9 @@ export default function LoginPage({ onLogin }: { onLogin: (m: Me) => void }) {
   const [domains, setDomains] = useState<{ id: string; name: string }[]>([]);
   const [domain, setDomain] = useState("");
   const domainRef = useRef<HTMLSelectElement>(null);
+  const [step, setStep] = useState(0);
+  const still = typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  useEffect(() => { if (still) return; const t = window.setTimeout(() => setStep((i) => (i + 1) % STEPS.length), STEP_MS); return () => window.clearTimeout(t); }, [step, still]);
   useEffect(() => { api.loginOptions().then((r) => { setDomains(r.domains); if (r.default_theme) rememberDefault(r.default_theme); }).catch(() => undefined); }, []);      // вход — в теме системы, если в браузере нет личного выбора
   const fail = (err: unknown) => { const ae = err as ApiError; setError(ae.status === 429 && ae.retryAfter ? `Слишком много неудачных попыток. Повторите через ${Math.max(1, Math.ceil(ae.retryAfter / 60))} мин.` : ae.message); };
   const submit = async (e: FormEvent) => {
@@ -43,15 +53,17 @@ export default function LoginPage({ onLogin }: { onLogin: (m: Me) => void }) {
     <div className="login">
       <section className="login-art" aria-label="KAV Checker">
         <span className="side-brand"><Mark size={30} />KAV Checker</span>
-        <h1>Что установлено, на каких компьютерах и насколько свежи данные</h1>
-        <p>Центр аудита Kaspersky Security Center: реестр программ и версий, активность устройств, уязвимости и отчёты XLSX. База KSC только читается.</p>
-        <div className="login-bars" aria-hidden>
-          {BARS.map((row, r) => (
-            <div key={r} className="spectrum-track" style={{ width: `${62 + ((r * 17) % 35)}%` }}>
-              {row.map((v, i) => <span key={i} className="sp-seg" style={{ flexGrow: v, flexBasis: 0, ["--seg" as string]: `var(--sp-${Math.min(i + (r % 2), 7)})`, ["--i" as string]: i, ["--r" as string]: r }} />)}
-            </div>
+        <h1 aria-label="Центр управления уязвимостями">{TITLE.map((w, i) => <span key={i} aria-hidden><span className="w"><span style={{ ["--i" as string]: i }}>{w}</span></span>{i < TITLE.length - 1 ? " " : ""}</span>)}</h1>
+        <p key={step} className="login-line">{STEPS[step].text}</p>
+        <ol className="login-flow" aria-label="Как это работает">
+          {STEPS.map((st, i) => (
+            <li key={st.name}>
+              <button type="button" className={i === step ? "on" : ""} aria-current={i === step ? "step" : undefined} onClick={() => setStep(i)}>
+                <span className="flow-bar" aria-hidden />{st.name}
+              </button>
+            </li>
           ))}
-        </div>
+        </ol>
       </section>
       <div className="login-form">
         {challenge ? (

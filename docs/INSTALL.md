@@ -4,7 +4,7 @@
 
 - Linux-сервер (Ubuntu 22.04/24.04, Debian 12 или другой с systemd), Docker Engine 24+ и Docker Compose v2, git, curl, openssl.
 - 2 ГБ ОЗУ, 5 ГБ на диске для образов и данных.
-- Доступ по TCP к SQL Server базы KSC (обычно порт 1433) и учётная запись **только для чтения** (роль `db_datareader` в базе KSC). Не используйте учётную запись самого Сервера администрирования.
+- Доступ по TCP к SQL Server базы KSC (обычно порт 1433) и учётная запись **только для чтения** (роль `db_datareader` в базе KSC). Не используйте учётную запись самого Сервера администрирования. Если KSC и SQL Server на Windows-сервере — подготовьте его по [KSC_WINDOWS_SQL.md](KSC_WINDOWS_SQL.md).
 - Внешний reverse proxy с TLS (nginx, Caddy, Traefik): приложение публикует порт только на loopback и не привязано к домену.
 
 ## Шаги

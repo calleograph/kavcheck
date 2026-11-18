@@ -11,6 +11,7 @@ import BiSourcesAdmin from "./BiSourcesAdmin";
 import { fmt } from "../../util";
 
 interface Form { id?: string; name: string; host: string; port: number; database: string; auth_type: string; username: string; password: string; password_set: boolean; tls_mode: string; trust_server_cert: boolean; connect_timeout_s: number; query_timeout_s: number; is_active: boolean }
+const KSC_SQL_DOC = "https://github.com/calleograph/kavcheck/blob/master/docs/KSC_WINDOWS_SQL.md";
 const empty: Form = { name: "", host: "", port: 1433, database: "KAV", auth_type: "sql", username: "", password: "", password_set: false, tls_mode: "require", trust_server_cert: true, connect_timeout_s: 10, query_timeout_s: 60, is_active: true };
 
 /** Источники данных: Серверы администрирования KSC и BI-системы (Excel через SMB) — оба только на чтение. */
@@ -88,6 +89,18 @@ function KscSources({ ctx }: { ctx: Ctx }) {
                 <label>База данных<input className="mono" value={form.database} onChange={(e) => set("database", e.target.value)} spellCheck={false} required /><span className="help">По умолчанию KAV</span></label>
               </div>
             </fieldset>
+            <details className="disclosure">
+              <summary>KSC и SQL Server на Windows? Что подготовить на сервере</summary>
+              <div className="adv">
+                <ul className="small">
+                  <li>SQL Server в смешанном режиме аутентификации (при «только Windows» вход SQL-логином отклоняется даже с верным паролем).</li>
+                  <li>SQL-логин с единственной ролью <span className="mono">db_datareader</span> в базе KSC; не учётная запись службы KSC.</li>
+                  <li>Постоянный TCP-порт (не динамический) и правило сетевого экрана для адреса этого сервера.</li>
+                  <li>После каждого шага проверяйте, что сам KSC по-прежнему подключается к своей базе: правки сети SQL Server могут его отключить.</li>
+                </ul>
+                <p className="small"><a href={KSC_SQL_DOC} target="_blank" rel="noopener noreferrer">Пошаговая инструкция с проверками и откатом</a></p>
+              </div>
+            </details>
             <fieldset className="group"><legend>Учётная запись только для чтения</legend>
               <div className="cols">
                 <label>Тип авторизации<select value={form.auth_type} onChange={(e) => set("auth_type", e.target.value)}><option value="sql">SQL Server</option><option value="windows">Windows (DOMAIN\user)</option></select></label>
