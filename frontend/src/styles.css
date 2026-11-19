@@ -501,7 +501,7 @@ td .empty { padding: 28px 12px; }
 /* имя пользователя в верхней панели не выходит за край на средних ширинах: сокращается многоточием */
 .topbar .dd-btn { min-width: 0; max-width: 100%; }
 .topbar .dd-btn .uname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 1180px) { .topbar .dd-btn .uname { max-width: 160px; } }
+@media (max-width: 1180px) { .topbar .dd-btn .uname { max-width: 160px; } .topbar .src-btn .src-meta { display: none; } }      /* вторая строка источника (база, сервер, версия KSC) — в выпадающем списке; иначе шапка шире экрана при 1024 */
 /* закрытая панель не занимает место: иначе скрытое меню у правого края расширяет страницу (прокрутка по горизонтали на 1024 px) */
 .dd:not(.open) > .dd-panel { display: none; }
 .dd.open > .dd-panel { animation: dd-in 160ms var(--ease-out); }
@@ -1097,6 +1097,14 @@ pre.notes-pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
 .vdb-title { max-width: 520px; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .new-dot { margin-left: 6px; }
 .vdb-card { display: flex; flex-direction: column; gap: 12px; }
+.lookup, .ksc-hits { display: flex; flex-direction: column; gap: 12px; margin: 0 0 16px; }
+.lookup-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.lookup-head h2 { font-size: var(--fs-lg); margin: 0; overflow-wrap: anywhere; }
+.lookup-title { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.lookup-desc { display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.lookup-src { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 24px; }
+.lookup-src li { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; overflow-wrap: anywhere; }
+.ksc-hits-line { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
 .vdb-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .vdb-dates { margin: 0; overflow-wrap: anywhere; }
 .vdb-desc { margin: 0; line-height: 1.5; max-width: 72ch; }

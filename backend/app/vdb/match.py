@@ -212,7 +212,7 @@ def evaluate(version: dict, prod: CatProd, link: Link, a) -> Claim | None:
     if a.conditional or a.platform.startswith("plugin:"):
         env = f" (среда: {a.platform[7:]})" if a.platform.startswith("plugin:") else ""
         return Claim(a.source, a.ext_id, "clarify", f"{basis}; уязвимость зависит от среды или редакции{env}" + (f"; {a.version_text}" if a.version_text else ""), link.confidence)
-    upstream = a.source in ("nvd", "bdu", "kev") and bool(mask & 2) and not a.ecosystem
+    upstream = a.source in ("nvd", "bdu", "kev", "cve") and bool(mask & 2) and not a.ecosystem
     if upstream:
         return Claim(a.source, a.ext_id, "clarify", f"{basis}; пакет Linux: исправление могло быть перенесено в версию дистрибутива — сверьте с бюллетенем дистрибутива", link.confidence)
     if a.versions_all and not (a.v_start or a.v_end or a.exact):      # источник называет только продукт (CISA KEV): версия неизвестна — решение за специалистом

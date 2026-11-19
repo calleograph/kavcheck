@@ -15,7 +15,7 @@ ALIASES: dict[tuple[str, str], str] = {
     ("nodejs", "node.js"): "nodejs", ("nodejs", "node_js"): "nodejs", ("git-scm", "git"): "git", ("php", "php"): "php", ("perl", "perl"): "perl", ("openssl", "openssl"): "openssl",
     ("openbsd", "openssh"): "openssh", ("postgresql", "postgresql"): "postgresql", ("microsoft", "sql_server"): "mssql-server", ("oracle", "mysql"): "mysql",
     ("oracle", "mysql_server"): "mysql", ("mariadb", "mariadb"): "mariadb", ("redis", "redis"): "redis", ("mongodb", "mongodb"): "mongodb", ("apache", "http_server"): "apache-httpd",
-    ("apache", "tomcat"): "apache-tomcat", ("f5", "nginx"): "nginx", ("nginx", "nginx"): "nginx", ("docker", "docker"): "docker-engine", ("mobyproject", "moby"): "docker-engine",
+    ("apache", "tomcat"): "apache-tomcat", ("f5", "nginx"): "nginx", ("f5", "nginx_open_source"): "nginx", ("nginx", "nginx"): "nginx", ("docker", "docker"): "docker-engine", ("mobyproject", "moby"): "docker-engine",
     ("docker", "desktop"): "docker-desktop", ("microsoft", ".net_framework"): "dotnet-framework", ("microsoft", "_net_framework"): "dotnet-framework",
     ("microsoft", ".net"): "dotnet-runtime", ("microsoft", "_net"): "dotnet-runtime", ("adobe", "acrobat_reader"): "adobe-acrobat-reader", ("adobe", "acrobat_reader_dc"): "adobe-acrobat-reader",
     ("adobe", "acrobat"): "adobe-acrobat", ("adobe", "acrobat_dc"): "adobe-acrobat", ("foxitsoftware", "foxit_reader"): "foxit-reader", ("foxit", "pdf_reader"): "foxit-reader",

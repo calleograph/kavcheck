@@ -187,6 +187,11 @@ export interface VdbRecordOut { source: string; scores: VdbScore[]; title: strin
   affected: VdbAffectedRow[]; affected_total: number }
 export interface VdbMatchOut { product_key: string; product: string; version: string; status: VdbStatus; status_ru: string; basis: string; confidence: string; hosts: number; installs: number; claims: { source: string; status_ru: string; basis: string }[] }
 export interface VdbCard extends VdbVulnRow { cvss: { primary: VdbScore; all: VdbScore[] } | null; records: VdbRecordOut[]; differences: { field: string; values: Record<string, string | number> }[]; infrastructure: { catalog: boolean; matches: VdbMatchOut[] } | null }
+export interface VdbLiveSource { source: string; title: string; found: boolean; error: string; url: string; status?: string }
+export interface VdbLiveRecord { source: string; title: string; ext_id: string; status: string; aliases: string[]; title_text: string; description: string; published: string | null; modified: string | null;
+  fix_available: boolean | null; refs: { url: string; tags: string[] }[]; cwe: string[]; affected: VdbAffectedRow[]; affected_total: number }
+export interface VdbLookup { id: string; local: VdbVulnRow | null; infrastructure: { catalog: boolean; matches: VdbMatchOut[] } | null;
+  live: { checked_at: string; sources: VdbLiveSource[]; key: string; title: string; description: string; exploited: boolean; published: string | null; modified: string | null; cvss: { primary: VdbScore; all: VdbScore[] } | null; records: VdbLiveRecord[] } | null }
 export interface VdbMapping { id: string; vendor_key: string; product_key: string; catalog_key: string; action: "map" | "exclude"; note: string | null; created_by: string | null; created_at: string }
 export type VdbCategory = "os" | "system" | "application" | "unclassified";
 export interface VdbCounts { total: number; new: number; new_exploited: number; new_critical: number; new_serious: number; by_status?: Record<string, number>; by_category?: Record<VdbCategory, number>; products?: number; plan_ready?: boolean }
@@ -656,6 +661,7 @@ export const api = {
     },
     list: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VdbVulnRow>>("GET", `/vdb/vulns${qs(p)}`),
     card: (key: string) => req<VdbCard>("GET", `/vdb/vulns/${encodeURIComponent(key)}`),
+    lookup: (id: string, live = false) => req<VdbLookup>("GET", `/vdb/lookup${qs({ id, live: live || undefined })}`),
     findings: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VdbVulnRow> & { summary: VdbCounts }>("GET", `/vdb/findings${qs(p)}`),
     summary: () => req<VdbCounts>("GET", "/vdb/findings/summary"),
     plan: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<VdbPlanRow> & { summary: { products: number; vulns: number; plan_ready: boolean } }>("GET", `/vdb/plan${qs(p)}`),

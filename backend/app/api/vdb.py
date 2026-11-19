@@ -18,6 +18,7 @@ from ..services.audit import write_audit
 from ..vdb import match as M
 from ..vdb import sources as S
 from ..vdb import journal as VJ
+from ..vdb import lookup as L
 from ..vdb import store
 from ..vdb.classify import CATEGORIES, CATEGORY_RU
 from ..vdb.normalize import SEV_RANK, SEV_RU, norm, pick_primary, score_key
@@ -436,8 +437,11 @@ async def vulns(q: str = Query("", max_length=200), min_severity: str = Query(""
         if not sid:
             raise HTTPException(status_code=409, detail="Источник KSC не выбран")
         stmt = stmt.where(VdbFinding.vuln_key.is_not(None))
-    d = (lambda c: c.desc()) if desc else (lambda c: c.asc())
-    order = {"priority": [VdbVuln.exploited.desc(), VdbVuln.sev_rank.desc(), VdbVuln.published.desc()], "published": [d(VdbVuln.published)], "modified": [d(VdbVuln.modified)],
+    # С текстовым запросом сортировка не должна идти по индексу: планировщик переоценивает число совпадений редкого слова или маски и проходит индекс порядка
+    # по всем записям (на 250 тыс. — секунды), вместо триграммного отбора и сортировки найденного. coalesce(c, c) не меняет значение, но отключает этот путь.
+    w = (lambda c: func.coalesce(c, c)) if q else (lambda c: c)
+    d = (lambda c: w(c).desc()) if desc else (lambda c: w(c).asc())
+    order = {"priority": [w(VdbVuln.exploited).desc(), w(VdbVuln.sev_rank).desc(), w(VdbVuln.published).desc()], "published": [d(VdbVuln.published)], "modified": [d(VdbVuln.modified)],
              "score": [d(VdbVuln.score).nulls_last()], "key": [d(VdbVuln.vuln_key)]}[sort]
     if version.strip():
         return await _by_version(db, stmt.order_by(*order, VdbVuln.vuln_key), q, version.strip(), offset, limit)
@@ -485,6 +489,69 @@ async def _by_version(db: AsyncSession, stmt, q: str, version: str, offset: int,
     return {"items": items, "total": len(hits), "offset": offset, "limit": limit, "approximate": len(cands) >= VERSION_CANDIDATES, "version": version}
 
 
+def _infra(ms: list) -> dict:
+    """Сопоставление уязвимости с каталогом установленного ПО: программа × версия, результат, основание, компьютеры."""
+    return {"catalog": True, "matches": sorted(({"product_key": m.product_key, "product": m.product_name, "version": m.version, "status": m.status, "status_ru": M.STATUS_RU[m.status],
+                                                "basis": m.basis, "confidence": m.confidence, "hosts": m.hosts_active, "installs": m.installs_active,
+                                                "claims": [{"source": c.source, "status_ru": M.STATUS_RU[c.status], "basis": c.basis} for c in m.claims]} for m in ms),
+                                               key=lambda x: (-M.STATUS_RANK[x["status"]], -x["installs"]))[:300]}
+
+
+def _live_score(s: dict) -> dict:
+    return {**s, "severity_ru": SEV_RU.get(s["severity"], ""), "source_title": L.TITLES.get(s["source"], s["source"]), "origin_label": s.get("origin") or L.TITLES.get(s["source"], "")}
+
+
+@router.get("/lookup")
+async def lookup(request: Request, id: str = Query(..., min_length=3, max_length=60), live: bool = False,  # noqa: A002
+                 su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    """Одна уязвимость по идентификатору — везде сразу: локальная база, внешние базы «здесь и сейчас» (CVE.org, NVD, OSV — если в локальной базе её нет или запрошено live)
+    и применимость к установленному ПО выбранного источника KSC по данным обоих. Внешние сведения в локальную базу не записываются (её обновляет worker по расписанию)."""
+    from ..reports.quick_ext import resolve_keys  # noqa: PLC0415
+
+    ident = id.strip()
+    if not L.is_id(ident):
+        raise HTTPException(status_code=422, detail="Укажите идентификатор уязвимости: CVE-2026-12345, BDU:2026-01234, GHSA-… или идентификатор OSV")
+    found, _ = await resolve_keys(db, [ident])
+    key = found[0] if found else None
+    v = await db.get(VdbVuln, key) if key else None
+    ext = None
+    if live or v is None or not v.products_text:        # нет записи или нет продуктов (NVD ещё не проанализировал CVE): продукты и версии — из записи поставщика
+        row = await db.get(VdbSource, "nvd")
+        nvd_key = request.app.state.settings_svc.decrypt(row.secret_enc, "vdb.nvd") if row is not None and row.secret_enc else ""
+        ext = await L.fetch_live(ident, nvd_key=nvd_key)
+        if v is None:                                    # внешняя запись назвала CVE (GHSA → CVE-…), которая уже есть в локальной базе
+            other = [i for r in ext["records"] for i in (r.vuln_key, *r.aliases) if i and i.upper() != ident.upper()][:10]
+            found, _ = await resolve_keys(db, other) if other else ([], [])
+            key = found[0] if found else None
+            v = await db.get(VdbVuln, key) if key else None
+    recs = ext["records"] if ext else []
+    live_out = None
+    if ext is not None:
+        scores = [s for r in recs for s in r.scores]
+        main = pick_primary(scores)
+        first = next((r for r in sorted(recs, key=lambda r: ("cve", "nvd", "osv").index(r.source))), None)
+        live_out = {"checked_at": datetime.fromtimestamp(ext["checked_at"], timezone.utc).isoformat(), "sources": ext["sources"], "key": first.vuln_key if first else ident.upper(),
+                    "title": first.title if first else "", "description": first.description if first else "", "exploited": any(r.exploited for r in recs),
+                    "published": _iso(min((r.published for r in recs if r.published), default=None)), "modified": _iso(max((r.modified for r in recs if r.modified), default=None)),
+                    "cvss": {"primary": _live_score(main), "all": [_live_score(s) | {"primary": s is main} for s in sorted(scores, key=score_key)]} if main else None,
+                    "records": [{"source": r.source, "title": L.TITLES[r.source], "ext_id": r.ext_id, "status": r.status, "aliases": r.aliases[:20], "title_text": r.title, "description": r.description,
+                                 "published": _iso(r.published), "modified": _iso(r.modified), "fix_available": r.fix_available, "refs": r.refs[:12], "cwe": (r.extra or {}).get("cwe", [])[:6],
+                                 "affected": [{"vendor": a.vendor, "product": a.product or a.pkg_name, "ecosystem": a.ecosystem, "platform": a.platform, "exact": a.exact, "from": a.v_start,
+                                               "from_incl": a.v_start_incl, "to": a.v_end, "to_incl": a.v_end_incl, "fixed": a.fixed, "all_versions": a.versions_all, "version_text": a.version_text,
+                                               "conditional": a.conditional} for a in r.affected[:150]], "affected_total": len(r.affected)} for r in recs]}
+    infra = None
+    sid = su.current_source_id
+    if sid and (v is not None or recs):
+        prods, maps = await M.load_context(db, sid)
+        if prods:
+            fresh = {r.source for r in recs}
+            affs = L.aff_rows(recs) + ([a for a in await M.affected_for(db, [key]) if a.source not in fresh] if key else [])
+            infra = _infra(M.matches_from(M.Matcher(prods, maps), affs, only_active=False))
+        else:
+            infra = {"catalog": False, "matches": []}
+    return {"id": ident, "local": _vuln_out(v) if v is not None else None, "live": live_out, "infrastructure": infra}
+
+
 @router.get("/vulns/{key}")
 async def vuln_card(key: str, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     """Общая карточка: сводка, данные каждого источника отдельно, различия между источниками, затронутые продукты и сопоставление с каталогом выбранного источника KSC."""
@@ -523,11 +590,7 @@ async def vuln_card(key: str, su: SessionUser = Depends(require_user), db: Async
     if sid:
         prods, maps = await M.load_context(db, sid)
         if prods:
-            ms = M.matches_from(M.Matcher(prods, maps), await M.affected_for(db, [k]), only_active=False)
-            infra = {"catalog": True, "matches": sorted(({"product_key": m.product_key, "product": m.product_name, "version": m.version, "status": m.status, "status_ru": M.STATUS_RU[m.status],
-                                                         "basis": m.basis, "confidence": m.confidence, "hosts": m.hosts_active, "installs": m.installs_active,
-                                                         "claims": [{"source": c.source, "status_ru": M.STATUS_RU[c.status], "basis": c.basis} for c in m.claims]} for m in ms),
-                                                        key=lambda x: (-M.STATUS_RANK[x["status"]], -x["installs"]))[:300]}
+            infra = _infra(M.matches_from(M.Matcher(prods, maps), await M.affected_for(db, [k]), only_active=False))
         else:
             infra = {"catalog": False, "matches": []}
     return {**_vuln_out(v), "description": v.description, "cvss": cvss, "records": records, "differences": diffs, "infrastructure": infra}

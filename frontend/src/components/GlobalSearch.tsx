@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, type Host } from "../api";
+import { api, type Host, type VdbVulnRow, type VulnDescr } from "../api";
 import { FUNCTIONS, QUICK_REPORTS, roleOk, type Fn, type Role } from "../navModel";
 import { Icon, type IconName } from "./Icons";
 
@@ -24,6 +24,8 @@ export function GlobalSearch({ sourceId, role, hier, page = false }: { sourceId:
   const [cat, setCat] = useState<Cat | null>(null);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [vulns, setVulns] = useState<VdbVulnRow[]>([]);
+  const [kvulns, setKvulns] = useState<VulnDescr[]>([]);
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
   const box = useRef<HTMLDivElement>(null);
@@ -52,22 +54,26 @@ export function GlobalSearch({ sourceId, role, hier, page = false }: { sourceId:
     document.addEventListener("mousedown", away); document.addEventListener("touchstart", away, { passive: true });
     return () => { document.removeEventListener("mousedown", away); document.removeEventListener("touchstart", away); };
   }, [open]);
-  const wantData = !cat || cat === "hosts" || cat === "software";
+  const wantData = !cat || cat === "hosts" || cat === "software" || cat === "vuln";
+  const vulnId = /^(cve|bdu|ghsa|kla)[-:\d]/i.test(term);
   useEffect(() => {
-    if (!sourceId || term.length < 2 || !wantData) { setHosts([]); setProducts([]); return; }
+    if (!sourceId || term.length < 2 || !wantData) { setHosts([]); setProducts([]); setVulns([]); setKvulns([]); return; }
     let alive = true;
     const t = window.setTimeout(() => {
       setBusy(true);
+      const v = !cat || cat === "vuln";
       Promise.all([
         !cat || cat === "hosts" ? api.hosts.list({ q: term, activity: "all", limit: 5 }).then((r) => r.items).catch(() => []) : Promise.resolve([] as Host[]),
         !cat || cat === "software" ? api.catalog.search(term, [sourceId]).then((r) => r.items.slice(0, 5)).catch(() => []) : Promise.resolve([] as Product[]),
-      ]).then(([h, p]) => { if (alive) { setHosts(h); setProducts(p); setActive(0); } }).finally(() => { if (alive) setBusy(false); });
+        v && term.length >= 3 ? api.vdb.list({ q: term, limit: 4 }).then((r) => r.items).catch(() => []) : Promise.resolve([] as VdbVulnRow[]),
+        // уязвимости, найденные KSC: только когда ищут именно уязвимость (первый запрос к KSC после простоя тяжёлый)
+        v && (cat === "vuln" || vulnId) ? api.vulns.list({ q: term, limit: 4, sort: "risk" }).then((r) => r.items).catch(() => []) : Promise.resolve([] as VulnDescr[]),
+      ]).then(([h, p, vv, kv]) => { if (alive) { setHosts(h); setProducts(p); setVulns(vv); setKvulns(kv); setActive(0); } }).finally(() => { if (alive) setBusy(false); });
     }, 220);
     return () => { alive = false; window.clearTimeout(t); };
-  }, [term, sourceId, cat, wantData]);
+  }, [term, sourceId, cat, wantData, vulnId]);
 
   const enc = encodeURIComponent(term);
-  const vulnId = /^(cve|bdu|ghsa|kla)[-:\d]/i.test(term);
   const groups = useMemo(() => {
     const g: { title: string; hits: Hit[] }[] = [];
     const fnHits = (): Hit[] => FUNCTIONS.filter((f) => roleOk(f.roles, role) && (!f.hier || hier) && (tokens.length ? matchFn(f, tokens) : false)).slice(0, 6)
@@ -83,11 +89,18 @@ export function GlobalSearch({ sourceId, role, hier, page = false }: { sourceId:
         { key: "pall", icon: "search", title: `Все программы с «${term}»`, to: `/software?q=${enc}` }] });
       if ((!cat || cat === "users") && term.length >= 2) g.push({ title: CATS.users, hits: [{ key: "uk", icon: "users", title: `Пользователь «${term}» среди пользователей KSC`, to: `/devices?tab=ksc&q=${enc}` },
         ...(role !== "viewer" ? [{ key: "ub", icon: "users" as IconName, title: `Сотрудник «${term}» по выгрузке BI`, to: `/devices?tab=bi&q=${enc}` }] : [])] });
-      if ((!cat || cat === "vuln") && term.length >= 2) g.push({ title: CATS.vuln, hits: [{ key: "vdb", icon: "vault", title: `«${term}» в базе уязвимостей`, to: `/vdb?tab=search&q=${enc}` }, { key: "vk", icon: "bug", title: `«${term}» среди уязвимостей KSC`, to: `/vulnerabilities?q=${enc}` }] });
+      if ((!cat || cat === "vuln") && term.length >= 2) {
+        const idHit: Hit[] = /^(cve-\d{4}-\d{4,}|bdu:\d{4}-\d{5}|ghsa-)/i.test(term) && !vulns.some((v) => v.key.toUpperCase() === term.toUpperCase())
+          ? [{ key: "vid", icon: "vault", title: `${term.toUpperCase()}: во внешних базах и в нашем контуре`, sub: "CVE.org, NVD, OSV — здесь и сейчас, даже если в локальной базе ещё нет", to: `/vdb?tab=search&q=${enc}`, strong: true }] : [];
+        g.push({ title: CATS.vuln, hits: [...idHit,
+          ...vulns.map((v) => ({ key: `v${v.key}`, icon: "vault" as IconName, title: v.key, sub: [v.title || v.description, v.severity_ru, v.exploited ? "эксплуатируется (KEV)" : "", v.finding ? `у нас: ${v.finding.status_ru}` : ""].filter(Boolean).join(" · "), to: `/vdb?tab=search&q=${encodeURIComponent(v.key)}&v=${encodeURIComponent(v.key)}` })),
+          ...kvulns.map((v) => ({ key: `k${v.descr_id}`, icon: "bug" as IconName, title: `${v.kla_id || v.cve[0] || "Уязвимость"} — обнаружена Kaspersky`, sub: [v.severity_label, `${v.hosts} комп.`, v.cve.slice(0, 3).join(", "), v.products[0]].filter(Boolean).join(" · "), to: `/vulnerabilities?q=${encodeURIComponent(v.kla_id || v.cve[0] || term)}` })),
+          { key: "vdball", icon: "search", title: `Все уязвимости с «${term}» в базе уязвимостей`, to: `/vdb?tab=search&q=${enc}` }, { key: "vkall", icon: "search", title: `«${term}» среди обнаруженных Kaspersky`, to: `/vulnerabilities?q=${enc}` }] });
+      }
       if (vulnId) g.sort((a, b) => (a.title === CATS.vuln ? -1 : b.title === CATS.vuln ? 1 : 0));
     }
     return g;
-  }, [term, cat, hosts, products, sourceId, role, hier, vulnId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [term, cat, hosts, products, vulns, kvulns, sourceId, role, hier, vulnId]); // eslint-disable-line react-hooks/exhaustive-deps
   const flat = groups.flatMap((g) => g.hits);
   const go = (h: Hit | undefined) => { if (!h) return; navigate(h.to); setOpen(false); setWide(false); setQ(""); setCat(null); input.current?.blur(); };
   const onKey = (e: React.KeyboardEvent) => {

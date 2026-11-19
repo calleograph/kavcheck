@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CompactList } from "../components/CompactList";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, isSecurity, type ApiError, type VdbAffectedRow, type VdbCard, type VdbCategory, type VdbPlanRow, type VdbScore, type VdbCounts, type VdbSourceInfo, type VdbVulnRow } from "../api";
+import { api, isSecurity, type ApiError, type VdbAffectedRow, type VdbCard, type VdbCategory, type VdbPlanRow, type VdbScore, type VdbCounts, type VdbSourceInfo, type VdbVulnRow, type VdbLookup, type VdbMatchOut, type VulnDescr } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
 import { EolList } from "../components/EolList";
@@ -24,7 +24,9 @@ type Stat = "" | "confirmed" | "potential" | "clarify" | "insufficient";
 const CAT_TITLE: Record<VdbCategory, string> = { os: "Операционные системы", system: "Системные компоненты", application: "Прикладное ПО", unclassified: "Не классифицировано" };
 const CAT_HINT: Record<VdbCategory, string> = { os: "Windows, ядро и дистрибутивы Linux", system: "Bash, OpenSSL, OpenSSH, библиотеки, пакеты ОС, среды выполнения, драйверы", application: "Браузеры, офис, серверное ПО, базы данных, средства разработки", unclassified: "Категорию нельзя определить уверенно: назначьте вручную" };
 const STAT_OPTS: [Stat, string][] = [["", "Любая"], ["confirmed", "Подтверждено"], ["potential", "Потенциально"], ["clarify", "Требует уточнения"], ["insufficient", "Данных недостаточно"]];
-const SRC_TITLE: Record<string, string> = { nvd: "NVD", kev: "CISA KEV", osv: "OSV", bdu: "БДУ ФСТЭК" };
+const SRC_TITLE: Record<string, string> = { nvd: "NVD", kev: "CISA KEV", osv: "OSV", bdu: "БДУ ФСТЭК", cve: "CVE.org" };
+/** Идентификатор одной уязвимости (как vdb/lookup.ID_RE): CVE, БДУ, GHSA и идентификаторы баз OSV — для него поиск идёт и во внешние базы «здесь и сейчас». */
+const VULN_ID = /^(CVE-\d{4}-\d{4,}|BDU:\d{4}-\d{5}|GHSA(-[23456789cfghjmpqrvwx]{4}){3}|(?!CVE-)[A-Z][A-Z0-9]{1,15}-(?=[A-Z0-9.:_-]*\d)[A-Z0-9][A-Z0-9.:_-]{2,40})$/i;
 
 /** Параметры сервера для выбранного диапазона CVSS: готовый уровень или свои границы (свои важнее). */
 function scoreParams(range: string, lo: string, hi: string): { score_min?: number; score_max?: number; no_score?: boolean } {
@@ -49,7 +51,7 @@ export default function VdbPage({ ctx }: { ctx: Ctx }) {
   if (!ctx.current) return <NoSource ctx={ctx} />;
   return (
     <section>
-      <PageHead title="База уязвимостей" lede="Сведения о новых уязвимостях из независимых баз (NVD, CISA KEV, OSV, БДУ ФСТЭК) и проверка, затрагивают ли они установленное в вашей организации ПО. Это потенциальные уязвимости: подтверждённые KSC — в разделе «Уязвимости»." />
+      <PageHead title="База уязвимостей" lede="Уязвимости из независимых баз (NVD, CISA KEV, OSV, БДУ ФСТЭК) и проверка, затрагивают ли они установленное у нас ПО. Поиск идёт везде сразу: по идентификатору (CVE, БДУ, GHSA) — ещё и в первоисточниках «здесь и сейчас», а уязвимости, которые Kaspersky обнаружил на компьютерах, показываются отдельным блоком." />
       <Tabs label="Вид" value={tab} onChange={(t) => setSp((p) => { p.set("tab", t); p.delete("v"); return p; })}
         items={[{ id: "search", label: "Поиск" }, { id: "mine", label: "Затрагивают нашу инфраструктуру", count: counts?.new || undefined }, { id: "sources", label: "Источники и обновление" }]} />
       {tab === "search" ? <SearchView ctx={ctx} /> : tab === "mine" ? <MineView ctx={ctx} onCounts={setCounts} counts={counts} /> : <SourcesView ctx={ctx} />}
@@ -122,8 +124,10 @@ function SearchView({ ctx }: { ctx: Ctx }) {
         count={{ n: list.initial ? null : list.total, noun: ["уязвимость", "уязвимости", "уязвимостей"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
         report={canReport ? { onClick: reportView, disabled: list.initial || !list.total, title: sel.count ? "Отчёт по отмеченным уязвимостям" : "Отчёт по найденным уязвимостям: потенциально затронутые компьютеры" } : null} />
       {note && <p className="muted small fbar-note"><b className="warn-text">{note}</b></p>}
+      {VULN_ID.test(applied.trim()) && <IdLookup ctx={ctx} id={applied.trim()} onOpen={(k) => setSp((p) => { p.set("v", k); return p; })} onReport={canReport ? (k) => setReport({ title: `Проверка инфраструктуры: ${k}`, keys: [k] }) : null} />}
+      {applied.trim().length >= 2 && !appliedV.trim() && <KscHits q={applied.trim()} />}
       {list.error && list.initial && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{list.error}</div></div>}
-      <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
+      {!(VULN_ID.test(applied.trim()) && !list.initial && list.total <= 1) && <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={7} /> : (
           <table className="table virt">
             <thead><tr><CheckAll all={sel.allOf(keys)} some={sel.someOf(keys)} onToggle={() => sel.toggleMany(keys)} /><ExpandTh /><SortTh k="key" label="Уязвимость" sort={sort} desc={desc} onSort={onSort} />
@@ -157,13 +161,96 @@ function SearchView({ ctx }: { ctx: Ctx }) {
               </>)} />
             {!list.items.length && !list.loading && <tbody><tr><td colSpan={10}><Empty icon="search" title="Уязвимости не найдены">{applied || sev || kev || mine || range || lo || hi ? "Измените запрос или фильтры." : "Локальная база пуста: включите и загрузите источники в разделе «Источники и обновление»."}</Empty></td></tr></tbody>}
           </table>)}
-      </div>
-      <ListFoot list={list} />
+      </div>}
+      {!(VULN_ID.test(applied.trim()) && !list.initial && list.total <= 1) && <ListFoot list={list} />}
       <ReportDock label="Выбранные уязвимости" count={sel.count} noun={["уязвимость выбрана", "уязвимости выбраны", "уязвимостей выбрано"]} canReport={canReport} onClear={sel.clear}
         onReport={() => setReport({ title: `Проверка инфраструктуры: ${sel.count} ${plural(sel.count, "уязвимость", "уязвимости", "уязвимостей")}`, keys: sel.ids })} />
       {open && <VdbCardPanel ctx={ctx} id={open} onClose={() => setSp((p) => { p.delete("v"); return p; })} onReport={(r) => setReport(r)} />}
       <ReportHost ctx={ctx} report={report} onClose={() => setReport(null)} />
     </>
+  );
+}
+
+/** Сопоставление с установленным ПО выбранного источника: программа, версия, результат, компьютеры (общая часть карточки и поиска по идентификатору). */
+function InfraTable({ ctx, infra }: { ctx: Ctx; infra: { catalog: boolean; matches: VdbMatchOut[] } | null }) {
+  const m = infra?.matches ?? [];
+  if (!infra) return <p className="muted small">Источник KSC не выбран.</p>;
+  if (!infra.catalog) return <p className="muted small">Каталог программ «{ctx.current?.name}» ещё не построен: сопоставление невозможно.</p>;
+  if (!m.length) return <p className="muted small">Совпадений с установленным ПО не найдено: продукты из описания не встречаются в каталоге «{ctx.current?.name}» или их версии вне затронутых.</p>;
+  return (
+    <div className="table-scroll"><table className="table compact">
+      <thead><tr><th>Программа</th><th>Версия</th><th>Результат</th><th className="num">Компьютеров</th></tr></thead>
+      <tbody>{m.map((x, i) => <tr key={i}><td><Link to={`/software/p/${encodeURIComponent(x.product_key)}`}>{x.product}</Link></td><td className="mono nowrap">{x.version || "—"}</td>
+        <td><StatusBadge s={x.status} label={x.status_ru} /><span className="sub small">{x.basis}</span></td><td className="num">{num(x.hosts)}</td></tr>)}</tbody></table></div>);
+}
+
+/** Одна уязвимость по идентификатору — везде сразу: локальная база, первоисточники (CVE.org, NVD, OSV) «здесь и сейчас» и применимость к нашему контуру.
+ *  Если в локальной базе записи нет (свежая или старая CVE), внешние базы опрашиваются сразу; если есть — по кнопке. */
+function IdLookup({ ctx, id, onOpen, onReport }: { ctx: Ctx; id: string; onOpen: (key: string) => void; onReport: ((key: string) => void) | null }) {
+  const [r, setR] = useState<VdbLookup | null>(null); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const run = (live: boolean) => { setBusy(true); setErr(""); api.vdb.lookup(id, live).then(setR).catch((e) => setErr((e as ApiError).message)).finally(() => setBusy(false)); };
+  useEffect(() => { setR(null); run(false); }, [id, ctx.current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lv = r?.live; const key = r?.local?.key ?? lv?.key ?? id.toUpperCase();
+  const aff = lv?.records.find((x) => x.affected.length);
+  const p = lv?.cvss?.primary;
+  const title = lv?.title || r?.local?.title || ""; const desc = lv?.description || r?.local?.description || "";      // у NVD заголовок — начало описания: второй раз не показываем
+  return (
+    <section className="card lookup" aria-label={`Уязвимость ${key}`} aria-busy={busy}>
+      <div className="lookup-head">
+        <h2 className="mono">{key}</h2>
+        {r && (r.local ? <span className="badge ok">есть в локальной базе</span> : <span className="badge warn">в локальной базе пока нет</span>)}
+        {(r?.local?.exploited || lv?.exploited) && <Kev />}
+        {p ? <span className="badge">CVSS {p.score.toFixed(1)} · {p.severity_ru}</span> : r?.local ? <>{r.local.score !== null && <span className="badge">CVSS {r.local.score.toFixed(1)}</span>}<LevelBadge v={r.local} /></> : null}
+        <div className="spacer" />
+        {r?.local && <button type="button" className="btn mini" onClick={() => onOpen(r.local!.key)}>Карточка</button>}
+        {r?.local && onReport && r.local.products.length > 0 && <button type="button" className="btn mini" onClick={() => onReport(r.local!.key)}><Icon name="target" size={15} />Проверить инфраструктуру</button>}
+        {r && <button type="button" className="btn mini ghost" disabled={busy} onClick={() => run(true)} title="Запросить запись в CVE.org, NVD и OSV прямо сейчас"><Icon name="refresh" size={15} />{lv ? "Обновить из внешних баз" : "Свежие данные из внешних баз"}</button>}
+      </div>
+      {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
+      {!r && !err && <p className="muted small"><span className="spin sm" /> Ищем в локальной базе{VULN_ID.test(id) ? " и во внешних базах (CVE.org, NVD, OSV)…" : "…"}</p>}
+      {r && <>
+        {title && !desc.startsWith(title.replace(/…$/, "")) && <p className="lookup-title">{title}</p>}
+        {desc && <p className="vdb-desc lookup-desc">{desc}</p>}
+        {lv && <>
+          <ul className="lookup-src" aria-label="Внешние базы">{lv.sources.map((s) => <li key={s.source}>
+            <span className={`dot ${s.found ? "ok" : s.error ? "bad" : "off"}`} aria-hidden /><a href={s.url} target="_blank" rel="noopener noreferrer">{s.title}<Icon name="external" size={12} className="ext" /></a>
+            <span className="muted small">{s.found ? `найдено${s.status ? `, статус «${s.status}»` : ""}` : s.error ? `недоступно: ${s.error}` : "записи нет"}</span></li>)}
+            {!lv.sources.length && <li className="muted small">Для идентификаторов БДУ внешнего запроса нет: база БДУ загружается целиком по расписанию.</li>}</ul>
+          <p className="muted small">{r.local ? "" : "Запись ещё не загружена в локальную базу (она обновляется по расписанию; NVD — за выбранное число лет). "}Сведения получены из первоисточников {fmt(lv.checked_at)}, в локальную базу не записываются.
+            {lv.sources.some((s) => s.source === "nvd" && s.status && /received|awaiting|undergoing/i.test(s.status)) && " NVD ещё не проанализировал запись (нет CPE и своей оценки): продукты и версии взяты из записи поставщика в CVE.org."}</p>
+          {aff && <details className="disclosure" open={!r.local}><summary>Затронутые продукты по данным {aff.title} ({aff.affected_total})</summary>
+            <div className="table-scroll"><table className="table compact"><thead><tr><th>Производитель и продукт</th><th>Версии</th></tr></thead>
+              <tbody>{aff.affected.map((a, i) => <tr key={i}><td>{[a.vendor, a.product].filter(Boolean).join(" ")}{a.ecosystem && <span className="sub mono small">{a.ecosystem}</span>}</td>
+                <td className="mono small">{rangeText(a)}{a.fixed && <span className="sub">исправлено в {a.fixed}</span>}</td></tr>)}</tbody></table></div></details>}
+        </>}
+        {!lv && !r.local && <p className="muted small">Уязвимость не найдена ни в локальной базе, ни во внешних.</p>}
+        <h3 className="vdb-h">Применимость к нашему контуру («{ctx.current?.name}»)</h3>
+        <InfraTable ctx={ctx} infra={r.infrastructure} />
+        {isSecurity(ctx.me.user.role) && /^CVE-\d{4}-\d{4,7}$/i.test(key) && <p className="small"><Link to={`/hunt?tab=new&cve=${encodeURIComponent(key)}`}>Найти на компьютерах (CVE Hunt): данные KSC и сетевая проверка</Link></p>}
+      </>}
+    </section>
+  );
+}
+
+/** Уязвимости, которые обнаружил сам Kaspersky Security Center на компьютерах выбранного источника: совпадения по KLA, CVE и программе — те же данные, что в разделе «Уязвимости». */
+function KscHits({ q }: { q: string }) {
+  const [r, setR] = useState<{ items: VulnDescr[]; total: number } | null>(null); const [err, setErr] = useState(false);
+  useEffect(() => { let alive = true; setR(null); setErr(false);
+    api.vulns.list({ q, limit: 5, sort: "risk" }).then((x) => { if (alive) setR(x.unsupported ? null : { items: x.items, total: x.total }); }).catch(() => { if (alive) setErr(true); });
+    return () => { alive = false; }; }, [q]);
+  const to = `/vulnerabilities?q=${encodeURIComponent(q)}`;
+  if (err) return <p className="muted small ksc-hits-line">Kaspersky Security Center: уязвимости, обнаруженные на компьютерах, сейчас недоступны (источник KSC не ответил).</p>;
+  if (!r) return null;
+  if (!r.total) return <p className="muted small ksc-hits-line"><Icon name="bug" size={15} />Kaspersky Security Center: среди уязвимостей, обнаруженных на компьютерах, совпадений нет.</p>;
+  return (
+    <section className="card ksc-hits" aria-label="Обнаружено Kaspersky">
+      <div className="lookup-head"><h2>Обнаружено Kaspersky на компьютерах</h2><span className="badge accent">{num(r.total)}</span><div className="spacer" /><Link className="btn mini" to={to}>Все в разделе «Уязвимости»</Link></div>
+      <div className="table-scroll"><table className="table compact">
+        <thead><tr><th>Уязвимость (KSC)</th><th>CVE</th><th>Программы</th><th className="num">Компьютеров</th></tr></thead>
+        <tbody>{r.items.map((v) => <tr key={v.descr_id}>
+          <td><Link className="mono" to={`/vulnerabilities?q=${encodeURIComponent(v.kla_id || (v.cve[0] ?? ""))}`}>{v.kla_id || "—"}</Link><span className="sub"><span className={`badge ${v.severity === "critical" ? "err" : v.severity === "high" ? "warn" : ""}`}>{v.severity_label || v.severity}</span></span></td>
+          <td className="mono small"><CompactList items={v.cve} label="CVE" /></td><td className="small"><CompactList items={v.products} sep="; " label="программы" /></td><td className="num">{num(v.hosts)}</td></tr>)}</tbody></table></div>
+    </section>
   );
 }
 
@@ -216,12 +303,7 @@ export function VdbCardPanel({ ctx, id, onClose, onReport }: { ctx: Ctx; id: str
         {c.description && <p className="vdb-desc">{c.description}</p>}
         {c.differences.length > 0 && <div className="alert warn"><Icon name="info" /><div className="alert-body"><b>Источники расходятся:</b><ul>{c.differences.map((d) => <li key={d.field}>{d.field}: {Object.entries(d.values).map(([s, v]) => `${SRC_TITLE[s] ?? s} — ${v}`).join("; ")}</li>)}</ul></div></div>}
         <h3 className="vdb-h">Установленное ПО в «{ctx.current?.name}»</h3>
-        {!c.infrastructure ? <p className="muted small">Источник KSC не выбран.</p> : !c.infrastructure.catalog ? <p className="muted small">Каталог программ источника ещё не построен: сопоставление невозможно.</p>
-          : !m.length ? <p className="muted small">Совпадений с установленным ПО не найдено: продукты из описания не встречаются в каталоге или их версии вне затронутых.</p> : (
-            <div className="table-scroll"><table className="table compact">
-              <thead><tr><th>Программа</th><th>Версия</th><th>Результат</th><th className="num">Компьютеров</th></tr></thead>
-              <tbody>{m.map((x, i) => <tr key={i}><td><Link to={`/software/p/${encodeURIComponent(x.product_key)}`}>{x.product}</Link></td><td className="mono">{x.version || "—"}</td>
-                <td><StatusBadge s={x.status} label={x.status_ru} /><span className="sub small">{x.basis}</span></td><td className="num">{num(x.hosts)}</td></tr>)}</tbody></table></div>)}
+        <InfraTable ctx={ctx} infra={c.infrastructure} />
         {c.infrastructure?.catalog && m.length > 0 && <p className="muted small">«Подтверждено источником» — продукт сопоставлен надёжно и версия входит в диапазон источника; «потенциально» и «требуется уточнение» требуют проверки специалистом.
           {affected.length === 0 && " Все найденные версии исправлены."} Компьютеры по версиям — кнопка «Проверить инфраструктуру».</p>}
         <h3 className="vdb-h">Данные источников</h3>

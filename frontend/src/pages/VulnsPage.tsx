@@ -152,7 +152,10 @@ function VulnHostsPanel({ title, lede, filters, all, ctx, onClose, report }: { t
 /** Список уязвимостей KSC (KLA/CVE): найти новую CVE, выбрать одну или несколько записей и сразу получить отчёт о затронутых компьютерах. */
 function ListView({ ctx }: { ctx: Ctx }) {
   const sid = ctx.current?.id ?? "";
-  const [q, setQ] = useKept("vlist.q", ""); const [applied, setApplied] = useState(q);
+  const [sp] = useSearchParams();
+  const [q, setQ] = useKept("vlist.q", sp.get("q") ?? ""); const [applied, setApplied] = useState(q);
+  const urlQ = sp.get("q");
+  useEffect(() => { if (urlQ !== null) { setQ(urlQ); setApplied(urlQ); } }, [urlQ]); // eslint-disable-line react-hooks/exhaustive-deps     // переход из верхнего поиска и из «Базы уязвимостей»
   const [severity, setSeverity] = useKept<Sev>("vlist.severity", ""); const [patchable, setPatchable] = useKept("vlist.patchable", false); const [all, setAll] = useKept("vlist.all", false);
   const [sort, setSort] = useKept("vlist.sort", "risk"); const [desc, setDesc] = useKept("vlist.desc", true);
   const sel = useRowSel<number>(); const [report, setReport] = useState<Report | null>(null); const ex = useExpanded<number>();
