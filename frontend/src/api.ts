@@ -74,7 +74,7 @@ export interface SessionRow { login: string; domain: string; upn: string; user_n
   online: boolean | null; last_connected: string | null; source_id: string; source: string }
 export interface SessionsNow { items: SessionRow[]; total: number; more: boolean; fetched_at: string; note: string; sources: { source_id: string; source: string; rows: number; more: boolean; error: string }[];
   choices: { id: string; name: string }[] }
-export type QuickKind = "quick_sessions" | "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_ad" | "quick_adaudit" | "quick_admin";
+export type QuickKind = "quick_sessions" | "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_ad" | "quick_adaudit" | "quick_admin" | "quick_inv";
 
 export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "offline" | "unknown" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
@@ -392,6 +392,7 @@ let allSources = false;
 const ALL_OK = /^\/(eol|devices|quick\/preview|reports|overview|licenses|bi\/ksc-users)(\/|\?|$)/;
 let onUnauthorized: (() => void) | null = null;
 export const setCsrf = (t: string) => { csrf = t; };
+export const csrfToken = () => csrf;
 export const setSourceId = (id: string | null) => { sourceId = id; };
 export const setAllSources = (on: boolean) => { allSources = on; };
 const sourceHeader = (path: string) => (allSources && ALL_OK.test(path) ? "all" : sourceId);
@@ -401,7 +402,7 @@ export class ApiError extends Error {
   constructor(public status: number, message: string, public code = "", public retryAfter?: number) { super(message); }
 }
 
-async function req<T>(method: string, path: string, body?: unknown, opts: { raw?: boolean } = {}): Promise<T> {
+export async function req<T>(method: string, path: string, body?: unknown, opts: { raw?: boolean } = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET" && method !== "HEAD") headers["X-CSRF-Token"] = csrf;
@@ -419,7 +420,7 @@ async function req<T>(method: string, path: string, body?: unknown, opts: { raw?
   if (r.status === 204 || opts.raw) return undefined as T;
   return r.json() as Promise<T>;
 }
-const qs = (o: Record<string, string | number | boolean | undefined | null>) => { const p = new URLSearchParams(); for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== null && v !== "") p.set(k, String(v)); const s = p.toString(); return s ? `?${s}` : ""; };
+export const qs = (o: Record<string, string | number | boolean | undefined | null>) => { const p = new URLSearchParams(); for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== null && v !== "") p.set(k, String(v)); const s = p.toString(); return s ? `?${s}` : ""; };
 
 async function rawPost<T>(path: string, data: ArrayBuffer): Promise<T> {
   const r = await fetch(`/api/v1${path}`, { method: "POST", headers: { "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream", ...(sourceId ? { "X-Source-Id": sourceId } : {}) }, body: data, credentials: "same-origin" });

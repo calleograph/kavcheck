@@ -24,9 +24,9 @@ from ..ksc import vulns as V
 from ..ksc.driver import KscError, SourceClient
 from ..search import any_field, matcher
 
-QUICK_KINDS = ("quick_sessions", "quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_ad", "quick_adaudit", "quick_admin")
-NO_KSC = ("quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_ad", "quick_adaudit", "quick_admin")          # строятся без источника KSC (своя внутренняя база)
-KIND_TITLE = {"quick_sessions": "Сейчас в системе", "quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры", "quick_pentest": "Результаты Pentest", "quick_hunt": "Результаты целевого поиска уязвимостей", "quick_bi": "Владельцы устройств (BI)", "quick_hier": "Иерархия. Предприятие", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "Администрирование"}
+QUICK_KINDS = ("quick_sessions", "quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_ad", "quick_adaudit", "quick_admin", "quick_inv")
+NO_KSC = ("quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_ad", "quick_adaudit", "quick_admin", "quick_inv")          # строятся без источника KSC (своя внутренняя база)
+KIND_TITLE = {"quick_sessions": "Сейчас в системе", "quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры", "quick_pentest": "Результаты Pentest", "quick_hunt": "Результаты целевого поиска уязвимостей", "quick_bi": "Владельцы устройств (BI)", "quick_hier": "Иерархия. Предприятие", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "Администрирование", "quick_inv": "Инвентаризация"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
 ONLINE_RU = {True: "в сети", False: "не в сети", None: "нет данных"}
@@ -762,6 +762,10 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
     if kind == "quick_adaudit" and kind not in BUILDERS:
         from .quick_adaudit import build_adaudit  # noqa: PLC0415
         BUILDERS[kind] = build_adaudit
+    if kind == "quick_inv" and kind not in BUILDERS:
+        from .quick_inv import build_inv  # noqa: PLC0415
+
+        BUILDERS[kind] = build_inv
     if kind == "quick_admin" and kind not in BUILDERS:
         from .quick_admin import build_admin  # noqa: PLC0415
 
@@ -777,7 +781,7 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
 
 # Таблицы, которые входят только в подробный отчёт: построчные перечни (обнаружения, компьютеры, устройства, события). В кратком остаются сводные таблицы и показатели.
 DETAIL_TABLES = {"quick_vulns": {"rows", "hosts"}, "quick_extvulns": {"rows", "hosts"}, "quick_hosts": {"hosts", "protection", "software", "vulns", "vulns_groups", "eol", "events", "hardware"}, "quick_protection": {"hosts"}, "quick_events": {"rows", "hosts"},
-                 "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}, "quick_pentest": {"hosts", "ports", "hits", "skipped"}, "quick_hunt": {"coverage"}, "quick_bi": {"rows"}, "quick_hier": {"rows"}, "quick_ad": {"rows"}, "quick_adaudit": {"rows"}, "quick_admin": {"rows"}}
+                 "quick_eol": {"devices"}, "quick_devices": {"devices"}, "quick_overview": {"hosts"}, "quick_pentest": {"hosts", "ports", "hits", "skipped"}, "quick_hunt": {"coverage"}, "quick_bi": {"rows"}, "quick_hier": {"rows"}, "quick_ad": {"rows"}, "quick_adaudit": {"rows"}, "quick_admin": {"rows"}, "quick_inv": {"rows"}}
 
 
 def shape(kind: str, doc: dict, p: dict) -> dict:

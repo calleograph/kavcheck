@@ -249,3 +249,8 @@ def ids_list(ids) -> str:
     if not out:
         raise ValueError("пустой список идентификаторов")
     return ", ".join(out)
+
+# Инвентаризация: компьютеры, на которых установлена программа по маске названия (подсчёт использования лицензий). Активность — по tmLastNagentConnected (since = NULL — все записи).
+LIC_HOSTS = ("SELECT a.nHostId AS host_id, MAX(h.wstrDisplayName) AS name, MAX(a.wstrDisplayName) AS product, MAX(a.wstrBuild) AS version FROM dbo.v_akpub_application a "
+             "JOIN dbo.v_akpub_host h ON h.nId = a.nHostId WHERE a.wstrDisplayName LIKE %(p)s AND (%(since)s IS NULL OR h.tmLastNagentConnected >= %(since)s) "
+             "GROUP BY a.nHostId ORDER BY MAX(h.wstrDisplayName) OFFSET 0 ROWS FETCH NEXT %(n)s ROWS ONLY")

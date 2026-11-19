@@ -11,6 +11,7 @@ export interface NavGroup { id: string; label: string; icon: IconName; items: Na
 export const NAV_TOP: NavItem[] = [
   { to: "/", label: "Быстрый доступ", icon: "bolt", end: true },
   { to: "/overview", label: "Обзор", icon: "home" },
+  { to: "/inventory", label: "Инвентаризация", icon: "package" },
 ];
 export const NAV_GROUPS: NavGroup[] = [
   { id: "infra", label: "Инфраструктура", icon: "monitor", items: [
@@ -27,8 +28,18 @@ export const NAV_REPORTS: NavItem = { to: "/reports", label: "Отчёты", ico
 export const NAV_HIDDEN: Record<string, string> = {
   "/software/p/:key": "карточка программы (из «Программы», поиска, отчётов)", "/hosts/:hostId": "карточка компьютера (из «Компьютеры», поиска)", "/vulnerabilities/hosts/:hostId": "уязвимости компьютера (из «Уязвимости»)",
   "/zones/:zid": "карточка зоны (из «Зоны ответственности»)", "/reports/:jobId": "готовый отчёт (из «Отчёты»)", "/security": "личная страница: пароль и двухфакторная проверка (меню пользователя)",
+  "/inventory/*": "подсистема «Инвентаризация»: вложенные страницы — INV_NAV ниже",
   "/appearance": "личная страница: тема оформления (меню пользователя)", "/password": "перенаправление на /security", "/admin": "администрирование (группа меню «Администрирование»)",
 };
+
+/** Навигация подсистемы «Инвентаризация» (свои разделы внутри /inventory). perm — право раздела, без которого пункт скрыт; admin — только администратор. */
+export interface InvNavItem { to: string; label: string; icon: IconName; end?: boolean; perm?: "import" | "refs"; admin?: boolean }
+export const INV_NAV: InvNavItem[] = [
+  { to: "/inventory", label: "Обзор", icon: "home", end: true }, { to: "/inventory/assets", label: "Оборудование", icon: "monitor" }, { to: "/inventory/docs", label: "Документы", icon: "file" },
+  { to: "/inventory/locations", label: "Местоположения", icon: "sitemap" }, { to: "/inventory/people", label: "Сотрудники", icon: "users" }, { to: "/inventory/licenses", label: "Лицензии", icon: "key" },
+  { to: "/inventory/reports", label: "Отчёты", icon: "download" }, { to: "/inventory/scan", label: "Сканирование", icon: "target" }, { to: "/inventory/refs", label: "Справочники", icon: "layers" },
+  { to: "/inventory/import", label: "Импорт", icon: "upload", perm: "import" }, { to: "/inventory/settings", label: "Настройки", icon: "sliders", admin: true },
+];
 
 export const ADMIN_TABS: { id: string; label: string }[] = [
   { id: "system", label: "Техническое состояние" }, { id: "sources", label: "Источники данных" }, { id: "licenses", label: "Лицензии" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" }, { id: "hier", label: "Иерархия предприятия" },
@@ -62,6 +73,7 @@ const NAV_KW: Record<string, string> = {
   "/devices": "устройства пользователи владелец bi сопоставление сотрудники владельцы принадлежность", "/protection": "защита антивирус базы постоянная защита проблемные компьютеры состояние защиты", "/vulnerabilities": "уязвимости cve kla исправления обнаружения отчёт по уязвимостям игнорировать исключения",
   "/vdb": "база уязвимостей cve nvd kev osv бду поиск план устранения", "/eol": "eol окончание поддержки операционные системы устаревшие исключения", "/events": "события безопасности угрозы обнаружения атаки", "/hunt": "cve hunt целевой поиск уязвимости задание",
   "/pentest": "pentest сканирование находки результаты задания nmap nuclei", "/zones": "зоны ответственности ответственные контакты компьютеры зоны", "/hierarchy": "иерархия предприятия структура организации руководители подразделения граф", "/reports": "отчёты сформированные проверка версий шаблоны сохранённые центр отчётов",
+  "/inventory": "инвентаризация учёт имущества itam активы оборудование инвентарный номер карточка имущества владелец ответственный мол местоположение помещение склад выдача возврат перемещение акт ремонт списание этикетка qr штрихкод лицензии it invent",
   "/adaudit": "аудит домена active directory ad учётные записи пароли password never expires бессрочный пароль срок смены сброс пароля reset change 4723 4724 неиспользуемые неактивные последний вход заблокированные административные сервисные временные подрядчики protected users ежемесячная квартальная проверка",
 };
 const ROLE_ADMIN: Role[] = ["admin"];
@@ -77,6 +89,15 @@ export const FUNCTIONS: Fn[] = [
   { title: "Сброс пароля (Reset Password)", to: "/adaudit?tab=resets", kw: "сброс пароля reset 4724 смена пароля change 4723 журналы контроллеров домена", icon: "key", roles: ["security", "admin"], group: "Защита и уязвимости" },
   { title: "Пароль без срока действия", to: "/adaudit?tab=passwords", kw: "password never expires бессрочный пароль давность смены пароля", icon: "key", roles: ["security", "admin"], group: "Защита и уязвимости" },
   { title: "Неиспользуемые учётные записи домена", to: "/adaudit?tab=activity", kw: "неиспользуемые неактивные давно не входили последний вход lastlogon заблокированные", icon: "key", roles: ["security", "admin"], group: "Защита и уязвимости" },
+  { title: "Инвентаризация: оборудование", to: "/inventory/assets", kw: "реестр оборудования учётные единицы инвентарный номер серийный номер карточка имущества", icon: "monitor", group: "Инвентаризация" },
+  { title: "Инвентаризация: документы и акты", to: "/inventory/docs", kw: "акт выдачи возврата приёма-передачи перемещение накладная ремонт списание работы печатная форма", icon: "file", group: "Инвентаризация" },
+  { title: "Инвентаризация: местоположения", to: "/inventory/locations", kw: "регион город адрес здание этаж помещение кабинет рабочее место стойка серверная склад", icon: "sitemap", group: "Инвентаризация" },
+  { title: "Инвентаризация: сотрудники и закреплённое", to: "/inventory/people", kw: "сотрудник пользователь владелец ответственный мол оборудование сотрудника увольнение", icon: "users", group: "Инвентаризация" },
+  { title: "Инвентаризация: лицензии ПО", to: "/inventory/licenses", kw: "лицензии программ ключ активации срок действия назначение установки нехватка", icon: "key", group: "Инвентаризация" },
+  { title: "Инвентаризация: отчёты", to: "/inventory/reports", kw: "реестр отчёт по сотрудникам ответственным местоположениям склад ремонт гарантия списание стоимость история перемещений дубли", icon: "download", group: "Инвентаризация" },
+  { title: "Инвентаризация: сканирование QR и штрихкодов", to: "/inventory/scan", kw: "сканер qr штрихкод этикетка камера телефон найти по коду", icon: "target", group: "Инвентаризация" },
+  { title: "Инвентаризация: справочники и свойства", to: "/inventory/refs", kw: "типы оборудования производители модели статусы поставщики сервисные организации подразделения филиалы дополнительные свойства поля", icon: "layers", group: "Инвентаризация" },
+  { title: "Инвентаризация: импорт Excel/CSV", to: "/inventory/import", kw: "импорт excel csv загрузка таблицы сопоставление столбцов", icon: "upload", group: "Инвентаризация" },
   { title: "Импорт BI-выгрузки", to: "/admin?tab=sources", kw: "импорт bi выгрузка excel smb структура проверить запустить", icon: "upload", roles: ROLE_ADMIN, group: "Администрирование · Подключения и источники" },
   { title: "Новая проверка версий программ", to: "/reports", kw: "проверка версий устаревшие версии программ отчёт аудит", icon: "file", group: "Отчёты" },
   { title: "Моя тема оформления", to: "/appearance", kw: "тема оформления night glass grove aurora цвет", icon: "sun", group: "Личное" },
@@ -102,6 +123,8 @@ export const QUICK_ACTIONS: QuickAction[] = [
   { id: "eol", title: "EOL", hint: "ПО и ОС без поддержки", icon: "clock", to: "/eol" },
   { id: "hier", title: "Иерархия предприятия", hint: "структура и отчёты", icon: "sitemap", to: "/hierarchy", hier: true },
   { id: "reports", title: "Отчёты", hint: "готовые и новые", icon: "file", to: "/reports" },
+  { id: "inventory", title: "Инвентаризация", hint: "учёт оборудования и документы", icon: "package", to: "/inventory" },
+  { id: "inv-scan", title: "Найти по QR или номеру", hint: "сканирование этикетки", icon: "target", to: "/inventory/scan" },
   { id: "overview", title: "Обзор инфраструктуры", hint: "сводные показатели", icon: "home", to: "/overview" },
   { id: "admin-sources", title: "Источники данных", hint: "KSC и BI", icon: "database", to: "/admin?tab=sources", roles: ["admin"] },
   { id: "admin-system", title: "Техническое состояние", hint: "службы, задания, ошибки", icon: "gauge", to: "/admin?tab=system", roles: ["admin"] },
@@ -135,6 +158,8 @@ export const QUICK_REPORTS: QuickReportDef[] = [
   { id: "r-pentest", title: "Результаты Pentest", hint: "задания и находки", icon: "target", kind: "quick_pentest", params: { view: "jobs" }, options: { scope: false }, section: "/pentest", roles: ["analyst", "security", "admin"] },
   { id: "r-zones", title: "Зоны ответственности", hint: "состояние безопасности зон", icon: "grid", params: {}, options: {}, section: "/zones" },
   { id: "r-adaudit", title: "Аудит домена: сводка для руководства", hint: "последняя проверка учётных записей AD", icon: "key", kind: "quick_adaudit", params: { view: "summary" }, options: { scope: false }, section: "/adaudit", roles: ["security", "admin"] },
+  { id: "r-inv", title: "Реестр ИТ-оборудования", hint: "учётные карточки инвентаризации", icon: "package", kind: "quick_inv", params: { view: "registry" }, options: { scope: false }, section: "/inventory/assets", roles: ["analyst", "security", "admin"] },
+  { id: "r-inv-warranty", title: "Истекающая гарантия", hint: "оборудование с гарантией на исходе", icon: "clock", kind: "quick_inv", params: { view: "warranty" }, options: { scope: false }, section: "/inventory/assets?warranty=soon", roles: ["analyst", "security", "admin"] },
   { id: "r-hier", title: "Структура организации", hint: "готовые отчёты по иерархии", icon: "sitemap", params: {}, options: {}, section: "/hierarchy", roles: ["analyst", "security", "admin"] },
 ];
 export const DEFAULT_REPORTS: Record<Role, string[]> = {

@@ -491,8 +491,76 @@ class AdAuditSettings(_Group):
         return sorted(set(v))
 
 
+INV_PERMS = ("view", "create", "edit", "location", "people", "docs", "repair", "writeoff", "count", "import", "refs", "keys", "templates")
+_INV_ROLE_DEFAULT = {"view": "viewer", "create": "analyst", "edit": "analyst", "location": "analyst", "people": "analyst", "docs": "analyst", "repair": "analyst", "writeoff": "admin",
+                     "count": "analyst", "import": "analyst", "refs": "admin", "keys": "security", "templates": "admin"}
+
+
+class InvGrant(BaseModel):
+    """Права и область учёта для учётной записи KAV Checker: дополнительные права к праву роли и ограничение местоположениями (пусто — все)."""
+    model_config = {"extra": "forbid"}
+    login: str = Field(min_length=1, max_length=256)
+    perms: list[str] = Field(default_factory=list, max_length=len(INV_PERMS))
+    location_ids: list[int] = Field(default_factory=list, max_length=200)
+
+    @field_validator("perms")
+    @classmethod
+    def _perms(cls, v: list[str]) -> list[str]:
+        bad = [x for x in v if x not in INV_PERMS]
+        if bad:
+            raise ValueError(f"неизвестное право: {', '.join(bad)}")
+        return list(dict.fromkeys(v))
+
+
+class InvForm(BaseModel):
+    """Печатная форма документа: заголовок, вводный текст, столбцы таблицы оборудования, дополнительные свойства в таблице, подписи сторон."""
+    model_config = {"extra": "forbid"}
+    title: str = Field(default="", max_length=200)
+    intro: str = Field(default="", max_length=2000)
+    columns: list[str] = Field(default_factory=list, max_length=20)
+    props: list[str] = Field(default_factory=list, max_length=10)
+    signatures: list[str] = Field(default_factory=list, max_length=6)
+    footer: str = Field(default="", max_length=1000)
+
+
+class InventorySettings(_Group):
+    """Раздел «Инвентаризация»: права по ролям и учётным записям, нумерация, печатные формы, этикетки, сроки контроля, связь с KSC."""
+    roles: dict[str, str] = Field(default_factory=lambda: dict(_INV_ROLE_DEFAULT))          # право → наименьшая роль
+    grants: list[InvGrant] = Field(default_factory=list, max_length=500)
+    inv_prefix: str = Field(default="ИТ-", max_length=20)
+    inv_digits: int = Field(default=6, ge=3, le=12)
+    doc_prefix: dict[str, str] = Field(default_factory=dict)                                   # вид документа → префикс номера (пусто — встроенный)
+    forms: dict[str, InvForm] = Field(default_factory=dict)                                    # вид документа → печатная форма (пусто — встроенная)
+    label_w_mm: int = Field(default=58, ge=20, le=150)
+    label_h_mm: int = Field(default=40, ge=15, le=150)
+    label_code: str = Field(default="qr", pattern=r"^(qr|code128|both)$")
+    label_fields: list[str] = Field(default_factory=lambda: ["name", "inv_no", "serial"], max_length=6)
+    label_title: str = Field(default="", max_length=80)                                        # строка над данными (короткое название организации)
+    label_sheet: str = Field(default="label", pattern=r"^(label|a4)$")                         # label — страница на этикетку (принтер этикеток), a4 — лист с сеткой
+    a4_cols: int = Field(default=3, ge=1, le=6)
+    a4_rows: int = Field(default=8, ge=1, le=16)
+    warranty_days: int = Field(default=60, ge=1, le=730)                                       # «истекает гарантия» — не позднее чем через столько суток
+    license_days: int = Field(default=60, ge=1, le=730)
+    transit_days: int = Field(default=7, ge=1, le=365)                                         # перемещение «в пути» дольше — просрочено
+    repair_days: int = Field(default=30, ge=1, le=730)                                         # в ремонте дольше — долго
+    stale_days: int = Field(default=365, ge=30, le=3650)                                       # учётные сведения не обновлялись дольше — нужна актуализация
+    ksc_auto_link: bool = True                                                                 # однозначное совпадение имени или серийного номера — предполагаемая связь с компьютером KSC
+
+    @field_validator("roles")
+    @classmethod
+    def _roles(cls, v: dict[str, str]) -> dict[str, str]:
+        out = dict(_INV_ROLE_DEFAULT)
+        for k, r in v.items():
+            if k not in out:
+                raise ValueError(f"неизвестное право «{k}»")
+            if r not in ("viewer", "analyst", "security", "admin"):
+                raise ValueError(f"неизвестная роль «{r}»")
+            out[k] = r
+        return out
+
+
 GROUPS: dict[str, type[_Group]] = {"hier": HierSettings, "tech": TechSettings, "appearance": AppearanceSettings, "bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
-                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings, "adaudit": AdAuditSettings}
+                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings, "adaudit": AdAuditSettings, "inventory": InventorySettings}
 
 
 class SettingsService:

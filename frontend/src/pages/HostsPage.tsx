@@ -9,6 +9,7 @@ import { ListFoot, VirtualRows, staticList, useInfinite, useKept, type Chunk } f
 import { Icon } from "../components/Icons";
 import { FilterBar, ReportButton } from "../components/FilterBar";
 import { OwnerBlock, OwnerSub } from "../components/OwnerBlock";
+import { InvHostBlock } from "../components/InvHostBlock";
 import { SessionsTable, UserChip, UserSub, UsersKv } from "../components/HostPeople";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { maskMatcher } from "../mask";
@@ -168,6 +169,7 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
         <div className="card">
           <h2>Сведения</h2>
           <dl className="kv pairs">{facts.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
+          {ctx.current && <InvHostBlock sid={ctx.current.id} hid={h.host_id} hostName={h.name} />}
           {ctx.current && <OwnerBlock sid={ctx.current.id} hid={h.host_id} activityDays={ctx.me.activity_days} />}
         </div>
         <div className="stack">

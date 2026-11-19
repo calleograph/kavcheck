@@ -203,7 +203,7 @@ class Runner:
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
         if src is None:
-            src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_hier": "Иерархия", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "KAV Checker"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
+            src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_hier": "Иерархия", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "KAV Checker", "quick_inv": "Инвентаризация"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
             client = None
         else:
             client = SourceClient(conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), concurrency=self._cfg.ksc_concurrency, name=src.name)
@@ -228,6 +228,8 @@ class Runner:
             ctx.ad = AdService(LdapStore(self._svc), self._svc)
         if job.kind in ("quick_eol", "quick_devices", "quick_overview", "quick_sessions"):
             ctx.source_ids = [uuid.UUID(str(x)) for x in (job.source_ids or [str(job.source_id)])]
+        if job.kind == "quick_inv":                                                   # технические разделы инвентаризации читают KSC связанных компьютеров (свой клиент на источник)
+            ctx.client_for = lambda s: SourceClient(conn_params(s, self._svc.decrypt(s.password_enc, f"source.{s.id}")), concurrency=self._cfg.ksc_concurrency, name=s.name)
         if job.kind == "quick_sessions":
             ctx.settings = self._svc
             ctx.client_for = lambda s: SourceClient(conn_params(s, self._svc.decrypt(s.password_enc, f"source.{s.id}")), concurrency=self._cfg.ksc_concurrency, name=s.name)

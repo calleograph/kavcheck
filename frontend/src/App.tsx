@@ -32,6 +32,7 @@ const AdminPage = lazy(() => import("./pages/AdminPage"));
 const EolPage = lazy(() => import("./pages/EolPage"));
 const DevicesPage = lazy(() => import("./pages/DevicesPage"));
 const AppearancePage = lazy(() => import("./pages/AppearancePage"));
+const InvApp = lazy(() => import("./pages/inventory/InvApp"));
 import { ADMIN_GROUPS, ADMIN_ICONS, ADMIN_TABS, NAV_GROUPS, NAV_REPORTS, NAV_TOP, roleOk, type NavItem } from "./navModel";
 import { pushRecent } from "./recent";
 import { DEFAULT_THEME, THEMES, chooseTheme, isTheme, syncTheme, type ThemeId } from "./theme";
@@ -41,7 +42,7 @@ export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; 
 /** Разделы, работающие со всеми источниками сразу; остальные показывают выбранный источник. */
 export const ALL_PAGES = ["/eol", "/devices", "/reports", "/zones"];
 /** Страницы, для которых «Все источники» не требуют пояснения: главная и независимые от KSC разделы. */
-const scopeAware = (pathname: string) => pathname === "/" || pathname === "/overview" || pathname.startsWith("/pentest") || pathname.startsWith("/hunt") || ALL_PAGES.some((p) => pathname.startsWith(p));
+const scopeAware = (pathname: string) => pathname === "/" || pathname === "/overview" || pathname.startsWith("/inventory") || pathname.startsWith("/pentest") || pathname.startsWith("/hunt") || ALL_PAGES.some((p) => pathname.startsWith(p));
 
 export { ADMIN_TABS };
 
@@ -305,6 +306,7 @@ export default function App() {
           <Route path="/zones" element={<ZonesPage key={currentId} ctx={ctx} />} />
           <Route path="/zones/:zid" element={<ZonesPage key={currentId} ctx={ctx} />} />
           <Route path="/hierarchy" element={hierOk === null ? null : hierOk ? <HierarchyPage ctx={ctx} /> : <Navigate to="/" replace />} />
+          <Route path="/inventory/*" element={<InvApp ctx={ctx} />} />
           <Route path="/reports" element={<ReportsPage key={currentId} ctx={ctx} />} />
           <Route path="/reports/:jobId" element={<ReportsPage ctx={ctx} />} />
           <Route path="/security" element={<SecurityPage me={me} onLogout={logout} />} />

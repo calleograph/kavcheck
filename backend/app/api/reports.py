@@ -44,6 +44,8 @@ def can_see(su: SessionUser, j: ReportJob, hier=None) -> bool:
         return j.created_by_id == su.user_id and j.kind == "quick_zone" and set((j.params or {}).get("zone_ids") or []) <= su.zone_ids
     if j.kind == "quick_adaudit":                         # аудит домена: специалист по ИБ и администратор
         return su.is_security
+    if j.kind == "quick_inv":                             # инвентаризация: отчёт строится по области учёта автора — виден автору и администратору
+        return su.is_admin or j.created_by_id == su.user_id
     if j.kind == "quick_admin":                           # таблицы администрирования: журналы, пользователи, лицензии — только администратор
         return su.is_admin
     if j.kind == "quick_devices" and (j.params or {}).get("view") == "users" and (j.params or {}).get("pd", True) and su.role == "viewer":
@@ -177,6 +179,10 @@ async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends
         raise HTTPException(status_code=403, detail="Аудит домена доступен специалисту по ИБ и администратору")
     if body.kind == "quick_admin" and not su.is_admin:
         raise HTTPException(status_code=403, detail="Отчёты администрирования доступны администратору")
+    if body.kind == "quick_inv":                                                   # область учёта автора — с сервера
+        from .quick import inv_params  # noqa: PLC0415
+
+        params = await inv_params(request, db, su, params)
     if body.kind in quick.NO_KSC:
         sources = []
     elif body.kind in ("quick_zone", "quick_eol", "quick_devices", "quick_overview", "quick_sessions"):      # зона и EOL могут охватывать несколько источников: без явного выбора — все доступные пользователю

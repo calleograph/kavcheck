@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, Uuid, text
+from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, Uuid, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
@@ -1805,3 +1805,255 @@ class AdPwdEvent(Base):
     by_sid: Mapped[str] = mapped_column(String(190), nullable=False, default="")
     import_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     __table_args__ = (Index("ux_ad_pwd_events_rec", "dc", "record_id", unique=True), Index("ix_ad_pwd_events_target", "target_sid", "at"), Index("ix_ad_pwd_events_at", "kind", "at"))
+
+
+# ------------------------------------------------------------------------------------------------ Инвентаризация (учёт ИТ-активов, app/inventory)
+class InvLocation(Base):
+    """Местоположение: дерево «регион → город → адрес → здание → этаж → помещение → рабочее место» (и площадка, серверная, стойка, склад). path — полный путь для показа и поиска,
+    ids_path — «/1/5/9/» для выборки поддерева одним условием; оба пересчитываются при переименовании и переносе узла."""
+    __tablename__ = "inv_locations"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    parent_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_locations.id", ondelete="RESTRICT"))
+    kind: Mapped[str] = mapped_column(String(12), nullable=False, default="room")
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    code: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    note: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    path: Mapped[str] = mapped_column(String(1500), nullable=False, default="")
+    ids_path: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    data: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)                 # стойка: {units}; адрес: {postcode}
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    __table_args__ = (Index("ix_inv_locations_parent", "parent_id"), Index("ix_inv_locations_ids", "ids_path"))
+
+
+class InvRef(Base):
+    """Справочник модуля: kind — type (тип оборудования, data.cls — класс), manufacturer, model (parent — производитель, data.type_id), status (data.cls — состояние учёта),
+    supplier (поставщик; data.service — сервисная организация), dept, branch, license_type, sw_category."""
+    __tablename__ = "inv_refs"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    code: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    parent_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    data: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    __table_args__ = (Index("ix_inv_refs_kind", "kind", "name"),)
+
+
+class InvPerson(Base):
+    """Сотрудник учёта: пользователь, владелец, ответственный, МОЛ, ИТ-специалист. Заводится вручную или переносится из BI, адресной книги, AD (source, ext_key — откуда и чей ключ)."""
+    __tablename__ = "inv_people"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    login: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    dept: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    phone: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(8), nullable=False, default="manual")          # manual | bi | hier | ad
+    ext_key: Mapped[str] = mapped_column(String(400), nullable=False, default="")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    note: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    search: Mapped[str] = mapped_column(String(1300), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    __table_args__ = (Index("ix_inv_people_ext", "ext_key"), Index("ix_inv_people_email", "email"))
+
+
+class InvProp(Base):
+    """Дополнительное свойство карточки: тип (text, multiline, number, date, bool, select, multiselect, money, url), варианты, значение по умолчанию, обязательность,
+    типы оборудования (пусто — все). Значения хранятся в InvAsset.props по коду."""
+    __tablename__ = "inv_props"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    descr: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    type: Mapped[str] = mapped_column(String(12), nullable=False, default="text")
+    options: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    default: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)               # {"v": значение}
+    required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    type_ids: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    in_list: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class InvAsset(Base):
+    """Учётная единица (карточка имущества). Технические сведения не хранятся — берутся из связанного компьютера KSC (ksc_source_id, ksc_host_id) при показе;
+    здесь только учётные: номера, тип и модель, статус, местоположение, ответственные лица, приобретение, дополнительные свойства. Физически не удаляется (списание — статус)."""
+    __tablename__ = "inv_assets"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    uid: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True, default=uuid.uuid4)
+    inv_no: Mapped[str] = mapped_column(String(60), nullable=False, unique=True)
+    acc_no: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    serial: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    type_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    cls: Mapped[str] = mapped_column(String(12), nullable=False, default="other")
+    model_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    manufacturer_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    status_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    st_cls: Mapped[str] = mapped_column(String(10), nullable=False, default="stock")
+    location_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_locations.id", ondelete="RESTRICT"))
+    loc_detail: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    parent_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_assets.id", ondelete="SET NULL"))
+    rel: Mapped[str] = mapped_column(String(10), nullable=False, default="")                    # part — входит в состав, vm — ВМ на хосте, attached — подключено к
+    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    owner_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    resp_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    mol_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    it_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    dept_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    branch_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    purchase_date: Mapped[date | None] = mapped_column(Date)
+    received_date: Mapped[date | None] = mapped_column(Date)
+    commissioned_date: Mapped[date | None] = mapped_column(Date)
+    warranty_until: Mapped[date | None] = mapped_column(Date)
+    cost: Mapped[int | None] = mapped_column(BigInteger)                                       # копейки
+    supplier_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    purchase_doc: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    props: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ksc_source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    ksc_host_id: Mapped[int | None] = mapped_column(BigInteger)
+    ksc_link: Mapped[str] = mapped_column(String(10), nullable=False, default="")               # "" | confirmed | auto | lost (компьютер исчез из KSC)
+    ksc_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    linked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    ext_ids: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)               # идентификаторы других систем (SMBIOS UUID, MAC, мониторинг, виртуализация)
+    transit_doc_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    updated_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    search: Mapped[str] = mapped_column(String(3000), nullable=False, default="")
+    __table_args__ = (Index("ux_inv_assets_ksc", "ksc_source_id", "ksc_host_id", unique=True), Index("ix_inv_assets_serial", "serial"), Index("ix_inv_assets_host", "hostname"),
+                      Index("ix_inv_assets_loc", "location_id"), Index("ix_inv_assets_status", "st_cls", "cls"), Index("ix_inv_assets_user", "user_id"), Index("ix_inv_assets_owner", "owner_id"),
+                      Index("ix_inv_assets_resp", "resp_id"), Index("ix_inv_assets_parent", "parent_id"), Index("ix_inv_assets_warranty", "warranty_until"))
+
+
+class InvHistory(Base):
+    """Событие жизненного цикла учётной единицы: что изменилось (changes: поле, было, стало), состояние после события (state — для просмотра «на дату»), основание, документ."""
+    __tablename__ = "inv_history"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    asset_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("inv_assets.id", ondelete="CASCADE"), nullable=False)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    changes: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    state: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    comment: Mapped[str] = mapped_column(String(2000), nullable=False, default="")
+    basis: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    doc_id: Mapped[int | None] = mapped_column(BigInteger)
+    people: Mapped[str] = mapped_column(String(300), nullable=False, default="")                # «,12,15,» — сотрудники, закреплённые или снятые событием (история сотрудника)
+    __table_args__ = (Index("ix_inv_history_asset", "asset_id", "at"), Index("ix_inv_history_at", "at"))
+
+
+class InvDoc(Base):
+    """Документ: issue — выдача сотруднику, return — возврат, move — внутреннее перемещение, accept — приём-передача, handover — передача материальных ценностей,
+    defect — приём неисправного, repair — ремонт, writeoff — списание, work — работа. Изменения в карточках применяются на этапе, который это предусматривает (inventory/docs.py)."""
+    __tablename__ = "inv_docs"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    no: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="draft")
+    doc_date: Mapped[date] = mapped_column(Date, nullable=False)
+    from_location_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_locations.id", ondelete="RESTRICT"))
+    to_location_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_locations.id", ondelete="RESTRICT"))
+    from_person_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    to_person_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    resp_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    basis: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    data: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    history: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    done_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    __table_args__ = (Index("ix_inv_docs_kind", "kind", "status", "doc_date"),)
+
+
+class InvDocItem(Base):
+    """Строка документа: учётная единица и её сведения на момент оформления (snap), состояние и примечание."""
+    __tablename__ = "inv_doc_items"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    doc_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("inv_docs.id", ondelete="CASCADE"), nullable=False)
+    asset_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("inv_assets.id", ondelete="RESTRICT"), nullable=False)
+    snap: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    condition: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    __table_args__ = (Index("ux_inv_doc_items", "doc_id", "asset_id", unique=True), Index("ix_inv_doc_items_asset", "asset_id"))
+
+
+class InvLicense(Base):
+    """Приобретённая лицензия (учётная единица ПО): количество, срок, поставщик, ответственный. match — маски названий программ KSC для подсчёта установок;
+    usage — последний подсчёт (worker). Ключ активации — только в зашифрованном виде (key_enc), выдаётся отдельно и пишется в журнал действий."""
+    __tablename__ = "inv_licenses"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    vendor: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    version: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    edition: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    type_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    category_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    metric: Mapped[str] = mapped_column(String(10), nullable=False, default="device")          # device | user | site
+    qty: Mapped[int | None] = mapped_column(Integer)                                           # None — без ограничения
+    match: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    purchase_date: Mapped[date | None] = mapped_column(Date)
+    valid_until: Mapped[date | None] = mapped_column(Date)
+    supplier_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    cost: Mapped[int | None] = mapped_column(BigInteger)
+    purchase_doc: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    resp_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    key_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    usage: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    updated_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+
+
+class InvLicAssign(Base):
+    """Назначение лицензии учётной единице или сотруднику."""
+    __tablename__ = "inv_lic_assign"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    license_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("inv_licenses.id", ondelete="CASCADE"), nullable=False)
+    asset_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_assets.id", ondelete="CASCADE"))
+    person_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="CASCADE"))
+    at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    __table_args__ = (Index("ix_inv_lic_assign", "license_id"), Index("ix_inv_lic_assign_asset", "asset_id"))
+
+
+class InvFile(Base):
+    """Вложение (документ приобретения, скан акта, фото): хранится в базе, чтобы попадать в резервные копии вместе с карточками; размер ограничен (inventory/files.py)."""
+    __tablename__ = "inv_files"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    owner: Mapped[str] = mapped_column(String(8), nullable=False)                               # asset | doc | license
+    owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    mime: Mapped[str] = mapped_column(String(120), nullable=False, default="application/octet-stream")
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    __table_args__ = (Index("ix_inv_files_owner", "owner", "owner_id"),)
+
+
+class InvView(Base):
+    """Сохранённый фильтр списка: личный или общий (shared)."""
+    __tablename__ = "inv_views"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    page: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    params: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    shared: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    __table_args__ = (Index("ix_inv_views_user", "user_id", "page"),)

@@ -28,7 +28,7 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions|quick_inv)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
@@ -190,6 +190,14 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         except KscError as exc:
             raise HTTPException(status_code=409 if exc.code == "no_data" else 422, detail=exc.message) from None
         return _answer(doc, ctx.now)
+    if body.kind == "quick_inv":                       # инвентаризация: права раздела и область учёта пользователя (scope_ids — только с сервера)
+        params = await inv_params(request, db, su, body.params)
+        ctx = quick.Ctx(source_name="Инвентаризация", activity_days=0, sm=request.app.state.session_maker, light=True, max_rows=20000)
+        try:
+            doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
+        except KscError as exc:
+            raise HTTPException(status_code=409 if exc.code == "no_data" else 422, detail=exc.message) from None
+        return _answer(doc, ctx.now)
     if body.kind == "quick_admin":                     # таблицы администрирования: только администратор, внутренняя база
         if not su.is_admin:
             raise HTTPException(status_code=403, detail="Отчёты администрирования доступны администратору")
@@ -299,3 +307,20 @@ def _answer(doc: dict, fetched_at) -> dict:
     main = doc["tables"][0]
     return {"doc": quick.brief(doc), "items": main["rows"][:PREVIEW_ROWS], "total": len(main["rows"]), "columns": main["columns"], "fetched_at": fetched_at, "preview_rows": PREVIEW_ROWS,
             "html_row_limit": quick_export.HTML_ROW_LIMIT}
+
+
+async def inv_params(request: Request, db: AsyncSession, su: SessionUser, raw: dict) -> dict:
+    """Параметры отчёта инвентаризации: право «просмотр» в разделе, область учёта — с сервера (клиентское значение scope_ids отбрасывается)."""
+    from ..inventory import core as IC  # noqa: PLC0415
+
+    if su.is_zone:
+        raise HTTPException(status_code=403, detail="Раздел недоступен")
+    cfg = await request.app.state.settings_svc.get(db, "inventory")
+    acc = await IC.access_for(db, su, cfg)
+    acc.need("view")
+    try:
+        params = QUICK_PARAMS["quick_inv"].model_validate({**raw, "scope_ids": []}).model_dump()
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
+    params["scope_ids"] = list(acc.scope_ids)
+    return params

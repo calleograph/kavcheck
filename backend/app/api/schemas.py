@@ -373,6 +373,39 @@ class QuickAdAudit(Params):
     severity: str = Field(default="", pattern=r"^(|critical|high|medium|low)$")
 
 
+class QuickInv(Params):
+    """Инвентаризация: вид отчёта и отбор страницы (те же параметры, что у списка оборудования); scope_ids проставляет сервер (область учёта пользователя)."""
+    view: str = Field(default="registry", pattern=r"^(registry|computers|card|by_person|by_resp|by_location|stock|repair|warranty|writtenoff|cost|owner_history|moves|hardware|software|licenses|license_usage|components|docs|duplicates)$")
+    q: str = Field(default="", max_length=300)
+    cls: str = Field(default="", max_length=200)
+    type_id: int | None = None
+    model_id: int | None = None
+    manufacturer_id: int | None = None
+    status_id: int | None = None
+    st: str = Field(default="", max_length=100)
+    location: int | None = None
+    no_location: bool = False
+    person: int | None = None
+    role: str = Field(default="", pattern=r"^(|user|owner|resp|mol|it)$")
+    dept_id: int | None = None
+    branch_id: int | None = None
+    supplier_id: int | None = None
+    ksc: str = Field(default="", pattern=r"^(|linked|unlinked|lost|auto)$")
+    warranty: str = Field(default="", pattern=r"^(|soon|expired|none|valid)$")
+    transit: bool = False
+    no_owner: bool = False
+    no_resp: bool = False
+    stale: bool = False
+    parent: int | None = None
+    ids: list[int] = Field(default_factory=list, max_length=5000)
+    props: dict[str, str] = Field(default_factory=dict)
+    asset_id: int | None = None
+    date_from: str = Field(default="", max_length=10)
+    date_to: str = Field(default="", max_length=10)
+    doc_kind: str = Field(default="", max_length=100)
+    scope_ids: list[int] = Field(default_factory=list, max_length=200)
+
+
 class QuickAd(Params):
     """Active Directory: вид отчёта, маска поиска пользователей, группа (идентификатор из карточки), срок для «истекающих» (сутки), вложенные участники группы."""
     view: str = Field(default="users", pattern=r"^(users|disabled|locked|expiring|memberships|group_members|mismatch)$")
@@ -453,11 +486,11 @@ class QuickOverview(Params):
     source_id: str = Field(default="", max_length=40)
 
 
-QUICK_PARAMS = {"quick_sessions": QuickSessions, "quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_hier": QuickHier, "quick_ad": QuickAd, "quick_adaudit": QuickAdAudit, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
+QUICK_PARAMS = {"quick_sessions": QuickSessions, "quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_hier": QuickHier, "quick_ad": QuickAd, "quick_adaudit": QuickAdAudit, "quick_inv": QuickInv, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
 
 
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions|quick_inv)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
@@ -489,7 +522,7 @@ class OverrideIn(BaseModel):
 
 class TemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions|quick_inv)$")
     params: dict
     shared: bool = True
 
