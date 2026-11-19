@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Markdown } from "../../components/Markdown";
 import { api, type ApiError, type UpdatesOverview } from "../../api";
 import { ConfirmDialog } from "../../components/Dialogs";
 import { Icon } from "../../components/Icons";
@@ -70,7 +71,7 @@ export default function UpdatesAdmin() {
         {rem?.ok && !rem.behind && <div className="alert ok mt"><Icon name="checkCircle" /><div className="alert-body">Установлена последняя версия.</div></div>}
         {rem?.ok && rem.behind && (
           <div className="alert info mt"><Icon name="upload" /><div className="alert-body"><b>Доступна версия {rem.latest_version}</b> (установлена {rem.current_version}).
-            {rem.notes && <details className="disclosure"><summary>Что изменилось</summary><pre className="notes-pre">{rem.notes}</pre></details>}</div></div>
+            {rem.notes && <details className="disclosure"><summary>Что изменилось</summary><Markdown text={rem.notes} className="md notes-md" /></details>}</div></div>
         )}
         <p className="muted small prose-note">Обновление выполняет <code>scripts/update.sh</code>: проверки, загрузка готовых образов релиза, резервная копия внутренней базы и .env, миграции, перезапуск и проверка; у каждого этапа свой тайм-аут, при ошибке или зависании — возврат к прежней версии. Сервис недоступен 1–3 минуты. Отчёты, настройки и подключения сохраняются.</p>
         <div className="preflight">

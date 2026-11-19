@@ -1009,7 +1009,17 @@ details.disclosure.scope > summary { flex-wrap: wrap; }
 .scope-now { color: var(--ink); font-weight: 600; }
 .prose-note { margin: 16px 0 12px; max-width: 80ch; }
 .prose-note.grow { flex: 1 1 420px; margin: 0; }
-pre.notes-pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
+/* Markdown (заметки к выпуску) */
+.md { max-width: 80ch; font-size: var(--fs-sm); line-height: 1.55; overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 8px; }
+.md h3, .md h4, .md h5, .md h6 { margin: 16px 0 4px; font-size: var(--fs-md); line-height: 1.35; }
+.md p { margin: 4px 0 8px; }
+.md ul, .md ol { margin: 4px 0 8px; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.md li::marker { color: var(--muted); }
+.md code { font-family: var(--mono); font-size: .92em; padding: 1px 4px; border-radius: var(--radius-xs); background: var(--sunken); }
+.md pre { margin: 8px 0; padding: 8px 12px; border-radius: var(--radius); background: var(--sunken); overflow-x: auto; }
+.md pre code { padding: 0; background: none; }
+.md strong { font-weight: 600; color: var(--ink); }
 .skel-title { display: inline-block; width: 280px; max-width: 70vw; height: 28px; }
 .skel-chart { display: block; height: 128px; }
 .align-center { align-self: center; }
