@@ -1995,7 +1995,7 @@ class InvDocItem(Base):
 
 class InvLicense(Base):
     """Приобретённая лицензия (учётная единица ПО): количество, срок, поставщик, ответственный. match — маски названий программ KSC для подсчёта установок;
-    usage — последний подсчёт (worker). Ключ активации — только в зашифрованном виде (key_enc), выдаётся отдельно и пишется в журнал действий."""
+    usage — последний подсчёт (worker). Ключ активации здесь не хранится: key_ref — где он записан (парольный менеджер); key_enc — ключи прежних версий, до удаления."""
     __tablename__ = "inv_licenses"
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
@@ -2014,7 +2014,8 @@ class InvLicense(Base):
     purchase_doc: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     resp_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
     note: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    key_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    key_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")              # прежние версии: ключ в зашифрованном виде; новые ключи не принимаются
+    key_ref: Mapped[str] = mapped_column(String(500), nullable=False, default="")       # где хранится ключ: ссылка или путь к записи в парольном менеджере
     usage: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)

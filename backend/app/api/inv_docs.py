@@ -222,7 +222,7 @@ async def move_doc(did: int, body: StatusBody, ix: Ix = Depends(inv_ctx), db: As
 
 
 @router.get("/docs/{did}/print")
-async def print_doc(did: int, request: Request, fmt: str = Query("json", pattern=r"^(json|html|pdf|docx)$"), ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+async def print_doc(did: int, request: Request, fmt: str = Query("json", pattern=r"^(json|html|pdf|docx|xlsx)$"), ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
     """Печатная форма документа: json — структура для страницы печати в приложении, html — файл для сохранения, PDF, DOCX (для правки). Черновик помечается «не проведён»."""
     d = await db.get(InvDoc, did)
     if d is None:
@@ -236,6 +236,9 @@ async def print_doc(did: int, request: Request, fmt: str = Query("json", pattern
         return HTMLResponse(P.render_html(p), headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.html"})
     if fmt == "pdf":
         return Response(P.render_pdf(p), media_type="application/pdf", headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(name)}.pdf"})
+    if fmt == "xlsx":
+        return Response(P.render_xlsx(p), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.xlsx"})
     return Response(P.render_docx(p), media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.docx"})
 

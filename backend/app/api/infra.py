@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import date, timedelta
 from urllib.parse import unquote
 
@@ -13,9 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import get_db
 from ..infra import connectors as K
+from ..infra import netscan as NS
 from ..infra import sync as S
 from ..inventory import core as C
-from ..models import InfraChange, InfraFinding, InfraObject, InfraSource, InvAsset, InvLocation, utcnow
+from ..models import InfraChange, InfraFinding, InfraObject, InfraSource, InvAsset, InvLocation, PtJob, utcnow
 from ..search import column_like
 from .inv import Ix, audit, get_asset, inv_ctx
 
@@ -88,7 +90,7 @@ async def sources(ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db))
 
 
 class SourceBody(BaseModel):
-    kind: str = Field(pattern=r"^(" + "|".join(K.KINDS_RU) + ")$")
+    kind: str = Field(pattern=r"^(" + "|".join(k for k in K.KINDS_RU if k != "netscan") + ")$")      # источник сетевого обнаружения создаётся сам
     name: str = Field(min_length=1, max_length=200)
     url: str = Field(default="", max_length=500)
     username: str = Field(default="", max_length=200)
@@ -284,7 +286,7 @@ async def set_match(oid: int, body: MatchBody, ix: Ix = Depends(inv_ctx), db: As
     elif body.action == "create":
         ix.acc.need("create")
         if o.kind not in S.ASSET_KINDS:
-            raise HTTPException(status_code=422, detail="Карточка создаётся для сервера, ВМ или сетевого устройства")
+            raise HTTPException(status_code=422, detail="Карточка создаётся для сервера, ВМ, компьютера, принтера или сетевого устройства")
         a = await S.create_asset(db, o, s, ix.su.display_name)
         o.asset_id, o.match, o.match_basis = a.id, "confirmed", f"карточка создана: {ix.su.display_name}"
     elif body.action == "reject":
@@ -415,3 +417,62 @@ async def changes(days: int = Query(30, ge=1, le=3650), ix: Ix = Depends(inv_ctx
                              .where(InfraChange.at >= since).order_by(InfraChange.at.desc()).limit(2000))).all()
     return {"items": [{"at": C._iso(c.at), "object_id": o.id, "object": o.name, "kind_ru": K.OBJ_RU.get(o.kind, o.kind), "source": sn, "asset_id": o.asset_id, "field": c.field,
                        "label": S.FIELD_RU.get(c.field, c.field), "old": c.old, "new": c.new} for c, o, sn in rows]}
+
+
+# ------------------------------------------------------------------------------------------------ сетевое обнаружение (задание сканера Pentest)
+def _ns_job(j: PtJob) -> dict:
+    ns = (j.options or {}).get("netscan") or {}
+    return {"id": str(j.id), "title": j.title, "targets": j.targets_input[:500], "targets_n": j.targets_n, "status": j.status, "stage_ru": j.stage_ru, "pct": j.pct, "hosts_up": j.hosts_up,
+            "created_by": j.created_by, "created_at": C._iso(j.created_at), "finished_at": C._iso(j.finished_at), "ingested": bool(ns.get("ingested")), "stats": ns.get("stats") or {}}
+
+
+@router.get("/infra/netscan")
+async def netscan_state(request: Request, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+    s = await request.app.state.settings_svc.get(db, "pentest")
+    jobs = (await db.execute(select(PtJob).where(PtJob.profile == NS.PROFILE).order_by(PtJob.created_at.desc()).limit(20))).scalars().all()
+    return {"can_run": ix.su.is_security and s.enabled, "enabled": s.enabled, "is_security": ix.su.is_security, "networks": list(s.allowed_networks), "ports": NS.PORTS,
+            "large_threshold": s.large_threshold, "kinds": NS.KIND_RU, "jobs": [_ns_job(j) for j in jobs]}
+
+
+class NetscanBody(BaseModel):
+    subnets: str = Field(min_length=1, max_length=20000)
+    title: str = Field("", max_length=200)
+    confirm_scope: bool = False
+    confirm_large: bool = False
+
+
+@router.post("/infra/netscan", status_code=201)
+async def netscan_start(body: NetscanBody, request: Request, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+    """Запуск обнаружения: активное сканирование сети — только роль «Безопасность» и выше, область — разрешённые сети Pentest."""
+    if not ix.su.is_security:
+        raise HTTPException(status_code=403, detail="Сканирование сети запускает пользователь с ролью «Безопасность» или администратор")
+    s = await request.app.state.settings_svc.get(db, "pentest")
+    try:
+        job = await NS.start(db, subnets=body.subnets, title=body.title, settings=s, user_name=ix.su.display_name, user_id=ix.su.user_id, confirm_scope=body.confirm_scope, confirm_large=body.confirm_large)
+    except NS.NetscanError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    audit(db, ix, "netscan.start", str(job.id), {"targets": job.targets_n, "input": body.subnets[:500]})
+    await db.commit()
+    return _ns_job(job)
+
+
+@router.get("/infra/netscan/{job_id}")
+async def netscan_result(job_id: uuid.UUID, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+    j = await db.get(PtJob, job_id)
+    if j is None or j.profile != NS.PROFILE:
+        raise HTTPException(status_code=404, detail="Задание не найдено")
+    src = (await db.execute(select(InfraSource).where(InfraSource.kind == NS.PROFILE).limit(1))).scalar_one_or_none()
+    objs = {o.ext_id: o for o in (await db.execute(select(InfraObject).where(InfraObject.source_id == src.id))).scalars()} if src else {}
+    aids = {o.asset_id for o in objs.values() if o.asset_id}
+    assets = {a.id: a for a in (await db.execute(select(InvAsset).where(InvAsset.id.in_(aids)))).scalars()} if aids else {}
+    items = []
+    for h in await NS.hosts(db, j.id):
+        o = objs.get(f"ip:{h['ip']}")
+        a = assets.get(o.asset_id) if o and o.asset_id else None
+        items.append({**h, "kind_ru": NS.KIND_RU.get(h["kind"], h["kind"]), "name": (h["names"] or [o.name if o and o.name != h["ip"] else ""])[0],
+                      "object_id": o.id if o else None, "match": o.match if o else "", "asset": {"id": a.id, "inv_no": a.inv_no, "name": a.name or a.hostname} if a else None,
+                      "can_create": bool(o) and h["kind"] in S.ASSET_KINDS})
+    by = {}
+    for i in items:
+        by[i["kind"]] = by.get(i["kind"], 0) + 1
+    return {"job": _ns_job(j), "items": items, "by_kind": by, "unregistered": sum(1 for i in items if not i["asset"])}

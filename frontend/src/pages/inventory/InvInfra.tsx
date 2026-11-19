@@ -12,31 +12,33 @@ import { Empty, Segmented, SkelRows, Tabs } from "../../components/ui";
 import { fmt, fmtDate, num } from "../../util";
 import { AssetSearch, LocationPicker, PersonPicker, useInv } from "./InvBits";
 import { useInvReport } from "./InvReport";
+import { Netscan } from "./InvNetscan";
 import { inv, type InfraFinding, type InfraObject, type InfraOverview, type InfraSource, type Rack } from "./invApi";
 
-type Tab = "overview" | "objects" | "findings" | "sources" | "ips" | "racks";
+type Tab = "overview" | "objects" | "findings" | "sources" | "ips" | "racks" | "netscan";
 const SEV: Record<string, string> = { high: "err", medium: "warn", low: "" };
 const ST_TONE: Record<string, string> = { attention: "err", review: "warn", fixing: "accent", confirmed: "", fixed: "ok", exception: "" };
 const MATCH_RU: Record<string, string> = { confirmed: "подтверждено", auto: "автоматически", ambiguous: "неоднозначно", none: "нет в учёте", rejected: "не связывать" };
 
 export default function InvInfra() {
   const [sp, setSp] = useSearchParams();
-  const tab = ((["overview", "objects", "findings", "sources", "ips", "racks"] as Tab[]).includes(sp.get("tab") as Tab) ? sp.get("tab") : "overview") as Tab;
+  const tab = ((["overview", "objects", "findings", "sources", "ips", "racks", "netscan"] as Tab[]).includes(sp.get("tab") as Tab) ? sp.get("tab") : "overview") as Tab;
   const go = (t: Tab, extra: Record<string, string> = {}) => setSp(() => { const p = new URLSearchParams({ tab: t, ...extra }); if (t === "overview") p.delete("tab"); return p; });
   const rep = useInvReport();
   const [toast, show] = useToast();
   return (
     <div className="inv-page">
       <div className="inv-head"><h1>Инфраструктура</h1>
-        <button className="btn" onClick={() => rep.open(["infra_registry", "infra_hypervisors", "infra_ips", "infra_racks", "infra_findings", "infra_changes", "infra_new_gone", "infra_sync", "infra_decom", "infra_asof", "infra_review"], {}, "Серверная и сетевая инфраструктура")}><Icon name="download" size={16} />Отчёт</button></div>
+        <button className="btn" onClick={() => rep.open(["infra_registry", "infra_hypervisors", "infra_ips", "infra_racks", "infra_findings", "infra_changes", "infra_new_gone", "infra_sync", "infra_decom", "infra_asof", "infra_review", "infra_netscan"], {}, "Серверная и сетевая инфраструктура")}><Icon name="download" size={16} />Отчёт</button></div>
       <Tabs<Tab> label="Инфраструктура" value={tab} onChange={(t) => go(t)} items={[{ id: "overview", label: "Обзор" }, { id: "findings", label: "Расхождения" }, { id: "objects", label: "Объекты источников" },
-        { id: "ips", label: "IP-адреса" }, { id: "racks", label: "Стойки" }, { id: "sources", label: "Источники" }]} />
+        { id: "ips", label: "IP-адреса" }, { id: "racks", label: "Стойки" }, { id: "netscan", label: "Сетевое обнаружение" }, { id: "sources", label: "Источники" }]} />
       {tab === "overview" && <Overview go={go} />}
       {tab === "findings" && <Findings show={show} rep={rep.open} />}
       {tab === "objects" && <Objects show={show} />}
       {tab === "sources" && <Sources show={show} />}
       {tab === "ips" && <Ips />}
       {tab === "racks" && <Racks />}
+      {tab === "netscan" && <Netscan show={show} report={(params) => rep.open(["infra_netscan"], params)} />}
       {rep.node}{toast}
     </div>
   );
@@ -126,7 +128,7 @@ function DecideDialog({ ids, status, onClose, onDone }: { ids: number[]; status:
 
 function Objects({ show }: { show: (t: string, tone?: "ok" | "error") => void }) {
   const [sp] = useSearchParams();
-  const [kind, setKind] = useState(sp.get("kind") ?? ""); const [match, setMatch] = useState(""); const [q, setQ] = useState(""); const [present, setPresent] = useState<"" | "1" | "0">("1");
+  const [kind, setKind] = useState(sp.get("kind") ?? ""); const [match, setMatch] = useState(""); const [q, setQ] = useState(sp.get("q") ?? ""); const [present, setPresent] = useState<"" | "1" | "0">("1");
   const [d, setD] = useState<{ items: InfraObject[]; total: number; kinds: Record<string, string> } | null>(null);
   const [open, setOpen] = useState<InfraObject | null>(null);
   const load = useCallback(() => inv.infraObjects({ kind, match, q, present: present === "" ? undefined : present === "1", limit: 1000 }).then(setD).catch((e) => show((e as ApiError).message, "error")), [kind, match, q, present, show]);

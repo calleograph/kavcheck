@@ -293,3 +293,88 @@ def render_docx(p: dict) -> bytes:
         z.writestr("word/document.xml", document)
         z.writestr("word/styles.xml", styles)
     return buf.getvalue()
+
+
+# ------------------------------------------------------------------------------------------------ XLSX (печатная форма в Excel: шапка, стороны, таблица, подписи)
+def render_xlsx(p: dict) -> bytes:
+    import math  # noqa: PLC0415
+
+    from openpyxl import Workbook  # noqa: PLC0415
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side  # noqa: PLC0415
+    from openpyxl.utils import get_column_letter  # noqa: PLC0415
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (p["no"] or "Документ")[:31].replace("/", "-")
+    cols = p["columns"]
+    n = max(2, len(cols))
+    widths = {"n": 5, "inv_no": 14, "acc_no": 14, "serial": 18, "cost": 14, "condition": 16, "name": 34, "model": 24, "location": 30, "note": 24, "type": 18}
+    for i, (k, _t) in enumerate(cols, 1):
+        ws.column_dimensions[get_column_letter(i)].width = widths.get(k, 18)
+    chars = sum(widths.get(k, 18) for k, _t in cols) or 40                 # Excel не подбирает высоту объединённых ячеек: строк текста — по оценке ширины
+    thin = Side(style="thin", color="555555")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    wrap = Alignment(wrap_text=True, vertical="top")
+    r = 1
+
+    def line(text: str, *, bold: bool = False, size: int = 11, align: str = "left") -> None:
+        nonlocal r
+        ws.cell(row=r, column=1, value=text).font = Font(bold=bold, size=size)
+        ws.cell(row=r, column=1).alignment = Alignment(horizontal=align, wrap_text=True, vertical="top")
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n)
+        ws.row_dimensions[r].height = max(1, math.ceil(len(text) * size / 11 / chars)) * (size + 5)
+        r += 1
+
+    if p["org"]:
+        line(p["org"], bold=True, align="right")
+        if p["unit"]:
+            line(p["unit"], align="right")
+    r += 1
+    line(p["title"], bold=True, size=14, align="center")
+    line(f"№ {p['no']} от {p['date']}", align="center")
+    if p["draft"]:
+        line(f"Документ не проведён: {p['status'].lower()}", align="center")
+    r += 1
+    for k, v in p["parties"]:
+        ws.cell(row=r, column=1, value=k).font = Font(color="555555")
+        if n > 2:
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=2)
+        ws.cell(row=r, column=min(3, n), value=str(v)).alignment = wrap
+        if n > 3:
+            ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=n)
+            ws.row_dimensions[r].height = max(1, math.ceil(len(str(v)) / max(10, chars - 20))) * 16
+        r += 1
+    if p["intro"]:
+        r += 1
+        line(p["intro"])
+    r += 1
+    for i, (_k, t) in enumerate(cols, 1):
+        c = ws.cell(row=r, column=i, value=t)
+        c.font, c.fill, c.border, c.alignment = Font(bold=True), PatternFill("solid", fgColor="F1F3F5"), box, wrap
+    r += 1
+    for row in p["rows"]:
+        for i, (k, _t) in enumerate(cols, 1):
+            c = ws.cell(row=r, column=i, value=row.get(k, ""))
+            c.border, c.alignment = box, wrap
+        r += 1
+    line(f"Всего наименований: {len(p['rows'])}")
+    if p["footer"]:
+        r += 1
+        line(p["footer"])
+    if p["comment"]:
+        line(f"Примечание: {p['comment']}")
+    r += 2
+    for lb, nm in p["signatures"]:
+        ws.cell(row=r, column=1, value=lb)
+        ws.cell(row=r, column=min(3, n), value=f"________________ / {nm or '________________'} /")
+        ws.cell(row=r + 1, column=min(3, n), value="«___» ____________ 20__ г.").font = Font(size=9, color="555555")
+        r += 3
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.fitToWidth = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToHeight = 0
+    import io as _io  # noqa: PLC0415
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

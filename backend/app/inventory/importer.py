@@ -36,6 +36,60 @@ SYN = {"inv_no": ("инвентарный", "инв. номер", "инв ном
 REF_OF = {"type": "type", "manufacturer": "manufacturer", "model": "model", "status": "status", "dept": "dept", "branch": "branch", "supplier": "supplier"}
 
 
+HINTS = {"inv_no": "пусто — номер присвоится по шаблону; по нему же ищется карточка при обновлении", "serial": "по нему ищется карточка, если нет инвентарного номера",
+         "type": "значение справочника «Типы оборудования»; новое создаётся, если разрешено", "status": "например «На складе», «В эксплуатации»",
+         "location": "путь через «/»: Регион / Город / Здание / Помещение — недостающие уровни создаются",
+         "user": "ФИО или адрес почты; новый сотрудник создаётся", "purchase_date": "ДД.ММ.ГГГГ или ГГГГ-ММ-ДД", "received_date": "ДД.ММ.ГГГГ", "commissioned_date": "ДД.ММ.ГГГГ",
+         "warranty_until": "ДД.ММ.ГГГГ", "cost": "число, копейки через запятую или точку"}
+EXAMPLE = [  # вымышленные данные
+    {"inv_no": "", "serial": "SN-EX-000101", "name": "Ноутбук бухгалтерии", "hostname": "nb-buh-01", "type": "Ноутбук", "manufacturer": "Пример-Тех", "model": "PT-14",
+     "status": "В эксплуатации", "location": "Центральный офис / Здание 1 / Каб. 101", "user": "Иванова Анна Сергеевна", "resp": "Петров Олег Игоревич", "dept": "Бухгалтерия",
+     "purchase_date": "15.03.2025", "warranty_until": "15.03.2028", "cost": "84500,00", "supplier": "ООО «Поставщик-Пример»", "purchase_doc": "Накладная № 17 от 15.03.2025",
+     "note": "пример строки — удалите перед импортом"},
+    {"inv_no": "", "serial": "SN-EX-000202", "name": "МФУ на этаже", "type": "Принтер и МФУ", "manufacturer": "Пример-Принт", "model": "MF-300",
+     "status": "В эксплуатации", "location": "Центральный офис / Здание 1 / Этаж 2", "resp": "Петров Олег Игоревич", "purchase_date": "2024-11-01", "cost": "36990"},
+    {"inv_no": "", "serial": "SN-EX-000303", "name": "Монитор 24\"", "type": "Монитор", "manufacturer": "Пример-Тех", "status": "На складе", "location": "Склад ИТ"},
+]
+
+
+def template(fmt: str, example: bool, props: list[InvProp]) -> bytes:
+    """Шаблон файла импорта: столбцы — поля карточки и активные доп. свойства; example — с вымышленными строками. CSV — «;» и UTF-8 с BOM (открывается в Excel)."""
+    cols = [(f, t) for f, t in FIELDS.items()] + [(f"prop:{p.code}", p.name) for p in props]
+    rows = [[r.get(f, "") for f, _t in cols] for r in EXAMPLE] if example else []
+    if fmt == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+        w.writerow([t for _f, t in cols])
+        w.writerows(rows)
+        return ("\ufeff" + buf.getvalue()).encode("utf-8")
+    from openpyxl import Workbook  # noqa: PLC0415
+    from openpyxl.styles import Font  # noqa: PLC0415
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Оборудование"
+    ws.append([t for _f, t in cols])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for r in rows:
+        ws.append(r)
+    for i, (_f, t) in enumerate(cols, 1):
+        ws.column_dimensions[ws.cell(1, i).column_letter].width = max(14, min(40, len(t) + 4))
+    ws.freeze_panes = "A2"
+    d = wb.create_sheet("Описание полей")
+    d.append(["Столбец", "Что указывать"])
+    for c in d[1]:
+        c.font = Font(bold=True)
+    for f, t in cols:
+        d.append([t, HINTS.get(f, "доп. свойство" if f.startswith("prop:") else "")])
+    d.append([])
+    d.append(["Импортируется первый лист. Обязательных столбцов нет; столбцы можно удалять и переставлять — сопоставление проверяется перед загрузкой."])
+    d.column_dimensions["A"].width, d.column_dimensions["B"].width = 30, 90
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
 class ImportError_(ValueError):
     pass
 

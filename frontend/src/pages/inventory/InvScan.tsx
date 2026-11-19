@@ -30,8 +30,9 @@ export default function InvScan() {
           <div className="input-icon grow"><Icon name="search" size={16} /><input ref={input} autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="Отсканируйте этикетку или введите инвентарный / серийный номер" aria-label="Код или номер" /></div>
           <button className="btn primary" type="submit">Найти</button>
           {hasDetector() ? <button type="button" className={`btn ${cam ? "" : "ghost"}`} onClick={() => setCam(!cam)}><Icon name={cam ? "stop" : "eye"} size={16} />{cam ? "Выключить камеру" : "Камера"}</button>
-            : <span className="muted small">Распознавание камерой этот браузер не поддерживает — используйте ручной сканер или камеру телефона (QR откроет карточку).</span>}
+            : null}
         </form>
+        {!hasDetector() && <p className="muted small">Распознавание камерой этот браузер не поддерживает — используйте ручной сканер или камеру телефона (QR откроет карточку).</p>}
         {camErr && <p className="field-err">{camErr}</p>}
         <Camera on={cam} onCode={(c) => void find(c)} onError={(m) => { setCamErr(m); setCam(false); }} />
         {err && <div className="alert flat warn" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}

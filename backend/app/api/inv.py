@@ -438,29 +438,56 @@ async def link(aid: int, body: LinkBody, ix: Ix = Depends(inv_ctx), db: AsyncSes
 
 
 @router.get("/ksc/hosts")
-async def ksc_hosts(source: uuid.UUID, q: str = Query("", max_length=200), unlinked: bool = True, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000),
-                    ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
-    """Компьютеры источника из подготовленных данных (KSC не опрашивается): для создания карточек и ручного сопоставления. unlinked — только без учётной карточки."""
-    if not ix.su.can_use_source(source):
+async def ksc_hosts(source: str = Query("", max_length=2000), q: str = Query("", max_length=200), unlinked: bool = True, days: int | None = Query(None, ge=1, le=3650),
+                    offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000), ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+    """Компьютеры источников из подготовленных данных (KSC не опрашивается): для создания карточек и ручного сопоставления.
+    source — один или несколько источников через запятую (пусто — все доступные); unlinked — только без учётной карточки; days — только выходившие на связь за столько суток."""
+    want = [x.strip() for x in source.split(",") if x.strip()]
+    try:
+        ids = [uuid.UUID(x) for x in want]
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Неверный идентификатор источника") from None
+    srcs = {s.id: s for s in (await db.execute(select(KscSource))).scalars() if ix.su.can_use_source(s.id) and (not ids or s.id in ids)}
+    if ids and set(ids) - set(srcs):
         raise HTTPException(status_code=403, detail="Нет доступа к источнику")
-    gen = (await db.execute(select(ZcSource.gen).where(ZcSource.source_id == source))).scalar()
-    if not gen:
-        return {"items": [], "total": 0, "offset": offset, "limit": limit, "note": "Подготовленные данные источника ещё не рассчитаны (Администрирование → Расчёт данных зон)."}
-    w = [ZcHost.source_id == source, ZcHost.gen == gen]
+    gens = {sid: g for sid, g in (await db.execute(select(ZcSource.source_id, ZcSource.gen).where(ZcSource.source_id.in_(list(srcs)), ZcSource.gen > 0))).all()} if srcs else {}
+    missing = [srcs[x].name for x in srcs if x not in gens]
+    note = f"Подготовленные данные ещё не рассчитаны: {', '.join(missing)} (Администрирование → Расчёт данных зон)." if missing else ""
+    if not gens:
+        return {"items": [], "total": 0, "offset": offset, "limit": limit, "note": note}
+    w = [or_(*[and_(ZcHost.source_id == sid, ZcHost.gen == g) for sid, g in gens.items()])]
     if (c := column_like(ZcHost.search, q.strip())) is not None:
         w.append(c)
     if unlinked:
-        w.append(ZcHost.host_id.not_in(select(InvAsset.ksc_host_id).where(InvAsset.ksc_source_id == source, InvAsset.ksc_host_id.is_not(None))))
+        linked_q = select(InvAsset.ksc_source_id, InvAsset.ksc_host_id).where(InvAsset.ksc_host_id.is_not(None), InvAsset.ksc_source_id.in_(list(gens)))
+        taken = {(str(a), h) for a, h in (await db.execute(linked_q)).all()}
+        if taken:
+            by_src: dict = {}
+            for a, h in taken:
+                by_src.setdefault(a, []).append(h)
+            w.append(and_(*[or_(ZcHost.source_id != uuid.UUID(a), ZcHost.host_id.not_in(hs)) for a, hs in by_src.items()]))
+    old = None
+    if days:                                                       # скрытые фильтром активности — при тех же остальных условиях
+        fresh = ZcHost.last_connected >= utcnow() - timedelta(days=days)
+        old = (await db.execute(select(func.count()).select_from(ZcHost).where(*w, or_(ZcHost.last_connected.is_(None), ~fresh)))).scalar_one()
+        w.append(fresh)
     total = (await db.execute(select(func.count()).select_from(ZcHost).where(*w))).scalar_one()
-    rows = (await db.execute(select(ZcHost).where(*w).order_by(ZcHost.name).offset(offset).limit(limit))).scalars().all()
-    linked = dict((await db.execute(select(InvAsset.ksc_host_id, InvAsset.id).where(InvAsset.ksc_source_id == source, InvAsset.ksc_host_id.in_([r.host_id for r in rows])))).all()) if rows else {}
-    return {"items": [{"host_id": r.host_id, "name": r.name, "os": r.os, "ip": (r.data or {}).get("ip", ""), "group": (r.data or {}).get("group", ""), "last_connected": C._iso(r.last_connected),
-                       "active": r.active, "asset_id": linked.get(r.host_id)} for r in rows], "total": total, "offset": offset, "limit": limit}
+    rows = (await db.execute(select(ZcHost).where(*w).order_by(ZcHost.name, ZcHost.source_id).offset(offset).limit(limit))).scalars().all()
+    linked = {(str(a), h): i for a, h, i in (await db.execute(select(InvAsset.ksc_source_id, InvAsset.ksc_host_id, InvAsset.id).where(InvAsset.ksc_host_id.in_([r.host_id for r in rows])))).all()} if rows else {}
+    return {"items": [{"source_id": str(r.source_id), "source": srcs[r.source_id].name, "host_id": r.host_id, "name": r.name, "os": r.os, "ip": (r.data or {}).get("ip", ""),
+                       "group": (r.data or {}).get("group", ""), "last_connected": C._iso(r.last_connected), "active": r.active, "asset_id": linked.get((str(r.source_id), r.host_id))} for r in rows],
+            "total": total, "offset": offset, "limit": limit, "note": note, "hidden_old": old}
+
+
+class HostRef(BaseModel):
+    source_id: uuid.UUID
+    host_id: int
 
 
 class ImportBody(BaseModel):
-    source_id: uuid.UUID
-    host_ids: list[int] = Field(min_length=1, max_length=1000)
+    source_id: uuid.UUID | None = None
+    host_ids: list[int] = Field(default_factory=list, max_length=1000)
+    hosts: list[HostRef] = Field(default_factory=list, max_length=1000)          # из нескольких источников сразу
     status_id: int | None = None
     location_id: int | None = None
 
@@ -476,41 +503,51 @@ def cls_from(os_name: str, name: str, group: str = "") -> str:
 
 @router.post("/ksc/import")
 async def ksc_import(body: ImportBody, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
-    """Создать учётные карточки для компьютеров KSC (из подготовленных данных): имя, тип по ОС, связь «подтверждено» по идентификатору KSC.
+    """Создать учётные карточки для компьютеров KSC (из подготовленных данных) одного или нескольких источников: имя, тип по ОС и группе, связь «подтверждено».
     Повторный запуск не создаёт дублей: уже связанные компьютеры пропускаются (уникальность «источник + компьютер»). Порция — до 1000 компьютеров."""
     ix.acc.need("create")
-    if not ix.su.can_use_source(body.source_id):
-        raise HTTPException(status_code=403, detail="Нет доступа к источнику")
+    pairs = [(h.source_id, h.host_id) for h in body.hosts] + ([(body.source_id, i) for i in body.host_ids] if body.source_id else [])
+    if not pairs or len(pairs) > 1000:
+        raise HTTPException(status_code=422, detail="Выберите от 1 до 1000 компьютеров")
     if ix.acc.scopes and not body.location_id:
         raise HTTPException(status_code=422, detail="Укажите местоположение в пределах вашей области учёта")
-    gen = (await db.execute(select(ZcSource.gen).where(ZcSource.source_id == body.source_id))).scalar()
-    if not gen:
-        raise HTTPException(status_code=409, detail="Подготовленные данные источника ещё не рассчитаны")
-    hosts = (await db.execute(select(ZcHost).where(ZcHost.source_id == body.source_id, ZcHost.gen == gen, ZcHost.host_id.in_(body.host_ids)))).scalars().all()
-    have = {h for (h,) in (await db.execute(select(InvAsset.ksc_host_id).where(InvAsset.ksc_source_id == body.source_id, InvAsset.ksc_host_id.in_(body.host_ids))))}
     types = {c: await C.type_for_cls(db, c) for c in ("server", "workstation")}
     st = body.status_id or ((await C.default_status(db, "use")) or InvRef(id=None)).id
-    created = []
-    for h in hosts:
-        if h.host_id in have:
+    created, skipped = [], 0
+    by_src: dict = {}
+    for sid, hid in pairs:
+        by_src.setdefault(sid, []).append(hid)
+    for sid, hids in by_src.items():
+        if not ix.su.can_use_source(sid):
+            raise HTTPException(status_code=403, detail="Нет доступа к источнику")
+        gen = (await db.execute(select(ZcSource.gen).where(ZcSource.source_id == sid))).scalar()
+        if not gen:
+            skipped += len(hids)
             continue
-        cls = cls_from(h.os, h.name, (h.data or {}).get("group", ""))
-        a = InvAsset(uid=uuid.uuid4(), inv_no=await C.next_inv_no(db, ix.cfg), created_by=ix.su.display_name, updated_by=ix.su.display_name, version=1,
-                     ksc_source_id=body.source_id, ksc_host_id=h.host_id, ksc_link="confirmed", ksc_name=h.name[:300], linked_at=utcnow())
-        db.add(a)
-        data = {"name": h.name.split(".")[0][:300], "hostname": h.name.split(".")[0].lower(), "type_id": types[cls].id if types[cls] else None, "status_id": st}
-        if body.location_id:
-            data["location_id"] = body.location_id
-        try:
-            ch = await C.apply_changes(db, a, data, ix.acc, creating=True)
-        except C.Invalid as exc:
-            raise bad(exc) from None
-        await db.flush()
-        await C.record(db, a, "import", ch, ix.su.display_name, title=f"Создание карточки по компьютеру KSC {h.name}")
-        created.append(a.id)
-    audit(db, ix, "ksc.import", str(body.source_id), {"created": len(created), "requested": len(body.host_ids)})
+        hosts = (await db.execute(select(ZcHost).where(ZcHost.source_id == sid, ZcHost.gen == gen, ZcHost.host_id.in_(hids)))).scalars().all()
+        have = {h for (h,) in (await db.execute(select(InvAsset.ksc_host_id).where(InvAsset.ksc_source_id == sid, InvAsset.ksc_host_id.in_(hids))))}
+        for h in hosts:
+            if h.host_id in have:
+                skipped += 1
+                continue
+            cls = cls_from(h.os, h.name, (h.data or {}).get("group", ""))
+            a = InvAsset(uid=uuid.uuid4(), inv_no=await C.next_inv_no(db, ix.cfg), created_by=ix.su.display_name, updated_by=ix.su.display_name, version=1,
+                         ksc_source_id=sid, ksc_host_id=h.host_id, ksc_link="confirmed", ksc_name=h.name[:300], linked_at=utcnow())
+            db.add(a)
+            data = {"name": h.name.split(".")[0][:300], "hostname": h.name.split(".")[0].lower(), "type_id": types[cls].id if types[cls] else None, "status_id": st}
+            if body.location_id:
+                data["location_id"] = body.location_id
+            try:
+                ch = await C.apply_changes(db, a, data, ix.acc, creating=True)
+            except C.Invalid as exc:
+                raise bad(exc) from None
+            await db.flush()
+            await C.record(db, a, "import", ch, ix.su.display_name, title=f"Создание карточки по компьютеру KSC {h.name}")
+            created.append(a.id)
+        skipped += len(set(hids) - {h.host_id for h in hosts})
+    audit(db, ix, "ksc.import", ",".join(str(x) for x in by_src)[:120], {"created": len(created), "requested": len(pairs)})
     await db.commit()
-    return {"created": len(created), "skipped": len(body.host_ids) - len(created), "ids": created}
+    return {"created": len(created), "skipped": len(pairs) - len(created), "ids": created}
 
 
 @router.get("/assets/{aid}/tech")
@@ -677,6 +714,18 @@ async def _body(request: Request, limit: int) -> bytes:
         if len(buf) > limit:
             raise HTTPException(status_code=413, detail="Файл больше 30 МБ")
     return bytes(buf)
+
+
+@router.get("/import/template")
+async def import_template(fmt: str = Query("xlsx", pattern=r"^(xlsx|csv)$"), example: bool = False, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+    """Шаблон файла импорта (пустой или с вымышленным примером): столбцы совпадают с полями сопоставления."""
+    from ..inventory import importer as IM  # noqa: PLC0415
+
+    ix.acc.need("import")
+    props = list((await db.execute(select(InvProp).where(InvProp.active.is_(True)).order_by(InvProp.id))).scalars())
+    name = f"inventory-import-{'example' if example else 'template'}.{fmt}"
+    media = "text/csv; charset=utf-8" if fmt == "csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return Response(IM.template(fmt, example, props), media_type=media, headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.post("/import/preview")

@@ -29,8 +29,13 @@ export default function InvImport({ ctx }: { ctx: Ctx }) {
   return (
     <div className="inv-page">
       <div className="inv-head"><h1>Импорт из Excel или CSV</h1></div>
-      <div className="card">
-        <ol className="inv-steps-text"><li>Выберите файл: первая строка — заголовки, далее строка на единицу.</li><li>Проверьте сопоставление столбцов.</li><li>Нажмите «Проверить» — ничего не запишется, будут показаны ошибки по строкам.</li><li>Импортируйте. Повторная загрузка того же файла не создаёт дублей.</li></ol>
+      <div className="card inv-import-card">
+        <ol className="inv-steps-text"><li>Нет готовой таблицы — скачайте шаблон ниже и заполните его.</li><li>Выберите файл: первая строка — заголовки, далее строка на единицу.</li><li>Проверьте сопоставление столбцов.</li><li>Нажмите «Проверить» — ничего не запишется, будут показаны ошибки по строкам.</li><li>Импортируйте. Повторная загрузка того же файла не создаёт дублей.</li></ol>
+        <div className="row wrap inv-tpl"><span className="muted small">Шаблон файла:</span>
+          <a className="btn ghost mini" href={inv.importTemplate("xlsx", false)}><Icon name="download" size={14} />Excel</a><a className="btn ghost mini" href={inv.importTemplate("csv", false)}><Icon name="download" size={14} />CSV</a>
+          <span className="muted small">с примером заполнения:</span>
+          <a className="btn ghost mini" href={inv.importTemplate("xlsx", true)}><Icon name="download" size={14} />Excel</a><a className="btn ghost mini" href={inv.importTemplate("csv", true)}><Icon name="download" size={14} />CSV</a></div>
+        <p className="muted small">В шаблоне — все поля карточки и дополнительные свойства; в Excel на втором листе описано, что указывать в каждом столбце. Пример заполнен вымышленными данными — удалите его строки перед загрузкой. CSV — разделитель «;», кодировка UTF-8.</p>
         <div className="row wrap"><input ref={ref} type="file" accept=".xlsx,.csv,.txt" hidden onChange={(e) => void pick(e.target.files?.[0])} />
           <button className="btn primary" onClick={() => ref.current?.click()} disabled={busy}><Icon name="upload" size={16} />{file ? "Другой файл" : "Выбрать файл"}</button>
           {file && <span className="muted small">{file.name} · {num(Math.round(file.size / 1024))} КБ{pv ? ` · строк: ${num(pv.total)}` : ""}</span>}</div>

@@ -12,7 +12,7 @@ type S = Record<string, unknown> & { roles: Record<string, string>; grants: { lo
 type T = "access" | "numbers" | "forms" | "labels" | "control" | "notify";
 const PERM_RU: Record<string, string> = { view: "Просмотр оборудования", create: "Создание карточек", edit: "Изменение учётных свойств", location: "Изменение местоположения", people: "Изменение владельцев и ответственных",
   docs: "Оформление документов (выдача, возврат, перемещение)", repair: "Оформление ремонтов", writeoff: "Списание", count: "Проведение инвентаризации", import: "Импорт из Excel/CSV", refs: "Управление справочниками и местоположениями",
-  keys: "Просмотр ключей лицензий", templates: "Печатные формы и этикетки" };
+  keys: "Просмотр ключей лицензий, сохранённых прежними версиями", templates: "Печатные формы и этикетки" };
 const ROLE_RU: Record<string, string> = { viewer: "Просмотр", analyst: "Аналитик", security: "Специалист по ИБ", admin: "Администратор" };
 const LABEL_FIELDS: Record<string, string> = { name: "Наименование", inv_no: "Инвентарный номер", serial: "Серийный номер", hostname: "Имя компьютера", location: "Местоположение", user: "Пользователь", acc_no: "Бухгалтерский номер" };
 
@@ -36,7 +36,7 @@ export default function InvSettings() {
       {tab === "access" && <div className="stack">
         <div className="card flush"><div className="card-head"><h2>Права по ролям</h2></div>
           <p className="muted small pad">Наименьшая роль KAV Checker, которой разрешено действие. Администратору разрешено всё.</p>
-          <div className="table-scroll"><table className="table compact"><thead><tr><th>Действие</th><th>Разрешено начиная с роли</th></tr></thead><tbody>
+          <div className="table-scroll"><table className="table compact mid"><thead><tr><th>Действие</th><th>Разрешено начиная с роли</th></tr></thead><tbody>
             {Object.entries(PERM_RU).map(([p, lb]) => <tr key={p}><td>{lb}</td><td><select value={s.roles[p] ?? "admin"} onChange={(e) => set("roles", { ...s.roles, [p]: e.target.value })} aria-label={lb}>{Object.entries(ROLE_RU).map(([r, v]) => <option key={r} value={r}>{v}</option>)}</select></td></tr>)}</tbody></table></div></div>
         <div className="card"><div className="card-head"><h2>Учётные записи: дополнительные права и область учёта</h2><div className="spacer" /><button className="btn mini" onClick={() => set("grants", [...s.grants, { login: "", perms: [], location_ids: [] }])}><Icon name="plus" size={14} />Добавить</button></div>
           <p className="muted small">Например, ответственному за учёт в филиале — оформление документов только в его регионе. Если указаны местоположения, пользователь видит и меняет только оборудование в них (с вложенными).</p>

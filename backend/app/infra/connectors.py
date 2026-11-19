@@ -17,9 +17,11 @@ from typing import Any
 import httpx
 
 KINDS_RU = {"zabbix": "Мониторинг (Zabbix)", "vsphere": "VMware vSphere", "proxmox": "Proxmox VE", "ovirt": "oVirt / zVirt", "netbox": "Реестр инфраструктуры (NetBox)",
-            "hyperv": "Hyper-V (выгрузка скриптом)", "backup": "Резервное копирование (JSON или выгрузка)", "generic": "Произвольный JSON по HTTP (провайдер)"}
+            "hyperv": "Hyper-V (выгрузка скриптом)", "backup": "Резервное копирование (JSON или выгрузка)", "generic": "Произвольный JSON по HTTP (провайдер)",
+            "netscan": "Сетевое обнаружение (сканирование подсетей)"}
 OBJ_RU = {"server": "Сервер / хост виртуализации", "vm": "Виртуальная машина", "cluster": "Кластер", "network": "Сетевое устройство", "monitor": "Узел мониторинга", "ip": "IP-адрес",
-          "prefix": "Подсеть", "vlan": "VLAN", "site": "Площадка", "rack": "Стойка", "backup": "Резервное копирование", "resource": "Внешний ресурс"}
+          "prefix": "Подсеть", "vlan": "VLAN", "site": "Площадка", "rack": "Стойка", "backup": "Резервное копирование", "resource": "Внешний ресурс",
+          "workstation": "Компьютер", "printer": "Принтер или МФУ", "host": "Узел сети (тип не определён)"}
 MAX_OBJECTS = 50_000
 TIMEOUT = 30.0
 

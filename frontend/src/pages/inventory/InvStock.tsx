@@ -10,7 +10,7 @@ import { useInvReport } from "./InvReport";
 import { inv, money, type Stock } from "./invApi";
 
 export default function InvStock() {
-  const { meta, can } = useInv(); const nav = useNavigate();
+  const { can } = useInv(); const nav = useNavigate();
   const [d, setD] = useState<Stock | null>(null); const [err, setErr] = useState("");
   const rep = useInvReport();
   useEffect(() => { inv.stock().then(setD).catch((e) => setErr((e as ApiError).message)); }, []);
@@ -22,7 +22,7 @@ export default function InvStock() {
       <div className="inv-head"><h1>Склад</h1>
         <div className="row wrap">{can("create") && <button className="btn primary" onClick={() => nav("/inventory/docs/new?kind=receipt")}><Icon name="plus" size={16} />Поступление</button>}
           <button className="btn" onClick={() => rep.open(["stock", "components"], {}, "Склад")}><Icon name="download" size={16} />Отчёт</button></div></div>
-      <div className="meters">{order.map(([k, lb]) => <div key={k} className="meter"><Link className="meter-link" to={`/inventory/assets?st=${k}`}><span className="l">{lb}</span><span className="v">{num(d.by_st[k] ?? 0)}</span><span className="t">{meta.st[k]}</span></Link></div>)}</div>
+      <div className="meters inv-st-meters">{order.map(([k, lb]) => <div key={k} className="meter"><Link className="meter-link" to={`/inventory/assets?st=${k}`}><span className="l">{lb}</span><span className="v">{num(d.by_st[k] ?? 0)}</span></Link></div>)}</div>
       <div className="split">
         <div className="card flush"><div className="card-head"><h2>Свободное и резерв по моделям</h2></div>
           {!d.models.length ? <p className="muted small pad">На складе пусто.</p> : <div className="table-scroll"><table className="table compact"><thead><tr><th>Тип</th><th>Производитель и модель</th><th className="num">На складе</th><th className="num">Резерв</th><th className="num hide-sm">Стоимость</th></tr></thead>

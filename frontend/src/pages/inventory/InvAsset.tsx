@@ -46,8 +46,8 @@ export default function InvAssetPage({ ctx }: { ctx: Ctx }) {
         </div>
         <div className="row wrap inv-card-actions">
           {(a.can.edit || a.can.location || a.can.people) && !edit && <button className="btn" onClick={() => { setEdit(true); go("main"); }}><Icon name="edit" size={16} />Изменить</button>}
-          {a.can.docs && <select className="btn-select" value="" aria-label="Оформить документ" onChange={(e) => e.target.value && nav(`/inventory/docs/new?kind=${e.target.value}&ids=${a.id}`)}>
-            <option value="">Оформить…</option>{docKinds.map((k) => <option key={k} value={k}>{meta.doc_short[k]}</option>)}</select>}
+          {a.can.docs && <select className="btn-select" value="" aria-label="Сформировать документ" onChange={(e) => e.target.value && nav(`/inventory/docs/new?kind=${e.target.value}&ids=${a.id}`)}>
+            <option value="">Сформировать документ…</option>{docKinds.map((k) => <option key={k} value={k}>{meta.doc_short[k]}</option>)}</select>}
           <a className="btn" href={inv.labelsUrl([a.id])} target="_blank" rel="noopener"><Icon name="file" size={16} />Этикетка</a>
           <button className="btn primary" onClick={() => rep.open(["card"], { asset_id: a.id, ids: [a.id] })} title="Карточка учётной единицы: XLSX, PDF, HTML (вкладками)"><Icon name="download" size={16} />Отчёт</button>
         </div>

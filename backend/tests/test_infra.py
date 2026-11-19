@@ -7,6 +7,7 @@ import json
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from app.infra import connectors as K
 from app.infra import sync as S
@@ -184,3 +185,64 @@ def test_parsers_on_samples():
         K.parse_hyperv({"format": "other"})
     gen = K.parse_generic({"data": {"items": [{"host": "app-db01", "lastOk": "2026-11-18"}]}}, {"items": "data.items", "id": "host", "name": "host", "last_backup": "lastOk"}, "backup")
     assert gen[0]["kind"] == "backup" and gen[0]["attrs"]["last_backup"] == "2026-11-18"
+
+
+def test_netscan_classification():
+    from app.infra.netscan import classify
+
+    p = lambda port, **kw: {"port": port, **kw}  # noqa: E731
+    assert classify([p(9100), p(80, product="HP LaserJet http config")])["kind"] == "printer"
+    assert classify([p(135), p(445), p(3389)]) == {"kind": "workstation", "os": "Windows", "why": classify([p(135), p(445), p(3389)])["why"]}
+    assert classify([p(135), p(445), p(88), p(389), p(53)])["kind"] == "server"
+    assert classify([p(22, product="OpenSSH", version="9.6p1 Ubuntu", ostype="Linux")]) | {"why": ""} == {"kind": "server", "os": "Linux", "why": ""}
+    assert classify([p(22, product="MikroTik RouterOS sshd"), p(80)])["kind"] == "network"
+    assert classify([p(8006), p(22)])["kind"] == "server"
+    assert classify([])["kind"] == "host"
+    assert classify([p(8080, product="nginx")])["kind"] == "server"
+    assert classify([p(22, product="OpenSSH"), p(139, product="Samba smbd"), p(445, product="Samba smbd")]) | {"why": ""} == {"kind": "server", "os": "Linux", "why": ""}
+
+
+async def test_netscan_job_ingest_and_matching(client, app, monkeypatch):
+    from app.infra import netscan as NS
+    from app.models import PtHost, PtJob, PtPort
+
+    await login(client, "admin", "Admin-Passw0rd-123")
+    meta = (await client.get(f"{API}/meta")).json()
+    ws = next(r["id"] for r in meta["refs"] if r["kind"] == "type" and r["data"].get("cls") == "workstation")
+    known = (await client.post(f"{API}/assets", json={"data": {"type_id": ws, "hostname": "ws-acc-07"}})).json()
+    assert (await client.post(f"{API}/infra/netscan", json={"subnets": "192.0.2.0/29"})).status_code == 422               # без подтверждения области не запускается
+    r = await client.post(f"{API}/infra/netscan", json={"subnets": "192.0.2.0/29", "confirm_scope": True})
+    assert r.status_code == 201, r.text
+    jid = r.json()["id"]
+    assert all(j["id"] != jid for j in (await client.get("/api/v1/pentest/jobs")).json()["items"])                     # в списках Pentest не показывается
+    async with app.state.session_maker() as db:                         # результат сканера: компьютер с именем из DNS, принтер, узел без портов
+        import uuid as _u
+
+        job = await db.get(PtJob, _u.UUID(jid))
+        assert job.profile == "netscan" and job.options["scan"]["preset"] == "netscan"
+        hosts = {h.ip: h for h in (await db.execute(select(PtHost).where(PtHost.job_id == job.id))).scalars()}
+        for ip, ports in {"192.0.2.2": [135, 445, 3389], "192.0.2.3": [9100, 631], "192.0.2.4": []}.items():
+            hosts[ip].state, hosts[ip].ports_n = "done", len(ports)
+            db.add_all(PtPort(job_id=job.id, ip=ip, port=pt, proto="tcp") for pt in ports)
+        job.status = "done"
+        await db.commit()
+
+    async def rdns(ips):
+        return {"192.0.2.2": "ws-acc-07.example.local"}
+    monkeypatch.setattr(NS, "_rdns", rdns)
+    from app.inventory.service import InvService
+
+    await InvService(app.state.session_maker, app.state.settings_svc, None, None).infra_tick()
+    res = (await client.get(f"{API}/infra/netscan/{jid}")).json()
+    by = {i["ip"]: i for i in res["items"]}
+    assert res["job"]["ingested"] and by["192.0.2.2"]["kind"] == "workstation" and by["192.0.2.2"]["asset"]["id"] == known["id"]
+    assert by["192.0.2.3"]["kind"] == "printer" and by["192.0.2.3"]["asset"] is None and by["192.0.2.3"]["can_create"]
+    assert by["192.0.2.4"]["kind"] == "host" and not by["192.0.2.4"]["can_create"]
+    codes = {(f["code"], f["object_id"]) for f in (await client.get(f"{API}/infra/findings")).json()["items"]}
+    assert ("not_registered", by["192.0.2.3"]["object_id"]) in codes
+    made = (await client.put(f"{API}/infra/objects/{by['192.0.2.3']['object_id']}/match", json={"action": "create"})).json()
+    a = (await client.get(f"{API}/assets/{made['asset_id']}")).json()
+    assert a["cls"] == "printer"
+    rep = await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": "infra_netscan", "netscan_job": jid}})
+    assert rep.status_code == 200, rep.text
+    assert "192.0.2.3" in rep.text and "Нет в учёте" in rep.text

@@ -22,7 +22,7 @@ from . import connectors as K
 TRACKED = ("name", "fqdn", "ips", "macs", "bios_uuid", "serial", "parent_ext")
 TRACKED_ATTRS = ("cpu", "ram_mb", "disk_gb", "power", "os", "available", "monitored", "status", "host", "cluster")
 EVENT_CODES = ("ip_changed", "host_changed", "config_changed")          # события изменения: закрываются решением, а не сверкой
-ASSET_KINDS = ("server", "vm", "network")
+ASSET_KINDS = ("server", "vm", "network", "workstation", "printer")
 FIELD_RU = {"name": "Имя", "fqdn": "FQDN", "ips": "IP-адреса", "macs": "MAC-адреса", "bios_uuid": "SMBIOS UUID", "serial": "Серийный номер", "parent_ext": "Хост",
             "cpu": "CPU", "ram_mb": "ОЗУ, МБ", "disk_gb": "Диски, ГБ", "power": "Питание", "os": "ОС", "available": "Доступность", "monitored": "На мониторинге", "status": "Состояние",
             "host": "Хост", "cluster": "Кластер", "present": "Есть в источнике"}
@@ -71,8 +71,9 @@ def _txt(v) -> str:
     return "" if v is None else str(v)
 
 
-async def store(db: AsyncSession, src: InfraSource, objects: list[dict]) -> dict:
-    """Обновить объекты источника. Возвращает {received, new, changed, gone}; изменения — InfraChange и события расхождений (IP, хост, конфигурация)."""
+async def store(db: AsyncSession, src: InfraSource, objects: list[dict], partial: bool = False) -> dict:
+    """Обновить объекты источника. Возвращает {received, new, changed, gone}; изменения — InfraChange и события расхождений (IP, хост, конфигурация).
+    partial — выдача охватывает часть источника (сетевое обнаружение по подсетям): отсутствующие объекты не помечаются исчезнувшими."""
     now = utcnow()
     have = {o.ext_id: o for o in (await db.execute(select(InfraObject).where(InfraObject.source_id == src.id))).scalars()}
     seen: set[str] = set()
@@ -117,7 +118,7 @@ async def store(db: AsyncSession, src: InfraSource, objects: list[dict]) -> dict
                 if cfg:
                     await event(db, "config_changed", o, src, "; ".join(cfg))
     for ext, o in have.items():
-        if ext not in seen and o.present:
+        if ext not in seen and o.present and not partial:
             o.present = False
             st["gone"] += 1
             await db.flush()
@@ -164,7 +165,7 @@ async def match(db: AsyncSession, src: InfraSource, by: str = "") -> dict:
         for m in o.macs or []:
             by_mac[m].add(o.asset_id)
     objs = list((await db.execute(select(InfraObject).where(InfraObject.source_id == src.id, InfraObject.present.is_(True),
-                                                            InfraObject.kind.in_(("server", "vm", "network", "monitor", "backup", "resource"))))).scalars())
+                                                            InfraObject.kind.in_(("server", "vm", "network", "monitor", "backup", "resource", "workstation", "printer", "host"))))).scalars())
     st = {"matched": 0, "created": 0, "ambiguous": 0}
     create = (src.options or {}).get("create_assets", src.kind in ("vsphere", "proxmox", "ovirt", "hyperv", "netbox"))
     key = f"src:{src.id}"
@@ -183,10 +184,13 @@ async def match(db: AsyncSession, src: InfraSource, by: str = "") -> dict:
             cand = set().union(*[by_mac.get(m, set()) for m in o.macs])
             basis = "MAC-адрес" if cand else ""
         if not cand:
-            names = {short(o.name), short(o.fqdn)} - {""}
+            names = {n for n in (short(o.name), short(o.fqdn)) if n and not n.isdigit()}          # имя-адрес («192.0.2.5» → «192») — не имя
             cand = set().union(*[by_name.get(n, set()) for n in names]) if names else set()
             if cand:
                 basis = "имя" + (" и IP-адрес" if len(cand) == 1 and set(o.ips or []) & ip_of.get(next(iter(cand)), set()) else "")
+        if not cand and src.kind == "netscan" and o.ips:              # сетевое обнаружение: имени может не быть — IP-адрес объекта другого источника, уже связанного с карточкой
+            cand = {aid for aid, ips in ip_of.items() if set(o.ips) & ips}
+            basis = "IP-адрес" if cand else ""
         if len(cand) == 1:
             aid = next(iter(cand))
             if o.asset_id != aid:
@@ -235,7 +239,7 @@ async def create_asset(db: AsyncSession, o: InfraObject, src: InfraSource, by: s
 
     row = await db.get(AppSetting, "inventory")
     cfg = InventorySettings(**{k: v for k, v in ((row.value if row else {}) or {}).items() if k in InventorySettings.model_fields})
-    cls = {"vm": "vm", "server": "server", "network": "network"}[o.kind]
+    cls = {"vm": "vm", "server": "server", "network": "network", "workstation": "workstation", "printer": "printer"}[o.kind]
     t = await C.type_for_cls(db, cls)
     st = await C.default_status(db, "use" if (o.attrs or {}).get("power", "on") == "on" else "stock")
     a = InvAsset(uid=uuid.uuid4(), inv_no=await C.next_inv_no(db, cfg), created_by=by, updated_by=by, version=1,
@@ -324,7 +328,7 @@ async def reconcile(db: AsyncSession, stale_days: int = 7, by: str = "сверк
                     add("no_purpose", asset=a, found_="назначение не заполнено", expected="назначение и сервис")
             if not a.it_id and not a.resp_id:
                 add("no_admin", asset=a, found_="ответственный не назначен", expected="ответственный ИТ-специалист")
-            tech = [o for o in mine if o.kind in ASSET_KINDS]
+            tech = [o for o in mine if o.kind in ASSET_KINDS and srcs[o.source_id].kind != "netscan"]       # обнаружение охватывает часть сети и запускается вручную: «исчез»/«устарел» по нему не считаются
             if tech and not any(o.present for o in tech):
                 add("gone", asset=a, found_="; ".join(f"{srcs[o.source_id].name}: нет с {o.last_seen:%d.%m.%Y}" for o in tech[:5]), expected="есть в источнике")
             elif tech and max(o.last_seen for o in tech) < now - timedelta(days=stale_days):
@@ -338,7 +342,7 @@ async def reconcile(db: AsyncSession, stale_days: int = 7, by: str = "сверк
     ip_assets: dict[str, set] = defaultdict(set)
     ip_obj: dict[str, InfraObject] = {}
     for o in objs:
-        if o.present and o.kind in ("server", "vm", "network", "monitor"):
+        if o.present and o.kind in ("server", "vm", "network", "monitor") and srcs[o.source_id].kind != "netscan":
             for ip in o.ips or []:
                 ip_assets[ip].add(o.asset_id or f"o{o.id}")
                 ip_obj.setdefault(ip, o)

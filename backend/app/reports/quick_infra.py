@@ -207,6 +207,35 @@ async def build_infra_view(db, view: str, p: dict, acc: C.Access, cfg, ctx):
         complete = round(100 * (1 - (stats[1][1] + stats[3][1] + stats[4][1]) / max(1, 3 * len(act))))
         metrics = [metric("act", "В эксплуатации", len(act)), metric("complete", "Полнота сведений, %", complete), metric("issues", "Объектов с замечаниями", len(probs), "", "warn")]
         notes.append("Периодическая проверка (рекомендуется дважды в год): полнота реестра, ответственные, мониторинг, резервное копирование, защита и расхождения — вместо ручной проверки таблиц.")
+    elif view == "infra_netscan":
+        import uuid  # noqa: PLC0415
+
+        from ..infra import netscan as NS  # noqa: PLC0415
+        from ..models import PtJob  # noqa: PLC0415
+
+        try:
+            jid = uuid.UUID(p.get("netscan_job") or "") if p.get("netscan_job") else None
+        except ValueError:
+            jid = None
+        job = await db.get(PtJob, jid) if jid else (await db.execute(select(PtJob).where(PtJob.profile == NS.PROFILE, PtJob.status.in_(NS.FINISHED)).order_by(PtJob.finished_at.desc()).limit(1))).scalar_one_or_none()
+        hosts = await NS.hosts(db, job.id) if job is not None and job.profile == NS.PROFILE else []
+        src = next((s for s in srcs.values() if s.kind == NS.PROFILE), None)
+        objs = {o.ext_id: o for o in (await db.execute(select(InfraObject).where(InfraObject.source_id == src.id))).scalars()} if src else {}
+        aids = {o.asset_id for o in objs.values() if o.asset_id}
+        assets = {a.id: a for a in (await db.execute(select(InvAsset).where(InvAsset.id.in_(aids)))).scalars()} if aids else {}
+        rows = []
+        for h in hosts:
+            o = objs.get(f"ip:{h['ip']}")
+            a = assets.get(o.asset_id) if o and o.asset_id else None
+            rows.append({"ip": h["ip"], "name": (h["names"] or [o.name if o and o.name != h["ip"] else ""])[0], "kind": NS.KIND_RU.get(h["kind"], h["kind"]), "os": h["os"],
+                         "ports": ", ".join(str(x["port"]) for x in h["ports"]), "why": h["why"], "asset": f"{a.inv_no} {a.name or a.hostname}".strip() if a else "", "_reg": bool(a)})
+        cols = [col("ip", "IP-адрес"), col("name", "Имя (DNS)"), col("kind", "Тип"), col("os", "ОС"), col("ports", "Открытые порты"), col("asset", "Учётная карточка"), col("why", "Основание типа")]
+        tables += [{"id": "all", "title": "Все найденные узлы", "columns": cols, "rows": rows}, {"id": "unreg", "title": "Нет в учёте", "columns": cols, "rows": [r for r in rows if not r["_reg"]]}]
+        tabs = [{"id": t["id"], "title": t["title"]} for t in tables]
+        metrics = [metric("all", "Найдено узлов", len(rows)), metric("unreg", "Нет в учёте", sum(1 for r in rows if not r["_reg"]), "", "warn"),
+                   *[metric(k, v, sum(1 for r in rows if r["kind"] == v)) for k, v in NS.KIND_RU.items()]]
+        sub = f"Задание «{job.title}», {job.targets_input[:200]}, завершено {job.finished_at:%d.%m.%Y %H:%M} UTC" if job is not None and job.finished_at else "Готовых заданий обнаружения нет"
+        notes.append("Тип узла и ОС определяются по открытым портам и ответам служб: это оценка, а не инвентарные данные. Сопоставление с карточками — по имени и IP-адресу.")
     return tables, metrics, tabs, sub, notes
 
 

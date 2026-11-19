@@ -58,7 +58,7 @@ export default function InvOverview() {
             <div className="row wrap tight inv-st">{d.by_st.map((x) => <Link key={x.st} className="chip" to={`/inventory/assets?st=${x.st}`}>{x.name}: <b>{num(x.n)}</b></Link>)}</div>
           </div>
           <div className="card">
-            <div className="card-head"><h2>Документы в работе</h2><div className="spacer" />{can("docs") && <Link className="btn mini" to="/inventory/docs/new?kind=issue"><Icon name="plus" size={14} />Выдача</Link>}</div>
+            <div className="card-head"><h2>Документы в работе</h2><div className="spacer" />{can("docs") && <Link className="btn mini" to="/inventory/docs"><Icon name="file" size={14} />Сформировать документ</Link>}</div>
             {d.docs_open.length ? <div className="row wrap tight">{d.docs_open.map((x) => <Link key={x.kind} className="chip" to={`/inventory/docs?kind=${x.kind}&open_only=1`}>{x.name}: <b>{x.n}</b></Link>)}</div> : <p className="muted small">Незавершённых документов нет.</p>}
           </div>
         </div>

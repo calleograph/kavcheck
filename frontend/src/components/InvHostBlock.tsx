@@ -15,7 +15,7 @@ export function InvHostBlock({ sid, hid, hostName }: { sid: string; hid: number;
   if (err) return <p className="muted small">Инвентаризация: {err}</p>;
   if (!d || d.hidden) return null;
   const link = async (a: Asset) => { setBusy(true); try { await inv.link(a.id, sid, hid, "сопоставлено из карточки компьютера"); await load(); } catch (e) { setErr((e as ApiError).message); } finally { setBusy(false); } };
-  const create = async () => { setBusy(true); try { const r = await inv.kscImport(sid, [hid]); if (r.ids[0]) nav(`/inventory/assets/${r.ids[0]}`); else await load(); } catch (e) { setErr((e as ApiError).message); } finally { setBusy(false); } };
+  const create = async () => { setBusy(true); try { const r = await inv.kscImport([{ source_id: sid, host_id: hid }]); if (r.ids[0]) nav(`/inventory/assets/${r.ids[0]}`); else await load(); } catch (e) { setErr((e as ApiError).message); } finally { setBusy(false); } };
   const a = d.asset;
   return (
     <div className="inv-hostblock">

@@ -53,7 +53,7 @@ export interface DocCard extends Doc { items: DocItem[]; files: FileRow[]; can: 
 export interface License {
   id: number; name: string; vendor: string; version: string; edition: string; type_id: number | null; type: string; category_id: number | null; category: string; metric: string; metric_ru: string; qty: number | null;
   match: string[]; purchase_date: string | null; valid_until: string | null; supplier_id: number | null; supplier: string; cost: number | null; cost_text: string; purchase_doc: string; resp_id: number | null; resp: string;
-  note: string; key_set: boolean; active: boolean; updated_at: string; updated_by: string; installs: number | null; assigned: number; free: number | null; issues: string[]; usage_at: string | null; usage_errors: string[];
+  note: string; key_set: boolean; key_ref: string; active: boolean; updated_at: string; updated_by: string; installs: number | null; assigned: number; free: number | null; issues: string[]; usage_at: string | null; usage_errors: string[];
 }
 export interface LicenseCard extends License { assignments: { id: number; asset_id: number | null; asset: string; ksc: boolean; person_id: number | null; person: string; at: string; by: string; note: string }[]; files: FileRow[]; usage: Record<string, unknown>; can_key: boolean }
 export interface Install { source_id: string; source: string; host_id: number; name: string; product: string; version: string; assigned: boolean; asset_id: number | null; inv_no: string }
@@ -63,7 +63,7 @@ export interface Overview {
   recent: { at: string; by: string; kind: string; title: string; asset_id: number; inv_no: string; name: string; doc_id: number | null }[]; ksc_sources: number; cfg: { warranty_days: number; license_days: number; stale_days: number };
 }
 export interface Group { id: number | string | null; name: string; n: number; cost: number; cost_text: string }
-export interface KscHost { host_id: number; name: string; os: string; ip: string; group: string; last_connected: string | null; active: boolean; asset_id: number | null }
+export interface KscHost { source_id: string; source: string; host_id: number; name: string; os: string; ip: string; group: string; last_connected: string | null; active: boolean; asset_id: number | null }
 export interface View { id: number; name: string; params: Record<string, string>; shared: boolean; mine: boolean }
 export interface ImportPreview { headers: string[]; rows: string[][]; total: number; mapping: Record<string, string>; fields: Record<string, string>; props: Record<string, string> }
 export interface ImportResult { rows: number; created: number; updated: number; unchanged: number; skipped: number; errors: { row: number; error: string }[]; created_refs: { refs: number; locations: number; people: number }; dry_run: boolean }
@@ -127,8 +127,8 @@ export const inv = {
   lookup: (code: string) => req<Asset>("GET", `/inv/lookup${qs({ code })}`),
   byUid: (uid: string) => req<{ id: number }>("GET", `/inv/a/${uid}`),
   byHost: (source: string, host: number) => req<{ asset: Asset | null; candidates: Asset[]; can_link: boolean; can_create: boolean; hidden?: boolean; host_name?: string }>("GET", `/inv/by-host${qs({ source, host })}`),
-  kscHosts: (p: Q) => req<Page<KscHost> & { note?: string }>("GET", `/inv/ksc/hosts${qs(p)}`),
-  kscImport: (source_id: string, host_ids: number[], status_id?: number | null, location_id?: number | null) => req<{ created: number; skipped: number; ids: number[] }>("POST", "/inv/ksc/import", { source_id, host_ids, status_id, location_id }),
+  kscHosts: (p: Q) => req<Page<KscHost> & { note?: string; hidden_old?: number | null }>("GET", `/inv/ksc/hosts${qs(p)}`),
+  kscImport: (hosts: { source_id: string; host_id: number }[], status_id?: number | null, location_id?: number | null) => req<{ created: number; skipped: number; ids: number[] }>("POST", "/inv/ksc/import", { hosts, status_id, location_id }),
   views: (page: string) => req<{ items: View[] }>("GET", `/inv/views${qs({ page })}`),
   addView: (page: string, name: string, params: Record<string, string>, shared: boolean) => req<{ id: number }>("POST", "/inv/views", { page, name, params, shared }),
   delView: (id: number) => req<{ ok: boolean }>("DELETE", `/inv/views/${id}`),
@@ -155,7 +155,7 @@ export const inv = {
   editDoc: (id: number, b: Record<string, unknown>) => req<DocCard>("PUT", `/inv/docs/${id}`, b),
   docStatus: (id: number, to: string, comment = "", data?: Record<string, unknown>) => req<{ status: string; changed: number }>("POST", `/inv/docs/${id}/status`, { to, comment, data }),
   printForm: (id: number) => req<Record<string, unknown>>("GET", `/inv/docs/${id}/print?fmt=json`),
-  printUrl: (id: number, fmt: "html" | "pdf" | "docx") => `/api/v1/inv/docs/${id}/print?fmt=${fmt}`,
+  printUrl: (id: number, fmt: "html" | "pdf" | "docx" | "xlsx") => `/api/v1/inv/docs/${id}/print?fmt=${fmt}`,
   labelsUrl: (ids: number[], fmt: "pdf" | "zpl" = "pdf") => `/api/v1/inv/labels?ids=${ids.join(",")}&fmt=${fmt}`,
   locLabelsUrl: (ids: number[]) => `/api/v1/inv/labels?locations=${ids.join(",")}`,
   fileUrl: (id: number) => `/api/v1/inv/files/${id}`,
@@ -181,6 +181,10 @@ export const inv = {
   stock: () => req<Stock>("GET", "/inv/stock"),
   notifyPreview: () => req<{ sections: { title: string; rows: string[] }[] }>("GET", "/inv/notify/preview"),
   notifyTest: () => req<{ sent: boolean; sections: number; error: string }>("POST", "/inv/notify/test"),
+  importTemplate: (fmt: "csv" | "xlsx", example: boolean) => `/api/v1/inv/import/template${qs({ fmt, example: example ? 1 : undefined })}`,
+  netscan: () => req<NetscanState>("GET", "/inv/infra/netscan"),
+  netscanStart: (b: { subnets: string; title?: string; confirm_scope: boolean; confirm_large: boolean }) => req<NetscanJob>("POST", "/inv/infra/netscan", b),
+  netscanResult: (id: string) => req<NetscanResult>("GET", `/inv/infra/netscan/${id}`),
   infraOverview: (p: Q) => req<InfraOverview>("GET", `/inv/infra/overview${qs(p)}`),
   infraSources: () => req<{ items: (InfraSource & { objects: number })[]; kinds: Record<string, string> }>("GET", "/inv/infra/sources"),
   infraAddSource: (b: Record<string, unknown>) => req<InfraSource>("POST", "/inv/infra/sources", b),
@@ -206,3 +210,8 @@ export const inv = {
 /** Параметры отбора списка оборудования: адресная строка ↔ запрос (один набор для списка, группировки, массовых операций и отчёта). */
 export const FILTER_KEYS = ["q", "cls", "type_id", "model_id", "manufacturer_id", "status_id", "st", "location", "no_location", "person", "role", "dept_id", "branch_id", "supplier_id", "ksc", "warranty", "transit", "no_owner", "no_resp", "stale", "parent"] as const;
 export const money = (k: number | null | undefined) => (k === null || k === undefined ? "" : `${(k / 100).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`);
+
+export interface NetscanJob { id: string; title: string; targets: string; targets_n: number; status: string; stage_ru: string; pct: number; hosts_up: number; created_by: string; created_at: string; finished_at: string | null; ingested: boolean; stats: Record<string, number> }
+export interface NetscanState { can_run: boolean; enabled: boolean; is_security: boolean; networks: string[]; ports: string; large_threshold: number; kinds: Record<string, string>; jobs: NetscanJob[] }
+export interface NetscanHost { ip: string; name: string; names: string[]; kind: string; kind_ru: string; os: string; why: string; ports: { port: number; service: string; product: string; version: string }[]; object_id: number | null; match: string; asset: { id: number; inv_no: string; name: string } | null; can_create: boolean }
+export interface NetscanResult { job: NetscanJob; items: NetscanHost[]; by_kind: Record<string, number>; unregistered: number }

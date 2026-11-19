@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import uuid
 import zipfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from app.models import InvAsset, KscSource, ZcHost, ZcSource
 from app.services import local_admin as la
@@ -107,6 +107,11 @@ async def test_documents_apply_on_their_stage_and_print(client, app):
     docx = await client.get(f"{API}/docs/{doc['id']}/print", params={"fmt": "docx"})
     z = zipfile.ZipFile(io.BytesIO(docx.content))
     assert "Сотрудник Первый" in z.read("word/document.xml").decode()
+    xlsx = await client.get(f"{API}/docs/{doc['id']}/print", params={"fmt": "xlsx"})
+    from openpyxl import load_workbook
+
+    ws = load_workbook(io.BytesIO(xlsx.content)).active
+    assert xlsx.status_code == 200 and any("Сотрудник Первый" in str(c.value or "") for row in ws.iter_rows() for c in row)
     # перемещение: «в пути» после отправки, новое место — только после приёма
     mv = (await client.post(f"{API}/docs", json={"kind": "move", "to_location_id": s["store"]["id"], "role": "", "items": [{"asset_id": ids[1]}]})).json()
     for st in ("prepared", "sent"):
@@ -174,28 +179,45 @@ async def test_ksc_import_without_duplicates_and_link_sync(client, app):
     assert st["lost"] == 1 and lost.ksc_link == "lost"                                                       # карточка остаётся, связь — утрачена
     conflict = await client.put(f"{API}/assets/{manual['id']}/ksc", json={"source_id": str(sid), "host_id": 2})
     assert conflict.status_code == 409
+    sid2 = uuid.uuid4()                                                    # второй источник: выбор нескольких источников и фильтр «на связи за N суток»
+    async with app.state.session_maker() as db:
+        db.add(KscSource(id=sid2, name="KSC-второй", host="ksc2.example.local", port=1433, database="KAV", username="ro", password_enc="x"))
+        db.add(ZcSource(source_id=sid2, gen=1, status="ready", built_at=now))
+        db.add(ZcHost(source_id=sid2, host_id=1, gen=1, name="pc-b01", search="pc-b01", os="Windows 11 Pro", last_connected=now, active=True, data={}))
+        db.add(ZcHost(source_id=sid2, host_id=2, gen=1, name="pc-b-old", search="pc-b-old", os="Windows 10", last_connected=now - timedelta(days=90), active=False, data={}))
+        await db.commit()
+    both = (await client.get(f"{API}/ksc/hosts", params={"source": f"{sid},{sid2}", "days": 30})).json()
+    assert {h["name"] for h in both["items"]} == {"pc-b01"} and both["hidden_old"] == 1 and both["items"][0]["source"] == "KSC-второй"
+    r = (await client.post(f"{API}/ksc/import", json={"hosts": [{"source_id": h["source_id"], "host_id": h["host_id"]} for h in both["items"]]})).json()
+    assert r["created"] == 1 and (await client.get(f"{API}/ksc/hosts", params={"source": f"{sid},{sid2}", "days": 30})).json()["total"] == 0
 
 
-async def test_licenses_key_is_encrypted_and_audited(client, app):
+async def test_licenses_keep_key_reference_not_key(client, app):
     s = await setup(client, app)
     a = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["workstation"]}})).json()
-    r = await client.post(f"{API}/licenses", json={"name": "Офисный пакет (пример)", "qty": 1, "valid_until": "2000-01-01", "key": "AAAAA-BBBBB-CCCCC", "match": ["Офисный пакет*"]})
+    ref = "https://vault.example.local/records/office-2026"
+    assert (await client.post(f"{API}/licenses", json={"name": "Офисный пакет (пример)", "key": "AAAAA-BBBBB-CCCCC"})).status_code == 422     # ключи здесь не хранятся
+    r = await client.post(f"{API}/licenses", json={"name": "Офисный пакет (пример)", "qty": 1, "valid_until": "2000-01-01", "key_ref": ref, "match": ["Офисный пакет*"]})
     lid = r.json()["id"]
-    async with app.state.session_maker() as db:
+    await client.post(f"{API}/licenses/{lid}/assign", json={"asset_ids": [a["id"]], "person_ids": [s["p1"]["id"]]})
+    card = (await client.get(f"{API}/licenses/{lid}")).json()
+    assert card["assigned"] == 2 and "срок действия истёк" in card["issues"] and any("назначено больше" in i for i in card["issues"])
+    assert card["key_ref"] == ref and not card["key_set"]
+    async with app.state.session_maker() as db:                       # ключ прежней версии: виден по праву keys с записью в журнал, удаляется пустым значением
         from app.models import InvLicense
 
         lc = await db.get(InvLicense, lid)
-        assert lc.key_enc and "AAAAA" not in lc.key_enc
-    await client.post(f"{API}/licenses/{lid}/assign", json={"asset_ids": [a["id"]], "person_ids": [s["p1"]["id"]]})
-    card = (await client.get(f"{API}/licenses/{lid}")).json()
-    assert card["assigned"] == 2 and "срок действия истёк" in card["issues"] and any("назначено больше" in i for i in card["issues"]) and card["key_set"]
-    assert "key" not in card
-    assert (await client.get(f"{API}/licenses/{lid}/key")).json()["key"] == "AAAAA-BBBBB-CCCCC"
+        lc.key_enc = app.state.settings_svc.encrypt("OLD-KEY", f"inv.lic.{lid}")
+        await db.commit()
+    assert (await client.get(f"{API}/licenses/{lid}/key")).json()["key"] == "OLD-KEY"
     await login(client, "analyst1", "Analyst-Passw0rd-123")
     assert (await client.get(f"{API}/licenses/{lid}/key")).status_code == 403
     await login(client, "admin", "Admin-Passw0rd-123")
     log = (await client.get("/api/v1/admin/audit", params={"q": "inv.license.key_view"})).json()
     assert any(i["action"] == "inv.license.key_view" for i in log.get("items", log if isinstance(log, list) else []))
+    body = {k: card[k] for k in ("name", "qty", "match")} | {"key_ref": ref, "key": ""}
+    assert (await client.put(f"{API}/licenses/{lid}", json=body)).status_code == 200
+    assert not (await client.get(f"{API}/licenses/{lid}")).json()["key_set"]
 
 
 async def test_reports_build_with_tabs_and_respect_scope(client, app):
@@ -245,6 +267,22 @@ async def test_import_csv_preview_check_and_upsert(client, app):
     assert a["user"] == "Сотрудник Первый" and a["location"].endswith("Кабинет 202") and a["cost"] == 5400000 and a["warranty_until"] == "2027-12-31" and a["model"] == "Модель X1"
     again = (await client.post(f"{API}/import/run", params={"dry_run": False}, content=csv_text, headers=hdrs)).json()
     assert again["created"] == 0 and again["unchanged"] == 2                                                   # повторный импорт не создаёт дублей
+
+
+async def test_import_template_example_imports_cleanly(client, app):
+    await setup(client, app)
+    from urllib.parse import quote
+    import json as _j
+
+    empty = await client.get(f"{API}/import/template", params={"fmt": "xlsx"})
+    assert empty.status_code == 200 and empty.content[:2] == b"PK"
+    csv_text = (await client.get(f"{API}/import/template", params={"fmt": "csv", "example": True})).content
+    assert csv_text.startswith("\ufeff".encode())
+    pv = (await client.post(f"{API}/import/preview", content=csv_text, headers={"X-File-Name": "t.csv", "Content-Type": "application/octet-stream"})).json()
+    assert pv["total"] == 3 and set(pv["mapping"].values()) >= {"serial", "type", "location", "user", "cost", "warranty_until"}
+    hdrs = {"X-File-Name": "t.csv", "X-Mapping": quote(_j.dumps(pv["mapping"])), "Content-Type": "application/octet-stream"}
+    chk = (await client.post(f"{API}/import/run", params={"dry_run": True}, content=csv_text, headers=hdrs)).json()
+    assert chk["created"] == 3 and not chk["errors"], chk
 
 
 def test_inventory_enum_values_fit_postgres_column_lengths():

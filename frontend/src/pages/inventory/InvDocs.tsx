@@ -51,7 +51,7 @@ export default function InvDocs({ ctx }: { ctx: Ctx }) {
   return (
     <div className="inv-page">
       <div className="inv-head"><h1>Документы</h1>
-        {can("docs") && <div className="row wrap">{["issue", "return", "move"].map((k) => <button key={k} className={`btn ${k === "issue" ? "primary" : ""}`} onClick={() => nav(`/inventory/docs/new?kind=${k}`)}><Icon name="plus" size={16} />{meta.doc_short[k]}</button>)}
+        {can("docs") && <div className="row wrap inv-doc-new" role="group" aria-label="Сформировать документ"><span className="muted small">Сформировать:</span>{["issue", "return", "move"].map((k) => <button key={k} className={`btn ${k === "issue" ? "primary" : ""}`} onClick={() => nav(`/inventory/docs/new?kind=${k}`)}><Icon name="file" size={16} />{DOC_NEW[k]}</button>)}
           <select className="btn-select" value="" aria-label="Другой документ" onChange={(e) => e.target.value && nav(`/inventory/docs/new?kind=${e.target.value}`)}><option value="">Другой документ…</option>{kinds.filter((k) => !["issue", "return", "move"].includes(k)).map((k) => <option key={k} value={k}>{meta.doc_short[k]}</option>)}</select></div>}
       </div>
       <FilterBar search={{ value: q, onChange: setQ, placeholder: "Номер, основание, инвентарный номер оборудования", label: "Поиск документов" }}
@@ -64,11 +64,11 @@ export default function InvDocs({ ctx }: { ctx: Ctx }) {
         onReset={() => { setQ(""); setSp(new URLSearchParams(), { replace: true }); }} count={{ n: list.initial ? null : list.total, noun: ["документ", "документа", "документов"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
         report={{ onClick: () => rep.open(["docs"], { doc_kind: kind }, "Журнал документов"), title: "Журнал документов" }} />
       <div className="table-scroll">
-        {list.initial ? <SkelRows cols={6} /> : <table className="table virt"><thead><tr><th>Номер</th><th>Вид</th><th>Дата</th><th>Этап</th><th className="hide-sm">Стороны</th><th className="hide-sm">Единиц</th></tr></thead>
-          <tbody><VirtualRows list={list} colSpan={6} estimate={46} row={(d) => <tr>
-            <td><Link to={`/inventory/docs/${d.id}`} className="mono">{d.no}</Link></td><td>{d.kind_ru}</td><td className="nowrap">{fmtDate(d.date)}</td><td><span className={`badge ${TONE[d.status]}`}>{d.status_ru}</span></td>
-            <td className="hide-sm small">{[d.from_person || d.from_location, d.to_person || d.to_location].filter(Boolean).join(" → ") || "—"}</td><td className="hide-sm num">{d.items_n}</td></tr>} />
-            {!list.items.length && !list.loading && <tr><td colSpan={6}><Empty icon="file" title="Документов нет">Выдача, возврат и перемещение оформляются здесь или из карточки оборудования.</Empty></td></tr>}</tbody></table>}
+        {list.initial ? <SkelRows cols={7} /> : <table className="table virt"><thead><tr><th>Номер</th><th>Вид</th><th>Дата</th><th>Этап</th><th className="hide-sm">Стороны</th><th className="hide-sm">Единиц</th><th className="hide-sm">Файл</th></tr></thead>
+          <tbody><VirtualRows list={list} colSpan={7} estimate={46} row={(d) => <tr>
+            <td className="nowrap"><Link to={`/inventory/docs/${d.id}`} className="mono">{d.no}</Link></td><td>{d.kind_ru}</td><td className="nowrap">{fmtDate(d.date)}</td><td><span className={`badge ${TONE[d.status]}`}>{d.status_ru}</span></td>
+            <td className="hide-sm small" title={[d.from_person || d.from_location, d.to_person || d.to_location].filter(Boolean).join(" → ")}>{[d.from_person || tail(d.from_location), d.to_person || tail(d.to_location)].filter(Boolean).join(" → ") || "—"}</td><td className="hide-sm num">{d.items_n}</td><td className="hide-sm nowrap"><DocFiles id={d.id} compact /></td></tr>} />
+            {!list.items.length && !list.loading && <tr><td colSpan={7}><Empty icon="file" title="Документов нет">Выдача, возврат и перемещение оформляются здесь или из карточки оборудования.</Empty></td></tr>}</tbody></table>}
       </div>
       <ListFoot list={list} />
       {rep.node}
@@ -152,6 +152,23 @@ function DocEditor({ init, onSaved, onCancel, docId }: { init: Draft; onSaved: (
   );
 }
 
+/** последний уровень пути местоположения: полный путь — в подсказке */
+const tail = (path: string) => path.split(" / ").slice(-2).join(" / ");
+
+const DOC_NEW: Record<string, string> = { issue: "Акт выдачи", return: "Акт возврата", move: "Накладная на перемещение" };
+
+/** Сформировать файл документа: Word, Excel, PDF, HTML (тот же состав, что у печатной формы). compact — короткие ссылки для строки таблицы. */
+export function DocFiles({ id, compact, noPrint }: { id: number; compact?: boolean; noPrint?: boolean }) {
+  const f: ["docx" | "xlsx" | "pdf" | "html", string, string][] = [["docx", "Word", "DOCX"], ["xlsx", "Excel", "XLSX"], ["pdf", "PDF", "PDF"], ["html", "HTML", "HTML"]];
+  if (compact) return <span className="row tight">{f.slice(0, 3).map(([k, , short]) => <a key={k} className="btn ghost mini" href={inv.printUrl(id, k)} {...(k === "pdf" ? { target: "_blank", rel: "noopener" } : {})} title={`Сформировать ${short}`}>{short}</a>)}</span>;
+  return (
+    <div className="row wrap tight inv-gen-btns">
+      {f.map(([k, lb, short]) => <a key={k} className={`btn ${k === "docx" ? "primary" : ""}`} title={`Сформировать файл ${short}`} href={inv.printUrl(id, k)} {...(k === "pdf" ? { target: "_blank", rel: "noopener" } : {})}><Icon name="download" size={16} />{lb}</a>)}
+      {!noPrint && <Link className="btn ghost" to={`/inventory/docs/${id}/print`}><Icon name="file" size={16} />Открыть для печати</Link>}
+    </div>
+  );
+}
+
 export function DocNew() {
   const [sp] = useSearchParams(); const nav = useNavigate(); const { meta, can } = useInv();
   const kind = sp.get("kind") ?? "issue";
@@ -167,7 +184,7 @@ export function DocNew() {
     <div className="inv-page">
       <BackLink to="/inventory/docs" label="Документы" />
       <div className="inv-head"><h1>{meta.doc_kinds[kind]}</h1></div>
-      {!init ? <div className="card"><SkelRows rows={4} cols={3} /></div> : <DocEditor init={init} onCancel={() => nav(-1)} onSaved={(d) => nav(`/inventory/docs/${d.id}`, { replace: true })} />}
+      {!init ? <div className="card"><SkelRows rows={4} cols={3} /></div> : <DocEditor init={init} onCancel={() => nav(-1)} onSaved={(d) => nav(`/inventory/docs/${d.id}?new=1`, { replace: true })} />}
     </div>
   );
 }
@@ -178,6 +195,7 @@ export function DocPage() {
   const [d, setD] = useState<DocCard | null>(null); const [err, setErr] = useState(""); const [edit, setEdit] = useState(false);
   const [step, setStep] = useState<string | null>(null);
   const [toast, show] = useToast();
+  const [sp] = useSearchParams(); const fresh = sp.get("new") === "1";
   const load = useCallback(() => inv.doc(did).then((x) => { setD(x); setErr(""); }).catch((e) => setErr((e as ApiError).message)), [did]);
   useEffect(() => { void load(); }, [load]);
   if (err) return <div className="card"><Empty icon="file" title="Документ недоступен" action={<Link className="btn" to="/inventory/docs">К документам</Link>}>{err}</Empty></div>;
@@ -193,9 +211,6 @@ export function DocPage() {
         <div className="inv-card-title"><span className="inv-card-no mono">{d.no}</span><h1>{d.title}</h1>
           <div className="row tight wrap"><span className={`badge ${TONE[d.status]}`}>{d.status_ru}</span><span className="muted small">от {fmtDate(d.date)} · оформил {d.created_by}</span></div></div>
         <div className="row wrap inv-card-actions">
-          <Link className="btn" to={`/inventory/docs/${d.id}/print`}><Icon name="file" size={16} />Печатная форма</Link>
-          <a className="btn" href={inv.printUrl(d.id, "pdf")} target="_blank" rel="noopener">PDF</a>
-          <a className="btn" href={inv.printUrl(d.id, "docx")}>DOCX</a>
           {d.can.edit && !edit && <button className="btn" onClick={() => setEdit(true)}><Icon name="edit" size={16} />Изменить</button>}
         </div>
       </div>
@@ -203,6 +218,9 @@ export function DocPage() {
         const i = steps.indexOf(s), cur = steps.indexOf(d.status);
         return <li key={s} className={i < cur ? "done" : i === cur ? "cur" : ""}><span>{meta.doc_status[s]}</span></li>;
       })}</ol>}
+      {!edit && <div className={`card inv-gen ${fresh ? "fresh" : ""}`}><div><h2>Сформировать документ</h2>
+        <p className="muted small">{fresh ? "Черновик сохранён. Сформируйте документ для подписи — файл соберётся по текущим данным." : d.status === "draft" ? "Документ ещё черновик: на файле будет отметка «Черновик»." : "Файл собирается по текущим данным документа и шаблону печатной формы."}</p></div>
+        <DocFiles id={d.id} /></div>}
       {edit ? <DocEditor init={draft} docId={d.id} onCancel={() => setEdit(false)} onSaved={(x) => { setD(x); setEdit(false); show("Документ сохранён"); }} /> : <>
         {d.next.length > 0 && d.can.move && <div className="card inv-next">
           <div className="row wrap">{d.next.map((s) => <button key={s} className={`btn ${s === "cancelled" || s === "draft" ? "ghost" : "primary"}`} onClick={() => setStep(s)}>{NEXT_LABEL[s] ?? meta.doc_status[s]}</button>)}</div>
@@ -265,7 +283,7 @@ export function DocPrint() {
   return (
     <div className="inv-print-wrap">
       <div className="row wrap inv-print-bar no-print"><BackLink to={`/inventory/docs/${did}`} label="К документу" /><div className="spacer" />
-        <a className="btn" href={inv.printUrl(did, "pdf")} target="_blank" rel="noopener">PDF</a><a className="btn" href={inv.printUrl(did, "docx")}>DOCX</a><a className="btn" href={inv.printUrl(did, "html")}>HTML</a>
+        <DocFiles id={did} noPrint />
         <button className="btn primary" onClick={() => window.print()}><Icon name="file" size={16} />Печать</button></div>
       <article className="inv-sheet">
         {p.org && <div className="inv-sheet-org"><b>{p.org}</b>{p.org_full && p.org_full !== p.org && <span>{p.org_full}</span>}{p.unit && <span>{p.unit}</span>}</div>}

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ApiError } from "../../api";
 import type { Ctx } from "../../App";
-import { Modal } from "../../components/Dialogs";
+import { ConfirmDialog, Modal } from "../../components/Dialogs";
 import { FilterBar } from "../../components/FilterBar";
 import { Icon } from "../../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, type Chunk } from "../../components/Infinite";
@@ -13,7 +13,7 @@ import { Dock, Empty, Segmented, SkelRows, SortTh } from "../../components/ui";
 import { fmtDate, num, plural } from "../../util";
 import { KscBadge, LocCell, LocationPicker, PersonPicker, RefSelect, StBadge, refsOf, shortLabel, useInv } from "./InvBits";
 import { useInvReport } from "./InvReport";
-import { FILTER_KEYS, inv, type Asset, type Group, type View } from "./invApi";
+import { FILTER_KEYS, inv, type Asset, type Group, type KscHost, type View } from "./invApi";
 
 const GROUP_BY: [string, string][] = [["", "Без группировки"], ["type", "Тип"], ["cls", "Класс"], ["manufacturer", "Производитель"], ["model", "Модель"], ["status", "Статус"], ["location", "Местоположение"],
   ["dept", "Подразделение"], ["branch", "Филиал"], ["user", "Пользователь"], ["resp", "Ответственный"], ["mol", "МОЛ"], ["supplier", "Поставщик"]];
@@ -193,51 +193,68 @@ function BulkEdit({ ids, onClose, onDone }: { ids: number[]; onClose: () => void
 
 function KscImport({ ctx, onClose, onDone }: { ctx: Ctx; onClose: () => void; onDone: (n: number) => void }) {
   const { meta } = useInv();
-  const sources = ctx.sources; const [src, setSrc] = useState(ctx.current?.id ?? ctx.sources[0]?.id ?? "");
-  const [q, setQ] = useState(""); const [items, setItems] = useState<{ host_id: number; name: string; os: string; ip: string; group: string; active: boolean }[]>([]); const [total, setTotal] = useState(0);
-  const [pick, setPick] = useState<number[]>([]); const [loc, setLoc] = useState<number | null>(null); const [st, setSt] = useState<number | null>(null);
+  const sources = ctx.sources;
+  const [srcs, setSrcs] = useState<string[]>(ctx.all || !ctx.current ? sources.map((s) => s.id) : [ctx.current.id]);
+  const [days, setDays] = useState<number | "">(ctx.me.activity_days || 30);
+  const [q, setQ] = useState(""); const [items, setItems] = useState<KscHost[]>([]); const [total, setTotal] = useState(0); const [hidden, setHidden] = useState<number | null>(null);
+  const key = (h: { source_id: string; host_id: number }) => `${h.source_id}:${h.host_id}`;
+  const [pick, setPick] = useState<string[]>([]); const [loc, setLoc] = useState<number | null>(null); const [st, setSt] = useState<number | null>(null);
   const [busy, setBusy] = useState(""); const [err, setErr] = useState(""); const [note, setNote] = useState("");
-  const load = () => { if (!src) return; inv.kscHosts({ source: src, q, limit: 500 }).then((r) => { setItems(r.items); setTotal(r.total); setNote(r.note ?? ""); setErr(""); }).catch((e) => setErr((e as ApiError).message)); };
-  useEffect(() => { const t = window.setTimeout(load, 250); return () => window.clearTimeout(t); }, [src, q]); // eslint-disable-line react-hooks/exhaustive-deps
+  const params = (limit: number) => ({ source: srcs.join(","), q, days: days || undefined, limit });
+  const load = () => {
+    if (!srcs.length) { setItems([]); setTotal(0); setHidden(null); return; }
+    inv.kscHosts(params(500)).then((r) => { setItems(r.items); setTotal(r.total); setHidden(r.hidden_old ?? null); setNote(r.note ?? ""); setErr(""); }).catch((e) => setErr((e as ApiError).message));
+  };
+  useEffect(() => { const t = window.setTimeout(load, 250); return () => window.clearTimeout(t); }, [srcs, q, days]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggleSrc = (id: string) => { setSrcs(srcs.includes(id) ? srcs.filter((x) => x !== id) : [...srcs, id]); setPick([]); };
   const run = async (all: boolean) => {
     setErr(""); let created = 0;
     try {
       if (all) {
         for (let guard = 0; guard < 100; guard++) {
-          const r = await inv.kscHosts({ source: src, q, limit: 1000 });
+          const r = await inv.kscHosts(params(1000));
           if (!r.items.length) break;
           setBusy(`Создано ${created}, осталось ${r.total}…`);
-          const x = await inv.kscImport(src, r.items.map((h) => h.host_id), st, loc);
+          const x = await inv.kscImport(r.items.map((h) => ({ source_id: h.source_id, host_id: h.host_id })), st, loc);
           created += x.created;
           if (!x.created) break;
         }
       } else {
-        for (let i = 0; i < pick.length; i += 1000) { setBusy(`Создано ${created} из ${pick.length}…`); created += (await inv.kscImport(src, pick.slice(i, i + 1000), st, loc)).created; }
+        const refs = pick.map((k) => { const [source_id, h] = k.split(":"); return { source_id, host_id: Number(h) }; });
+        for (let i = 0; i < refs.length; i += 1000) { setBusy(`Создано ${created} из ${refs.length}…`); created += (await inv.kscImport(refs.slice(i, i + 1000), st, loc)).created; }
       }
       onDone(created); setPick([]); load();
     } catch (e) { setErr((e as ApiError).message); } finally { setBusy(""); }
   };
+  const many = srcs.length > 1;
+  const [ask, setAsk] = useState(false);
   return (
     <Modal side wide title="Создать карточки из KSC" lede="Компьютеры KSC без учётной карточки (подготовленные данные, KSC не опрашивается). Карточка сразу связывается с компьютером; повторный запуск дублей не создаёт." onClose={onClose}>
       <div className="form-stack">
+        <div className="field"><span>Источники KSC</span>
+          <div className="chips" role="group" aria-label="Источники KSC">{sources.map((x) => <button key={x.id} type="button" className={`chip toggle ${srcs.includes(x.id) ? "on" : ""}`} aria-pressed={srcs.includes(x.id)} onClick={() => toggleSrc(x.id)}>{x.name}</button>)}
+            {sources.length > 1 && <button type="button" className="link-btn small" onClick={() => { setSrcs(srcs.length === sources.length ? [] : sources.map((x) => x.id)); setPick([]); }}>{srcs.length === sources.length ? "Снять все" : "Выбрать все"}</button>}</div></div>
         <div className="row wrap">
-          <label className="field">Источник KSC<select value={src} onChange={(e) => { setSrc(e.target.value); setPick([]); }}>{sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+          <label className="field">Были на связи<select value={days} onChange={(e) => setDays(e.target.value ? Number(e.target.value) : "")}>
+            {[7, 14, 30, 60, 90, 180].map((d) => <option key={d} value={d}>за последние {d} дн.</option>)}<option value="">когда угодно (включая давно без связи)</option></select></label>
           <LocationPicker label="Местоположение для новых карточек" value={loc} onChange={setLoc} placeholder="не указывать" />
           <RefSelect kind="status" label="Статус" value={st} onChange={setSt} empty="«В эксплуатации»" />
         </div>
         <div className="input-icon"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя, адрес, группа KSC" aria-label="Поиск компьютеров KSC" /></div>
         {note && <div className="alert flat warn"><Icon name="info" /><div className="alert-body">{note}</div></div>}
-        <div className="row"><span className="muted small">Без карточки: <b>{num(total)}</b>{pick.length ? ` · выбрано ${pick.length}` : ""}</span><div className="spacer" />
+        <div className="row wrap"><span className="muted small">Без карточки: <b>{num(total)}</b>{pick.length ? `, выбрано ${pick.length}` : ""}{hidden ? `. Не показаны давно не выходившие на связь: ${num(hidden)}` : ""}</span><div className="spacer" />
           <button className="btn" disabled={!!busy || !pick.length} onClick={() => void run(false)}>Создать для выбранных</button>
-          <button className="btn primary" disabled={!!busy || !total} onClick={() => void run(true)}>Создать для всех ({num(total)})</button></div>
+          <button className="btn primary" disabled={!!busy || !total || !srcs.length} onClick={() => (total > 200 ? setAsk(true) : void run(true))}>Создать для всех ({num(total)})</button></div>
         {busy && <p className="muted small"><span className="spin sm" /> {busy}</p>}
         {err && <p className="field-err">{err}</p>}
-        <div className="table-scroll inv-ksc-list"><table className="table compact"><thead><tr><th className="check"><input type="checkbox" aria-label="Выбрать все" checked={items.length > 0 && items.every((h) => pick.includes(h.host_id))} onChange={(e) => setPick(e.target.checked ? items.map((h) => h.host_id) : [])} /></th><th>Компьютер</th><th className="hide-sm">ОС</th><th className="hide-sm">Группа KSC</th></tr></thead>
-          <tbody>{items.map((h) => <tr key={h.host_id}><td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={pick.includes(h.host_id)} onChange={() => setPick(pick.includes(h.host_id) ? pick.filter((x) => x !== h.host_id) : [...pick, h.host_id])} /></td>
-            <td>{h.name}<span className="sub mono">{h.ip}</span>{!h.active && <span className="badge">давно без связи</span>}</td><td className="hide-sm small">{h.os}</td><td className="hide-sm small">{h.group}</td></tr>)}
-            {!items.length && <tr><td colSpan={4}><Empty icon="check" title="Все компьютеры источника уже учтены">Карточки без пары можно связать вручную в карточке оборудования.</Empty></td></tr>}</tbody></table></div>
+        <div className="table-scroll inv-ksc-list"><table className="table compact"><thead><tr><th className="check"><input type="checkbox" aria-label="Выбрать все" checked={items.length > 0 && items.every((h) => pick.includes(key(h)))} onChange={(e) => setPick(e.target.checked ? items.map(key) : [])} /></th><th>Компьютер</th>{many && <th className="hide-sm">Источник</th>}<th className="hide-sm">ОС</th><th className="hide-sm">Группа KSC</th></tr></thead>
+          <tbody>{items.map((h) => <tr key={key(h)}><td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={pick.includes(key(h))} onChange={() => setPick(pick.includes(key(h)) ? pick.filter((x) => x !== key(h)) : [...pick, key(h)])} /></td>
+            <td>{h.name}<span className="sub mono">{h.ip}</span>{!h.active && <span className="badge">давно без связи</span>}</td>{many && <td className="hide-sm small">{h.source}</td>}<td className="hide-sm small">{h.os}</td><td className="hide-sm small">{h.group}</td></tr>)}
+            {!items.length && <tr><td colSpan={many ? 5 : 4}>{srcs.length ? <Empty icon="check" title="Компьютеров без карточки нет">{hidden ? "С учётом фильтра «Были на связи». " : ""}Карточки без пары можно связать вручную в карточке оборудования.</Empty> : <Empty icon="info" title="Выберите хотя бы один источник" />}</td></tr>}</tbody></table></div>
         <p className="muted small">Тип определяется по операционной системе: серверная ОС — «{refsOf(meta, "type").find((r) => r.data.cls === "server")?.name ?? "сервер"}», иначе — «{refsOf(meta, "type").find((r) => r.data.cls === "workstation")?.name ?? "рабочая станция"}». Тип можно поменять массово.</p>
       </div>
+      {ask && <ConfirmDialog danger={false} title={`Создать ${num(total)} карточек?`} confirmLabel="Создать" onClose={() => setAsk(false)} onConfirm={() => { setAsk(false); void run(true); }}
+        body={<p>Будут созданы карточки для всех {num(total)} компьютеров по текущему отбору{many ? ` из ${srcs.length} источников` : ""}{days ? `, выходивших на связь за ${days} дн.` : ", включая давно не выходившие на связь"}. Проверьте отбор: удалять лишние карточки придётся вручную.</p>} />}
     </Modal>
   );
 }

@@ -1,5 +1,5 @@
 """Лицензии ПО в разделе «Инвентаризация»: приобретённые лицензии (количество, срок, поставщик, ответственный), назначения карточкам и сотрудникам, фактические установки по KSC
-(подсчёт — worker, список компьютеров — по запросу), расхождения «установлено больше, чем куплено» и «установлено без назначения». Ключ активации хранится зашифрованным,
+(подсчёт — worker, список компьютеров — по запросу), расхождения «установлено больше, чем куплено» и «установлено без назначения». Ключ активации здесь не хранится — только ссылка на запись в парольном менеджере (ключи прежних версий — зашифрованы до удаления),
 выдаётся отдельным запросом с правом «просмотр ключей» и записью в журнал действий."""
 from __future__ import annotations
 
@@ -21,6 +21,10 @@ from .inv import Ix, audit, inv_ctx
 router = APIRouter(prefix="/inv", tags=["inventory"])
 
 
+
+def _n(v: int) -> str:
+    return f"{v:,}".replace(",", "\u00a0")
+
 def lic_state(lc: InvLicense, assigned: int, today: date, soon_days: int) -> dict:
     u = lc.usage or {}
     inst = u.get("installs")
@@ -30,9 +34,9 @@ def lic_state(lc: InvLicense, assigned: int, today: date, soon_days: int) -> dic
     elif lc.valid_until and lc.valid_until <= today + timedelta(days=soon_days):
         issues.append(f"срок истекает {lc.valid_until:%d.%m.%Y}")
     if lc.qty is not None and assigned > lc.qty:
-        issues.append(f"назначено больше, чем куплено ({assigned} из {lc.qty})")
+        issues.append(f"назначено больше, чем куплено ({_n(assigned)} из {_n(lc.qty)})")
     if lc.qty is not None and inst is not None and inst > lc.qty and lc.metric == "device":
-        issues.append(f"установлено больше, чем куплено ({inst} из {lc.qty})")
+        issues.append(f"установлено больше, чем куплено ({_n(inst)} из {_n(lc.qty)})")
     if inst is not None and lc.metric == "device" and inst > assigned and assigned:
         issues.append(f"установлено без назначения: {inst - assigned}")
     return {"installs": inst, "assigned": assigned, "free": (lc.qty - assigned) if lc.qty is not None else None, "issues": issues, "usage_at": u.get("at"), "usage_errors": u.get("errors") or []}
@@ -42,7 +46,7 @@ def lic_out(lc: InvLicense, refs: dict, people: dict, assigned: int, cfg) -> dic
     return {"id": lc.id, "name": lc.name, "vendor": lc.vendor, "version": lc.version, "edition": lc.edition, "type_id": lc.type_id, "type": refs.get(lc.type_id, ""), "category_id": lc.category_id,
             "category": refs.get(lc.category_id, ""), "metric": lc.metric, "metric_ru": M.METRIC_RU.get(lc.metric, lc.metric), "qty": lc.qty, "match": lc.match or [],
             "purchase_date": C._d(lc.purchase_date), "valid_until": C._d(lc.valid_until), "supplier_id": lc.supplier_id, "supplier": refs.get(lc.supplier_id, ""), "cost": lc.cost,
-            "cost_text": C.money_str(lc.cost), "purchase_doc": lc.purchase_doc, "resp_id": lc.resp_id, "resp": people.get(lc.resp_id, ""), "note": lc.note, "key_set": bool(lc.key_enc),
+            "cost_text": C.money_str(lc.cost), "purchase_doc": lc.purchase_doc, "resp_id": lc.resp_id, "resp": people.get(lc.resp_id, ""), "note": lc.note, "key_set": bool(lc.key_enc), "key_ref": lc.key_ref,
             "active": lc.active, "updated_at": C._iso(lc.updated_at), "updated_by": lc.updated_by, **lic_state(lc, assigned, date.today(), cfg.license_days)}
 
 
@@ -95,7 +99,8 @@ class LicBody(BaseModel):
     purchase_doc: str = Field(default="", max_length=300)
     resp_id: int | None = None
     note: str = Field(default="", max_length=8000)
-    key: str | None = Field(default=None, max_length=4000)                # None — не менять; "" — удалить
+    key_ref: str = Field(default="", max_length=500)                      # где хранится ключ: ссылка на запись в парольном менеджере
+    key: str | None = Field(default=None, max_length=0)                    # только "" — удалить ключ, сохранённый прежней версией; новые ключи не принимаются
     active: bool = True
 
 
@@ -121,11 +126,9 @@ async def _apply(db: AsyncSession, request: Request, lc: InvLicense, body: LicBo
     lc.type_id, lc.category_id, lc.metric, lc.qty, lc.match = body.type_id, body.category_id, body.metric, body.qty, [m.strip() for m in body.match if m.strip()]
     lc.purchase_date, lc.valid_until, lc.supplier_id, lc.cost, lc.purchase_doc, lc.resp_id, lc.note, lc.active = (body.purchase_date, body.valid_until, body.supplier_id, cost, body.purchase_doc,
                                                                                                                    body.resp_id, body.note, body.active)
+    lc.key_ref = body.key_ref.strip()
     if body.key is not None:
-        svc = request.app.state.settings_svc
-        if body.key and svc.box is None:
-            raise HTTPException(status_code=409, detail="Ключи не сохраняются: не задан APP_MASTER_KEY")
-        lc.key_enc = svc.encrypt(body.key, f"inv.lic.{lc.id}") if body.key else ""
+        lc.key_enc = ""
     lc.updated_at, lc.updated_by = C.utcnow(), by
 
 
@@ -136,7 +139,7 @@ async def add_license(body: LicBody, request: Request, ix: Ix = Depends(inv_ctx)
     db.add(lc)
     await db.flush()
     await _apply(db, request, lc, body, ix.su.display_name)
-    audit(db, ix, "license.add", lc.name[:120], {"id": lc.id, "qty": lc.qty, "key": bool(body.key)})
+    audit(db, ix, "license.add", lc.name[:120], {"id": lc.id, "qty": lc.qty, "key_ref": bool(lc.key_ref)})
     await db.commit()
     if lc.match:
         await S.set_state(request.app.state.session_maker, lic_requested=True)
@@ -151,7 +154,7 @@ async def edit_license(lid: int, body: LicBody, request: Request, ix: Ix = Depen
         raise HTTPException(status_code=404, detail="Лицензия не найдена")
     old_match = list(lc.match or [])
     await _apply(db, request, lc, body, ix.su.display_name)
-    audit(db, ix, "license.edit", lc.name[:120], {"id": lid, "key_changed": body.key is not None})
+    audit(db, ix, "license.edit", lc.name[:120], {"id": lid, "key_ref": lc.key_ref[:200], "old_key_removed": body.key is not None})
     await db.commit()
     if lc.match != old_match:
         await S.set_state(request.app.state.session_maker, lic_requested=True)

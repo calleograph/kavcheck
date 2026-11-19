@@ -231,6 +231,13 @@ class InvService:
                 await db.commit()
             if err and self.journal is not None:
                 await self.journal.emit("inventory", "infra_source_failed", level="warn", message=f"Источник «{s.name}»: {err}"[:500])
+        from ..infra import netscan as NS  # noqa: PLC0415
+
+        async with self.sm() as db:                                        # готовые задания сетевого обнаружения → источник «Сетевое обнаружение»
+            for job in await NS.pending(db):
+                await NS.ingest(db, job)
+                ran += 1
+            await db.commit()
         if ran or force:
             async with self.sm() as db:
                 st = await IS.reconcile(db, cfg.infra_stale_days)

@@ -54,13 +54,13 @@ export default function InvLicenses({ ctx }: { ctx: Ctx }) {
 
 function LicForm({ init, onClose, onSaved }: { init?: LicenseCard; onClose: () => void; onSaved: (id: number) => void }) {
   const { meta } = useInv();
-  const [f, setF] = useState<Record<string, unknown>>(() => init ? { ...init, cost: init.cost !== null ? (init.cost / 100).toFixed(2).replace(".", ",") : "", key: undefined } : { name: "", metric: "device", match: [], active: true });
+  const [f, setF] = useState<Record<string, unknown>>(() => init ? { ...init, cost: init.cost !== null ? (init.cost / 100).toFixed(2).replace(".", ",") : "", drop_key: false } : { name: "", metric: "device", match: [], active: true });
   const [names, setNames] = useState({ resp: init?.resp ?? "" }); const [err, setErr] = useState("");
   const set = (k: string, v: unknown) => setF((x) => ({ ...x, [k]: v }));
   const save = async () => {
     const body = { name: f.name, vendor: f.vendor ?? "", version: f.version ?? "", edition: f.edition ?? "", type_id: f.type_id ?? null, category_id: f.category_id ?? null, metric: f.metric, qty: f.qty === "" || f.qty === undefined || f.qty === null ? null : Number(f.qty),
       match: f.match, purchase_date: f.purchase_date || null, valid_until: f.valid_until || null, supplier_id: f.supplier_id ?? null, cost: f.cost || null, purchase_doc: f.purchase_doc ?? "", resp_id: f.resp_id ?? null, note: f.note ?? "",
-      active: f.active ?? true, ...(typeof f.key === "string" ? { key: f.key } : {}) };
+      active: f.active ?? true, key_ref: f.key_ref ?? "", ...(f.drop_key ? { key: "" } : {}) };
     try { if (init) { await inv.editLicense(init.id, body); onSaved(init.id); } else onSaved((await inv.addLicense(body)).id); } catch (e) { setErr((e as ApiError).message); }
   };
   const t = (k: string, lb: string, ph = "") => <label className="field">{lb}<input value={String(f[k] ?? "")} onChange={(e) => set(k, e.target.value)} placeholder={ph} /></label>;
@@ -80,7 +80,9 @@ function LicForm({ init, onClose, onSaved }: { init?: LicenseCard; onClose: () =
           <PersonPicker label="Ответственный" value={f.resp_id as number | null} name={names.resp} onChange={(id, nm) => { set("resp_id", id); setNames({ resp: nm }); }} /></div>
         <TagInput label="Маски названия программы (KSC)" value={f.match as string[]} onChange={(v) => set("match", v)} placeholder="Офисный пакет* — Enter" mono={false} />
         <p className="muted small">По маскам считаются компьютеры, где программа установлена (по данным KSC, активные за период из общих настроек). «*» — любое число символов.</p>
-        <label className="field">Ключ активации{init?.key_set && <span className="muted small"> (сохранён; поле пустое — без изменений)</span>}<input type="password" autoComplete="off" value={String(f.key ?? "")} onChange={(e) => set("key", e.target.value)} placeholder={init?.key_set ? "••••••" : "хранится в зашифрованном виде"} /></label>
+        <label className="field">Где хранится ключ активации<input value={String(f.key_ref ?? "")} onChange={(e) => set("key_ref", e.target.value)} maxLength={500} placeholder="ссылка на запись в парольном менеджере или путь к ней" />
+          <span className="muted small">Сам ключ здесь не хранится — только ссылка на запись, где он лежит.</span></label>
+        {init?.key_set && <label className="check-row"><input type="checkbox" checked={!!f.drop_key} onChange={(e) => set("drop_key", e.target.checked)} />Удалить ключ, сохранённый прежней версией (сначала перенесите его в парольный менеджер)</label>}
         <label className="field">Примечание<textarea rows={2} value={String(f.note ?? "")} onChange={(e) => set("note", e.target.value)} /></label>
         {init && <label className="check-row"><input type="checkbox" checked={!!f.active} onChange={(e) => set("active", e.target.checked)} />Действующая (снятые — в архиве)</label>}
         {err && <p className="field-err">{err}</p>}
@@ -115,13 +117,16 @@ export function LicensePage() {
         <div className="meter"><span className="l">Установлено (KSC)</span><span className={`v ${l.qty !== null && (l.installs ?? 0) > l.qty ? "bad-text" : ""}`}>{num(l.installs)}</span><span className="t">{l.usage_at ? `подсчёт ${fmt(l.usage_at)}` : "ещё не подсчитано"}</span></div>
       </div>
       {l.issues.length > 0 && <div className="alert flat warn"><Icon name="alert" /><div className="alert-body"><b>Расхождения</b><ul className="reasons">{l.issues.map((i) => <li key={i}>{i}</li>)}</ul></div></div>}
-      {l.usage_errors.length > 0 && <p className="muted small">Подсчёт не по всем источникам: {l.usage_errors.join("; ")}</p>}
+      {l.usage_errors.length > 0 && <details className="disclosure small"><summary>Подсчёт не по всем источникам: {l.usage_errors.map((e) => e.split(":")[0]).join(", ")}</summary><ul className="reasons muted">{l.usage_errors.map((e) => <li key={e}>{e}</li>)}</ul></details>}
       <div className="split even">
         <div className="card"><h2>Сведения</h2>
           <Kv rows={[["Поставщик", l.supplier], ["Дата приобретения", l.purchase_date && fmtDate(l.purchase_date)], ["Стоимость", l.cost_text && `${l.cost_text} ₽`], ["Документ", l.purchase_doc], ["Ответственный", l.resp],
-            ["Маски программ", l.match.length ? <span className="mono small">{l.match.join("; ")}</span> : <span className="muted">не заданы — установки не считаются</span>], ["Примечание", l.note]]} />
-          {l.key_set && <div className="row">{key ? <code className="inv-key">{key}</code> : l.can_key ? <button className="btn mini" onClick={() => inv.licKey(l.id).then((r) => setKey(r.key)).catch((e) => show((e as ApiError).message, "error"))}><Icon name="eye" size={14} />Показать ключ</button>
-            : <span className="muted small">Ключ сохранён; просмотр — по праву «просмотр ключей лицензий».</span>}{key && <span className="muted small">открытие ключа записано в журнал действий</span>}</div>}
+            ["Маски программ", l.match.length ? <span className="mono small">{l.match.join("; ")}</span> : <span className="muted">не заданы — установки не считаются</span>],
+            ["Ключ активации", l.key_ref ? (/^https?:\/\//i.test(l.key_ref) ? <a href={l.key_ref} target="_blank" rel="noopener noreferrer" className="inv-keyref"><Icon name="vault" size={14} />{l.key_ref}</a> : <span className="inv-keyref"><Icon name="vault" size={14} />{l.key_ref}</span>) : <span className="muted">не указано, где хранится</span>],
+            ["Примечание", l.note]]} />
+          {l.key_set && <div className="alert flat warn"><Icon name="alert" /><div className="alert-body">Сохранён ключ прежней версии. Перенесите его в парольный менеджер, укажите ссылку на запись и удалите ключ отсюда (Изменить → «Удалить ключ»).
+            <div className="row mt-sm">{key ? <code className="inv-key">{key}</code> : l.can_key ? <button className="btn mini" onClick={() => inv.licKey(l.id).then((r) => setKey(r.key)).catch((e) => show((e as ApiError).message, "error"))}><Icon name="eye" size={14} />Показать ключ</button>
+            : <span className="muted small">Ключ сохранён; просмотр — по праву «просмотр ключей лицензий».</span>}{key && <span className="muted small">открытие ключа записано в журнал действий</span>}</div></div></div>}
         </div>
         <div className="card"><h2>Назначения ({l.assignments.length})</h2>
           {l.assignments.length ? <ul className="inv-list">{l.assignments.map((a) => <li key={a.id}>{a.asset_id ? <Link to={`/inventory/assets/${a.asset_id}`}>{a.asset}</Link> : <Link to={`/inventory/people/${a.person_id}`}>{a.person}</Link>}
