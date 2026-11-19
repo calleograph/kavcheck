@@ -203,7 +203,7 @@ class Runner:
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
         if src is None:
-            src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_hier": "Иерархия", "quick_ad": "Active Directory", "quick_admin": "KAV Checker"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
+            src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_hier": "Иерархия", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "KAV Checker"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
             client = None
         else:
             client = SourceClient(conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), concurrency=self._cfg.ksc_concurrency, name=src.name)

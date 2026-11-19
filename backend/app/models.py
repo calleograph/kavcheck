@@ -1662,3 +1662,146 @@ class HierSnapshot(Base):
     records: Mapped[list | None] = mapped_column(JSONType)
     same_as_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     __table_args__ = (Index("ix_hier_snapshots_status", "status", "finished_at"),)
+
+
+# ------------------------------------------------------------------------------------------------ аудит домена Active Directory
+class AdAuditRun(Base):
+    """Проверка домена (снимок): когда, кем или по расписанию, вид (ежемесячная / квартальная / внеплановая), итоги и охват данных. Строки учётных записей и замечаний — в своих таблицах."""
+    __tablename__ = "ad_audit_runs"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="running")      # running | ok | failed
+    kind: Mapped[str] = mapped_column(String(10), nullable=False, default="manual")          # monthly | quarterly | manual
+    by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    period: Mapped[str] = mapped_column(String(7), nullable=False, default="")               # ГГГГ-ММ
+    domain: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    message: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    stats: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    notes: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    policy: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    __table_args__ = (Index("ix_ad_audit_runs_status", "status", "started_at"),)
+
+
+class AdAuditAccount(Base):
+    """Учётная запись в проверке: состояние на момент проверки, категория с основаниями, способ последней операции с паролем. Секреты не хранятся."""
+    __tablename__ = "ad_audit_accounts"
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ad_audit_runs.id", ondelete="CASCADE"), nullable=False)
+    guid: Mapped[str] = mapped_column(String(40), nullable=False)
+    sid: Mapped[str] = mapped_column(String(190), nullable=False, default="")
+    login: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    upn: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    mail: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    dn: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    department: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    manager: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(12), nullable=False, default="user")
+    category_basis: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pne: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    must_change: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pwd_expired: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pwd_last_set: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    pwd_age: Mapped[int | None] = mapped_column(Integer)
+    pwd_bucket: Mapped[str] = mapped_column(String(8), nullable=False, default="unknown")
+    expires: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_logon: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_logon_src: Mapped[str] = mapped_column(String(6), nullable=False, default="none")      # dc | llt | none
+    idle_days: Mapped[int | None] = mapped_column(Integer)
+    created: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    privileged: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    protected: Mapped[bool | None] = mapped_column(Boolean)
+    spn: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    workstations: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    groups: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    pwd_op: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    uac: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    findings_n: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_sev: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    __table_args__ = (Index("ix_ad_audit_accounts_run", "run_id", "guid"), Index("ix_ad_audit_accounts_login", "run_id", "login"))
+
+
+class AdAuditFinding(Base):
+    """Замечание проверки: учётная запись × проверка. key = guid:code — по нему замечание прослеживается между проверками и связывается с решением."""
+    __tablename__ = "ad_audit_findings"
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("ad_audit_runs.id", ondelete="CASCADE"), nullable=False)
+    key: Mapped[str] = mapped_column(String(80), nullable=False)
+    guid: Mapped[str] = mapped_column(String(40), nullable=False)
+    login: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(12), nullable=False, default="user")
+    code: Mapped[str] = mapped_column(String(24), nullable=False)
+    severity: Mapped[str] = mapped_column(String(10), nullable=False)
+    sev_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="violation")       # violation | review
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    basis: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    first_seen: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)    # впервые обнаружено (по цепочке проверок)
+    runs_n: Mapped[int] = mapped_column(Integer, nullable=False, default=1)                       # проверок подряд, в которых замечание есть
+    __table_args__ = (Index("ix_ad_audit_findings_run", "run_id", "code"), Index("ix_ad_audit_findings_key", "run_id", "key"))
+
+
+class AdAuditDecision(Base):
+    """Решение по замечанию (живёт между проверками): в работе / устранено / согласованное исключение, ответственный, срок, комментарий, история изменений."""
+    __tablename__ = "ad_audit_decisions"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    guid: Mapped[str] = mapped_column(String(40), nullable=False)
+    code: Mapped[str] = mapped_column(String(24), nullable=False)
+    login: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    state: Mapped[str] = mapped_column(String(12), nullable=False, default="open")              # open | in_progress | fixed | exception
+    comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    owner: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    due: Mapped[date | None] = mapped_column(Date)
+    by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    history: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+
+
+class AdClassOverride(Base):
+    """Категория учётной записи, назначенная администратором вручную (важнее правил)."""
+    __tablename__ = "ad_class_overrides"
+    guid: Mapped[str] = mapped_column(String(40), primary_key=True)
+    login: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(12), nullable=False)
+    note: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+
+
+class AdEventImport(Base):
+    """Загрузка выгрузки событий 4723/4724: файл, кто загрузил, сколько событий и охват журналов по контроллерам."""
+    __tablename__ = "ad_event_imports"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    file_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    added: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dcs: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+
+
+class AdPwdEvent(Base):
+    """Событие журнала Security контроллера: 4723 — смена пароля пользователем (change), 4724 — сброс пароля другой учётной записью (reset)."""
+    __tablename__ = "ad_pwd_events"
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    dc: Mapped[str] = mapped_column(String(255), nullable=False)
+    record_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    target_sid: Mapped[str] = mapped_column(String(190), nullable=False, default="")
+    target: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    target_domain: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    by: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    by_domain: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    by_sid: Mapped[str] = mapped_column(String(190), nullable=False, default="")
+    import_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    __table_args__ = (Index("ux_ad_pwd_events_rec", "dc", "record_id", unique=True), Index("ix_ad_pwd_events_target", "target_sid", "at"), Index("ix_ad_pwd_events_at", "kind", "at"))

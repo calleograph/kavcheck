@@ -28,7 +28,7 @@ def test_every_route_is_in_the_menu_or_explained():
 def test_every_admin_tab_is_grouped_once_and_rendered():
     tabs = re.findall(r'\{ id: "([a-z]+)", label: "', block("export const ADMIN_TABS"))
     grouped = [t for g in re.findall(r'tabs: \[([^\]]*)\]', block("export const ADMIN_GROUPS")) for t in re.findall(r'"([a-z]+)"', g)]
-    assert sorted(tabs) == sorted(grouped) and len(tabs) == 21, "каждая вкладка администрирования — ровно в одной группе"
+    assert sorted(tabs) == sorted(grouped) and len(tabs) == 22, "каждая вкладка администрирования — ровно в одной группе"
     for t in tabs:
         assert f'tab === "{t}"' in ADMIN, f"вкладка {t} не отображается на странице администрирования"
     for t in tabs:

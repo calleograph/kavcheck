@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, setAllSources, setCsrf, setSourceId, setUnauthorizedHandler, type Me, type QuickPrefs, type SourceRef } from "./api";
+import { api, isSecurity, setAllSources, setCsrf, setSourceId, setUnauthorizedHandler, type Me, type QuickPrefs, type SourceRef } from "./api";
 import { Icon, Mark } from "./components/Icons";
 import { Empty, ToTop } from "./components/ui";
 import { GlobalSearch } from "./components/GlobalSearch";
@@ -12,6 +12,7 @@ import HierarchyPage from "./pages/HierarchyPage";
 import QuickPage from "./pages/QuickPage";
 // разделы загружаются по первому обращению: стартовая загрузка — оболочка, вход и главная
 const PentestPage = lazy(() => import("./pages/PentestPage"));
+const AdAuditPage = lazy(() => import("./pages/AdAuditPage"));
 const HuntPage = lazy(() => import("./pages/HuntPage"));
 const SoftwarePage = lazy(() => import("./pages/SoftwarePage"));
 const HostsPage = lazy(() => import("./pages/HostsPage"));
@@ -299,6 +300,7 @@ export default function App() {
           <Route path="/protection" element={<ProtectionPage key={currentId} ctx={ctx} />} />
           <Route path="/events" element={<EventsPage key={currentId} ctx={ctx} />} />
           <Route path="/hunt" element={me.user.role === "viewer" ? <Navigate to="/" replace /> : <HuntPage ctx={ctx} />} />
+          <Route path="/adaudit" element={isSecurity(me.user.role) ? <AdAuditPage ctx={ctx} /> : <Navigate to="/" replace />} />
           <Route path="/pentest" element={me.user.role === "viewer" ? <Navigate to="/" replace /> : <PentestPage ctx={ctx} />} />
           <Route path="/zones" element={<ZonesPage key={currentId} ctx={ctx} />} />
           <Route path="/zones/:zid" element={<ZonesPage key={currentId} ctx={ctx} />} />

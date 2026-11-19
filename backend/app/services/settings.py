@@ -412,8 +412,87 @@ class HierSettings(_Group):
         return out
 
 
+AD_CATEGORIES = ("user", "admin", "service", "temp", "contractor")
+
+
+class AdClassRule(BaseModel):
+    """Правило классификации учётных записей домена. group/ou/attribute — сильный признак (категория назначается по одному), name/description — слабый
+    (нужны два согласных слабых признака, иначе «Не определено»): тип учётной записи не определяется только по имени."""
+    model_config = {"extra": "forbid"}
+    category: Literal["user", "admin", "service", "temp", "contractor"]
+    kind: Literal["group", "ou", "name", "description", "attribute"]
+    value: str = Field(min_length=1, max_length=300)                # группа — CN или DN (с учётом вложенности); OU — DN ветки; name/description — маска со «*»; attribute — «имя=маска»
+    note: str = Field(default="", max_length=200)
+
+    @field_validator("value")
+    @classmethod
+    def _v(cls, v: str, info) -> str:
+        v = v.strip()
+        if info.data.get("kind") == "attribute" and not re.fullmatch(r"[A-Za-z][\w-]{0,63}=.+", v):
+            raise ValueError("правило по атрибуту записывается как «атрибут=значение», например employeeType=contractor")
+        return v
+
+
+def _default_ad_rules() -> list[AdClassRule]:
+    return [AdClassRule(category="service", kind="name", value="svc*", note="префикс сервисных учётных записей"), AdClassRule(category="service", kind="description", value="*сервисн*"),
+            AdClassRule(category="service", kind="description", value="*служебн*"), AdClassRule(category="admin", kind="name", value="adm*"), AdClassRule(category="admin", kind="name", value="*-adm"),
+            AdClassRule(category="temp", kind="description", value="*временн*"), AdClassRule(category="contractor", kind="description", value="*подряд*"),
+            AdClassRule(category="contractor", kind="attribute", value="employeeType=contractor")]
+
+
+class AdAuditSettings(_Group):
+    """Раздел «Аудит домена»: расписание ежемесячной проверки, подключение (существующее LDAPS), пороги по категориям учётных записей и правила классификации."""
+    enabled: bool = False                                                       # проверка по расписанию (раз в месяц в выбранный день)
+    connection: str = Field(default="", max_length=64)                          # id подключения LDAPS; пусто — первое включённое
+    ldap_filter: str = Field(default="", max_length=500)                        # дополнительный фильтр пользователей, например исключить ветку
+    day_of_month: int = Field(default=1, ge=1, le=28)
+    schedule_time: str = Field(default="03:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    timezone: str = Field(default="UTC", max_length=64)
+    quarter_months: list[int] = Field(default_factory=lambda: [1, 4, 7, 10], max_length=12)    # в эти месяцы плановая проверка — квартальная (в отчёте — раздел неиспользуемых и давних паролей)
+    per_dc_logon: bool = True                                                   # точная дата последнего входа: lastLogon с каждого контроллера домена (иначе только lastLogonTimestamp)
+    pwd_days: dict[str, int] = Field(default_factory=lambda: {"user": 90, "admin": 30, "service": 180, "temp": 90, "contractor": 90})
+    inactive_days: int = Field(default=90, ge=14, le=3650)                      # не входила дольше — неиспользуемая
+    new_days: int = Field(default=30, ge=1, le=365)                             # создана не раньше — «недавно созданная»
+    grace_days: int = Field(default=14, ge=1, le=365)                           # новой учётной записи даётся столько суток на первый вход и смену пароля
+    protected_users: bool = True                                                # административная учётная запись вне группы Protected Users — замечание
+    admin_groups: list[str] = Field(default_factory=list, max_length=50)        # дополнительные привилегированные группы (CN или DN) к встроенным (Domain Admins, Enterprise Admins, Administrators…)
+    rules: list[AdClassRule] = Field(default_factory=_default_ad_rules, max_length=300)
+    keep_runs: int = Field(default=36, ge=3, le=240)                            # сколько проверок хранить
+    events_keep_days: int = Field(default=1095, ge=30, le=3650)                 # срок хранения загруженных событий смены и сброса пароля
+
+    @field_validator("timezone")
+    @classmethod
+    def _tz(cls, v: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # noqa: PLC0415
+
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            raise ValueError(f"неизвестный часовой пояс «{v}» (пример: Europe/Moscow)") from None
+        return v
+
+    @field_validator("pwd_days")
+    @classmethod
+    def _pwd(cls, v: dict[str, int]) -> dict[str, int]:
+        out = {"user": 90, "admin": 30, "service": 180, "temp": 90, "contractor": 90}
+        for k, n in v.items():
+            if k not in out:
+                raise ValueError(f"неизвестная категория «{k}»")
+            if not 1 <= int(n) <= 3650:
+                raise ValueError("срок смены пароля — от 1 до 3650 суток")
+            out[k] = int(n)
+        return out
+
+    @field_validator("quarter_months")
+    @classmethod
+    def _qm(cls, v: list[int]) -> list[int]:
+        if any(not 1 <= m <= 12 for m in v):
+            raise ValueError("месяц — от 1 до 12")
+        return sorted(set(v))
+
+
 GROUPS: dict[str, type[_Group]] = {"hier": HierSettings, "tech": TechSettings, "appearance": AppearanceSettings, "bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
-                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings}
+                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings, "adaudit": AdAuditSettings}
 
 
 class SettingsService:

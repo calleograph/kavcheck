@@ -18,7 +18,7 @@ export const NAV_GROUPS: NavGroup[] = [
   { id: "sec", label: "Защита и уязвимости", icon: "shieldPulse", items: [
     { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" }, { to: "/vulnerabilities", label: "Уязвимости", icon: "bug" }, { to: "/vdb", label: "База уязвимостей", icon: "vault" },
     { to: "/eol", label: "EOL", icon: "clock" }, { to: "/events", label: "События безопасности", icon: "bell" },
-    { to: "/hunt", label: "CVE Hunt", icon: "search", roles: ["analyst", "security", "admin"] }, { to: "/pentest", label: "Pentest", icon: "target", roles: ["analyst", "security", "admin"] }] },
+    { to: "/hunt", label: "CVE Hunt", icon: "search", roles: ["analyst", "security", "admin"] }, { to: "/pentest", label: "Pentest", icon: "target", roles: ["analyst", "security", "admin"] }, { to: "/adaudit", label: "Аудит домена", icon: "key", roles: ["security", "admin"] }] },
   { id: "org", label: "Организация", icon: "sitemap", items: [
     { to: "/zones", label: "Зоны ответственности", icon: "grid" }, { to: "/hierarchy", label: "Иерархия предприятия", icon: "sitemap", hier: true }] },
 ];
@@ -34,18 +34,18 @@ export const ADMIN_TABS: { id: string; label: string }[] = [
   { id: "system", label: "Техническое состояние" }, { id: "sources", label: "Источники данных" }, { id: "licenses", label: "Лицензии" }, { id: "users", label: "Пользователи" }, { id: "ldap", label: "LDAPS" }, { id: "hier", label: "Иерархия предприятия" },
   { id: "general", label: "Общие настройки" }, { id: "zones", label: "Зоны ответственности" }, { id: "zcache", label: "Расчёт данных зон" }, { id: "eolcfg", label: "EOL и пользователи" }, { id: "mail", label: "Рассылки отчётов" }, { id: "org", label: "Организация и отчёты" },
   { id: "catalog", label: "Каталог программ" }, { id: "vdb", label: "База уязвимостей" }, { id: "pentest", label: "Pentest" }, { id: "ptchecks", label: "Pentest: шаблоны и проверки" }, { id: "updates", label: "Обновления" }, { id: "components", label: "Компоненты" },
-  { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" }, { id: "logs", label: "Журналы и хранение" },
+  { id: "journal", label: "Журнал событий" }, { id: "audit", label: "Журнал действий" }, { id: "logs", label: "Журналы и хранение" }, { id: "adaudit", label: "Аудит домена" },
 ];
 export const ADMIN_GROUPS: { id: string; label: string; tabs: string[] }[] = [
   { id: "conn", label: "Подключения и источники", tabs: ["sources", "ldap", "licenses"] },
   { id: "access", label: "Пользователи и доступ", tabs: ["users"] },
   { id: "org", label: "Организация", tabs: ["hier", "zones", "zcache", "org"] },
-  { id: "rules", label: "Правила анализа", tabs: ["eolcfg", "catalog", "vdb", "pentest", "ptchecks"] },
+  { id: "rules", label: "Правила анализа", tabs: ["eolcfg", "catalog", "vdb", "pentest", "ptchecks", "adaudit"] },
   { id: "system", label: "Система и обслуживание", tabs: ["system", "general", "updates", "components"] },
   { id: "logs", label: "Журналы и уведомления", tabs: ["journal", "audit", "logs", "mail"] },
 ];
 export const ADMIN_ICONS: Record<string, IconName> = { system: "gauge", sources: "database", licenses: "key", users: "users", ldap: "key", hier: "sitemap", general: "sliders", zones: "grid", zcache: "clock", eolcfg: "users", mail: "mail", org: "file",
-  catalog: "package", vdb: "vault", pentest: "target", ptchecks: "shieldPulse", updates: "upload", components: "package", journal: "journal", audit: "history", logs: "database" };
+  catalog: "package", vdb: "vault", pentest: "target", ptchecks: "shieldPulse", updates: "upload", components: "package", journal: "journal", audit: "history", logs: "database", adaudit: "key" };
 
 // ------------------------------------------------------------------------------------------------ указатель функций (поиск по названию и ключевым словам)
 export interface Fn { title: string; to: string; kw: string; icon: IconName; roles?: Role[]; hier?: boolean; group: string }
@@ -55,13 +55,14 @@ const ADMIN_KW: Record<string, string> = {
   general: "общие настройки активность период хранение ограничения отчётов название сайта", zones: "зоны ответственные csv импорт спорные компьютеры исключения", zcache: "расчёт зон расписание ресурсы кэш ночной", eolcfg: "eol окончание поддержки исключения опрос пользователей устройств пороги cpu озу",
   mail: "рассылка отчётов почта smtp расписание", org: "организация шапка подвал логотип отчёты оформление", catalog: "каталог программ продукты ветки группировка исправления", vdb: "база уязвимостей nvd kev osv бду фстэк источники обновление",
   pentest: "pentest профили сканирование nmap", ptchecks: "nuclei шаблоны проверки nse политика безопасности", updates: "обновление версия релиз откат резервная копия", components: "компоненты версии зависимости обновление решения",
-  journal: "журнал событий ошибки входы запросы", audit: "журнал действий кто что сделал аудит", logs: "журналы хранение ротация квота архивы сроки",
+  journal: "журнал событий ошибки входы запросы", audit: "журнал действий кто что сделал аудит", logs: "журналы хранение ротация квота архивы сроки", adaudit: "аудит домена расписание сроки паролей категории правила классификации сервисные административные привилегированные группы protected users",
 };
 const NAV_KW: Record<string, string> = {
   "/": "быстрый доступ старт избранное главная панель", "/overview": "обзор главная сводка показатели лицензии динамика", "/hosts": "компьютеры устройства рабочие станции серверы состояние найти компьютер", "/software": "программы версии установленное по реестр найти программу",
   "/devices": "устройства пользователи владелец bi сопоставление сотрудники владельцы принадлежность", "/protection": "защита антивирус базы постоянная защита проблемные компьютеры состояние защиты", "/vulnerabilities": "уязвимости cve kla исправления обнаружения отчёт по уязвимостям игнорировать исключения",
   "/vdb": "база уязвимостей cve nvd kev osv бду поиск план устранения", "/eol": "eol окончание поддержки операционные системы устаревшие исключения", "/events": "события безопасности угрозы обнаружения атаки", "/hunt": "cve hunt целевой поиск уязвимости задание",
   "/pentest": "pentest сканирование находки результаты задания nmap nuclei", "/zones": "зоны ответственности ответственные контакты компьютеры зоны", "/hierarchy": "иерархия предприятия структура организации руководители подразделения граф", "/reports": "отчёты сформированные проверка версий шаблоны сохранённые центр отчётов",
+  "/adaudit": "аудит домена active directory ad учётные записи пароли password never expires бессрочный пароль срок смены сброс пароля reset change 4723 4724 неиспользуемые неактивные последний вход заблокированные административные сервисные временные подрядчики protected users ежемесячная квартальная проверка",
 };
 const ROLE_ADMIN: Role[] = ["admin"];
 const GROUP_OF = (p: string) => NAV_GROUPS.find((g) => g.items.some((i) => i.to === p))?.label ?? (p === "/" || p === "/overview" ? "Главное" : "Отчёты");
@@ -73,6 +74,9 @@ export const FUNCTIONS: Fn[] = [
   { title: "Сейчас в системе", to: "/devices?tab=now", kw: "кто залогинен вошёл сейчас сеанс текущий пользователь где работает онлайн", icon: "users", group: "Инфраструктура" },
   { title: "Пользователи KSC", to: "/devices?tab=ksc", kw: "пользователи ksc вход последний пользователь логин", icon: "users", group: "Инфраструктура" },
   { title: "Active Directory: пользователи и группы", to: "/hierarchy?tab=ad", kw: "active directory ad домен учётная запись группы членство memberof участники группы пользователь домена логин upn dn", icon: "users", roles: ["analyst", "security", "admin"], hier: true, group: "Организация" },
+  { title: "Сброс пароля (Reset Password)", to: "/adaudit?tab=resets", kw: "сброс пароля reset 4724 смена пароля change 4723 журналы контроллеров домена", icon: "key", roles: ["security", "admin"], group: "Защита и уязвимости" },
+  { title: "Пароль без срока действия", to: "/adaudit?tab=passwords", kw: "password never expires бессрочный пароль давность смены пароля", icon: "key", roles: ["security", "admin"], group: "Защита и уязвимости" },
+  { title: "Неиспользуемые учётные записи домена", to: "/adaudit?tab=activity", kw: "неиспользуемые неактивные давно не входили последний вход lastlogon заблокированные", icon: "key", roles: ["security", "admin"], group: "Защита и уязвимости" },
   { title: "Импорт BI-выгрузки", to: "/admin?tab=sources", kw: "импорт bi выгрузка excel smb структура проверить запустить", icon: "upload", roles: ROLE_ADMIN, group: "Администрирование · Подключения и источники" },
   { title: "Новая проверка версий программ", to: "/reports", kw: "проверка версий устаревшие версии программ отчёт аудит", icon: "file", group: "Отчёты" },
   { title: "Моя тема оформления", to: "/appearance", kw: "тема оформления night glass grove aurora цвет", icon: "sun", group: "Личное" },
@@ -130,13 +134,14 @@ export const QUICK_REPORTS: QuickReportDef[] = [
   { id: "r-hunt", title: "Результаты CVE Hunt", hint: "история заданий", icon: "search", kind: "quick_hunt", params: { view: "jobs" }, options: { scope: false }, section: "/hunt", roles: ["analyst", "security", "admin"] },
   { id: "r-pentest", title: "Результаты Pentest", hint: "задания и находки", icon: "target", kind: "quick_pentest", params: { view: "jobs" }, options: { scope: false }, section: "/pentest", roles: ["analyst", "security", "admin"] },
   { id: "r-zones", title: "Зоны ответственности", hint: "состояние безопасности зон", icon: "grid", params: {}, options: {}, section: "/zones" },
+  { id: "r-adaudit", title: "Аудит домена: сводка для руководства", hint: "последняя проверка учётных записей AD", icon: "key", kind: "quick_adaudit", params: { view: "summary" }, options: { scope: false }, section: "/adaudit", roles: ["security", "admin"] },
   { id: "r-hier", title: "Структура организации", hint: "готовые отчёты по иерархии", icon: "sitemap", params: {}, options: {}, section: "/hierarchy", roles: ["analyst", "security", "admin"] },
 ];
 export const DEFAULT_REPORTS: Record<Role, string[]> = {
   viewer: ["r-rtp", "r-bases", "r-vulns", "r-hosts", "r-devices", "r-eol"],
   analyst: ["r-rtp", "r-bases", "r-vulns", "r-soft", "r-owners", "r-bi-disc", "r-zones", "r-hunt", "r-pentest"],
-  security: ["r-rtp", "r-bases", "r-vulns", "r-soft", "r-owners", "r-bi-disc", "r-zones", "r-hunt", "r-pentest"],
-  admin: ["r-rtp", "r-bases", "r-vulns", "r-soft", "r-owners", "r-bi-disc", "r-zones", "r-hunt", "r-pentest"],
+  security: ["r-rtp", "r-bases", "r-vulns", "r-soft", "r-owners", "r-bi-disc", "r-zones", "r-hunt", "r-pentest", "r-adaudit"],
+  admin: ["r-rtp", "r-bases", "r-vulns", "r-soft", "r-owners", "r-bi-disc", "r-zones", "r-hunt", "r-pentest", "r-adaudit"],
 };
 
 export const roleOk = (roles: Role[] | undefined, role: string) => !roles || (roles as string[]).includes(role);

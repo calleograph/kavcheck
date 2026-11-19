@@ -1934,3 +1934,38 @@ tr[aria-current="true"] > td { background: var(--accent-soft); }
 .zone-top { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
 .zone-top .card-head h3 { margin: 0; }
 .zone-top p { margin: 0; }
+
+/* ------------------------------------------------------------------ аудит домена */
+.ada-runline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin: 0 0 12px; font-size: var(--fs-sm); }
+.ada-runline > span { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.ada-fail { flex-basis: 100%; }
+.ada-split { margin: 12px 0; }
+.ada-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.ada-side .card > p { margin: 8px 0 0; }
+.meter-link { all: unset; display: flex; flex-direction: column; gap: 2px; cursor: pointer; border-radius: var(--radius-xs); min-width: 0; }
+.meter-link:hover .l { color: var(--ink); } .meter-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.ada-issues { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ada-issue { display: grid; grid-template-columns: 104px minmax(0, 1fr) auto; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer; transition: background-color var(--t-fast), border-color var(--t-fast); }
+.ada-issue:hover { background: var(--surface-2); border-color: var(--line-strong); } .ada-issue:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ada-issue .badge { justify-self: start; }
+.ada-issue-t { min-width: 0; overflow-wrap: anywhere; } .ada-issue-t .sub { display: block; font-size: var(--fs-xs); } .ada-issue-n { text-align: right; font-variant-numeric: tabular-nums; } .ada-issue-n b { font-size: var(--fs-lg); }
+.ada-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--accent-line); border-radius: var(--radius); background: var(--accent-soft); font-size: var(--fs-sm); }
+.ada-decide { display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); margin: 8px 0; }
+.ada-decide textarea { width: 100%; }
+.ada-basis { min-width: 16rem; max-width: 42rem; } .ada-basis .sub { overflow-wrap: anywhere; }
+.ada-desc { max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tr.row-bad > td { background: color-mix(in srgb, var(--danger-bg) 55%, transparent); }
+tr.row-bad > td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
+.ada-dcs { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ada-dcs li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; overflow-wrap: anywhere; }
+.ada-upload { position: relative; overflow: hidden; display: inline-flex; flex-direction: row; align-items: center; width: auto; align-self: flex-start; } .ada-upload input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.ada-card { display: flex; flex-direction: column; gap: 12px; }
+.ada-cf { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ada-cf > li { padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.ada-cf > li.bad { border-color: var(--danger); box-shadow: inset 3px 0 0 var(--danger); }
+.ada-cf > li > p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.ada-cf .row { flex-wrap: wrap; gap: 8px; }
+.ada-rules input, .ada-rules select { width: 100%; min-width: 8rem; }
+@media (max-width: 900px) { .ada-issue { grid-template-columns: minmax(0, 1fr) auto; } .ada-issue .badge { grid-column: 1 / -1; } }
+.form-stack { display: flex; flex-direction: column; gap: 16px; }

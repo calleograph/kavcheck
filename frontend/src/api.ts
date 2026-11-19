@@ -74,7 +74,7 @@ export interface SessionRow { login: string; domain: string; upn: string; user_n
   online: boolean | null; last_connected: string | null; source_id: string; source: string }
 export interface SessionsNow { items: SessionRow[]; total: number; more: boolean; fetched_at: string; note: string; sources: { source_id: string; source: string; rows: number; more: boolean; error: string }[];
   choices: { id: string; name: string }[] }
-export type QuickKind = "quick_sessions" | "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_ad" | "quick_admin";
+export type QuickKind = "quick_sessions" | "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_ad" | "quick_adaudit" | "quick_admin";
 
 export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "offline" | "unknown" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }
@@ -192,6 +192,27 @@ export interface VdbLiveRecord { source: string; title: string; ext_id: string; 
   fix_available: boolean | null; refs: { url: string; tags: string[] }[]; cwe: string[]; affected: VdbAffectedRow[]; affected_total: number }
 export interface VdbLookup { id: string; local: VdbVulnRow | null; infrastructure: { catalog: boolean; matches: VdbMatchOut[] } | null;
   live: { checked_at: string; sources: VdbLiveSource[]; key: string; title: string; description: string; exploited: boolean; published: string | null; modified: string | null; cvss: { primary: VdbScore; all: VdbScore[] } | null; records: VdbLiveRecord[] } | null }
+export type AdCategory = "user" | "admin" | "service" | "temp" | "contractor" | "undefined";
+export type AdSev = "critical" | "high" | "medium" | "low";
+export interface AdRun { id: string; started_at: string; finished_at: string | null; status: "running" | "ok" | "failed"; kind: "manual" | "monthly" | "quarterly"; kind_ru: string; by: string; period: string; domain: string; message: string;
+  stats: Record<string, number | string | null>; coverage?: { dcs: string[]; dc_logon_ok: string[]; logs: Record<string, [string, string]>; logs_missing: string[]; window: [string, string] | null }; notes?: string[] | null;
+  policy: { pwd_days?: Record<string, number>; inactive_days?: number; new_days?: number; grace_days?: number } }
+export interface AdCodeAgg { code: string; title: string; severity: AdSev; status: "violation" | "review"; total: number; open: number; exception: number; in_progress: number }
+export interface AdState { latest: AdRun | null; previous: AdRun | null; last: AdRun | null; requested: boolean; next_run: string | null; schedule: { enabled: boolean; day: number; time: string; timezone: string };
+  import: { at: string; by: string; file_name: string; events: number; added: number; dcs: { name: string; log_from: string | null; log_to: string | null; error: string }[] } | null;
+  open: number | null; exceptions: number | null; carried: number; by_code: AdCodeAgg[]; policy: { pwd_days: Record<string, number>; inactive_days: number; new_days: number; grace_days: number }; can_admin: boolean }
+export interface AdPwdOp { state: "change" | "reset" | "no_event" | "before_logs" | "no_logs" | "no_pwd"; at: string | null; kind: string | null; by: string; dc: string; reset_pending: boolean; basis: string; attempts_failed: number }
+export interface AdAccount { guid: string; login: string; name: string; upn: string; mail: string; dn: string; description: string; title: string; department: string; manager: string; category: AdCategory; category_ru: string;
+  category_basis: string[]; enabled: boolean; locked: boolean; pne: boolean; must_change: boolean; pwd_expired: boolean; pwd_last_set: string | null; pwd_age: number | null; pwd_bucket: string; pwd_bucket_ru: string;
+  expires: string | null; last_logon: string | null; last_logon_src: "dc" | "llt" | "none"; idle_days: number | null; created: string | null; privileged: string[]; protected: boolean | null; spn: boolean;
+  workstations: string; groups: string[]; pwd_op: AdPwdOp; findings_n: number; max_sev: number }
+export interface AdDecision { state: "open" | "in_progress" | "fixed" | "exception"; state_ru: string; comment: string; owner: string; due: string | null; by: string; at: string; expired: boolean;
+  history: { at: string; by: string; state: string; comment: string; owner: string; due: string | null }[] }
+export interface AdFinding { key: string; guid: string; login: string; name: string; category: AdCategory; category_ru: string; code: string; title: string; severity: AdSev; severity_ru: string; status: "violation" | "review";
+  status_ru: string; basis: string; first_seen: string; runs_n: number; decision: AdDecision | null }
+export interface AdAccountCard extends AdAccount { run: { id: string; started_at: string }; findings: AdFinding[]; events: { at: string; kind: string; kind_ru: string; success: boolean; by: string; dc: string }[];
+  history: { at: string; kind_ru: string; category_ru: string; enabled: boolean; pwd_last_set: string | null; last_logon: string | null; findings: number }[]; override: { category: AdCategory; note: string; by: string; at: string } | null }
+export interface AdEvent { at: string; kind: "change" | "reset"; kind_ru: string; event_id: number; success: boolean; target: string; target_guid: string; target_name: string; by: string; dc: string }
 export interface VdbMapping { id: string; vendor_key: string; product_key: string; catalog_key: string; action: "map" | "exclude"; note: string | null; created_by: string | null; created_at: string }
 export type VdbCategory = "os" | "system" | "application" | "unclassified";
 export interface VdbCounts { total: number; new: number; new_exploited: number; new_critical: number; new_serious: number; by_status?: Record<string, number>; by_category?: Record<VdbCategory, number>; products?: number; plan_ready?: boolean }
@@ -641,6 +662,23 @@ export const api = {
     status: () => req<DevicesStatus>("GET", "/devices/status"),
     poll: () => req<{ queued: number }>("POST", "/devices/poll"),
     card: (sid: string, hid: number, showService = false) => req<DeviceCard>("GET", `/devices/${sid}/${hid}${qs({ show_service: showService })}`),
+  },
+  adaudit: {
+    state: () => req<AdState>("GET", "/adaudit/state"),
+    run: (kind: "manual" | "quarterly") => req<{ queued: boolean }>("POST", "/adaudit/run", { kind }),
+    runs: () => req<{ items: AdRun[] }>("GET", "/adaudit/runs"),
+    accounts: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<AdAccount> & { run: AdRun | null }>("GET", `/adaudit/accounts${qs(p)}`),
+    account: (guid: string, run?: string) => req<AdAccountCard>("GET", `/adaudit/accounts/${encodeURIComponent(guid)}${qs({ run })}`),
+    findings: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<AdFinding>>("GET", `/adaudit/findings${qs(p)}`),
+    decide: (body: { keys: string[]; state: AdDecision["state"]; comment: string; owner: string; due: string | null }) => req<{ updated: number }>("PUT", "/adaudit/decisions", body),
+    category: (guid: string, category: AdCategory | null, note: string) => req<{ ok: boolean }>("PUT", `/adaudit/accounts/${encodeURIComponent(guid)}/category`, { category, note }),
+    events: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<AdEvent>>("GET", `/adaudit/events${qs(p)}`),
+    imports: () => req<{ items: { at: string; by: string; file_name: string; events: number; added: number; skipped: number; dcs: { name: string; log_from: string | null; log_to: string | null; error: string }[] }[]; coverage: Record<string, [string, string]> }>("GET", "/adaudit/imports"),
+    upload: async (file: File) => {
+      const r = await fetch("/api/v1/adaudit/events/import", { method: "POST", headers: { "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) }, body: file, credentials: "same-origin" });
+      if (!r.ok) { let m = `Ошибка ${r.status}`; try { const d = await r.json(); if (typeof d.detail === "string") m = d.detail; } catch { /* текст по умолчанию */ } throw new ApiError(r.status, m); }
+      return r.json() as Promise<{ events: number; added: number; skipped: number; note: string }>;
+    },
   },
   vdb: {
     sources: () => req<{ items: VdbSourceInfo[]; vulns: number; ecosystems: string[]; storage: { db_bytes: number | null; tmp_bytes: number; free_bytes: number } }>("GET", "/vdb/sources"),

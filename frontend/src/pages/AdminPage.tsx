@@ -22,6 +22,7 @@ import EolAdmin from "./admin/EolAdmin";
 import LogsAdmin from "./admin/LogsAdmin";
 import ComponentsAdmin from "./admin/ComponentsAdmin";
 import HierarchyAdmin from "./admin/HierarchyAdmin";
+import AdAuditAdmin from "./admin/AdAuditAdmin";
 
 const LEDE: Record<string, string> = {
   system: "Исправна ли сама система: сервер, контейнеры, фоновые задания и очереди, PostgreSQL, источники KSC и BI, Pentest, версии компонентов и ошибки — что происходит внутри и где искать причину.",
@@ -41,6 +42,7 @@ const LEDE: Record<string, string> = {
   updates: "Версия KAV Checker, релизы GitHub, обновление, откат и резервные копии.",
   journal: "Входы, проверки и запросы к источникам, формирование отчётов, ошибки.",
   audit: "Кто, что и когда сделал в KAV Checker.",
+  adaudit: "Аудит домена: подключение (существующее LDAPS), расписание ежемесячной и квартальной проверки, сроки паролей по категориям, пороги активности и правила классификации учётных записей.",
   components: "Что установлено в KAV Checker, какие версии доступны у разработчиков и какие решения приняты по обновлению. Обновление приложения — только проверенным выпуском.",
   logs: "Сроки, объём, архивы и квота всех журналов: событий приложения, действий, выполнения заданий Pentest. Результаты сканирований этими настройками не затрагиваются.",
 };
@@ -62,6 +64,7 @@ export default function AdminPage({ ctx }: { ctx: Ctx; version: string }) {
       {tab === "users" && <UsersAdmin ctx={ctx} />}
       {tab === "ldap" && <LdapAdmin sources={ctx.sources} />}
       {tab === "hier" && <HierarchyAdmin />}
+      {tab === "adaudit" && <AdAuditAdmin />}
       {tab === "general" && <GeneralAdmin />}
       {tab === "zones" && <ZonesAdmin />}
       {tab === "zcache" && <CacheAdmin />}

@@ -42,6 +42,8 @@ def can_see(su: SessionUser, j: ReportJob, hier=None) -> bool:
     """hier — настройки группы «hier» (для отчётов иерархии и AD: доступ по ролям раздела; не переданы — такие отчёты не показываются)."""
     if su.is_zone:                                         # ответственный за зону — только свои отчёты по своим зонам
         return j.created_by_id == su.user_id and j.kind == "quick_zone" and set((j.params or {}).get("zone_ids") or []) <= su.zone_ids
+    if j.kind == "quick_adaudit":                         # аудит домена: специалист по ИБ и администратор
+        return su.is_security
     if j.kind == "quick_admin":                           # таблицы администрирования: журналы, пользователи, лицензии — только администратор
         return su.is_admin
     if j.kind == "quick_devices" and (j.params or {}).get("view") == "users" and (j.params or {}).get("pd", True) and su.role == "viewer":
@@ -171,6 +173,8 @@ async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends
 
         if not ad_allowed(su, await request.app.state.settings_svc.get(db, "hier")):
             raise HTTPException(status_code=403, detail="Вкладка «Active Directory» недоступна для вашей роли")
+    if body.kind == "quick_adaudit" and not su.is_security:
+        raise HTTPException(status_code=403, detail="Аудит домена доступен специалисту по ИБ и администратору")
     if body.kind == "quick_admin" and not su.is_admin:
         raise HTTPException(status_code=403, detail="Отчёты администрирования доступны администратору")
     if body.kind in quick.NO_KSC:
