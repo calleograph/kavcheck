@@ -1,5 +1,7 @@
 """Поиск одной уязвимости во внешних базах (CVE.org, NVD, OSV) и её применимость к каталогу: разбор CVE JSON 5, подставной HTTP, маршрут /vdb/lookup. Без сети."""
 
+import time
+
 import httpx
 
 from app.models import VdbVuln, utcnow
@@ -108,7 +110,8 @@ async def test_live_cache_drops_expired_and_is_capped(monkeypatch):
     monkeypatch.setattr(L, "Http", NoNet)
     monkeypatch.setattr(L, "_one", one)
     monkeypatch.setattr(L, "CACHE_MAX", 3)
-    monkeypatch.setattr(L, "_cache", {"OLD-2000-1": (0.0, {}), "OLD-2000-2": (0.0, {})})       # истёкшие записи
+    old = time.monotonic() - L.LIVE_TTL - 1                                                 # не 0.0: на свежей машине CI monotonic() меньше LIVE_TTL
+    monkeypatch.setattr(L, "_cache", {"OLD-2000-1": (old, {}), "OLD-2000-2": (old, {})})    # истёкшие записи
     await L.fetch_live("GHSA-2222-3333-4444")
     assert list(L._cache) == ["GHSA-2222-3333-4444"]                                       # noqa: SLF001 — истёкшие удалены при вставке
     for i in range(5):
