@@ -32,3 +32,12 @@ def test_memory_does_not_grow_with_rows(tmp_path):
     peak = tracemalloc.get_traced_memory()[1] - base
     tracemalloc.stop()
     assert peak < 25 * 1024 * 1024, f"пик {peak / 1048576:.0f} МБ: запись не потоковая"          # обычная книга openpyxl давала бы сотни мегабайт на таких данных
+
+
+def test_ksc_strings_in_host_sheet_are_escaped(tmp_path):
+    rows = _rows(1)
+    rows[0]["name"] = "=cmd|' /C calc'!A0"
+    p = tmp_path / "f.xlsx"
+    export.write_xlsx(p, "software_hosts", rows, {"rows": 1, "hosts": 1, "branches": [{"branch": "@x", "installs": 1, "hosts": 1, "packages": ["php"]}]}, {"Отчёт": "t", "_org": None})
+    wb = load_workbook(p)
+    assert wb["Компьютеры"]["A2"].value == "'=cmd|' /C calc'!A0" and wb["Версии"]["A2"].value == "'@x"

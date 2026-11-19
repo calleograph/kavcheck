@@ -1,6 +1,7 @@
 """Данные зон для отчётов и рассылок: из подготовленных данных PostgreSQL; обновление из KSC — только по явному запросу или если данных ещё нет."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from ..config import Settings
 from ..ksc.driver import KscError
 from ..models import KscSource, Zone, ZoneContact
 from ..services.cache import TtlCache
+from ..services.jobs import JOBS
 from ..services.settings import SettingsService
 from ..services.sources import SourceRegistry
 from . import report as R
@@ -63,8 +65,24 @@ class ZoneData:
                 hosts = set((await db.execute(sel(ZcHostZone.host_id).where(ZcHostZone.source_id == src.id, ZcHostZone.gen == zs.gen, ZcHostZone.zone_id.in_(zone_ids)))).scalars().all())
                 if not hosts:
                     continue
-            async with RES.heavy("обновление данных зоны для отчёта", 1):
-                res = await SN.build_source(bc, src, hosts=hosts)
+            res = None
+            for _ in range(3):                    # чужой расчёт дожидаемся (аренда умершего исполнителя истекает) и проверяем, не дал ли он новое поколение
+                async with RES.heavy("обновление данных зоны для отчёта", 1):        # сначала место у ограничителя, затем аренда (как у расчёта зон)
+                    async with JOBS.run("zonecache", str(src.id)) as lease:       # один расчёт данных источника за раз: иначе два расчёта пишут одно поколение и чистят друг друга
+                        if lease is not None:
+                            gen = await SN.db_gen(db, src.id)
+                            await db.commit()
+                            if gen == zs.gen:                 # пока ждали, другой расчёт поколение не сменил
+                                res = await SN.build_source(bc, src, hosts=hosts)
+                if lease is not None:
+                    break
+                while await JOBS.is_live("zonecache", str(src.id)) and not cancelled():      # ждём без места у ограничителя и без аренды
+                    await asyncio.sleep(5)
+                if cancelled() or await SN.db_gen(db, src.id) != zs.gen:
+                    break
+            await db.commit()
+            if res is None:
+                continue
             touched |= set(res["zones"])
             notes.append(f"Данные источника «{src.name}» обновлены перед формированием отчёта ({res['hosts']} компьютеров).")
         if touched:

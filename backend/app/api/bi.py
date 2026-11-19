@@ -377,9 +377,15 @@ async def decide(body: DecideIn, su: SessionUser = Depends(require_admin), db: A
     """Решение администратора: подтвердить (надёжное соответствие), отклонить (больше не предлагается) или сбросить (снова решает автоматическое сопоставление)."""
     from ..models import BiDevice  # noqa: PLC0415
 
+    from ..db import xact_lock  # noqa: PLC0415
+
     dev = await db.get(BiDevice, body.device_id)
     if dev is None or await db.get(KscSource, body.ksc_source_id) is None:
         raise HTTPException(status_code=404, detail="Устройство BI или источник KSC не найден")
+    await xact_lock(db, f"bi-match:{dev.source_id}")                  # как пересчёт и массовые операции: решение не пересекается с ними
+    if body.decision == "confirm" and (await db.execute(select(BiMatch.id).where(BiMatch.level == "confirmed", BiMatch.ksc_source_id == body.ksc_source_id, BiMatch.host_id == body.host_id,
+                                                                                 BiMatch.device_id != body.device_id).limit(1))).first():
+        raise HTTPException(status_code=409, detail="Компьютер уже сопоставлен с другим устройством: сначала отмените то подтверждение")
     m = (await db.execute(select(BiMatch).where(BiMatch.device_id == body.device_id, BiMatch.ksc_source_id == body.ksc_source_id, BiMatch.host_id == body.host_id))).scalars().first()
     before = m.level if m else ""
     if body.decision == "reset":

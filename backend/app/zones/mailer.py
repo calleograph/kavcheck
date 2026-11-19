@@ -176,8 +176,23 @@ class Mailer:
         oid = await self._claim()
         if oid is None:
             return False
-        await self._send_row(oid)
+        beat = asyncio.create_task(self._beat(oid))
+        try:
+            await self._send_row(oid)
+        finally:
+            beat.cancel()
         return True
+
+    async def _beat(self, oid: uuid.UUID, every_s: float = 60) -> None:
+        """Пока письмо готовится и отправляется, отметка захвата обновляется: подготовка с перерасчётом данных зоны бывает дольше STUCK_AFTER, и recover_stuck не должен вернуть письмо в очередь."""
+        while True:
+            await asyncio.sleep(every_s)
+            try:
+                async with self.sm() as db:
+                    await db.execute(update(MailOutbox).where(MailOutbox.id == oid, MailOutbox.status == "sending").values(next_attempt_at=datetime.now(timezone.utc)))
+                    await db.commit()
+            except Exception:  # noqa: BLE001 — следующая попытка через every_s
+                log.debug("Не обновлена отметка отправки", exc_info=True)
 
     async def process_queue(self, limit: int = MAX_BATCH) -> int:
         n = 0
@@ -253,10 +268,10 @@ class Mailer:
             if res.ok:
                 row.status, row.sent_at, row.last_error, row.message_id = "accepted", datetime.now(timezone.utc), None, res.message_id
                 row.next_attempt_at = None
-                if row.body_path:
-                    Path(row.body_path).unlink(missing_ok=True)
-                    row.body_path = None
+                done, row.body_path = row.body_path, None
                 await db.commit()
+                if done:                                 # файл удаляется после фиксации: при сбое записи письмо не собирается заново
+                    Path(done).unlink(missing_ok=True)
                 await self.journal.emit("report", "mail_accepted", message=f"{row.zone_name}: принято сервером SMTP ({len(row.to_addrs or [])} адресатов)", data={"outbox": str(oid), "refused": len(row.refused)})
                 return
             row.last_error = res.error
@@ -267,10 +282,10 @@ class Mailer:
                 await self.journal.emit("report", "mail_retry", level="warn", message=f"{row.zone_name}: {res.error[:200]}; повтор {row.next_attempt_at:%H:%M} UTC", data={"outbox": str(oid), "attempt": row.attempts})
                 return
             row.status, row.next_attempt_at = "failed", None
-            if row.body_path:                            # письмо не ушло: файл с вложениями не храним (повтор вручную соберёт письмо заново) — при сломанном SMTP диск не растёт
-                Path(row.body_path).unlink(missing_ok=True)
-                row.body_path = None
+            done, row.body_path = row.body_path, None    # письмо не ушло: файл с вложениями не храним (повтор вручную соберёт письмо заново) — при сломанном SMTP диск не растёт
             await db.commit()
+            if done:
+                Path(done).unlink(missing_ok=True)
             await self.journal.emit("report", "mail_failed", level="error", message=f"{row.zone_name}: отчёт не отправлен — {res.error[:300]}", data={"outbox": str(oid), "attempts": row.attempts})
             await self._alert(smtp, row)
 

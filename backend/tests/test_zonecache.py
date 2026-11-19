@@ -433,3 +433,58 @@ async def test_cve_and_product_filters_use_host_lists_and_match_row_search(app):
         assert sorted(h["name"] for h in items) == ["pc-001"]                                    # исключённое обнаружение не находится по умолчанию
         _t, items = await ZR.hosts_page(db, "z1", None, bd=3, sd=30, ext=True, default_days=30, zone_days={}, activity="all", limit=100, cve="CVE-2099-1", triage="false_positive")
         assert [h["name"] for h in items] == ["pc-003"]
+
+
+async def test_report_ensure_builds_under_zonecache_lease_and_skips_if_other_build_finished(app, monkeypatch):
+    """Обновление данных перед отчётом — под той же арендой, что расчёт зон: чужой расчёт этого источника не повторяется."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from app.services.jobs import JOBS  # noqa: PLC0415
+    from app.zones import reporter as ZRep  # noqa: PLC0415
+
+    st = app.state
+    calls = []
+
+    async def fake_build(bc, src, hosts=None):
+        calls.append((await JOBS.is_live("zonecache", str(src.id))))
+        return {"zones": [], "hosts": 0}
+
+    monkeypatch.setattr(SN, "build_source", fake_build)
+    async with st.session_maker() as db:
+        src = KscSource(id=uuid.uuid4(), name="Т", host="h.example.local", port=1433, database="d", username="u", password_enc="x", is_active=True)
+        db.add(src)
+        await db.commit()
+        zd = ZRep.ZoneData(st.session_maker, st.settings, st.settings_svc, st.sources)
+        await zd.ensure(db, [src], None)
+        assert calls == [True]                                                 # расчёт шёл под арендой zonecache
+        await db.execute(ZcSource.__table__.update().values(gen=0))
+        await db.commit()
+        other = await JOBS.acquire("zonecache", str(src.id))                    # расчёт источника уже ведёт другой исполнитель
+
+        async def sleep(_s):
+            async with st.session_maker() as d2:
+                await d2.execute(ZcSource.__table__.update().where(ZcSource.source_id == src.id).values(gen=7))
+                await d2.commit()
+            await other.finish()
+
+        monkeypatch.setattr(ZRep, "asyncio", SimpleNamespace(sleep=sleep))
+        await zd.ensure(db, [src], None)
+        assert calls == [True]                                                 # готовое поколение другого расчёта — повторно не считается
+
+
+async def test_mail_being_prepared_is_not_requeued_as_stuck(app):
+    """Долгая подготовка письма (перерасчёт зоны) обновляет отметку захвата: recover_stuck не возвращает его в очередь (иначе второе письмо)."""
+    from app.models import MailOutbox  # noqa: PLC0415
+    from app.zones import mailer as ML  # noqa: PLC0415
+    from app.zones.reporter import ZoneData  # noqa: PLC0415
+
+    st = app.state
+    m = ML.Mailer(st.session_maker, st.settings, st.settings_svc, ZoneData(st.session_maker, st.settings, st.settings_svc, st.sources), st.journal)
+    async with st.session_maker() as db:
+        row = MailOutbox(period_key="p", status="sending", next_attempt_at=utcnow() - timedelta(minutes=30), to_addrs=["a@example.local"])
+        db.add(row)
+        await db.commit()
+    beat = asyncio.create_task(m._beat(row.id, every_s=0.01))
+    await asyncio.sleep(0.2)
+    beat.cancel()
+    assert await m.recover_stuck() == 0

@@ -93,3 +93,12 @@ async def test_source_card_shows_failed_background_read(client, app):
         await db.commit()
     (item,) = [i for i in (await client.get("/api/v1/admin/sources")).json()["items"] if i["name"] == "KSC-S"]
     assert item["last_check_ok"] is True and item["sync"]["status"] == "ready" and "отклонён" in item["sync"]["error"]
+
+
+async def test_journal_csv_escapes_formulas_from_failed_login_name(client, app):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    async with app.state.session_maker() as db:
+        db.add(EventLog(at=utcnow(), level="warn", category="auth", event="login_failed", user='=HYPERLINK("http://192.0.2.1")', message="=1+1"))
+        await db.commit()
+    csv = (await client.get("/api/v1/admin/journal/export.csv", params={"category": "auth"})).text
+    assert "\"'=HYPERLINK(" in csv and ";'=1+1;" in csv

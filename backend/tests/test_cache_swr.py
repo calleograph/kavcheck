@@ -56,3 +56,27 @@ async def test_background_failure_keeps_old_value_for_the_user():
     assert (await c.get(("b",), 0.01, make, swr=5))[0] == 1       # обновление в фоне упало — пользователь продолжает видеть прежние данные, а не ошибку
     await asyncio.sleep(0.05)
     assert (await c.get(("b",), 0.01, make, swr=5))[0] == 1
+
+
+async def test_cleanup_keeps_the_lock_of_a_running_computation_and_refresh_waiters_share_it():
+    c = TtlCache()
+    calls = []
+
+    async def slow():
+        calls.append("a")
+        await asyncio.sleep(0.1)
+        return len(calls)
+
+    async def fast():
+        return 0
+
+    await c.get(("a",), 0.01, slow)
+    await asyncio.sleep(0.02)
+    first = asyncio.create_task(c.get(("a",), 0.01, slow))         # пересчёт «a» идёт
+    await asyncio.sleep(0.01)
+    await c.get(("b",), 5, fast)                                    # очистка истёкших записей не снимает замок идущего расчёта
+    await asyncio.gather(first, c.get(("a",), 0.01, slow))
+    assert len(calls) == 2                                          # второй запрос дождался первого расчёта, а не запустил свой
+    calls.clear()
+    await asyncio.gather(*(c.get(("a",), 5, slow, refresh=True) for _ in range(3)))
+    assert len(calls) == 1                                          # ждавшие за замком при refresh получили свежий расчёт

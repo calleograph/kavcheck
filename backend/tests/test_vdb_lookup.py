@@ -92,3 +92,25 @@ async def test_lookup_live_record_matches_catalog_and_local_is_preferred(app, cl
     assert r["local"]["key"] == "CVE-2099-7002" and r["live"] is None and not seen and r["infrastructure"]["matches"]
     r = (await client.get("/api/v1/vdb/lookup", params={"id": "CVE-2099-7002", "live": True})).json()
     assert seen == ["CVE-2099-7002"] and r["live"] is not None
+
+
+async def test_live_cache_drops_expired_and_is_capped(monkeypatch):
+    class NoNet:
+        def __init__(self, **_kw):
+            pass
+
+        async def close(self):
+            pass
+
+    async def one(_http, src, ident, _key):
+        return {"source": src, "found": True, "error": ""}, []
+
+    monkeypatch.setattr(L, "Http", NoNet)
+    monkeypatch.setattr(L, "_one", one)
+    monkeypatch.setattr(L, "CACHE_MAX", 3)
+    monkeypatch.setattr(L, "_cache", {"OLD-2000-1": (0.0, {}), "OLD-2000-2": (0.0, {})})       # истёкшие записи
+    await L.fetch_live("GHSA-2222-3333-4444")
+    assert list(L._cache) == ["GHSA-2222-3333-4444"]                                       # noqa: SLF001 — истёкшие удалены при вставке
+    for i in range(5):
+        await L.fetch_live(f"PYSEC-2099-{i}")
+    assert len(L._cache) == 3 and "PYSEC-2099-4" in L._cache                                # noqa: SLF001 — размер ограничен, вытесняются старые

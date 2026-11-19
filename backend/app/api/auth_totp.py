@@ -11,7 +11,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, get_db, require_admin, require_user
@@ -108,15 +108,16 @@ async def enable(body: CodeIn, request: Request, su: SessionUser = Depends(requi
     ch = await db.get(AuthChallenge, _setup_key(user.id))
     if ch is None or ch.expires_at < utcnow():
         raise HTTPException(status_code=409, detail="Время настройки истекло. Начните заново.")
-    ch.attempts += 1
-    if ch.attempts > 10:
-        await db.delete(ch)
+    n = (await db.execute(update(AuthChallenge).where(AuthChallenge.key == ch.key).values(attempts=AuthChallenge.attempts + 1)      # атомарно: параллельные коды не обходят предел
+                          .returning(AuthChallenge.attempts).execution_options(synchronize_session=False))).scalar_one_or_none()
+    await db.commit()
+    if n is None or n > 10:
+        await db.execute(delete(AuthChallenge).where(AuthChallenge.key == ch.key))
         await db.commit()
         raise HTTPException(status_code=429, detail="Слишком много неверных кодов. Начните настройку заново.")
     secret = box.decrypt(ch.data["secret"], aad=f"totp_setup.{user.id}".encode())
     step = totp.verify(secret, body.code)
     if step is None:
-        await db.commit()
         raise HTTPException(status_code=422, detail="Код не подошёл. Проверьте время на телефоне и введите текущий код.")
     user.totp_secret_enc = box.encrypt(secret, aad=f"user_totp.{user.id}".encode())
     user.totp_enabled, user.totp_enabled_at, user.totp_last_step = True, utcnow(), step

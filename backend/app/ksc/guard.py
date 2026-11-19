@@ -22,7 +22,7 @@ def _normalize(sql: str) -> str:
         t = m.group(0)
         if t.startswith(("/*", "--")):
             return " "
-        return " 'str' " if t.startswith(("'", "N'")) else "ident"
+        return " 'str' " if t.startswith(("'", "N'")) else " ident "                  # с пробелами: [c]INTO не склеивается в одно «слово» identINTO
     text = _TOKENS.sub(repl, sql)
     if "/*" in text or "*/" in text or text.count("'") != text.count("'str'") * 2:
         raise UnsafeQuery("незакрытая строка или комментарий")

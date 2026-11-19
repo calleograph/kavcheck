@@ -230,13 +230,17 @@ async def assign(lid: int, body: AssignBody, ix: Ix = Depends(inv_ctx), db: Asyn
         raise HTTPException(status_code=404, detail="Лицензия не найдена")
     have_a = {a for (a,) in (await db.execute(select(InvLicAssign.asset_id).where(InvLicAssign.license_id == lid, InvLicAssign.asset_id.is_not(None))))}
     have_p = {p for (p,) in (await db.execute(select(InvLicAssign.person_id).where(InvLicAssign.license_id == lid, InvLicAssign.person_id.is_not(None))))}
-    ok_a = {a.id: a for a in (await db.execute(select(InvAsset).where(InvAsset.id.in_(body.asset_ids)))).scalars()} if body.asset_ids else {}
+    sa = select(InvAsset).where(InvAsset.id.in_(body.asset_ids))
+    if (af := ix.acc.asset_filter()) is not None:
+        sa = sa.where(af)
+    ok_a = {a.id: a for a in (await db.execute(sa)).scalars()} if body.asset_ids else {}
+    nm = await C.names_for(db, list(ok_a.values()))                # имена всех карточек одной выборкой
     ok_p = {p for (p,) in (await db.execute(select(InvPerson.id).where(InvPerson.id.in_(body.person_ids))))} if body.person_ids else set()
     n = 0
     for aid in dict.fromkeys(body.asset_ids):
         if aid in ok_a and aid not in have_a:
             db.add(InvLicAssign(license_id=lid, asset_id=aid, by=ix.su.display_name, note=body.note))
-            await C.record(db, ok_a[aid], "update", [{"f": "license", "label": "Лицензия", "old": "", "new": lc.name}], ix.su.display_name, title=f"Назначена лицензия «{lc.name}»")
+            await C.record(db, ok_a[aid], "update", [{"f": "license", "label": "Лицензия", "old": "", "new": lc.name}], ix.su.display_name, title=f"Назначена лицензия «{lc.name}»", names=nm)
             n += 1
     for pid in dict.fromkeys(body.person_ids):
         if pid in ok_p and pid not in have_p:
@@ -255,7 +259,12 @@ async def unassign(lid: int, aid: int, ix: Ix = Depends(inv_ctx), db: AsyncSessi
         raise HTTPException(status_code=404, detail="Назначение не найдено")
     lc = await db.get(InvLicense, lid)
     if r.asset_id:
-        a = await db.get(InvAsset, r.asset_id)
+        sa = select(InvAsset).where(InvAsset.id == r.asset_id)
+        if (af := ix.acc.asset_filter()) is not None:
+            sa = sa.where(af)
+        a = (await db.execute(sa)).scalar_one_or_none()
+        if a is None and af is not None:
+            raise HTTPException(status_code=404, detail="Назначение не найдено или вне вашей области учёта")
         if a is not None:
             await C.record(db, a, "update", [{"f": "license", "label": "Лицензия", "old": lc.name, "new": ""}], ix.su.display_name, title=f"Снято назначение лицензии «{lc.name}»")
     audit(db, ix, "license.unassign", lc.name[:120], {"id": lid, "assign": aid})

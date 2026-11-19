@@ -246,3 +246,19 @@ async def test_netscan_job_ingest_and_matching(client, app, monkeypatch):
     rep = await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": "infra_netscan", "netscan_job": jid}})
     assert rep.status_code == 200, rep.text
     assert "192.0.2.3" in rep.text and "Нет в учёте" in rep.text
+
+
+async def test_vm_parent_cycle_is_skipped_not_fatal(app):
+    """ВМ и её хост связаны с одной карточкой (ошибка решения): связь «ВМ на хосте» не ставится, сопоставление источника не падает."""
+    import uuid  # noqa: PLC0415
+
+    async with app.state.session_maker() as db:
+        s = InfraSource(kind="proxmox", name="pve-test", options={"create_assets": False})
+        a = InvAsset(uid=uuid.uuid4(), inv_no="T-0001", created_by="t", updated_by="t", version=1, name="app-db01")
+        db.add_all([s, a])
+        await db.flush()
+        db.add_all([InfraObject(source_id=s.id, ext_id="host:pve1", kind="host", name="pve1", asset_id=a.id, match="confirmed"),
+                    InfraObject(source_id=s.id, ext_id="vm:101", kind="vm", name="app-db01", parent_ext="host:pve1", asset_id=a.id, match="confirmed")])
+        await db.flush()
+        st = await S.match(db, s)
+        assert st["parent_skipped"] == 1 and a.parent_id is None

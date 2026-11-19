@@ -303,6 +303,11 @@ def render_xlsx(p: dict) -> bytes:
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side  # noqa: PLC0415
     from openpyxl.utils import get_column_letter  # noqa: PLC0415
 
+    from ..reports.export import safe_text  # noqa: PLC0415 — имена и примечания вводят пользователи: «=…» не должно стать формулой
+
+    def sv(v):
+        return safe_text(v) if isinstance(v, str) else v
+
     wb = Workbook()
     ws = wb.active
     ws.title = (p["no"] or "Документ")[:31].replace("/", "-")
@@ -319,7 +324,7 @@ def render_xlsx(p: dict) -> bytes:
 
     def line(text: str, *, bold: bool = False, size: int = 11, align: str = "left") -> None:
         nonlocal r
-        ws.cell(row=r, column=1, value=text).font = Font(bold=bold, size=size)
+        ws.cell(row=r, column=1, value=sv(text)).font = Font(bold=bold, size=size)
         ws.cell(row=r, column=1).alignment = Alignment(horizontal=align, wrap_text=True, vertical="top")
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n)
         ws.row_dimensions[r].height = max(1, math.ceil(len(text) * size / 11 / chars)) * (size + 5)
@@ -339,7 +344,7 @@ def render_xlsx(p: dict) -> bytes:
         ws.cell(row=r, column=1, value=k).font = Font(color="555555")
         if n > 2:
             ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=2)
-        ws.cell(row=r, column=min(3, n), value=str(v)).alignment = wrap
+        ws.cell(row=r, column=min(3, n), value=sv(str(v))).alignment = wrap
         if n > 3:
             ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=n)
             ws.row_dimensions[r].height = max(1, math.ceil(len(str(v)) / max(10, chars - 20))) * 16
@@ -354,7 +359,7 @@ def render_xlsx(p: dict) -> bytes:
     r += 1
     for row in p["rows"]:
         for i, (k, _t) in enumerate(cols, 1):
-            c = ws.cell(row=r, column=i, value=row.get(k, ""))
+            c = ws.cell(row=r, column=i, value=sv(row.get(k, "")))
             c.border, c.alignment = box, wrap
         r += 1
     line(f"Всего наименований: {len(p['rows'])}")

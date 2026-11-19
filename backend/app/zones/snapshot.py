@@ -34,6 +34,7 @@ from ..reports.quick import SEV_RU
 from ..vdb.match import STATUS_RU as M_STATUS_RU
 from ..vdb.normalize import SEV_RANK as SEV_RANK_RU
 from ..vdb.normalize import SEV_RU as EXT_SEV_RU
+from ..services.jobs import CURRENT
 from ..services.resources import RES
 from ..services.settings import SettingsService
 from ..services.sources import SourceRegistry
@@ -420,6 +421,8 @@ async def build_source(bc: BuildCtx, src: KscSource, *, hosts: set[int] | None =
                 zs.duration_ms, zs.progress, zs.error = int((time.monotonic() - t0) * 1000), None, None
                 zs.hosts_n, zs.detections_n, zs.agg_only, zs.notes = n_hosts, total_det + ext_total, agg_only, notes
                 zs.stamp, zs.probe_stamp, zs.probe_at, zs.vdb_rev, zs.vdb_rev_now = stamp_now, stamp_now, utcnow(), vrev, vnow
+            if (le := CURRENT.get()) is not None and le.kind == "zonecache":
+                await le.fence(db)                       # аренда перехвачена — поколение не подменяется (иначе два расчёта чистят друг друга)
             await db.commit()
         if not partial and cur:
             purge_later(bc.sm, sid, cur)

@@ -6,6 +6,7 @@ import asyncio
 from ..search import mssql_like
 from . import queries as q
 from .driver import SourceClient
+from .hosts import _utc
 
 SEVERITY = {1: "предупреждение", 2: "высокая", 4: "критическая"}
 SEVERITY_KEY = {1: "warning", 2: "high", 4: "critical"}
@@ -43,7 +44,7 @@ async def products_aggregate(client: SourceClient, *, active_days: int | None, e
     if exclude_slaves:
         where += " AND h.bIsSlaveServer = 0"
     if active_days:
-        where += " AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())"
+        where += " AND h.tmLastNagentConnected >= DATEADD(day, -(%(days)s), GETUTCDATE())"
         params["days"] = int(active_days)
     return await client.run(q.VULN_PRODUCTS_AGG.format(where=where), params, max_rows=200_000)
 
@@ -68,7 +69,7 @@ async def on_host(client: SourceClient, host_id: int) -> list[dict]:
                     "severity_label": SEVERITY.get(r.get("severity"), str(r.get("severity") or "")), "url": r.get("url") or "",
                     "product": r.get("product") or r.get("app_name") or "", "product_version": r.get("product_version") or "",
                     "app_name": r.get("app_name") or "", "app_version": r.get("app_version") or "", "publisher": r.get("publisher") or "",
-                    "detected": r.get("detected"), "patches_available": bool(r.get("patches_available")), "cve": sorted(nm["cve"]), "mssb": nm["mssb"],
+                    "detected": _utc(r.get("detected")), "patches_available": bool(r.get("patches_available")), "cve": sorted(nm["cve"]), "mssb": nm["mssb"],
                     "kb": [f"KB{k}" if k.isdigit() else k for k in nm["kb"]]})
     return out
 
@@ -91,7 +92,7 @@ async def page(client: SourceClient, *, offset: int, limit: int, host: str = "",
     rows = await client.run(q.VULNS_PAGE.format(where=w), {**params, "offset": offset, "limit": limit}, max_rows=limit)
     count_where = w.replace("(p.wstrDisplayName LIKE %(prod)s OR vp.wstrName LIKE %(prod)s)", "1 = 1") if mssql_like(product) else w   # в COUNT нет соединения с продуктами
     total = int((await client.run(q.VULNS_COUNT.format(where=count_where), params, max_rows=1))[0]["n"])
-    items = [{"occurrence_id": int(r["occurrence_id"]), "host_id": int(r["host_id"]), "host": r.get("host") or "", "detected": r.get("detected"), "kla_id": r.get("kla_id") or "",
+    items = [{"occurrence_id": int(r["occurrence_id"]), "host_id": int(r["host_id"]), "host": r.get("host") or "", "detected": _utc(r.get("detected")), "kla_id": r.get("kla_id") or "",
               "severity": SEVERITY.get(r.get("severity"), str(r.get("severity") or "")), "cve": r.get("cve") or "", "product": r.get("product") or r.get("app_name") or "",
               "product_version": r.get("product_version") or r.get("app_version") or "", "patches_available": bool(r.get("patches_available")), "url": r.get("url") or ""} for r in rows]
     return {"items": items, "total": total, "offset": offset, "limit": limit, "approximate_total": bool(product)}
@@ -173,7 +174,7 @@ async def descr_list(client: SourceClient, *, active_days: int | None, exclude_s
         where += " AND h.bIsSlaveServer = 0"
     params: dict = {}
     if active_days:
-        where += " AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())"
+        where += " AND h.tmLastNagentConnected >= DATEADD(day, -(%(days)s), GETUTCDATE())"
         params["days"] = int(active_days)
     # два независимых агрегата идут параллельно (семафор источника ограничивает одновременные запросы): время страницы — самый долгий из них, а не сумма.
     # Один проход с GROUPING SETS проверен и отвергнут: на крупной базе он в шесть раз медленнее двух отдельных запросов.
@@ -195,7 +196,7 @@ async def descr_list(client: SourceClient, *, active_days: int | None, exclude_s
         pr = sorted(by_descr.get(did, []), key=lambda x: -x[1])
         out.append({"descr_id": did, "kla_id": r.get("kla_id") or "", "severity": SEVERITY_KEY.get(r.get("severity"), "warning"), "severity_label": SEVERITY.get(r.get("severity"), ""),
                     "url": r.get("url") or "", "cve": sorted(nm["cve"]), "kb": nm["kb"], "products": [p for p, _ in pr if p][:6], "hosts": int(r["hosts"]), "total": int(r["total"]),
-                    "patchable": int(r.get("patchable") or 0), "last_detected": r.get("last_detected")})
+                    "patchable": int(r.get("patchable") or 0), "last_detected": _utc(r.get("last_detected"))})
     return out
 
 

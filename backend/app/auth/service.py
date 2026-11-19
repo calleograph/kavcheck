@@ -22,6 +22,7 @@ from ..config import Settings
 from ..models import AuthChallenge, LoginFailure, User, UserBackupCode, utcnow
 from ..security import totp
 from ..security.passwords import verify_password
+from ..services.jobs import _insert
 from . import ldap as ldapmod
 
 log = logging.getLogger("app.auth")
@@ -42,6 +43,7 @@ MESSAGES = {
     "no_role": ("Нет доступа: вашей учётной записи не назначена роль в KAV Checker. Обратитесь к администратору.", 403),
     "choose_domain": ("Учётная запись с таким именем есть в нескольких доменах. Выберите домен и войдите снова.", 409),
     "totp_expired": ("Время подтверждения истекло. Войдите заново.", 401),
+    "totp_unavailable": ("Второй фактор недоступен: не задан ключ шифрования. Обратитесь к администратору.", 503),
     "invalid_code": ("Неверный код. Проверьте время на телефоне или введите резервный код.", 401),
 }
 
@@ -95,18 +97,19 @@ class AuthService:
         if row and row.locked_until and row.locked_until > utcnow():
             raise AuthError("throttled", retry_after=int((row.locked_until - utcnow()).total_seconds()), reason="lockout", detail=f"неудачных попыток: {row.count}, блокировка до {row.locked_until:%H:%M:%S} UTC")
 
-    async def _record_failure(self, db: AsyncSession, key: str) -> None:
+    async def _record_failure(self, db: AsyncSession, key: str) -> int | None:
+        """+1 неудача атомарно в SQL (параллельные запросы не видят один и тот же счётчик); возвращает номер попытки, None — ключ уже заблокирован."""
         k, now = _h(key), utcnow()
-        row = await db.get(LoginFailure, k)
-        if row is None or now - row.first_at > timedelta(seconds=self._s.login_lockout_seconds * 3):
-            row = row or LoginFailure(key=k)
-            row.count, row.first_at, row.locked_until = 0, now, None
-            db.add(row)
-        row.count += 1
-        if row.count >= self._s.login_max_failures:
-            row.locked_until = now + timedelta(seconds=self._s.login_lockout_seconds)
-            row.count = 0
+        free = LoginFailure.locked_until.is_(None) | (LoginFailure.locked_until <= now)
+        sync = {"synchronize_session": False}
+        await db.execute(update(LoginFailure).where(LoginFailure.key == k, free, LoginFailure.first_at < now - timedelta(seconds=self._s.login_lockout_seconds * 3))
+                         .values(count=0, first_at=now, locked_until=None).execution_options(**sync))
+        await db.execute(_insert(db)(LoginFailure).values(key=k, count=0, first_at=now).on_conflict_do_nothing(index_elements=["key"]))
+        n = (await db.execute(update(LoginFailure).where(LoginFailure.key == k, free).values(count=LoginFailure.count + 1).returning(LoginFailure.count).execution_options(**sync))).scalar_one_or_none()
+        if n is not None and n >= self._s.login_max_failures:
+            await db.execute(update(LoginFailure).where(LoginFailure.key == k).values(locked_until=now + timedelta(seconds=self._s.login_lockout_seconds), count=0).execution_options(**sync))
         await db.commit()
+        return n
 
     async def _record_success(self, db: AsyncSession, key: str) -> None:
         row = await db.get(LoginFailure, _h(key))
@@ -199,6 +202,8 @@ class AuthService:
     async def second_factor(self, db: AsyncSession, user: User, *, groups) -> LoginResult:
         cfg = await self.totp_cfg(db)
         on = cfg.totp_policy != "off" and self._svc.box is not None
+        if cfg.totp_policy != "off" and self._svc.box is None and user.totp_enabled and user.totp_secret_enc:
+            raise AuthError("totp_unavailable", reason="totp_no_master_key", detail=f"{user.username}: второй фактор недоступен: не задан ключ шифрования (APP_MASTER_KEY)")
         if on and user.totp_enabled and user.totp_secret_enc:
             token = secrets.token_urlsafe(24)
             db.add(AuthChallenge(key=_th(token), kind="totp", user_id=user.id, attempts=0, expires_at=utcnow() + CHALLENGE_TTL))
@@ -226,17 +231,21 @@ class AuthService:
         except AuthError as exc:
             exc.detail = f"{user.username}: {exc.detail}"
             raise
-        ch.attempts += 1
+        # попытка засчитывается до проверки кода и одним UPDATE: параллельные запросы не обходят пределы
+        n = (await db.execute(update(AuthChallenge).where(AuthChallenge.key == ch.key).values(attempts=AuthChallenge.attempts + 1)
+                              .returning(AuthChallenge.attempts).execution_options(synchronize_session=False))).scalar_one_or_none()
         await db.commit()
-        if ch.attempts > CHALLENGE_ATTEMPTS:
-            await db.delete(ch)
+        if n is None or n > CHALLENGE_ATTEMPTS:
+            await db.execute(delete(AuthChallenge).where(AuthChallenge.key == ch.key))
             await db.commit()
             raise AuthError("totp_expired", reason="too_many_attempts", detail=f"{user.username}: больше {CHALLENGE_ATTEMPTS} попыток на одно подтверждение")
+        tn = await self._record_failure(db, tkey)        # неудача по пользователю тоже засчитывается заранее; верный код сбрасывает счётчик
+        if tn is None:
+            raise AuthError("throttled", retry_after=self._s.login_lockout_seconds, reason="lockout", detail=f"{user.username}: блокировка после неверных кодов")
         ok, backup = await self.check_code(db, user, code)
         if not ok:
-            await self._record_failure(db, tkey)
-            raise AuthError("invalid_code", reason="bad_code", detail=f"{user.username}: {'резервный код' if totp.looks_like_backup(code) else 'код приложения'} не принят (попытка {ch.attempts} из {CHALLENGE_ATTEMPTS})")
-        await db.delete(ch)
+            raise AuthError("invalid_code", reason="bad_code", detail=f"{user.username}: {'резервный код' if totp.looks_like_backup(code) else 'код приложения'} не принят (попытка {n} из {CHALLENGE_ATTEMPTS})")
+        await db.execute(delete(AuthChallenge).where(AuthChallenge.key == ch.key))
         user.last_login_at = utcnow()
         await db.commit()
         await self._record_success(db, tkey)

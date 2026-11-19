@@ -127,7 +127,7 @@ def _write_audit(path: Path, rows: list[dict], summary: dict, meta: dict) -> Non
     it.append(["Программа", "Условие проверки", "Целевая версия", "Компьютеров (уникальных)", *[f"{s}: компьютеров" for s in sources], "Пояснение"], font=bold)
     for p in summary.get("programs", []):
         by = {b["source"]: b["hosts"] for b in p.get("by_source", [])}
-        it.append([p["program"], p["condition"], p["target_version"], p["hosts"], *[by.get(s, 0) for s in sources], p.get("explain") or ""])
+        it.append([_cell(x) for x in (p["program"], p["condition"], p["target_version"], p["hosts"], *[by.get(s, 0) for s in sources], p.get("explain") or "")])
     it.append([])
     it.append(["Всего строк", summary.get("rows")])
     it.append(["Компьютеров (уникальных в пределах источника)", summary.get("hosts")])
@@ -148,7 +148,7 @@ def _write_audit(path: Path, rows: list[dict], summary: dict, meta: dict) -> Non
     for s in summary.get("sources", []):
         for i in s.get("items", []):
             for v, cnt in i.get("versions", []):
-                vs.append([s["source"], i["program"], v, cnt])
+                vs.append([_cell(x) for x in (s["source"], i["program"], v, cnt)])
     vs.filter(4)
     fs = bk.sheet("Найденные пакеты")
     fs.widths(24, 30, 26, 40, 24, 22, 20, 12)
@@ -157,7 +157,7 @@ def _write_audit(path: Path, rows: list[dict], summary: dict, meta: dict) -> Non
     for s in summary.get("sources", []):
         for i in s.get("items", []):
             for f in i.get("found", []):
-                fs.append([s["source"], i["program"], f.get("product") or "", f["name"], f.get("publisher") or "", f["version"], f.get("compared_version") or "", "да" if f["matched"] else "нет"])
+                fs.append([_cell(x) for x in (s["source"], i["program"], f.get("product") or "", f["name"], f.get("publisher") or "", f["version"], f.get("compared_version") or "", "да" if f["matched"] else "нет")])
     fs.filter(8)
     m = bk.sheet("Параметры отчёта")
     m.widths(44, 110)
@@ -191,7 +191,7 @@ def write_xlsx(path: Path, kind: str, rows: list[dict], summary: dict, meta: dic
         vs.freeze()
         vs.append(["Ветка", "Установок", "Уникальных компьютеров", "Пакеты"])
         for b in summary.get("branches", []):
-            vs.append([b["branch"], b["installs"], b["hosts"], ", ".join(b["packages"])[:30000]])
+            vs.append([_cell(x) for x in (b["branch"], b["installs"], b["hosts"], ", ".join(b["packages"])[:30000])])
         vs.filter(4)
         hs = bk.sheet("Компьютеры")
         hs.freeze()
@@ -202,8 +202,8 @@ def write_xlsx(path: Path, kind: str, rows: list[dict], summary: dict, meta: dic
         for rs in sorted(by_host.values(), key=lambda rs: rs[0]["name"].lower()):
             f = rs[0]
             branches = sorted({r["branch"] for r in rs if r["branch"]})
-            hs.append([f["name"], f["fqdn"], f["ip"], f["os"], f["linux_release"], f["group"], _cell(f["last_connected"]), f["activity"], ", ".join(branches), len(rs),
-                       "; ".join(f"{r['app_name']} {r['app_version']}" for r in rs)[:30000]])
+            hs.append([_cell(x) for x in (f["name"], f["fqdn"], f["ip"], f["os"], f["linux_release"], f["group"], f["last_connected"], f["activity"], ", ".join(branches), len(rs),
+                                          "; ".join(f"{r['app_name']} {r['app_version']}" for r in rs)[:30000])])
         hs.filter(11)
     ws = bk.sheet("Установки" if kind == "software_hosts" else "Компьютеры")
     ws.widths(*_autosize(columns, rows))

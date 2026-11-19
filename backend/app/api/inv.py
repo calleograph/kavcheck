@@ -4,6 +4,7 @@
 Учётные сведения меняются только здесь (через inventory/core.apply_changes) — с историей карточки и записью в журнал действий. Данные KSC только читаются."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from dataclasses import dataclass
@@ -63,6 +64,24 @@ async def get_asset(db: AsyncSession, ix: Ix, aid: int, *, lock: bool = False) -
     if a is None:
         raise HTTPException(status_code=404, detail="Карточка не найдена или вне вашей области учёта")
     return a
+
+
+def doc_filter(ix: Ix):
+    """Условие на InvDoc для пользователя с областью учёта: все строки — карточки его области; документ без строк — по местоположениям «откуда/куда» или свой. Без области — None."""
+    af = ix.acc.asset_filter()
+    if af is None:
+        return None
+    items = select(InvDocItem.id).where(InvDocItem.doc_id == InvDoc.id)
+    locs = ix.acc.loc_ids()
+    return or_(and_(items.exists(), ~items.where(InvDocItem.asset_id.not_in(select(InvAsset.id).where(af))).exists()),
+               and_(~items.exists(), or_(InvDoc.from_location_id.in_(locs), InvDoc.to_location_id.in_(locs), InvDoc.created_by == ix.su.display_name)))
+
+
+async def get_doc_row(db: AsyncSession, ix: Ix, did: int, *, lock: bool = False) -> InvDoc:
+    d = await db.get(InvDoc, did, with_for_update=lock)
+    if d is None or ((f := doc_filter(ix)) is not None and not (await db.execute(select(InvDoc.id).where(InvDoc.id == did, f))).first()):
+        raise HTTPException(status_code=404, detail="Документ не найден или вне вашей области учёта")
+    return d
 
 
 # ------------------------------------------------------------------------------------------------ сводные сведения раздела
@@ -306,20 +325,21 @@ async def bulk(body: BulkBody, ix: Ix = Depends(inv_ctx), db: AsyncSession = Dep
     if (af := ix.acc.asset_filter()) is not None:
         stmt = stmt.where(af)
     rows = (await db.execute(stmt.with_for_update())).scalars().all()
+    n = await C.names_for(db, list(rows))                          # имена всех карточек одной выборкой — дальше без запросов на каждую
     changed, errors = 0, []
     for a in rows:
         data = dict(body.data)
         if "props" in data:
             data["props"] = {**(a.props or {}), **(data["props"] or {})}
         try:
-            ch = await C.apply_changes(db, a, data, ix.acc)
+            ch = await C.apply_changes(db, a, data, ix.acc, names=n)          # при ошибке карточка возвращается в прежнее состояние (частичные значения без истории не сохраняются)
         except C.Invalid as exc:
             errors.append({"id": a.id, "inv_no": a.inv_no, "error": str(exc)})
             continue
         if ch:
             changed += 1
             if not body.dry_run:
-                await C.record(db, a, C.kind_of(ch), ch, ix.su.display_name, comment=body.comment, basis=body.basis, title="Массовое изменение: " + ", ".join(dict.fromkeys(c["label"] for c in ch)))
+                await C.record(db, a, C.kind_of(ch), ch, ix.su.display_name, comment=body.comment, basis=body.basis, title="Массовое изменение: " + ", ".join(dict.fromkeys(c["label"] for c in ch)), names=n)
     if body.dry_run:
         await db.rollback()
         return {"found": len(rows), "would_change": changed, "errors": errors[:50]}
@@ -458,14 +478,8 @@ async def ksc_hosts(source: str = Query("", max_length=2000), q: str = Query("",
     w = [or_(*[and_(ZcHost.source_id == sid, ZcHost.gen == g) for sid, g in gens.items()])]
     if (c := column_like(ZcHost.search, q.strip())) is not None:
         w.append(c)
-    if unlinked:
-        linked_q = select(InvAsset.ksc_source_id, InvAsset.ksc_host_id).where(InvAsset.ksc_host_id.is_not(None), InvAsset.ksc_source_id.in_(list(gens)))
-        taken = {(str(a), h) for a, h in (await db.execute(linked_q)).all()}
-        if taken:
-            by_src: dict = {}
-            for a, h in taken:
-                by_src.setdefault(a, []).append(h)
-            w.append(and_(*[or_(ZcHost.source_id != uuid.UUID(a), ZcHost.host_id.not_in(hs)) for a, hs in by_src.items()]))
+    if unlinked:                                                   # NOT EXISTS, а не список: десятки тысяч связанных карточек не упираются в предел параметров
+        w.append(~select(InvAsset.id).where(InvAsset.ksc_source_id == ZcHost.source_id, InvAsset.ksc_host_id == ZcHost.host_id).exists())
     old = None
     if days:                                                       # скрытые фильтром активности — при тех же остальных условиях
         fresh = ZcHost.last_connected >= utcnow() - timedelta(days=days)
@@ -514,6 +528,7 @@ async def ksc_import(body: ImportBody, ix: Ix = Depends(inv_ctx), db: AsyncSessi
     types = {c: await C.type_for_cls(db, c) for c in ("server", "workstation")}
     st = body.status_id or ((await C.default_status(db, "use")) or InvRef(id=None)).id
     created, skipped = [], 0
+    n = C.Names()                                                  # общий кэш имён на всю порцию
     by_src: dict = {}
     for sid, hid in pairs:
         by_src.setdefault(sid, []).append(hid)
@@ -526,23 +541,24 @@ async def ksc_import(body: ImportBody, ix: Ix = Depends(inv_ctx), db: AsyncSessi
             continue
         hosts = (await db.execute(select(ZcHost).where(ZcHost.source_id == sid, ZcHost.gen == gen, ZcHost.host_id.in_(hids)))).scalars().all()
         have = {h for (h,) in (await db.execute(select(InvAsset.ksc_host_id).where(InvAsset.ksc_source_id == sid, InvAsset.ksc_host_id.in_(hids))))}
+        nos = iter(await C.next_inv_nos(db, ix.cfg, sum(h.host_id not in have for h in hosts)))
         for h in hosts:
             if h.host_id in have:
                 skipped += 1
                 continue
             cls = cls_from(h.os, h.name, (h.data or {}).get("group", ""))
-            a = InvAsset(uid=uuid.uuid4(), inv_no=await C.next_inv_no(db, ix.cfg), created_by=ix.su.display_name, updated_by=ix.su.display_name, version=1,
+            a = InvAsset(uid=uuid.uuid4(), inv_no=next(nos), created_by=ix.su.display_name, updated_by=ix.su.display_name, version=1,
                          ksc_source_id=sid, ksc_host_id=h.host_id, ksc_link="confirmed", ksc_name=h.name[:300], linked_at=utcnow())
             db.add(a)
             data = {"name": h.name.split(".")[0][:300], "hostname": h.name.split(".")[0].lower(), "type_id": types[cls].id if types[cls] else None, "status_id": st}
             if body.location_id:
                 data["location_id"] = body.location_id
             try:
-                ch = await C.apply_changes(db, a, data, ix.acc, creating=True)
+                ch = await C.apply_changes(db, a, data, ix.acc, creating=True, names=n)
             except C.Invalid as exc:
                 raise bad(exc) from None
             await db.flush()
-            await C.record(db, a, "import", ch, ix.su.display_name, title=f"Создание карточки по компьютеру KSC {h.name}")
+            await C.record(db, a, "import", ch, ix.su.display_name, title=f"Создание карточки по компьютеру KSC {h.name}", names=n)
             created.append(a.id)
         skipped += len(set(hids) - {h.host_id for h in hosts})
     audit(db, ix, "ksc.import", ",".join(str(x) for x in by_src)[:120], {"created": len(created), "requested": len(pairs)})
@@ -645,8 +661,7 @@ async def _owner_ok(db: AsyncSession, ix: Ix, owner: str, oid: int) -> None:
     if owner == "asset":
         await get_asset(db, ix, oid)
     elif owner == "doc":
-        if await db.get(InvDoc, oid) is None:
-            raise HTTPException(status_code=404, detail="Документ не найден")
+        await get_doc_row(db, ix, oid)
     elif owner == "license":
         if await db.get(InvLicense, oid) is None:
             raise HTTPException(status_code=404, detail="Лицензия не найдена")
@@ -736,7 +751,7 @@ async def import_preview(request: Request, ix: Ix = Depends(inv_ctx), db: AsyncS
     ix.acc.need("import")
     data = await _body(request, IM.MAX_BYTES)
     try:
-        hdr, rows = IM.read_table(data, unquote(request.headers.get("x-file-name", "") or "file.csv"))
+        hdr, rows = await asyncio.to_thread(IM.read_table, data, unquote(request.headers.get("x-file-name", "") or "file.csv"))   # разбор большого файла не останавливает остальные запросы
     except IM.ImportError_ as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     props = list((await db.execute(select(InvProp).where(InvProp.active.is_(True)))).scalars())
@@ -762,7 +777,7 @@ async def import_run(request: Request, mode: str = Query("upsert", pattern=r"^(c
     data = await _body(request, IM.MAX_BYTES)
     name = unquote(request.headers.get("x-file-name", "") or "file.csv")
     try:
-        hdr, rows = IM.read_table(data, name)
+        hdr, rows = await asyncio.to_thread(IM.read_table, data, name)
         st = await IM.run(db, hdr, rows, {str(k): str(v) for k, v in mapping.items()}, mode=mode, create_refs=create_refs, acc=ix.acc, cfg=ix.cfg, by=ix.su.display_name, dry_run=dry_run)
     except IM.ImportError_ as exc:
         await db.rollback()

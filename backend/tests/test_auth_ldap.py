@@ -324,3 +324,25 @@ async def test_failed_logins_are_explained_in_the_journal(client, app):
     async with app.state.session_maker() as db:
         reasons = {(r.details or {}).get("reason") for r in (await db.execute(select(AuditLog).where(AuditLog.action == "auth.login_failed"))).scalars()}
     assert {"local_bad_password", "lockout"} <= reasons, reasons
+
+
+async def test_failure_counter_is_atomic_and_refuses_while_locked(app):
+    """Счётчик неудач увеличивается в SQL и возвращает номер попытки; при блокировке — None (параллельные запросы не видят один и тот же 0)."""
+    auth, n = app.state.auth, app.state.settings.login_max_failures
+    async with app.state.session_maker() as db:
+        got = [await auth._record_failure(db, "race-user") for _ in range(n + 1)]
+    assert got[:n] == list(range(1, n + 1)) and got[n] is None
+
+
+async def test_totp_user_cannot_log_in_with_password_only_without_master_key(client, app):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    secret = (await client.post("/api/v1/auth/totp/setup", json={"password": "Admin-Passw0rd-123"})).json()["secret"].replace(" ", "")
+    assert (await client.post("/api/v1/auth/totp/enable", json={"code": totp.code_at(secret)})).status_code == 200
+    await client.post("/api/v1/auth/logout")
+    client.headers.pop("X-CSRF-Token", None)
+    box, app.state.settings_svc.box = app.state.settings_svc.box, None
+    try:
+        r = await client.post("/api/v1/auth/login", json={"login": "admin", "password": "Admin-Passw0rd-123"}, headers={"Origin": "http://testserver"})
+    finally:
+        app.state.settings_svc.box = box
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "totp_unavailable" and "kavcheck_session" not in r.cookies

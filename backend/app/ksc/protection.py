@@ -158,7 +158,12 @@ async def load(client: SourceClient, *, exclude_slaves: bool, groups: dict | Non
     for p in await client.run(q.PROTECTION_PRODUCTS, max_rows=2_000_000):
         by_host.setdefault(int(p["host_id"]), []).append(p)
     now = datetime.now(timezone.utc)
-    recs = [record(h, by_host.get(int(h["host_id"]), []), groups, now) for h in hosts]
+    hosts.reverse()                                                 # строки KSC освобождаются по мере построения записей (pop с конца сохраняет порядок): пик памяти — не сырые строки плюс записи
+    recs = []
+    while hosts:
+        h = hosts.pop()
+        recs.append(record(h, by_host.pop(int(h["host_id"]), []), groups, now))
+    del by_host
     if hw_cfg is not None and hw_cfg.enabled:                      # оборудование Linux-серверов одним запросом; нет объектов или данных — оценка не выполняется
         from . import hardware as HW  # noqa: PLC0415
 

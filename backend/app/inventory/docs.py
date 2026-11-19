@@ -30,11 +30,27 @@ def flow_of(kind: str) -> dict:
     return M.DOC_FLOW.get(kind, M.DOC_FLOW_DEFAULT)
 
 
-async def snap(db: AsyncSession, a: InvAsset) -> dict:
-    n = await C.names_for(db, [a], props=False)
+async def snap(db: AsyncSession, a: InvAsset, names: C.Names | None = None) -> dict:
+    n = await C.names_for(db, [a], props=False, into=names)
     return {"inv_no": a.inv_no, "acc_no": a.acc_no, "serial": a.serial, "name": a.name or n.ref(a.type_id) or M.CLS_RU.get(a.cls, ""),
             "type": n.ref(a.type_id), "model": " ".join(x for x in (n.ref(a.manufacturer_id), n.ref(a.model_id)) if x), "location": n.loc(a.location_id), "cost": a.cost,
             "user": n.person(a.user_id), "status": n.ref(a.status_id)}
+
+
+async def check_assets(db: AsyncSession, doc: InvDoc, assets: list[InvAsset], acc: C.Access) -> None:
+    """Область учёта, занятость другим перемещением, списанные — при составлении черновика и ещё раз на этапе, меняющем карточки (между ними карточку могли списать или отправить)."""
+    if acc.scopes:
+        locs = {x.id: x for x in (await db.execute(select(InvLocation).where(InvLocation.id.in_({a.location_id for a in assets} - {None})))).scalars()}
+        out = [a.inv_no for a in assets if not acc.loc_ok(locs.get(a.location_id))]
+        if out:
+            raise HTTPException(status_code=403, detail=f"Вне вашей области учёта: {', '.join(out[:10])}")
+    busy = [a.inv_no for a in assets if a.transit_doc_id and a.transit_doc_id != doc.id]
+    if busy and doc.kind in ("move", "issue", "return", "writeoff"):
+        raise HTTPException(status_code=409, detail=f"В пути по другому перемещению: {', '.join(busy[:10])}")
+    if doc.kind in ("issue", "move", "accept", "handover"):
+        gone = [a.inv_no for a in assets if a.st_cls in ("writeoff", "decom", "lost")]
+        if gone:
+            raise HTTPException(status_code=409, detail=f"Списано или выведено из эксплуатации: {', '.join(gone[:10])}")
 
 
 async def set_items(db: AsyncSession, doc: InvDoc, items: list[dict], acc: C.Access) -> None:
@@ -46,19 +62,9 @@ async def set_items(db: AsyncSession, doc: InvDoc, items: list[dict], acc: C.Acc
     missing = [i for i in ids if i not in assets]
     if missing:
         raise HTTPException(status_code=422, detail=f"Карточки не найдены: {', '.join(map(str, missing[:10]))}")
-    if acc.scopes:
-        locs = {x.id: x for x in (await db.execute(select(InvLocation).where(InvLocation.id.in_({a.location_id for a in assets.values()} - {None})))).scalars()}
-        out = [a.inv_no for a in assets.values() if not acc.loc_ok(locs.get(a.location_id))]
-        if out:
-            raise HTTPException(status_code=403, detail=f"Вне вашей области учёта: {', '.join(out[:10])}")
-    busy = [a.inv_no for a in assets.values() if a.transit_doc_id and a.transit_doc_id != doc.id]
-    if busy and doc.kind in ("move", "issue", "return", "writeoff"):
-        raise HTTPException(status_code=409, detail=f"В пути по другому перемещению: {', '.join(busy[:10])}")
-    if doc.kind in ("issue", "move", "accept", "handover"):
-        gone = [a.inv_no for a in assets.values() if a.st_cls in ("writeoff", "decom", "lost")]
-        if gone:
-            raise HTTPException(status_code=409, detail=f"Списано или выведено из эксплуатации: {', '.join(gone[:10])}")
+    await check_assets(db, doc, list(assets.values()), acc)
     have = {it.asset_id: it for it in (await db.execute(select(InvDocItem).where(InvDocItem.doc_id == doc.id))).scalars()}
+    n = await C.names_for(db, list(assets.values()), props=False)          # имена всех строк одной выборкой
     keep = set(ids)
     for aid, it in have.items():
         if aid not in keep:
@@ -67,7 +73,7 @@ async def set_items(db: AsyncSession, doc: InvDoc, items: list[dict], acc: C.Acc
     for aid in ids:
         src = by[aid]
         it = have.get(aid)
-        s = await snap(db, assets[aid])
+        s = await snap(db, assets[aid], n)
         if it is None:
             db.add(InvDocItem(doc_id=doc.id, asset_id=aid, snap=s, condition=str(src.get("condition") or "")[:200], note=str(src.get("note") or "")[:500]))
         else:
@@ -91,15 +97,24 @@ async def transition(db: AsyncSession, doc: InvDoc, to: str, acc: C.Access, by: 
     if not items and to not in ("cancelled", "draft") and doc.kind != "receipt":
         raise HTTPException(status_code=422, detail="В документе нет оборудования")
     assets = {a.id: a for a in (await db.execute(select(InvAsset).where(InvAsset.id.in_([i.asset_id for i in items])).with_for_update())).scalars()} if items else {}
+    if assets and to in ("sent", "accepted", "done") and not (doc.kind == "move" and to == "done"):     # этап меняет карточки: проверки черновика — ещё раз, на заблокированных
+        await check_assets(db, doc, list(assets.values()), acc)
     full = C.Access(acc.perms | {"edit", "location", "people"}, acc.scopes, acc.scope_ids)       # право на сам документ уже проверено; область учёта — прежняя
     title = f"{M.DOC_SHORT[doc.kind]} {doc.no}"
     touched: list[int] = []
     d = doc.data or {}
+    n = await C.names_for(db, list(assets.values()))                   # общий кэш имён на все строки документа
+    stc: dict[str, InvRef] = {}
+
+    async def status_of(cls: str) -> InvRef:
+        if cls not in stc:
+            stc[cls] = await _status_of(db, cls)
+        return stc[cls]
 
     async def change(a: InvAsset, data: dict, kind: str = "doc", what: str = "") -> None:
-        ch = await C.apply_changes(db, a, data, full)
+        ch = await C.apply_changes(db, a, data, full, names=n)
         if ch or what:
-            await C.record(db, a, kind, ch, by, comment=comment, basis=doc.basis, doc_id=doc.id, title=f"{title}{': ' + what if what else ''}")
+            await C.record(db, a, kind, ch, by, comment=comment, basis=doc.basis, doc_id=doc.id, title=f"{title}{': ' + what if what else ''}", names=n)
             touched.append(a.id)
 
     to_person = await db.get(InvPerson, doc.to_person_id) if doc.to_person_id else None
@@ -126,25 +141,26 @@ async def transition(db: AsyncSession, doc: InvDoc, to: str, acc: C.Access, by: 
             for it in items:
                 a = assets[it.asset_id]
                 a.transit_doc_id = doc.id
-                await C.record(db, a, "doc", [], by, comment=comment, basis=doc.basis, doc_id=doc.id, title=f"{title}: отправлено в «{(await _loc_path(db, doc.to_location_id))}»")
+                await C.record(db, a, "doc", [], by, comment=comment, basis=doc.basis, doc_id=doc.id, title=f"{title}: отправлено в «{(await _loc_path(db, doc.to_location_id))}»", names=n)
                 touched.append(a.id)
         elif to == "accepted":
             if not doc.to_location_id:
                 raise HTTPException(status_code=422, detail="Укажите, куда перемещается оборудование")
             for it in items:
                 a = assets[it.asset_id]
-                a.transit_doc_id = None
+                if a.transit_doc_id == doc.id:
+                    a.transit_doc_id = None
                 await change(a, target(a), "move", "принято")
         elif to == "cancelled" and doc.status == "sent":
             for it in items:
                 a = assets[it.asset_id]
                 if a.transit_doc_id == doc.id:
                     a.transit_doc_id = None
-                    await C.record(db, a, "doc", [], by, comment=comment, doc_id=doc.id, title=f"{title}: перемещение отменено")
+                    await C.record(db, a, "doc", [], by, comment=comment, doc_id=doc.id, title=f"{title}: перемещение отменено", names=n)
                     touched.append(a.id)
     elif doc.kind == "repair":
         if to == "sent":
-            rep = await _status_of(db, "repair")
+            rep = await status_of("repair")
             for it in items:
                 a = assets[it.asset_id]
                 it.snap = {**(it.snap or {}), "prev_status_id": a.status_id}
@@ -156,7 +172,7 @@ async def transition(db: AsyncSession, doc: InvDoc, to: str, acc: C.Access, by: 
                 if extra_status:
                     prev = int(extra_status)
                 if prev is None or prev == a.status_id:
-                    prev = (await _status_of(db, "use" if a.user_id else "stock")).id
+                    prev = (await status_of("use" if a.user_id else "stock")).id
                 await change(a, {"status_id": prev}, "repair", f"возвращено из ремонта{(': ' + d['result']) if d.get('result') else ''}")
     elif to == "done":
         for it in items:
@@ -165,21 +181,21 @@ async def transition(db: AsyncSession, doc: InvDoc, to: str, acc: C.Access, by: 
                 if to_person is None:
                     raise HTTPException(status_code=422, detail="Укажите сотрудника, которому выдаётся оборудование")
                 data = target(a)
-                data.setdefault("status_id", (await _status_of(db, "use")).id)
+                data.setdefault("status_id", (await status_of("use")).id)
                 await change(a, data, "doc", f"выдано: {to_person.name}")
             elif doc.kind == "return":
                 data = target(a)
                 for r in ["user", *(d.get("clear_roles") or [])]:
                     if r in ROLE_FIELD:
                         data[ROLE_FIELD[r]] = None
-                data.setdefault("status_id", (await _status_of(db, "stock")).id)
+                data.setdefault("status_id", (await status_of("stock")).id)
                 await change(a, data, "doc", "возвращено")
             elif doc.kind == "writeoff":
                 acc.need("writeoff")
-                data = {"status_id": int(extra_status) if extra_status else (await _status_of(db, "writeoff")).id, "user_id": None}
+                data = {"status_id": int(extra_status) if extra_status else (await status_of("writeoff")).id, "user_id": None}
                 await change(a, data, "writeoff", "списано")
             elif doc.kind == "decom":
-                data = {"status_id": (await _status_of(db, "decom")).id, "user_id": None}
+                data = {"status_id": (await status_of("decom")).id, "user_id": None}
                 if a.parent_id and a.rel == "vm":
                     data["parent_id"] = None                                    # связь с хостом виртуализации снимается, в истории остаётся
                 ck = d.get("checklist") or {}
@@ -225,19 +241,21 @@ async def receive(db: AsyncSession, doc: InvDoc, acc: C.Access, by: str, comment
     cfg = InventorySettings(**{k: v for k, v in ((row.value if row else {}) or {}).items() if k in InventorySettings.model_fields})
     stock = await C.default_status(db, "stock")
     created: list[int] = []
+    n = C.Names()
+    nos = iter(await C.next_inv_nos(db, cfg, sum(int(ln.get("qty") or 1) for ln in lines)))
     for ln in lines:
         serials = [s for s in (ln.get("serials") or []) if s][: int(ln.get("qty") or 1)]
         for k in range(int(ln.get("qty") or 1)):
-            a = InvAsset(uid=uuid.uuid4(), inv_no=await C.next_inv_no(db, cfg), created_by=by, updated_by=by, version=1)
+            a = InvAsset(uid=uuid.uuid4(), inv_no=next(nos), created_by=by, updated_by=by, version=1)
             db.add(a)
             data = {"type_id": ln.get("type_id"), "manufacturer_id": ln.get("manufacturer_id"), "model_id": ln.get("model_id"), "name": ln.get("name") or "", "location_id": doc.to_location_id,
                     "status_id": stock.id if stock else None, "supplier_id": d.get("supplier_id"), "purchase_doc": (d.get("invoice") or doc.basis or doc.no)[:300],
                     "purchase_date": doc.doc_date.isoformat(), "received_date": utcnow().date().isoformat(), "cost": ln.get("cost"), "warranty_until": ln.get("warranty_until"),
                     "serial": serials[k] if k < len(serials) else ""}
-            ch = await C.apply_changes(db, a, {k2: v for k2, v in data.items() if v not in (None, "")}, acc, creating=True)
+            ch = await C.apply_changes(db, a, {k2: v for k2, v in data.items() if v not in (None, "")}, acc, creating=True, names=n)
             await db.flush()
-            await C.record(db, a, "create", ch, by, comment=comment, basis=doc.basis, doc_id=doc.id, title=f"Поступление {doc.no}: принято на склад")
-            db.add(InvDocItem(doc_id=doc.id, asset_id=a.id, snap=await snap(db, a), condition="новое"))
+            await C.record(db, a, "create", ch, by, comment=comment, basis=doc.basis, doc_id=doc.id, title=f"Поступление {doc.no}: принято на склад", names=n)
+            db.add(InvDocItem(doc_id=doc.id, asset_id=a.id, snap=await snap(db, a, n), condition="новое"))
             created.append(a.id)
     doc.data = {**d, "created": created}
     return created

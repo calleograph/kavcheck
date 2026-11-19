@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -237,7 +237,3 @@ async def sweep_expired(db: AsyncSession, source_id: uuid.UUID | None = None) ->
 async def history(db: AsyncSession, triage_id: uuid.UUID) -> list[dict]:
     ev = (await db.execute(select(VulnTriageEvent).where(VulnTriageEvent.triage_id == triage_id).order_by(VulnTriageEvent.id))).scalars().all()
     return [{"at": e.at, "actor": e.actor, "action": e.action, "from": STATUS_RU.get(e.from_status, ""), "to": STATUS_RU.get(e.to_status, ""), "comment": e.comment} for e in ev]
-
-
-def default_review_until(days: int = DEFAULT_REVIEW_DAYS) -> datetime:
-    return datetime.now(timezone.utc) + timedelta(days=days)

@@ -115,7 +115,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         app.state.auth = AuthService(settings, settings_svc, app.state.ldap)
         app.state.journal = Journal(session_maker)
         app.state.sources = SourceRegistry(settings, settings_svc)
-        app.state.runner = Runner(session_maker, settings, settings_svc, app.state.journal)
+        app.state.runner = Runner(session_maker, settings, settings_svc, app.state.journal, sources=app.state.sources)
         app.state.cache = TtlCache()
         tasks: list[asyncio.Task] = []
         from .services.system import install_journal_handler  # noqa: PLC0415

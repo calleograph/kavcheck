@@ -287,6 +287,7 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
         locals_: dict[int, set] = defaultdict(set)
         for d, email in (await db.execute(select(BiOwner.device_id, BiPerson.email).join(BiPerson, BiPerson.id == BiOwner.person_id).where(BiOwner.source_id == bi_source_id, BiPerson.email != ""))).all():
             locals_[int(d)].add(email.split("@", 1)[0].lower())
+        await xact_lock(db, f"bi-match:{bi_source_id}")              # до чтения решений: решение администратора, зафиксированное во время расчёта, иначе дало бы дубль пары
         kept = list((await db.execute(select(BiMatch).where(BiMatch.bi_source_id == bi_source_id, BiMatch.level.in_(KEEP)))).scalars())
         prior = {m.device_id: m for m in kept if m.level == "confirmed" and m.decided_by in RULES}      # связи по правилу пересматриваются каждый раз, но не переключаются без явной причины
         manual = {(m.device_id, m.ksc_source_id, m.host_id): m for m in kept if m.level in MANUAL and m.id not in {p.id for p in prior.values()}}
@@ -432,7 +433,6 @@ async def run(sm: async_sessionmaker[AsyncSession], bi_source_id, *, force: bool
                     n["stale_rows"] += 1
             n["ambiguous"] += 1
         dev_by_id = {d["id"]: d for d in devs}
-        await xact_lock(db, f"bi-match:{bi_source_id}")
         if lease is not None:
             await lease.fence(db)
         await db.execute(delete(BiMatch).where(BiMatch.bi_source_id == bi_source_id, or_(BiMatch.level.notin_(KEEP), and_(BiMatch.level == "confirmed", BiMatch.decided_by.in_(RULES)))))

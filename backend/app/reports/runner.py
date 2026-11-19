@@ -14,13 +14,14 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
-from ..ksc.driver import ConnParams, KscError, Session, SourceClient
+from ..ksc.driver import ConnParams, KscError, Session
 from ..ksc.grouping import Rule
 from ..models import GroupingRule, KscSource, ReportJob, utcnow
 from ..services import catalog as catalog_svc
 from ..services.audit import Journal
 from ..services.resources import RES, MemoryPressure
 from ..services.settings import ReportsSettings, SettingsService
+from ..services.sources import SourceRegistry
 from . import quick_pdf, audit, builder, export, quick, quick_export
 
 log = logging.getLogger("app.reports")
@@ -39,8 +40,9 @@ def job_dir(settings: Settings, job_id) -> Path:
 _BG: set = set()                                               # фоновые задачи, запущенные отчётами (построение каталога)
 
 class Runner:
-    def __init__(self, session_maker: async_sessionmaker[AsyncSession], settings: Settings, settings_svc: SettingsService, journal: Journal):
+    def __init__(self, session_maker: async_sessionmaker[AsyncSession], settings: Settings, settings_svc: SettingsService, journal: Journal, sources: SourceRegistry | None = None):
         self._sm, self._cfg, self._svc, self._journal = session_maker, settings, settings_svc, journal
+        self.sources = sources or SourceRegistry(settings, settings_svc)     # один клиент (семафор, пул) на источник для всех заданий: предел одновременных запросов к SQL Server общий
         self._sem = asyncio.Semaphore(settings.report_concurrency)
         self._tasks: set[asyncio.Task] = set()
         self.catalog = None          # services.catalog.CatalogScheduler: сборка каталога источника, если его ещё нет (задаётся в worker)
@@ -62,8 +64,11 @@ class Runner:
             from ..services.jobs import touch_current  # noqa: PLC0415
 
             touch_current()
+        q = update(ReportJob).where(ReportJob.id == job_id)
+        if values.get("status", "cancelled") != "cancelled":                  # итог выполнения не затирает отмену пользователя
+            q = q.where(ReportJob.status != "cancelled")
         async with self._sm() as db:
-            await db.execute(update(ReportJob).where(ReportJob.id == job_id).values(**values))
+            await db.execute(q.values(**values))
             await db.commit()
 
     async def _cancelled(self, job_id) -> bool:
@@ -89,6 +94,12 @@ class Runner:
         token = CURRENT.set(lease)                              # ход выполнения отмечают запросы к KSC и RES.breathe: без этого долгий отчёт «зависал» по журналу, а через 6 ч терял аренду
         status, error = "success", None
         try:
+            async with self._sm() as db:                                        # пока задание ждало места, его могли отменить: отменённое не запускается
+                ok = (await db.execute(update(ReportJob).where(ReportJob.id == job.id, ReportJob.status.in_(("queued", "running"))).values(status="running", worker=WORKER))).rowcount
+                await db.commit()
+            if not ok:
+                status, error = "interrupted", "отменено до запуска"
+                return
             await self._run_job(job)
             async with self._sm() as db:
                 cur = await db.get(ReportJob, job.id)
@@ -206,7 +217,7 @@ class Runner:
             src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_hier": "Иерархия", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "KAV Checker", "quick_inv": "Инвентаризация"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
             client = None
         else:
-            client = SourceClient(conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), concurrency=self._cfg.ksc_concurrency, name=src.name)
+            client = self.sources.client(src)
         flag = {"cancel": False}
         loop = asyncio.get_running_loop()
 
@@ -228,17 +239,17 @@ class Runner:
             ctx.ad = AdService(LdapStore(self._svc), self._svc)
         if job.kind in ("quick_eol", "quick_devices", "quick_overview", "quick_sessions"):
             ctx.source_ids = [uuid.UUID(str(x)) for x in (job.source_ids or [str(job.source_id)])]
-        if job.kind == "quick_inv":                                                   # технические разделы инвентаризации читают KSC связанных компьютеров (свой клиент на источник)
-            ctx.client_for = lambda s: SourceClient(conn_params(s, self._svc.decrypt(s.password_enc, f"source.{s.id}")), concurrency=self._cfg.ksc_concurrency, name=s.name)
+        if job.kind == "quick_inv":                                                   # технические разделы инвентаризации читают KSC связанных компьютеров (общий клиент источника)
+            ctx.client_for = self.sources.client
         if job.kind == "quick_sessions":
             ctx.settings = self._svc
-            ctx.client_for = lambda s: SourceClient(conn_params(s, self._svc.decrypt(s.password_enc, f"source.{s.id}")), concurrency=self._cfg.ksc_concurrency, name=s.name)
+            ctx.client_for = self.sources.client
         if job.kind == "quick_overview":
-            async def records_for(s: KscSource):                                    # у каждого источника свой клиент и своё чтение; ошибка источника попадает в отчёт отдельной строкой
+            async def records_for(s: KscSource):                                    # у каждого источника своё чтение; ошибка источника попадает в отчёт отдельной строкой
                 from ..ksc import hosts as H  # noqa: PLC0415
                 from ..ksc import protection as P  # noqa: PLC0415
 
-                c = SourceClient(conn_params(s, self._svc.decrypt(s.password_enc, f"source.{s.id}")), concurrency=self._cfg.ksc_concurrency, name=s.name)
+                c = self.sources.client(s)
                 recs = await P.load(c, exclude_slaves=rcfg.exclude_slave_servers, groups=await H.groups_map(c), hw_cfg=None)
                 return recs, datetime.now(timezone.utc)
 
@@ -246,11 +257,10 @@ class Runner:
         try:
             zone = (job.params or {}).get("zone") or ""
             if zone and job.kind not in ("quick_eol", "quick_devices", "quick_overview", "quick_sessions"):
-                from ..services.sources import SourceRegistry  # noqa: PLC0415
                 from ..zones.reporter import ZoneData  # noqa: PLC0415
 
                 if getattr(self, "_zones", None) is None:
-                    self._zones = ZoneData(self._sm, self._cfg, self._svc, SourceRegistry(self._cfg, self._svc))
+                    self._zones = ZoneData(self._sm, self._cfg, self._svc, self.sources)
                 async with self._sm() as db:
                     ctx.zone_hosts, ctx.zone_name = await self._zones.host_ids(db, src, zone), await self._zones.zone_name(db, zone)
             doc = await quick.build(job.kind, client, {k: v for k, v in (job.params or {}).items() if not k.startswith("_")}, ctx)
@@ -281,12 +291,11 @@ class Runner:
 
     async def _execute_zone(self, job: ReportJob) -> None:
         """Отчёт по зонам ответственности: один документ по всем выбранным источникам, те же выгрузки XLSX, HTML, CSV."""
-        from ..services.sources import SourceRegistry  # noqa: PLC0415
         from ..zones.reporter import ZoneData  # noqa: PLC0415
 
         started = utcnow()
         if getattr(self, "_zones", None) is None:
-            self._zones = ZoneData(self._sm, self._cfg, self._svc, SourceRegistry(self._cfg, self._svc))
+            self._zones = ZoneData(self._sm, self._cfg, self._svc, self.sources)
         loop = asyncio.get_running_loop()
         flag = {"cancel": False}
 
@@ -379,11 +388,10 @@ class Runner:
                 notes.append(f"{src.name}: нет в каталоге — {', '.join(missing)}")
             zset = None
             if params.get("zone"):
-                from ..services.sources import SourceRegistry  # noqa: PLC0415
                 from ..zones.reporter import ZoneData  # noqa: PLC0415
 
                 if getattr(self, "_zones", None) is None:
-                    self._zones = ZoneData(self._sm, self._cfg, self._svc, SourceRegistry(self._cfg, self._svc))
+                    self._zones = ZoneData(self._sm, self._cfg, self._svc, self.sources)
                 async with self._sm() as db3:
                     zset = await self._zones.host_ids(db3, src, params["zone"])
             plan.append((src.name, conn_params(src, self._svc.decrypt(src.password_enc, f"source.{src.id}")), resolved, zset))
@@ -473,7 +481,7 @@ class Runner:
         n = 0
         async with self._sm() as db:
             for j in (await db.execute(select(ReportJob).where(ReportJob.status == "running"))).scalars().all():
-                if await JOBS.is_live("report", str(j.id)):
+                if JOBS.busy_here("report", str(j.id)) or await JOBS.is_live("report", str(j.id)):      # ждёт места у ограничителя в этом процессе — аренды ещё нет, но задание живо
                     continue
                 if await JOBS.failures_since("report", str(j.id), utcnow() - timedelta(days=1)) >= 3:
                     j.status, j.finished_at, j.error, j.progress = "failed", utcnow(), "Формирование прерывалось несколько раз подряд (перезапуск или нехватка памяти)", "ошибка"

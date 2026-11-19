@@ -1,7 +1,7 @@
 """Сравнение версий. Один алгоритм на все программы не годится, поэтому схем две:
 * dpkg — пакеты Linux: epoch:upstream-revision, '~' меньше конца строки, числа сравниваются как числа (8.10 > 8.9);
 * numeric — программы Windows и прочие точечные версии: части сравниваются как числа, недостающие части равны нулю (130 = 130.0.0.0),
-  буквенный хвост после чисел — предварительная версия (rc, beta…) меньше выпуска, а прочие буквы (1.1.1w, 9.6p1) — исправление, больше выпуска.
+  буквенный хвост после чисел — предварительная версия (rc, beta, b1…) меньше выпуска, а прочие буквы (1.1.1w, 1.1.1m, 9.6p1) — исправление, больше выпуска.
 Нестандартная нумерация приводится к обычной преобразованием (transform) до сравнения: Java для Windows пишет 8u401 как 8.0.4010.7,
 Python для Windows — 3.12.3 как 3.12.3150.0, пакеты Java 8 в Linux — 1.8.0.392.
 shortcut: отличия rpmvercmp (буквы против цифр, '^') не учтены — уточнить при появлении таких версий."""
@@ -39,7 +39,7 @@ def _cmp_fragment(a: str, b: str) -> int:
 
 def split(v: str) -> tuple[int, str, str]:
     v = (v or "").strip()
-    epoch, _, rest = v.rpartition(":") if re.match(r"^\d+:", v) else ("0", "", v)
+    epoch, _, rest = v.partition(":") if re.match(r"^\d+:", v) else ("0", "", v)          # dpkg: эпоха — до первого двоеточия, в upstream двоеточие допустимо
     upstream, sep, revision = rest.rpartition("-")
     if not sep:
         upstream, revision = rest, ""
@@ -91,7 +91,10 @@ _PRE = {"alpha", "a", "beta", "b", "rc", "pre", "preview", "dev", "snapshot", "e
 
 
 def _tokens(v: str) -> list[str]:
-    return re.findall(r"\d+|[A-Za-z]+", v or "")
+    """Одна буква a/b/m, приклеенная к числу и без цифры после (1.1.1m, 1.0.2a) — буква исправления, а не предварительная версия (b1, 1.0-b): помечается «+»."""
+    v = v or ""
+    return [t + "+" if t.lower() in ("a", "b", "m") and m.start() and v[m.start() - 1].isdigit() and not v[m.end():m.end() + 1].isdigit() else t
+            for m in re.finditer(r"\d+|[A-Za-z]+", v) for t in (m.group(),)]
 
 
 def _canon(tokens: list[str]) -> list[str]:

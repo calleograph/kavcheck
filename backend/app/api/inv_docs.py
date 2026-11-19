@@ -20,7 +20,7 @@ from ..inventory import model as M
 from ..inventory import printing as P
 from ..models import InvAsset, InvDoc, InvDocItem, InvFile, InvLocation, InvPerson
 from ..search import column_like
-from .inv import Ix, audit, inv_ctx
+from .inv import Ix, audit, doc_filter, get_doc_row, inv_ctx
 
 router = APIRouter(prefix="/inv", tags=["inventory"])
 
@@ -60,6 +60,8 @@ async def docs(kind: str = Query("", max_length=60), status: str = Query("", max
         w.append(InvDoc.id.in_(select(InvDocItem.doc_id).where(InvDocItem.asset_id == asset)))
     if person:
         w.append(or_(InvDoc.from_person_id == person, InvDoc.to_person_id == person, InvDoc.resp_id == person))
+    if (f := doc_filter(ix)) is not None:
+        w.append(f)
     total = (await db.execute(select(func.count()).select_from(InvDoc).where(*w))).scalar_one()
     rows = (await db.execute(select(InvDoc).where(*w).order_by(InvDoc.doc_date.desc(), InvDoc.id.desc()).offset(offset).limit(limit))).scalars().all()
     counts = dict((await db.execute(select(InvDocItem.doc_id, func.count()).where(InvDocItem.doc_id.in_([d.id for d in rows])).group_by(InvDocItem.doc_id))).all()) if rows else {}
@@ -162,9 +164,7 @@ async def create_doc(body: DocBody, ix: Ix = Depends(inv_ctx), db: AsyncSession 
 
 @router.get("/docs/{did}")
 async def get_doc(did: int, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
-    d = await db.get(InvDoc, did)
-    if d is None:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+    d = await get_doc_row(db, ix, did)
     items = list((await db.execute(select(InvDocItem).where(InvDocItem.doc_id == did).order_by(InvDocItem.id))).scalars())
     assets = {a.id: a for a in (await db.execute(select(InvAsset).where(InvAsset.id.in_([i.asset_id for i in items])))).scalars()} if items else {}
     n = await C.names_for(db, list(assets.values()), props=False)
@@ -180,9 +180,7 @@ async def get_doc(did: int, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depend
 @router.put("/docs/{did}")
 async def edit_doc(did: int, body: DocBody, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
     """Изменение черновика или подготовленного документа (реквизиты и состав). Проведённый документ не меняется — его можно только отменить, если этап это допускает."""
-    d = await db.get(InvDoc, did, with_for_update=True)
-    if d is None:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+    d = await get_doc_row(db, ix, did, lock=True)
     ix.acc.need(D.perm_of(d.kind))
     if d.status not in ("draft", "prepared") and not (d.kind == "receipt" and d.status == "sent"):
         raise HTTPException(status_code=409, detail="Документ уже отправлен или проведён: изменять его нельзя")
@@ -206,9 +204,7 @@ class StatusBody(BaseModel):
 
 @router.post("/docs/{did}/status")
 async def move_doc(did: int, body: StatusBody, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
-    d = await db.get(InvDoc, did, with_for_update=True)
-    if d is None:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+    d = await get_doc_row(db, ix, did, lock=True)
     ix.acc.need(D.perm_of(d.kind))
     if body.data:
         d.data = {**(d.data or {}), **_clean_data(d.kind, body.data)}
@@ -224,9 +220,7 @@ async def move_doc(did: int, body: StatusBody, ix: Ix = Depends(inv_ctx), db: As
 @router.get("/docs/{did}/print")
 async def print_doc(did: int, request: Request, fmt: str = Query("json", pattern=r"^(json|html|pdf|docx|xlsx)$"), ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
     """Печатная форма документа: json — структура для страницы печати в приложении, html — файл для сохранения, PDF, DOCX (для правки). Черновик помечается «не проведён»."""
-    d = await db.get(InvDoc, did)
-    if d is None:
-        raise HTTPException(status_code=404, detail="Документ не найден")
+    d = await get_doc_row(db, ix, did)
     org = (await request.app.state.settings_svc.get(db, "organization")).model_dump()
     p = await P.build(db, d, ix.cfg, org)
     name = f"{d.no}"

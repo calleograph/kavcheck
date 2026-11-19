@@ -26,25 +26,29 @@ class TtlCache:
         if hit and not refresh and swr and time.time() - hit[0] <= ttl + swr:
             self._revalidate(key, ttl, swr, make)
             return hit[1], hit[0]
+        began = time.time()
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             hit = self._data.get(key)
-            if hit and not refresh and time.time() - hit[0] <= ttl:
+            if hit and ((not refresh and time.time() - hit[0] <= ttl) or hit[0] >= began):      # refresh: ждавшие за замком получают расчёт, завершившийся после их вызова, а не повторяют его
                 return hit[1], hit[0]
             value = await make()
             now = time.time()
             for k in [k for k, (t, _v) in self._data.items() if now - t > self._ttl.get(k, ttl + swr)]:      # истёкшие записи не лежат в памяти до вытеснения
-                self._data.pop(k, None)
-                self._locks.pop(k, None)
-                self._ttl.pop(k, None)
+                self._drop(k)
             if len(self._data) >= self._max:
                 for k in sorted(self._data, key=lambda k: self._data[k][0])[: self._max // 4]:
-                    self._data.pop(k, None)
-                    self._locks.pop(k, None)
-                    self._ttl.pop(k, None)
+                    self._drop(k)
             self._data[key] = (now, value)
             self._ttl[key] = ttl + swr
             return value, now
+
+    def _drop(self, k: tuple) -> None:
+        self._data.pop(k, None)
+        self._ttl.pop(k, None)
+        lk = self._locks.get(k)
+        if lk is not None and not lk.locked() and not getattr(lk, "_waiters", None):     # замок идущего расчёта остаётся: иначе второй запрос с тем же ключом начал бы свой расчёт
+            self._locks.pop(k, None)
 
     def _revalidate(self, key: tuple, ttl: float, swr: float, make: Callable[[], Awaitable[Any]]) -> None:
         if key in self._refreshing:

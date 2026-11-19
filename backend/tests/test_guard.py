@@ -14,7 +14,8 @@ def test_templates_pass_guard():
 
 
 @pytest.mark.parametrize("sql", ["DELETE FROM dbo.Hosts", "SELECT 1; DROP TABLE x", "UPDATE dbo.Hosts SET a = 1", "SELECT * INTO t FROM dbo.Hosts", "EXEC sp_who",
-                                 "SELECT 1 -- comment\nWAITFOR DELAY '0:0:5'", "with x as (select 1) select * from x; select 2"])
+                                 "SELECT 1 -- comment\nWAITFOR DELAY '0:0:5'", "with x as (select 1) select * from x; select 2",
+                                 "SELECT [c]INTO dbo.x FROM y", "SELECT 1 x[t]EXEC[xp_cmdshell]", "SELECT [a] FROM t [x]UPDATE[t]SET[c]=1", 'SELECT "c"INTO x FROM y'])
 def test_guard_rejects(sql):
     with pytest.raises(guard.UnsafeQuery):
         guard.check(sql)

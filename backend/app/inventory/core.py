@@ -34,11 +34,15 @@ class Access:
         if p not in self.perms:
             raise HTTPException(status_code=403, detail=f"Недостаточно прав в разделе «Инвентаризация»: {PERM_RU.get(p, p)}")
 
+    def loc_ids(self):
+        """Подзапрос id разрешённых местоположений (с вложенными); только при ограничении области."""
+        return select(InvLocation.id).where(or_(*[InvLocation.ids_path.like(p + "%") for p in self.scopes]))
+
     def asset_filter(self):
         """Условие на InvAsset: карточки в разрешённых местоположениях (пользователь с ограничением карточки без местоположения не видит)."""
         if not self.scopes:
             return None
-        return InvAsset.location_id.in_(select(InvLocation.id).where(or_(*[InvLocation.ids_path.like(p + "%") for p in self.scopes])))
+        return InvAsset.location_id.in_(self.loc_ids())
 
     def loc_ok(self, loc: InvLocation | None) -> bool:
         return not self.scopes or (loc is not None and any(loc.ids_path.startswith(p) for p in self.scopes))
@@ -112,6 +116,12 @@ async def next_number(db: AsyncSession, col, prefix: str, digits: int) -> str:
 
 async def next_inv_no(db: AsyncSession, cfg: InventorySettings) -> str:
     return await next_number(db, InvAsset.inv_no, cfg.inv_prefix, cfg.inv_digits)
+
+
+async def next_inv_nos(db: AsyncSession, cfg: InventorySettings, k: int) -> list[str]:
+    """k номеров подряд одной выборкой: блокировка номеров держится до конца транзакции, поэтому следующие номера никто не займёт."""
+    n = int((await next_inv_no(db, cfg))[len(cfg.inv_prefix):])
+    return [f"{cfg.inv_prefix}{n + i:0{cfg.inv_digits}d}" for i in range(k)]
 
 
 # ------------------------------------------------------------------------------------------------ значения
@@ -224,6 +234,7 @@ class Names:
     locs: dict[int, InvLocation] = field(default_factory=dict)
     parents: dict[int, InvAsset] = field(default_factory=dict)
     props: list[InvProp] = field(default_factory=list)
+    props_ok: bool = False                       # определения свойств уже загружены (пустой список — тоже ответ)
 
     def ref(self, i) -> str:
         return self.refs[i].name if i in self.refs else ""
@@ -235,22 +246,20 @@ class Names:
         return self.locs[i].path if i in self.locs else ""
 
 
-async def names_for(db: AsyncSession, assets: list[InvAsset], *, props: bool = True) -> Names:
-    n = Names()
-    ref_ids = {getattr(a, f) for a in assets for f in M.REF_FIELDS} - {None}
-    ppl = {getattr(a, f) for a in assets for f in M.PEOPLE_FIELDS} - {None}
-    locs = {a.location_id for a in assets} - {None}
-    par = {a.parent_id for a in assets} - {None}
-    if ref_ids:
-        n.refs = {r.id: r for r in (await db.execute(select(InvRef).where(InvRef.id.in_(ref_ids)))).scalars()}
-    if ppl:
-        n.people = {p.id: p for p in (await db.execute(select(InvPerson).where(InvPerson.id.in_(ppl)))).scalars()}
-    if locs:
-        n.locs = {x.id: x for x in (await db.execute(select(InvLocation).where(InvLocation.id.in_(locs)))).scalars()}
-    if par:
-        n.parents = {x.id: x for x in (await db.execute(select(InvAsset).where(InvAsset.id.in_(par)))).scalars()}
-    if props:
-        n.props = list((await db.execute(select(InvProp).order_by(InvProp.sort, InvProp.id))).scalars())
+async def _fill(db: AsyncSession, have: dict, model, ids: set) -> None:
+    if miss := ids - {None} - have.keys():
+        have.update({x.id: x for x in (await db.execute(select(model).where(model.id.in_(miss)))).scalars()})
+
+
+async def names_for(db: AsyncSession, assets: list[InvAsset], *, props: bool = True, into: Names | None = None) -> Names:
+    """Имена для карточек. `into` — общий кэш на пакет (массовое изменение, документ, импорт): догружается только недостающее."""
+    n = into if into is not None else Names()
+    await _fill(db, n.refs, InvRef, {getattr(a, f) for a in assets for f in M.REF_FIELDS})
+    await _fill(db, n.people, InvPerson, {getattr(a, f) for a in assets for f in M.PEOPLE_FIELDS})
+    await _fill(db, n.locs, InvLocation, {a.location_id for a in assets})
+    await _fill(db, n.parents, InvAsset, {a.parent_id for a in assets})
+    if props and not n.props_ok:
+        n.props, n.props_ok = list((await db.execute(select(InvProp).order_by(InvProp.sort, InvProp.id))).scalars()), True
     return n
 
 
@@ -309,9 +318,24 @@ class Invalid(Exception):
         self.errors = errors
 
 
-async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, *, creating: bool = False) -> list[dict]:
+async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, *, creating: bool = False, names: Names | None = None) -> list[dict]:
     """Проверяет и применяет изменения учётных полей. Возвращает список изменений [{f, label, old, new}] (имена — читаемые). Поля, на которые нет права, — 403.
-    Ошибки значений собираются все сразу (Invalid) — форма подсвечивает каждое поле."""
+    Ошибки значений собираются все сразу (Invalid) — форма подсвечивает каждое поле; при ошибке карточка возвращается в прежнее состояние (без точки сохранения на карточку).
+    `names` — общий кэш имён на пакет карточек (тот же передаётся в `record`)."""
+    orig: dict = {}
+    try:
+        with db.no_autoflush:                                        # частичные значения не уходят в базу посреди проверки
+            return await _apply(db, a, data, acc, creating, names, orig)
+    except Invalid:
+        for f, v in orig.items():
+            setattr(a, f, v)
+        raise
+
+
+async def _apply(db: AsyncSession, a: InvAsset, data: dict, acc: Access, creating: bool, names: Names | None, orig: dict) -> list[dict]:
+    def keep(f: str) -> None:
+        orig.setdefault(f, getattr(a, f))
+
     errors: dict[str, str] = {}
     changes: list[dict] = []
     keys = set(data)
@@ -322,11 +346,11 @@ async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, 
             acc.need("people")
         if keys - {"location_id", "loc_detail", *M.PEOPLE_FIELDS}:
             acc.need("edit")
-    ref_ids = {data[f] for f in M.REF_FIELDS if data.get(f)}
-    refs = {r.id: r for r in (await db.execute(select(InvRef).where(InvRef.id.in_(ref_ids)))).scalars()} if ref_ids else {}
-    ppl_ids = {data[f] for f in M.PEOPLE_FIELDS if data.get(f)}
-    ppl = {p.id: p for p in (await db.execute(select(InvPerson).where(InvPerson.id.in_(ppl_ids)))).scalars()} if ppl_ids else {}
-    old_names = await names_for(db, [a], props=False)
+    old_names = names if names is not None else Names()
+    await _fill(db, old_names.refs, InvRef, {data[f] for f in M.REF_FIELDS if data.get(f)})
+    await _fill(db, old_names.people, InvPerson, {data[f] for f in M.PEOPLE_FIELDS if data.get(f)})
+    refs, ppl = old_names.refs, old_names.people                    # в кэше и прежние имена карточки: тип и вид справочника проверяются ниже
+    await names_for(db, [a], props=False, into=old_names)
 
     def put(f: str, new, old_txt: str, new_txt: str) -> None:
         if getattr(a, f) != new:
@@ -334,6 +358,7 @@ async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, 
             if f in M.PEOPLE_FIELDS:
                 c["oid"], c["nid"] = getattr(a, f), new
             changes.append(c)
+            keep(f)
             setattr(a, f, new)
 
     for f, ln in M.TEXT_FIELDS.items():
@@ -365,6 +390,7 @@ async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, 
         v = str(data["note"] or "")[:20000]
         if v != (a.note or ""):
             changes.append({"f": "note", "label": "Примечание", "old": (a.note or "")[:200], "new": v[:200]})
+            keep("note")
             a.note = v
     for f, kind in M.REF_FIELDS.items():
         if f not in data:
@@ -377,6 +403,7 @@ async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, 
     if a.type_id and ("type_id" in data or creating):
         t = refs.get(a.type_id) or await db.get(InvRef, a.type_id)
         if t is not None:
+            keep("cls")
             a.cls = (t.data or {}).get("cls") or "other"
     if "model_id" in data and a.model_id and refs.get(a.model_id) is not None and refs[a.model_id].parent_id and "manufacturer_id" not in data:
         mid = refs[a.model_id].parent_id
@@ -384,6 +411,7 @@ async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, 
             m = await db.get(InvRef, mid)
             put("manufacturer_id", mid, old_names.ref(a.manufacturer_id), m.name if m else "")
     if "status_id" in data and a.status_id:
+        keep("st_cls")
         a.st_cls = (refs[a.status_id].data or {}).get("cls") or "use"
     for f in M.PEOPLE_FIELDS:
         if f not in data:
@@ -445,7 +473,9 @@ async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, 
         elif "parent_id" not in errors:
             put("rel", rel if pid else "", M.REL_RU.get(a.rel, ""), M.REL_RU.get(rel, "") if pid else "")
     if "props" in data or creating:
-        defs = list((await db.execute(select(InvProp).where(InvProp.active.is_(True)))).scalars())
+        if not old_names.props_ok:
+            old_names.props, old_names.props_ok = list((await db.execute(select(InvProp).order_by(InvProp.sort, InvProp.id))).scalars()), True
+        defs = [p for p in old_names.props if p.active]
         allowed = {p.code: p for p in props_for(defs, a.type_id)}
         cur = dict(a.props or {})
         incoming = data.get("props") or {}
@@ -475,6 +505,7 @@ async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, 
         for code, p in allowed.items():
             if p.required and cur.get(code) in (None, "", []):
                 errors[f"props.{code}"] = f"{p.name}: обязательное свойство"
+        keep("props")
         a.props = cur
     if errors:
         raise Invalid(errors)
@@ -499,9 +530,9 @@ def kind_of(changes: list[dict]) -> str:
 
 
 async def record(db: AsyncSession, a: InvAsset, kind: str, changes: list[dict], by: str, *, comment: str = "", basis: str = "", doc_id: int | None = None, title: str = "",
-                 at: datetime | None = None) -> InvHistory:
-    """Событие истории с состоянием после него; обновляет строку поиска и отметку изменения карточки."""
-    n = await names_for(db, [a])
+                 at: datetime | None = None, names: Names | None = None) -> InvHistory:
+    """Событие истории с состоянием после него; обновляет строку поиска и отметку изменения карточки. `names` — общий кэш имён на пакет карточек."""
+    n = await names_for(db, [a], into=names)
     a.search = search_text(a, n)
     if kind != "create":
         a.updated_at, a.updated_by = at or utcnow(), by

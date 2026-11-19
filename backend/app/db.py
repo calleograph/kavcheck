@@ -11,7 +11,8 @@ def create_engine(settings: Settings, *, background: bool = False, name: str = "
     url = settings.sqlalchemy_url
     if str(url).startswith("sqlite"):
         return create_async_engine(url)
-    server = {"application_name": name or ("kavcheck-worker" if background else "kavcheck"),              # служба в pg_stat_activity («Техническое состояние → PostgreSQL») "statement_timeout": "1800000" if background else "120000", "lock_timeout": "60000",
+    server = {"application_name": name or ("kavcheck-worker" if background else "kavcheck"),              # служба в pg_stat_activity («Техническое состояние → PostgreSQL»)
+              "statement_timeout": "1800000" if background else "120000", "lock_timeout": "60000",
               "idle_in_transaction_session_timeout": "900000" if background else "300000"}
     return create_async_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=10, pool_timeout=15, pool_recycle=1800, connect_args={"server_settings": server})
 

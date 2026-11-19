@@ -13,6 +13,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import get_db
+from ..db import xact_lock
 from ..infra import connectors as K
 from ..infra import netscan as NS
 from ..infra import sync as S
@@ -339,6 +340,7 @@ async def decide(body: DecideBody, ix: Ix = Depends(inv_ctx), db: AsyncSession =
     ix.acc.need("edit")
     if body.status == "exception" and not body.comment.strip():
         raise HTTPException(status_code=422, detail="Для исключения укажите основание (кем и почему принято)")
+    await xact_lock(db, "infra_reconcile")        # решение не теряется под одновременной сверкой
     now = utcnow()
     rows = (await db.execute(select(InfraFinding).where(InfraFinding.id.in_(body.ids)))).scalars().all()
     for f in rows:

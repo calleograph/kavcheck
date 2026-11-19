@@ -41,7 +41,7 @@ export default function InvOverview() {
       <div className="meters">
         <div className="meter"><Link className="meter-link" to="/inventory/assets?st=active"><span className="l">Действующее оборудование</span><span className="v">{num(s.active)}</span><span className="t">всего карточек {num(s.total)}</span></Link></div>
         <div className="meter"><Link className="meter-link" to="/inventory/reports?view=cost"><span className="l">Учётная стоимость</span><span className="v inv-money">{s.cost_text || "0,00"} ₽</span><span className="t">действующего оборудования</span></Link></div>
-        <div className="meter"><Link className="meter-link" to="/inventory/assets?cls=workstation,laptop,server,vm&ksc=linked"><span className="l">Связано с KSC</span><span className="v">{num(s.ksc_linked)}<small> / {num(s.computers)}</small></span><span className="t">компьютеров и серверов</span></Link></div>
+        <div className="meter"><Link className="meter-link" to="/inventory/assets?cls=workstation,laptop,server,vm&ksc=linked&st=active"><span className="l">Связано с KSC</span><span className="v">{num(s.ksc_linked)}<small> / {num(s.computers)}</small></span><span className="t">компьютеров и серверов</span></Link></div>
         <div className="meter"><Link className="meter-link" to="/inventory/assets?ksc=unlinked&st=active"><span className="l">Без связи с KSC</span><span className={`v ${s.ksc_unlinked ? "warn-text" : ""}`}>{num(s.ksc_unlinked)}</span><span className="t">{s.ksc_lost ? `и пропали из KSC: ${num(s.ksc_lost)}` : "компьютеры без технических сведений"}</span></Link></div>
       </div>
       <div className="split inv-ov-split">

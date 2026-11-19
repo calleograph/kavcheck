@@ -7,6 +7,8 @@ import uuid
 import zipfile
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from app.models import InvAsset, KscSource, ZcHost, ZcSource
 from app.services import local_admin as la
 from tests.conftest import login
@@ -245,6 +247,18 @@ async def test_reports_build_with_tabs_and_respect_scope(client, app):
     assert job.status_code == 201 and job.json()["params"]["scope_ids"] == [s["region"]["id"]]
 
 
+
+async def test_rerun_of_inventory_report_applies_current_scope(client, app):
+    s = await setup(client, app)
+    await login(client, "analyst1", "Analyst-Passw0rd-123")
+    job = (await client.post("/api/v1/reports", json={"kind": "quick_inv", "title": "Реестр", "params": {"view": "registry"}})).json()
+    assert job["params"]["scope_ids"] == []                                                   # пока ограничений нет — весь учёт
+    await login(client, "admin", "Admin-Passw0rd-123")
+    await client.put("/api/v1/admin/settings/inventory", json={"grants": [{"login": "analyst1", "perms": [], "location_ids": [s["region"]["id"]]}]})
+    await login(client, "analyst1", "Analyst-Passw0rd-123")
+    again = await client.post(f"/api/v1/reports/{job['id']}/rerun")
+    assert again.status_code == 201 and again.json()["params"]["scope_ids"] == [s["region"]["id"]]      # повтор не расширяет область прежними параметрами
+
 async def test_import_csv_preview_check_and_upsert(client, app):
     s = await setup(client, app)
     csv_text = ("Инв. номер;Наименование;Серийный номер;Тип;Производитель;Модель;Местоположение;Пользователь;Стоимость;Гарантия до\n"
@@ -371,3 +385,138 @@ async def test_receipt_creates_cards_stock_and_digest(client, app):
     assert not secs or all(sec["rows"] for sec in secs)
     pv = (await client.get(f"{API}/notify/preview")).json()
     assert isinstance(pv["sections"], list)
+
+
+def _count_sql(app):
+    """Счётчик SQL-операторов движка приложения (для проверки отсутствия N+1)."""
+    from sqlalchemy import event
+
+    n = [0]
+
+    def hook(*_a, **_kw):
+        n[0] += 1
+
+    event.listen(app.state.engine.sync_engine, "before_cursor_execute", hook)
+    return n, lambda: event.remove(app.state.engine.sync_engine, "before_cursor_execute", hook)
+
+
+async def test_bulk_edit_is_batched_and_rolls_back_invalid_card(client, app):
+    s = await setup(client, app)
+    ids = [(await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["monitor"], "location_id": s["room"]["id"], "user_id": s["p1"]["id"]}})).json()["id"] for _ in range(50)]
+    n, stop = _count_sql(app)
+    r = await client.post(f"{API}/assets/bulk", json={"ids": ids, "data": {"status_id": s["st"]["use"], "location_id": s["store"]["id"], "resp_id": s["p2"]["id"]}})
+    stop()
+    assert r.json()["changed"] == 50 and n[0] < 200, n[0]                     # пакет — не десятки запросов на карточку
+    print(f"bulk 50 cards: {n[0]} SQL statements")
+    lap = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["laptop"], "location_id": s["room"]["id"]}})).json()
+    await client.post(f"{API}/props", json={"name": "Класс (пример)", "type": "text", "required": True, "type_ids": [s["t"]["laptop"]]})
+    r = (await client.post(f"{API}/assets/bulk", json={"ids": [ids[0], lap["id"]], "data": {"status_id": s["st"]["repair"], "props": {}}})).json()
+    assert r["changed"] == 1 and [e["id"] for e in r["errors"]] == [lap["id"]]
+    after = (await client.get(f"{API}/assets/{lap['id']}")).json()
+    assert after["st_cls"] == "stock" and after["version"] == lap["version"]                               # карточка с ошибкой не изменена частично
+    assert [h["kind"] for h in (await client.get(f"{API}/assets/{lap['id']}/history")).json()["items"]] == ["create"]
+    assert (await client.get(f"{API}/assets/{ids[0]}")).json()["st_cls"] == "repair"
+
+
+async def test_document_stage_rechecks_transit_and_writeoff(client, app):
+    s = await setup(client, app)
+    x = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["monitor"], "location_id": s["room"]["id"]}})).json()["id"]
+    mv = [(await client.post(f"{API}/docs", json={"kind": "move", "to_location_id": s["store"]["id"], "items": [{"asset_id": x}]})).json()["id"] for _ in range(2)]
+    for d in mv:
+        assert (await client.post(f"{API}/docs/{d}/status", json={"to": "prepared"})).status_code == 200
+    assert (await client.post(f"{API}/docs/{mv[0]}/status", json={"to": "sent"})).status_code == 200
+    assert (await client.post(f"{API}/docs/{mv[1]}/status", json={"to": "sent"})).status_code == 409      # уже «в пути» по первому перемещению
+    assert (await client.post(f"{API}/docs/{mv[0]}/status", json={"to": "accepted"})).status_code == 200
+    a = (await client.get(f"{API}/assets/{x}")).json()
+    assert not a["in_transit"] and a["location"].endswith("Склад ИТ")
+    iss = (await client.post(f"{API}/docs", json={"kind": "issue", "to_person_id": s["p1"]["id"], "items": [{"asset_id": x}]})).json()["id"]
+    wo = (await client.post(f"{API}/docs", json={"kind": "writeoff", "items": [{"asset_id": x}]})).json()["id"]
+    assert (await client.post(f"{API}/docs/{wo}/status", json={"to": "done"})).status_code == 200
+    assert (await client.post(f"{API}/docs/{iss}/status", json={"to": "done"})).status_code == 409         # списанное не выдаётся по старому черновику
+    assert (await client.get(f"{API}/assets/{x}")).json()["st_cls"] == "writeoff"
+
+
+async def test_import_failed_row_does_not_poison_created_refs(client, app):
+    await setup(client, app)
+    from urllib.parse import quote
+    import json as _j
+
+    csv_text = ("Инв. номер;Наименование;Производитель;Гарантия до\n"
+                "ИТ-200001;Первый;Новый вендор (пример);не дата\n"
+                "ИТ-200002;Второй;Новый вендор (пример);31.12.2030\n").encode("utf-8")
+    mapping = {"Инв. номер": "inv_no", "Наименование": "name", "Производитель": "manufacturer", "Гарантия до": "warranty_until"}
+    hdrs = {"X-File-Name": "i.csv", "X-Mapping": quote(_j.dumps(mapping)), "Content-Type": "application/octet-stream"}
+    run = (await client.post(f"{API}/import/run", params={"dry_run": False}, content=csv_text, headers=hdrs)).json()
+    assert run["created"] == 1 and [e["row"] for e in run["errors"]] == [2] and run["created_refs"]["refs"] == 1, run
+    assert (await client.get(f"{API}/assets", params={"q": "ИТ-200002"})).json()["items"][0]["manufacturer"] == "Новый вендор (пример)"
+
+
+async def test_location_scope_covers_docs_files_counts_and_licenses(client, app):
+    s = await setup(client, app)
+    other = (await client.post(f"{API}/locations", json={"kind": "region", "name": "Северный регион"})).json()
+    a1 = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["monitor"], "name": "Монитор свой", "location_id": s["room"]["id"]}})).json()
+    a2 = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["monitor"], "name": "Монитор чужой", "location_id": other["id"]}})).json()
+    d_in = (await client.post(f"{API}/docs", json={"kind": "work", "items": [{"asset_id": a1["id"]}]})).json()["id"]
+    d_out = (await client.post(f"{API}/docs", json={"kind": "work", "items": [{"asset_id": a2["id"]}]})).json()["id"]
+    d_mix = (await client.post(f"{API}/docs", json={"kind": "work", "items": [{"asset_id": a1["id"]}, {"asset_id": a2["id"]}]})).json()["id"]
+    fid = (await client.post(f"{API}/files", params={"owner": "doc", "oid": d_out}, content=b"x", headers={"X-File-Name": "a.txt"})).json()["id"]
+    c_out = (await client.post(f"{API}/counts", json={"location_id": other["id"], "start": False})).json()["id"]
+    c_in = (await client.post(f"{API}/counts", json={"location_id": s["room"]["id"], "start": False})).json()["id"]
+    lid = (await client.post(f"{API}/licenses", json={"name": "Программа (пример)"})).json()["id"]
+    await client.post(f"{API}/licenses/{lid}/assign", json={"asset_ids": [a2["id"]]})
+    from sqlalchemy import select
+    from app.models import InvLicAssign
+
+    async with app.state.session_maker() as db:
+        asg = (await db.execute(select(InvLicAssign.id).where(InvLicAssign.asset_id == a2["id"]))).scalar_one()
+    await client.put("/api/v1/admin/settings/inventory", json={"grants": [{"login": "analyst1", "perms": [], "location_ids": [s["region"]["id"]]}]})
+    await login(client, "analyst1", "Analyst-Passw0rd-123")
+    assert [d["id"] for d in (await client.get(f"{API}/docs")).json()["items"]] == [d_in]
+    assert (await client.get(f"{API}/docs", params={"q": "чужой"})).json()["total"] == 0
+    for path in (f"/docs/{d_out}", f"/docs/{d_mix}", f"/docs/{d_out}/print", f"/files/{fid}", f"/counts/{c_out}"):
+        assert (await client.get(API + path)).status_code == 404, path
+    assert (await client.get(f"{API}/docs/{d_in}")).status_code == 200
+    assert [c["id"] for c in (await client.get(f"{API}/counts")).json()["items"]] == [c_in]
+    assert (await client.post(f"{API}/licenses/{lid}/assign", json={"asset_ids": [a1["id"], a2["id"]]})).json()["added"] == 1
+    assert (await client.delete(f"{API}/licenses/{lid}/assign/{asg}")).status_code == 404
+
+
+async def test_print_xlsx_escapes_formulas(client, app):
+    s = await setup(client, app)
+    a = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["monitor"], "name": "=HYPERLINK(\"http://example.local\")"}})).json()
+    d = (await client.post(f"{API}/docs", json={"kind": "work", "items": [{"asset_id": a["id"]}]})).json()["id"]
+    from openpyxl import load_workbook
+
+    ws = load_workbook(io.BytesIO((await client.get(f"{API}/docs/{d}/print", params={"fmt": "xlsx"})).content)).active
+    vals = [str(c.value) for row in ws.iter_rows() for c in row if c.value]
+    assert any(v.startswith("'=HYPERLINK") for v in vals) and not any(v.startswith("=HYPERLINK") for v in vals)   # имя карточки не становится формулой
+
+
+async def test_infra_sync_error_of_one_source_does_not_stop_others(client, app, monkeypatch):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    ids = [(await client.post(f"{API}/infra/sources", json={"kind": "proxmox", "name": nm, "url": f"https://{h}.example.local", "username": "reader@pve!kav", "secret": "y"})).json()["id"]
+           for nm, h in (("Сбойный (пример)", "pve1"), ("Рабочий (пример)", "pve2"))]
+    from app.infra import connectors as K
+    from app.infra import sync as IS
+    from app.inventory.service import InvService
+
+    async def fetch(src, secret, transport=None):
+        return []
+    real = IS.sync_source
+
+    async def sync_source(db, row, objects):
+        if row.name.startswith("Сбойный"):
+            raise RuntimeError("сбой сопоставления")
+        return await real(db, row, objects)
+    monkeypatch.setattr(K, "fetch", fetch)
+    monkeypatch.setattr(IS, "sync_source", sync_source)
+    await InvService(app.state.session_maker, app.state.settings_svc, None, None).infra_tick(force=True)
+    srcs = {x["id"]: x for x in (await client.get(f"{API}/infra/sources")).json()["items"]}
+    assert "RuntimeError" in srcs[ids[0]]["last_error"] and srcs[ids[0]]["last_try_at"]
+    assert srcs[ids[1]]["last_error"] == "" and srcs[ids[1]]["last_ok_at"]
+
+
+def test_read_table_rejects_non_csv_with_message():
+    from app.inventory import importer as IM
+    with pytest.raises(IM.ImportError_, match="не похож на таблицу"):
+        IM.read_table(b"\0" * 200_000, "x.csv")              # «поле» больше предела csv — понятная ошибка вместо 500

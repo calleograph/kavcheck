@@ -53,11 +53,11 @@ async def main() -> None:
             log.warning("Аренды заданий прежнего процесса сняты, задания будут запущены заново: %s", n)
     except Exception:  # noqa: BLE001 — например, миграция ещё не применена
         log.warning("Не удалось снять аренды прежнего процесса", exc_info=True)
-    runner = Runner(sm, settings, svc, journal)
+    sources = SourceRegistry(settings, svc)                              # один клиент на источник для всех служб worker: семафор запросов к KSC — общий
+    runner = Runner(sm, settings, svc, journal, sources=sources)
     catalog = CatalogScheduler(sm, settings, svc, journal)
     runner.catalog = catalog
     vdb = VdbSync(sm, settings, svc, journal)
-    sources = SourceRegistry(settings, svc)
     mailer = Mailer(sm, settings, svc, ZoneData(sm, settings, svc, sources), journal)
     zcache = ZoneCache(sm, settings, svc, sources, journal)
     eol = EolService(sm, svc, sources, journal)

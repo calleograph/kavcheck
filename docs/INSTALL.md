@@ -58,6 +58,17 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 300s;
     }
+    # загрузки файлов (BI до 500 МБ, архив БДУ 400 МБ, журналы 4723/4724 200 МБ, иерархия, импорт и вложения инвентаризации): пределы проверяет приложение
+    location ~ ^/api/v1/(inv/files|inv/import/(preview|run)|inv/infra/sources/[0-9]+/upload|vdb/sources/bdu/upload|bi/sources/[^/]+/(preview|upload)|adaudit/events/import|hier/admin/upload)$ {
+        client_max_body_size 512m;
+        proxy_request_buffering off;
+        proxy_pass http://127.0.0.1:18080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+    }
 }
 ```
 

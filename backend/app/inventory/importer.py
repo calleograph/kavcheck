@@ -135,7 +135,10 @@ def read_table(data: bytes, name: str) -> tuple[list[str], list[list[str]]]:
         raise ImportError_("Кодировка CSV не распознана: сохраните файл в UTF-8")
     first = text.splitlines()[0] if text else ""
     delim = max((";", ",", "\t"), key=first.count)
-    rd = list(csv.reader(io.StringIO(text), delimiter=delim))
+    try:
+        rd = list(csv.reader(io.StringIO(text), delimiter=delim))
+    except csv.Error:
+        raise ImportError_("Файл не похож на таблицу CSV: сохраните его в Excel (XLSX) или CSV с разделителем «;»") from None
     if not rd:
         raise ImportError_("Файл пуст")
     if len(rd) > MAX_ROWS + 1:
@@ -168,6 +171,15 @@ class Resolver:
         self.locs: dict[str, int | None] = {}
         self.people: dict[str, int | None] = {}
         self.created = {"refs": 0, "locations": 0, "people": 0}
+        self.fresh: list[tuple[dict | None, object, str]] = []        # созданное в текущей строке: (кэш, ключ, счётчик)
+
+    def drop(self) -> None:
+        """Строка откатилась: созданных в ней значений больше нет — убрать их из кэша и счётчиков."""
+        for d, k, c in self.fresh:
+            if d is not None:
+                d.pop(k, None)
+            self.created[c] -= 1
+        self.fresh = []
 
     async def ref(self, kind: str, name: str, parent: int | None = None) -> int | None:
         key = (kind, name.casefold(), parent)
@@ -185,6 +197,7 @@ class Resolver:
             await self.db.flush()
             rid = r.id
             self.created["refs"] += 1
+            self.fresh.append((self.refs, key, "refs"))
         if rid is None:
             raise ValueError(f"{M.REF_RU.get(kind, kind)}: значения «{name}» нет в справочнике")
         self.refs[key] = rid
@@ -211,6 +224,7 @@ class Resolver:
                     found.path = f"{parent.path} / {part}" if parent else part
                     found.ids_path = f"{parent.ids_path if parent else '/'}{found.id}/"
                     self.created["locations"] += 1
+                    self.fresh.append((self.locs, key.casefold(), "locations"))
                 parent = found
             x = parent
         if not self.acc.loc_ok(x):
@@ -238,6 +252,7 @@ class Resolver:
             await self.db.flush()
             pid = p.id
             self.created["people"] += 1
+            self.fresh.append((self.people, k, "people"))
         self.people[k] = pid
         return pid
 
@@ -278,6 +293,7 @@ async def run(db: AsyncSession, headers: list[str], rows: list[list[str]], mappi
     st = {"rows": len(rows), "created": 0, "updated": 0, "unchanged": 0, "skipped": 0, "errors": []}
     seen_inv: dict[str, int] = {}
     default_type = await C.type_for_cls(db, "other")
+    names = C.Names()                                                              # общий кэш имён на весь файл
     for n, r in enumerate(rows, start=2):
         row = {f: (r[i] if i < len(r) else "").strip() for f, i in idx.items()}
         inv = row.get("inv_no", "")
@@ -287,6 +303,7 @@ async def run(db: AsyncSession, headers: list[str], rows: list[list[str]], mappi
                 st["skipped"] += 1
                 continue
             seen_inv[inv.casefold()] = n
+        res.fresh = []
         try:
             async with (contextlib.nullcontext() if dry_run else db.begin_nested()):        # проверка откатывается целиком; при записи строка с ошибкой откатывается одна
                 existing = None
@@ -313,26 +330,26 @@ async def run(db: AsyncSession, headers: list[str], rows: list[list[str]], mappi
                         data["status_id"] = s0.id if s0 else None
                     a = InvAsset(uid=uuid.uuid4(), inv_no="-", created_by=by, updated_by=by, version=1)
                     db.add(a)
-                    ch = await C.apply_changes(db, a, data, acc, creating=True)
+                    ch = await C.apply_changes(db, a, data, acc, creating=True, names=names)
                     await db.flush()
-                    await C.record(db, a, "import", ch, by, title="Создание карточки при импорте")
+                    await C.record(db, a, "import", ch, by, title="Создание карточки при импорте", names=names)
                     st["created"] += 1
                 else:
                     if "props" in data:
                         data["props"] = {**(existing.props or {}), **data["props"]}
                     data.pop("inv_no", None)
-                    ch = await C.apply_changes(db, existing, data, C.Access(acc.perms | {"edit", "location", "people"}, acc.scopes, acc.scope_ids))
+                    ch = await C.apply_changes(db, existing, data, C.Access(acc.perms | {"edit", "location", "people"}, acc.scopes, acc.scope_ids), names=names)
                     if ch:
-                        await C.record(db, existing, "import", ch, by, title="Изменение при импорте")
+                        await C.record(db, existing, "import", ch, by, title="Изменение при импорте", names=names)
                         st["updated"] += 1
                     else:
                         st["unchanged"] += 1
-        except C.Invalid as exc:
-            st["errors"].append({"row": n, "error": "; ".join(exc.errors.values())})
+        except (C.Invalid, ValueError) as exc:
+            st["errors"].append({"row": n, "error": "; ".join(exc.errors.values()) if isinstance(exc, C.Invalid) else str(exc)})
             st["skipped"] += 1
-        except ValueError as exc:
-            st["errors"].append({"row": n, "error": str(exc)})
-            st["skipped"] += 1
+            if not dry_run:                                                        # строка откатилась вместе с созданными в ней значениями справочников
+                res.drop()
+                names = C.Names()
     st["created_refs"] = res.created
     st["errors"] = st["errors"][:500]
     return st

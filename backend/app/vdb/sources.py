@@ -205,8 +205,14 @@ async def run_kev(ctx: RunCtx) -> None:
 
 
 # ------------------------------------------------------------------------------------------------ БДУ ФСТЭК
+def _is_zip(path: Path) -> bool:
+    """Подпись ZIP по двум байтам: выгрузка до 400 МБ не читается в память целиком (повреждённый архив дальше честно даёт ошибку)."""
+    with path.open("rb") as f:
+        return f.read(2) == b"PK"
+
+
 def _open_xml(path: Path):
-    if path.read_bytes()[:2] == b"PK":
+    if _is_zip(path):
         z = zipfile.ZipFile(path)
         names = [n for n in z.namelist() if n.lower().endswith(".xml")]
         if not names:
@@ -216,7 +222,7 @@ def _open_xml(path: Path):
 
 
 async def _bdu_parse(ctx: RunCtx, path: Path) -> None:
-    if path.read_bytes()[:2] == b"PK":
+    if _is_zip(path):
         try:
             bad = zipfile.ZipFile(path).testzip()
         except zipfile.BadZipFile as exc:

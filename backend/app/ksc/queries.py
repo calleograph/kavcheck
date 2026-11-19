@@ -21,9 +21,9 @@ KSC_VERSION = "SELECT TOP (1) p.wstrProductBuildNumber AS build FROM dbo.v_akpub
 # --- сводка главной страницы
 SERVER_IDENTITY = "SELECT CAST(@@SERVERNAME AS nvarchar(256)) AS server, DB_NAME() AS db"
 COUNT_HOSTS = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0"
-COUNT_HOSTS_ACTIVE = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0 AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())"
+COUNT_HOSTS_ACTIVE = "SELECT COUNT(*) AS n FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0 AND h.tmLastNagentConnected >= DATEADD(day, -(%(days)s), GETUTCDATE())"
 # EOL: компьютеры (ОС) порциями по nId и устройства с заданными записями реестра ПО; признак активности считается в SQL (даты KSC — UTC)
-_ACTIVE = "CASE WHEN h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE()) THEN 1 ELSE 0 END"
+_ACTIVE = "CASE WHEN h.tmLastNagentConnected >= DATEADD(day, -(%(days)s), GETUTCDATE()) THEN 1 ELSE 0 END"
 EOL_OS_HOSTS = ("SELECT TOP (%(n)s) h.nId AS host_id, h.wstrOSName AS os_name, h.nVersionMajor AS os_major, h.nVersionMinor AS os_minor, h.nOsBuildNumber AS os_build, h.nPlatformType AS platform, " + _ACTIVE + " AS active "
                 "FROM dbo.v_akpub_host h WHERE h.nId > %(after)s AND {where} ORDER BY h.nId")
 # пакеты, по которым определяется дистрибутив Linux, когда KSC отдаёт просто «Linux» (список должен совпадать с eol.osmatch.RELEASE_PACKAGE_NAMES — это проверяет тест)
@@ -66,7 +66,7 @@ PRODUCTS_BY_IDS = ("SELECT p.nId AS product_id, p.wstrDisplayName AS name, p.wst
 PRODUCTS_BY_LIKE = ("SELECT p.nId AS product_id, p.wstrDisplayName AS name, p.wstrDisplayVersion AS version, p.wstrPublisher AS publisher, p.nPlatformTypeMask AS platform_mask "
                     "FROM dbo.hst_inventory_products p WHERE p.wstrDisplayName LIKE %(like)s {extra} ORDER BY p.nId OFFSET %(offset)s ROWS FETCH NEXT %(limit)s ROWS ONLY")
 INSTALL_COUNTS_ACTIVE = ("SELECT i.nProduct AS product_id, COUNT(*) AS installs, COUNT(DISTINCT i.nHostId) AS hosts FROM dbo.hst_inventory_hstprds i "
-                         "JOIN dbo.v_akpub_host h ON h.nId = i.nHostId AND h.bIsSlaveServer = 0 AND h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE()) "
+                         "JOIN dbo.v_akpub_host h ON h.nId = i.nHostId AND h.bIsSlaveServer = 0 AND h.tmLastNagentConnected >= DATEADD(day, -(%(days)s), GETUTCDATE()) "
                          "WHERE i.bDeleted = 0 AND i.nProduct IN ({ids}) GROUP BY i.nProduct")
 INSTALL_COUNTS = ("SELECT i.nProduct AS product_id, COUNT(*) AS installs, COUNT(DISTINCT i.nHostId) AS hosts FROM dbo.hst_inventory_hstprds i "
                   "WHERE i.bDeleted = 0 AND i.nProduct IN ({ids}) GROUP BY i.nProduct")
@@ -185,7 +185,7 @@ VULN_NAMES = "SELECT n.nVulnerabilityDescrId AS descr_id, n.nSense AS sense, n.w
 VULN_CVE_EXISTS = "EXISTS (SELECT 1 FROM dbo.vapm_vulnerability_names n WHERE n.nVulnerabilityDescrId = d.nId AND n.nSense = 3 AND n.wstrName LIKE %(cve)s)"
 
 # Состояние защиты: компьютеры со статусом KSC (1:1) и защитные продукты на них — два чтения небольших таблиц, проверки — в приложении (ksc/protection.py)
-PROTECTION_HOSTS = (f"SELECT {HOST_COLS}, s.nStatus AS ksc_status, s.nStatusMask AS status_mask, h.nUncured AS uncured, h.nVirusCount AS virus_count "
+PROTECTION_HOSTS = (f"SELECT {HOST_COLS}, s.nStatus AS ksc_status, s.nStatusMask AS status_mask, h.nUncured AS uncured "
                     "FROM dbo.v_akpub_host h LEFT JOIN dbo.v_akpub_host_status s ON s.nId = h.nId WHERE {where}")
 HOST_IDS = "SELECT h.nId AS host_id FROM dbo.v_akpub_host h WHERE {where} ORDER BY h.nId"
 KSC_STAMP = ("SELECT (SELECT COUNT_BIG(*) FROM dbo.v_akpub_host h WHERE h.bIsSlaveServer = 0) AS hosts, (SELECT MAX(h.nId) FROM dbo.v_akpub_host h) AS max_host, "
@@ -199,7 +199,7 @@ PROTECTION_PRODUCTS = ("SELECT p.nHost AS host_id, p.wstrProductNameId AS code, 
 # События безопасности: всегда ограничены периодом по tmRiseTime (индекс) и типами обнаружений; время задаёт устройство — значения из будущего отсекаются
 EV_SECURITY = ("'GNRL_EV_VIRUS_FOUND', 'GNRL_EV_SUSPICIOUS_OBJECT_FOUND', 'GNRL_EV_OBJECT_NOTCURED', 'GNRL_EV_OBJECT_DELETED', 'GNRL_EV_OBJECT_CURED', "
                "'GNRL_EV_OBJECT_QUARANTINED', 'GNRL_EV_ATTACK_DETECTED'")
-EV_PERIOD = "e.tmRiseTime >= DATEADD(hour, -%(hours)s, GETUTCDATE()) AND e.tmRiseTime < DATEADD(hour, 1, GETUTCDATE())"
+EV_PERIOD = "e.tmRiseTime >= DATEADD(hour, -(%(hours)s), GETUTCDATE()) AND e.tmRiseTime < DATEADD(hour, 1, GETUTCDATE())"
 EV_WHERE = f"{EV_PERIOD} AND e.strEventType IN ({EV_SECURITY})"
 EVENTS_BY_TYPE = f"SELECT e.strEventType AS type, COUNT(*) AS n, COUNT(DISTINCT e.nHostId) AS hosts FROM dbo.v_akpub_ev_event e WHERE {EV_WHERE} GROUP BY e.strEventType"
 EVENTS_HOSTS = f"""SELECT COUNT(DISTINCT e.nHostId) AS any_hosts,

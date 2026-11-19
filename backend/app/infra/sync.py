@@ -15,8 +15,9 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..db import xact_lock
 from ..inventory import core as C
-from ..models import InfraChange, InfraFinding, InfraObject, InfraSource, InvAsset, InvRef, KscSource, utcnow
+from ..models import InfraChange, InfraFinding, InfraObject, InfraSource, InvAsset, KscSource, utcnow
 from . import connectors as K
 
 TRACKED = ("name", "fqdn", "ips", "macs", "bios_uuid", "serial", "parent_ext")
@@ -227,7 +228,11 @@ async def match(db: AsyncSession, src: InfraSource, by: str = "") -> dict:
         host = by_ext.get(o.parent_ext) if o.parent_ext else None
         if o.kind == "vm" and host is not None and host.asset_id and a.parent_id != host.asset_id:
             hn = amap.get(host.asset_id) or await db.get(InvAsset, host.asset_id)
-            ch = await C.apply_changes(db, a, {"parent_id": host.asset_id, "rel": "vm"}, C.Access(frozenset({"edit"})))
+            try:
+                ch = await C.apply_changes(db, a, {"parent_id": host.asset_id, "rel": "vm"}, C.Access(frozenset({"edit"})))
+            except C.Invalid:                                # цикл или та же карточка: связь не ставится, остальная синхронизация продолжается
+                st["parent_skipped"] = st.get("parent_skipped", 0) + 1
+                continue
             if ch:
                 await C.record(db, a, "part", ch, by, title=f"ВМ размещена на хосте {hn.hostname or hn.name or hn.inv_no} (по данным «{src.name}»)")
     return st
@@ -278,6 +283,7 @@ def resolve(objs: list[tuple[InfraObject, InfraSource]], priority: dict[str, lis
 
 # ------------------------------------------------------------------------------------------------ сверка
 async def reconcile(db: AsyncSession, stale_days: int = 7, by: str = "сверка") -> dict:
+    await xact_lock(db, "infra_reconcile")        # API и worker: без блокировки — UniqueViolation по key и «устранено» поверх свежего решения администратора
     now = utcnow()
     srcs = {s.id: s for s in (await db.execute(select(InfraSource).where(InfraSource.enabled.is_(True)))).scalars()}
     has_mon = any(s.kind == "zabbix" for s in srcs.values())
@@ -381,8 +387,3 @@ async def sync_source(db: AsyncSession, src: InfraSource, objects: list[dict]) -
     st = await store(db, src, objects)
     st.update(await match(db, src))
     return st
-
-
-async def type_name(db: AsyncSession, tid: int | None) -> str:
-    r = await db.get(InvRef, tid) if tid else None
-    return r.name if r else ""

@@ -181,3 +181,17 @@ async def test_reading_during_import_sees_previous_snapshot(client, app, tmp_pat
     assert (await task).status == "ok"
     async with app.state.session_maker() as db:
         assert "Смирнов Олег" in {p.full_name for p in (await db.execute(select(BiPerson))).scalars()}
+
+
+async def test_confirm_refuses_host_already_confirmed_for_another_device(client, app, tmp_path):
+    from app.models import BiDevice  # noqa: PLC0415
+
+    sid, _ = await setup(client, app, tmp_path)
+    k = await ksc(app, "KSC A", [(4, "MAC-007", "", False, False, "")])
+    await M.run(app.state.session_maker, uuid.UUID(sid))
+    m = (await client.get("/api/v1/bi/matches")).json()["items"][0]
+    assert (await client.post("/api/v1/bi/matches/decide", json={"device_id": m["device_id"], "ksc_source_id": str(k), "host_id": 4, "decision": "confirm"})).status_code == 200
+    async with app.state.session_maker() as db:
+        other = (await db.execute(select(BiDevice.id).where(BiDevice.source_id == uuid.UUID(sid), BiDevice.id != m["device_id"]).limit(1))).scalar_one()
+    r = await client.post("/api/v1/bi/matches/decide", json={"device_id": other, "ksc_source_id": str(k), "host_id": 4, "decision": "confirm"})
+    assert r.status_code == 409                                              # как в массовой операции: два подтверждения одного компьютера KSC не создаются

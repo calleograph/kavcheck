@@ -42,6 +42,12 @@ def test_numeric_scheme():
     assert cn("130", "130.0.0.0") == 0 and cn("124.0.6367.60", "130") < 0 and cn("130.0.1", "130") > 0
     assert cn("1.1.1w", "1.1.1") > 0 and cn("1.0rc1", "1.0") < 0 and cn("9.6p1", "9.7") < 0
     assert cn("24.002.20736", "24.2.20736") == 0             # Adobe: 002 = 2
+    assert cn("1.1.1m", "1.1.1l") > 0 and cn("1.0.2a", "1.0.2") > 0 and cn("1.0.2a", "1.0.2b") < 0      # OpenSSL: буква исправления, не предварительная версия
+    assert cn("1.0b1", "1.0") < 0 and cn("2.0 b2", "2.0") < 0 and cn("1.0-b", "1.0") < 0 and cn("1.0-beta", "1.0") < 0
+
+
+def test_dpkg_epoch_is_up_to_the_first_colon():
+    assert versions.compare("1:2:3-1", "1:2:4-1") < 0 and versions.split("1:2:3-1") == (1, "2:3", "1")
 
 
 def test_transforms_and_conditions():

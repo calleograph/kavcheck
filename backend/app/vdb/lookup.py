@@ -26,7 +26,8 @@ URLS = {"cve": "https://www.cve.org/CVERecord?id={id}", "nvd": "https://nvd.nist
 # идентификатор одной уязвимости: CVE, БДУ, GHSA и идентификаторы баз OSV (PYSEC-…, GO-…, RUSTSEC-…, DSA-…, USN-…)
 ID_RE = re.compile(r"^(CVE-\d{4}-\d{4,}|BDU:\d{4}-\d{5}|GHSA(-[23456789cfghjmpqrvwx]{4}){3}|(?!CVE-)[A-Z][A-Z0-9]{1,15}-(?=[A-Z0-9.:_-]*\d)[A-Z0-9][A-Z0-9.:_-]{2,40})$", re.I)
 _EMPTY = {"", "*", "0", "n/a", "unspecified", "unknown", "-"}
-_cache: dict[str, tuple[float, dict]] = {}
+_cache: dict[str, tuple[float, dict]] = {}       # порядок вставки = порядок времени: истёкшие и самые старые — в начале
+CACHE_MAX = 1000
 
 
 def is_id(text: str) -> bool:
@@ -134,7 +135,11 @@ async def fetch_live(ident: str, *, nvd_key: str = "", http: Http | None = None)
             await http.close()
     out = {"id": ident, "checked_at": time.time(), "sources": [st for st, _ in res], "records": [r for _, rs in res for r in rs]}
     if own and any(st["found"] or not st["error"] for st in out["sources"]):       # ошибки сети не кэшируем: следующий запрос повторит
-        _cache[ident] = (time.monotonic(), out)
+        now = time.monotonic()
+        _cache.pop(ident, None)
+        while _cache and (len(_cache) >= CACHE_MAX or now - next(iter(_cache.values()))[0] >= LIVE_TTL):
+            del _cache[next(iter(_cache))]
+        _cache[ident] = (now, out)
     return out
 
 

@@ -326,7 +326,12 @@ async def rerun(job_id: uuid.UUID, request: Request, su: SessionUser = Depends(r
     """Повторить отчёт с теми же условиями и источниками."""
     old = await _job(db, job_id, su, request)
     sources = [] if old.kind in quick.NO_KSC else await _sources(db, su, [uuid.UUID(i) for i in job_sources(old)], None)     # Pentest, BI, иерархия…: без источника KSC
-    job = await enqueue(request, db, su, kind=old.kind, title=old.title, params=dict(old.params or {}), sources=sources, audit_action="report.rerun", extra={"from": str(old.id)})
+    params = dict(old.params or {})
+    if old.kind == "quick_inv":                                                    # область учёта — по текущим правам автора повтора, а не сохранённая
+        from .quick import inv_params  # noqa: PLC0415
+
+        params = await inv_params(request, db, su, params)
+    job = await enqueue(request, db, su, kind=old.kind, title=old.title, params=params, sources=sources, audit_action="report.rerun", extra={"from": str(old.id)})
     return job_out(job)
 
 

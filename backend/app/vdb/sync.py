@@ -139,6 +139,11 @@ class VdbSync:
                     else:
                         row.records = int((await db.execute(select(func.count()).select_from(VdbRecord).where(VdbRecord.source == key, VdbRecord.generation == row.active_generation))).scalar_one())
                 row.last_duration_ms = ms
+                current: set = set()                                     # источники KSC, чей расчёт был актуален до этой загрузки: только им частичный разбор может отметить новую ревизию
+                if not error and ctx.keys and len(ctx.keys) <= 3000:
+                    for a in (await db.execute(select(VdbAnalysis).where(VdbAnalysis.status == "ok"))).scalars().all():
+                        if a.rev == await store.analysis_rev(db, a.source_id):
+                            current.add(a.source_id)
                 if not error and (ctx.changed or ctx.keys):
                     row.data_ver = (row.data_ver or 0) + 1                  # данные изменились: от этого зависит ревизия расчёта; загрузка «без изменений» повторного расчёта не вызывает
                 await store.finish_run(db, run_id, finished_at=utcnow(), status="error" if error else "ok", fetched=ctx.fetched, changed=ctx.changed, duration_ms=ms, error=error[:1500] or None, channel=ctx.channel, attempts=ctx.attempts or None)
@@ -152,7 +157,7 @@ class VdbSync:
             if error:
                 outcome[:] = ["error", error[:500]]
             if not error and ctx.keys and len(ctx.keys) <= 3000:
-                await self.analyze_keys(ctx.keys)               # больше — полный пересчёт по изменению ревизии данных (analysis_tick)
+                await self.analyze_keys(ctx.keys, current=current)               # больше — полный пересчёт по изменению ревизии данных (analysis_tick)
             return not error
         except asyncio.CancelledError:
             outcome[:] = ["interrupted", "выполнение отменено"]
@@ -335,7 +340,9 @@ class VdbSync:
             await J.emit(self._sm, "analysis", f"Разбор изменений, накопленных за время расчёта: {len(keys)} уязвимостей")
             await self.analyze_keys(keys)
 
-    async def analyze_keys(self, keys: set[str]) -> None:
+    async def analyze_keys(self, keys: set[str], current: set | None = None) -> None:
+        """Разбор только изменённых уязвимостей. Ревизия (отпечаток всех данных) отмечается лишь для источников из current — их расчёт был актуален до загрузки;
+        иначе отложенные большие изменения (полный расчёт) считались бы разобранными."""
         async with self._sm() as db:
             sids = [s for s in (await db.execute(select(KscSource.id).where(KscSource.is_active.is_(True)))).scalars().all()]
         for sid in sids:
@@ -351,8 +358,8 @@ class VdbSync:
                     continue
                 async with self._sm() as db:
                     await analyze(db, sid, keys=sorted(keys), res=RES, lease=lease)
-                    rev = await store.revision(db, sid)
-                    await db.execute(update(VdbAnalysis).where(VdbAnalysis.source_id == sid).values(rev=store.rev_hash(rev), built_at=utcnow()))
+                    vals = {"built_at": utcnow(), **({"rev": await store.analysis_rev(db, sid)} if current is not None and sid in current else {})}
+                    await db.execute(update(VdbAnalysis).where(VdbAnalysis.source_id == sid).values(**vals))
                     await db.commit()
 
     async def analyze_full(self, source_id: uuid.UUID) -> int | None:

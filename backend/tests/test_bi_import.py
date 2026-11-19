@@ -273,3 +273,20 @@ async def test_shifted_or_garbled_columns_do_not_touch_history(app, tmp_path):
     assert ok.status == "ok", ok.message                                          # 2 из 30 — обычная смена
     forced = await run(app, sid, xlsx(tmp_path / "6.xlsx", rotated), at=T0 + timedelta(days=next(day)), force=True)
     assert forced.status == "ok"                                                  # ожидаемая массовая смена — по подтверждению администратора
+
+
+def test_shared_strings_bomb_is_rejected_before_parsing(tmp_path):
+    """Небольшой файл с мегабайтами одинаковых строк (степень сжатия ≫ 200) отклоняется проверкой архива, а не разбирается секундами."""
+    import zipfile  # noqa: PLC0415
+
+    import pytest  # noqa: PLC0415
+
+    from app.bi import xlsx as X  # noqa: PLC0415
+
+    p = tmp_path / "bomb.xlsx"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("xl/workbook.xml", "<workbook/>")
+        z.writestr("xl/sharedStrings.xml", "<sst>" + "<si><t>A</t></si>" * 200_000 + "</sst>")
+    with pytest.raises(X.XlsxError, match="архивную бомбу"):
+        X.check_archive(p)
+    assert X.check_archive(xlsx(tmp_path / "ok.xlsx", BASE)) == []

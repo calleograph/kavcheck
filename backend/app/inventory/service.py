@@ -33,7 +33,7 @@ async def get_state(sm) -> dict:
 
 async def set_state(sm, **kv) -> None:
     async with sm() as db:
-        row = await db.get(AppSetting, STATE_KEY)
+        row = await db.get(AppSetting, STATE_KEY, with_for_update=True)       # API и worker пишут одну строку: без блокировки одно из изменений терялось бы
         cur = dict(row.value or {}) if row else {}
         cur.update({k: v for k, v in kv.items() if v is not None})
         for k in [k for k, v in kv.items() if v is None]:
@@ -158,7 +158,7 @@ class InvService:
                 return
             async with self.sm() as db:
                 cfg = await self.svc.get(db, "inventory")
-                lease.stage("сверка связей с KSC")
+                await lease.stage("сверка связей с KSC")
                 stats = await sync_links(db, auto=cfg.ksc_auto_link)
                 await lease.fence(db)
                 await db.commit()
@@ -167,13 +167,14 @@ class InvService:
             last = st.get("lic_at")
             due = st.get("lic_requested") or not last or datetime.fromisoformat(last) < utcnow() - LIC_EVERY
             if due:
-                lease.stage("подсчёт использования лицензий")
+                await lease.stage("подсчёт использования лицензий")
+                await set_state(self.sm, lic_requested=None)                 # снимаем до подсчёта: запрос, пришедший во время подсчёта, не теряется
                 async with self.sm() as db:
                     general = await self.svc.get(db, "general")
                     n = await license_usage(db, self.sources, general.activity_days)
-                await set_state(self.sm, lic_at=utcnow().isoformat(), lic_requested=None, lic_count=n)
+                await set_state(self.sm, lic_at=utcnow().isoformat(), lic_count=n)
             await set_state(self.sm, sync_at=utcnow().isoformat(), sync_stats=stats)
-            lease.stage("источники инфраструктуры")
+            await lease.stage("источники инфраструктуры")
             async with JOBS.run("inv_infra", "") as il:
                 if il is not None:
                     await self.infra_tick()
@@ -181,7 +182,7 @@ class InvService:
                 cfg = await self.svc.get(db, "inventory")
             st = await get_state(self.sm)
             if await notify_due(cfg, st, utcnow()):
-                lease.stage("сводка сроков на почту")
+                await lease.stage("сводка сроков на почту")
                 r = await send_digest(self.sm, self.svc)
                 from zoneinfo import ZoneInfo  # noqa: PLC0415
 
@@ -224,9 +225,14 @@ class InvService:
                     continue
                 row.last_try_at, row.requested = utcnow(), False
                 if objects is not None:
-                    st = await IS.sync_source(db, row, objects)
-                    row.last_ok_at, row.last_error, row.last_stats = utcnow(), "", st
-                else:
+                    try:
+                        async with db.begin_nested():                         # сбой сверки одного источника откатывает только её
+                            st = await IS.sync_source(db, row, objects)
+                        row.last_ok_at, row.last_error, row.last_stats = utcnow(), "", st
+                    except Exception as exc:  # noqa: BLE001 — остальные источники и сверка продолжаются
+                        log.exception("Инфраструктура: сбой сверки источника %s", s.name)
+                        err = f"Внутренняя ошибка сверки: {type(exc).__name__}"
+                if err:
                     row.last_error = err[:2000]
                 await db.commit()
             if err and self.journal is not None:

@@ -12,7 +12,7 @@ from typing import Iterator
 from .profile import norm_header
 
 MAX_ENTRIES = 5000
-MAX_UNPACKED = 1024 * 1024 * 1024
+MAX_UNPACKED = 200 * 1024 * 1024          # выгрузка на 200 тыс. строк распаковывается в десятки мегабайт
 MAX_RATIO = 200
 HEADER_SCAN = 10
 
@@ -35,7 +35,8 @@ def check_archive(path: Path) -> list[str]:
             if total > MAX_UNPACKED:
                 raise XlsxError(f"Распакованный объём книги {total // (1024 * 1024)} МБ превышает предел {MAX_UNPACKED // (1024 * 1024)} МБ")
             for i in infos:
-                if i.compress_size and i.file_size / i.compress_size > MAX_RATIO and i.file_size > 10 * 1024 * 1024:
+                big = 1024 * 1024 if i.filename == "xl/sharedStrings.xml" else 10 * 1024 * 1024       # строки без повторов сжимаются слабо; 8 МБ одинаковых строк из 22 КБ разбирались 11 с
+                if i.compress_size and i.file_size / i.compress_size > MAX_RATIO and i.file_size > big:
                     raise XlsxError(f"Подозрительно высокая степень сжатия части «{i.filename}»: похоже на архивную бомбу, разбор отклонён")
             names = {i.filename for i in infos}
             if "xl/workbook.xml" not in names:

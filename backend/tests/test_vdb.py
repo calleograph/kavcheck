@@ -570,3 +570,29 @@ async def test_plan_by_product_categories_filters_and_admin_class(app, client):
     await client.post("/api/v1/auth/logout")
     await login(client, "viewer", "Viewer-Passw0rd-123")
     assert (await client.post("/api/v1/vdb/classes", json={"catalog_key": "google-chrome", "category": "os"})).status_code == 403
+
+
+async def test_partial_analysis_marks_revision_only_if_analysis_was_current(app, monkeypatch):
+    """Малая порция (KEV) не отмечает разобранными отложенные большие изменения: ревизия ставится, только если расчёт был актуален до загрузки."""
+    import app.vdb.sync as VS  # noqa: PLC0415
+    from app.models import KscSource, VdbAnalysis  # noqa: PLC0415
+
+    async def noop(db, sid, **kw):
+        return 0
+
+    monkeypatch.setattr(VS, "analyze", noop)
+    async with app.state.session_maker() as db:
+        await store.ensure_sources(db)
+        k = KscSource(name="S", host="sql.example.local", database="KAV", username="ro", is_active=True)
+        db.add(k)
+        await db.flush()
+        db.add(VdbAnalysis(source_id=k.id, status="ok", rev="stale"))
+        await db.commit()
+        sid = k.id
+    sync = make_sync(app)
+    await sync.analyze_keys({"CVE-2024-0001"})                                  # после полного расчёта / расчёт не был актуален
+    async with app.state.session_maker() as db:
+        assert (await db.get(VdbAnalysis, sid)).rev == "stale"
+    await sync.analyze_keys({"CVE-2024-0001"}, current={sid})
+    async with app.state.session_maker() as db:
+        assert (await db.get(VdbAnalysis, sid)).rev == await store.analysis_rev(db, sid)

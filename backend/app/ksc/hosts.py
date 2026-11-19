@@ -94,10 +94,10 @@ def hosts_where(*, qtext: str = "", group_contains: str = "", os_contains: str =
             where.append(sql)
             params[name] = like
     if active_days is not None and not inactive_only:
-        where.append("h.tmLastNagentConnected >= DATEADD(day, -%(days)s, GETUTCDATE())")
+        where.append("h.tmLastNagentConnected >= DATEADD(day, -(%(days)s), GETUTCDATE())")
         params["days"] = int(active_days)
     if inactive_only and active_days is not None:
-        where.append("(h.tmLastNagentConnected IS NULL OR h.tmLastNagentConnected < DATEADD(day, -%(days)s, GETUTCDATE()))")
+        where.append("(h.tmLastNagentConnected IS NULL OR h.tmLastNagentConnected < DATEADD(day, -(%(days)s), GETUTCDATE()))")
         params["days"] = int(active_days)
     return " AND ".join(where) or "1 = 1", params
 

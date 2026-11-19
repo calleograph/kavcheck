@@ -328,12 +328,14 @@ async def journal_export(q: str = Query("", max_length=200), level: str = Query(
     import csv  # noqa: PLC0415
     import io  # noqa: PLC0415
 
+    from ..reports.export import safe_text  # noqa: PLC0415
+
     rows = (await db.execute(journal_stmt(q, level, category, range_ if range_ in ("1h", "24h", "7d", "30d") else "24h").order_by(EventLog.id.desc()).limit(100_000))).scalars().all()
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
     w.writerow(["Время (UTC)", "Уровень", "Категория", "Событие", "Пользователь", "Источник", "Сообщение", "Длительность, мс", "IP"])
     for r in rows:
-        w.writerow([r.at.strftime("%Y-%m-%d %H:%M:%S"), r.level, r.category, r.event, r.user or "", r.source or "", r.message or "", r.duration_ms or "", r.ip or ""])
+        w.writerow([r.at.strftime("%Y-%m-%d %H:%M:%S"), r.level, r.category, r.event, safe_text(r.user or ""), safe_text(r.source or ""), safe_text(r.message or ""), r.duration_ms or "", r.ip or ""])      # логин неудачного входа задаёт кто угодно
     return StreamingResponse(iter(["﻿" + buf.getvalue()]), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=kavcheck-journal.csv"})
 
 
