@@ -257,3 +257,79 @@ def test_inventory_enum_values_fit_postgres_column_lengths():
              (m.InvPerson.source, ("manual", "bi", "hier", "ad")), (m.InvFile.owner, ("asset", "doc", "license")), (m.InvProp.type, M.PROP_TYPES)]
     for col, values in cases:
         assert col.type.length >= max(len(v) for v in values), (col, values)
+
+
+async def test_count_scan_offline_close_and_decisions(client, app):
+    s = await setup(client, app)
+    room2 = (await client.post(f"{API}/locations", json={"kind": "room", "name": "Кабинет 102", "parent_id": s["region"]["id"]})).json()
+    mk = lambda i, loc, **kw: client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["monitor"], "serial": f"CNT-{i}", "location_id": loc, **kw}})
+    a = [(await mk(i, s["room"]["id"])).json() for i in range(3)]
+    other = (await mk(9, room2["id"])).json()
+    skip = (await mk(8, s["room"]["id"], no_count=True)).json()
+    c = (await client.post(f"{API}/counts", json={"location_id": s["room"]["id"]})).json()
+    assert c["status"] == "active" and c["stats"]["expected"] == 3                       # «не подлежит инвентаризации» не ожидается
+    scan = lambda code, loc=s["room"]["id"], **kw: client.post(f"{API}/counts/{c['id']}/scan", json={"code": code, "location_id": loc, **kw})
+    assert (await scan(a[0]["inv_no"])).json()["result"] == "found"
+    assert (await scan("CNT-1", loc=room2["id"])).json()["result"] == "moved"           # по серийному номеру, но в другом помещении
+    assert (await scan(f"http://testserver/inventory/a/{other['uid']}")).json()["result"] == "extra"
+    assert (await scan("НЕТ-ТАКОГО")).json()["result"] == "unknown"
+    assert (await scan(a[0]["inv_no"])).json()["result"] == "again"
+    sync = (await client.post(f"{API}/counts/{c['id']}/sync", json={"scans": [{"code": skip["inv_no"], "location_id": s["room"]["id"], "user_id": s["p2"]["id"]}]})).json()
+    assert sync["results"][0]["result"] == "extra"                                          # отметка из автономного режима
+    assert (await client.get(f"{API}/assets/{a[1]['id']}")).json()["location"].endswith("Кабинет 101")    # сканирование учёт не меняет
+    st = (await client.get(f"{API}/counts/{c['id']}")).json()["stats"]
+    assert st["by_state"]["pending"] == 1 and st["user_diff"] == 1
+    closed = (await client.post(f"{API}/counts/{c['id']}/close")).json()
+    assert closed["status"] == "closed" and closed["stats"]["by_state"]["missing"] == 1
+    diff = (await client.get(f"{API}/counts/{c['id']}/items", params={"diff": True})).json()["items"]
+    by = {d["state"]: d for d in diff}
+    assert set(by) == {"moved", "extra", "unknown", "missing"}
+    r = await client.post(f"{API}/counts/{c['id']}/decide", json={"item_ids": [by["moved"]["id"]], "decision": "apply"})
+    assert r.json()["changed"] == 1
+    moved = (await client.get(f"{API}/assets/{a[1]['id']}")).json()
+    assert moved["location"].endswith("Кабинет 102")
+    h = (await client.get(f"{API}/assets/{a[1]['id']}/history")).json()["items"][0]
+    assert h["kind"] == "count" and c["no"] in h["basis"]
+    assert (await client.post(f"{API}/counts/{c['id']}/decide", json={"item_ids": [by["unknown"]["id"]], "decision": "apply"})).status_code == 422
+    assert (await client.post(f"{API}/counts/{c['id']}/decide", json={"item_ids": [by["missing"]["id"]], "decision": "lost"})).json()["changed"] == 1
+    assert (await client.get(f"{API}/assets/{by['missing']['asset_id']}")).json()["st_cls"] == "lost"
+    rep = (await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": "count_diff", "count_id": c["id"]}})).json()
+    assert rep["total"] == 5
+    off = (await client.get(f"{API}/counts/{c['id']}/offline")).json()
+    assert len(off["items"]) == 5 and any(l["id"] == s["room"]["id"] for l in off["locations"]) is True
+
+
+async def test_receipt_creates_cards_stock_and_digest(client, app):
+    s = await setup(client, app)
+    lines = [{"type_id": s["t"]["laptop"], "name": "Ноутбук (поставка)", "qty": 3, "cost": "50 000", "warranty_until": "2030-01-31", "serials": ["RC-1", "RC-2"]},
+             {"type_id": s["t"]["monitor"], "qty": 2}]
+    d = (await client.post(f"{API}/docs", json={"kind": "receipt", "to_location_id": s["store"]["id"], "basis": "Счёт № 7 (пример)", "data": {"lines": lines}})).json()
+    assert d["no"].startswith("ПС-") and d["items_n"] == 0
+    form = (await client.get(f"{API}/docs/{d['id']}/print")).json()
+    assert len(form["rows"]) == 2                                                              # до приёмки — строки заказа
+    assert (await client.post(f"{API}/docs/{d['id']}/status", json={"to": "sent"})).status_code == 200
+    r = (await client.post(f"{API}/docs/{d['id']}/status", json={"to": "done"})).json()
+    assert r["status"] == "done"
+    got = (await client.get(f"{API}/assets", params={"location": s["store"]["id"]})).json()["items"]
+    assert len(got) == 5 and {a["serial"] for a in got} >= {"RC-1", "RC-2"} and all(a["st_cls"] == "stock" for a in got)
+    lap = next(a for a in got if a["serial"] == "RC-1")
+    assert lap["cost"] == 5000000 and lap["warranty_until"] == "2030-01-31" and lap["purchase_doc"].startswith("Счёт")
+    doc = (await client.get(f"{API}/docs/{d['id']}")).json()
+    assert len(doc["items"]) == 5
+    stock = (await client.get(f"{API}/stock")).json()
+    assert stock["by_st"]["stock"] == 5 and stock["receipts"][0]["created"] == 5
+    big = await client.post(f"{API}/docs", json={"kind": "receipt", "to_location_id": s["store"]["id"], "data": {"lines": [{"type_id": s["t"]["monitor"], "qty": 501}]}})
+    assert big.status_code == 422
+    # комплектующее: установка и снятие — событие «Состав»
+    comp = (await client.post(f"{API}/assets", json={"data": {"type_id": next(r["id"] for r in (await client.get(f"{API}/meta")).json()["refs"] if r["kind"] == "type" and r["data"]["cls"] == "component"), "name": "Модуль памяти"}})).json()
+    up = await client.put(f"{API}/assets/{comp['id']}", json={"data": {"parent_id": lap["id"]}, "version": comp["version"]})
+    assert up.json()["rel"] == "part"
+    assert (await client.get(f"{API}/assets/{comp['id']}/history")).json()["items"][0]["kind"] == "part"
+    from app.inventory.service import digest
+    from app.services.settings import InventorySettings
+
+    async with app.state.session_maker() as db:
+        secs = await digest(db, InventorySettings(warranty_days=730))
+    assert not secs or all(sec["rows"] for sec in secs)
+    pv = (await client.get(f"{API}/notify/preview")).json()
+    assert isinstance(pv["sections"], list)

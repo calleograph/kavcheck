@@ -268,7 +268,7 @@ def state_of(a: InvAsset, n: Names) -> dict:
 
 def search_text(a: InvAsset, n: Names) -> str:
     parts = [a.inv_no, a.acc_no, a.serial, a.name, a.hostname, a.ksc_name, n.ref(a.type_id), n.ref(a.manufacturer_id), n.ref(a.model_id), n.ref(a.status_id), n.ref(a.dept_id),
-             n.ref(a.branch_id), n.loc(a.location_id), a.loc_detail, *[n.person(getattr(a, f)) for f in M.PEOPLE_FIELDS],
+             n.ref(a.branch_id), n.loc(a.location_id), a.loc_detail, a.purpose, a.service, *[n.person(getattr(a, f)) for f in M.PEOPLE_FIELDS],
              *[(n.people[getattr(a, f)].login if getattr(a, f) in n.people else "") for f in M.PEOPLE_FIELDS], a.purchase_doc]
     pdefs = {p.code: p for p in n.props}
     parts += [prop_text(pdefs.get(k), v) for k, v in (a.props or {}).items()]
@@ -290,7 +290,7 @@ def asset_row(a: InvAsset, n: Names) -> dict:
             "parent_id": a.parent_id, "parent": label(n.parents[a.parent_id], n) if a.parent_id in n.parents else "", "rel": a.rel, "rel_ru": M.REL_RU.get(a.rel, ""),
             "props": a.props or {}, "props_text": {k: prop_text(pdefs.get(k), v) for k, v in (a.props or {}).items()}, "note": a.note,
             "ksc_source_id": str(a.ksc_source_id) if a.ksc_source_id else None, "ksc_host_id": a.ksc_host_id, "ksc_link": a.ksc_link, "ksc_name": a.ksc_name,
-            "ext_ids": a.ext_ids or {}, "in_transit": a.transit_doc_id is not None, "transit_doc_id": a.transit_doc_id,
+            "ext_ids": a.ext_ids or {}, "no_count": bool(a.no_count), "purpose": a.purpose, "service": a.service, "rack_unit": a.rack_unit, "rack_units": a.rack_units, "in_transit": a.transit_doc_id is not None, "transit_doc_id": a.transit_doc_id,
             "created_at": _iso(a.created_at), "created_by": a.created_by, "updated_at": _iso(a.updated_at), "updated_by": a.updated_by, "version": a.version}
 
 
@@ -348,6 +348,19 @@ async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, 
             if f == "hostname":
                 v = v.lower()
             put(f, v, getattr(a, f) or "", v)
+    for f in ("rack_unit", "rack_units"):
+        if f in data:
+            try:
+                v = int(data[f]) if data[f] not in (None, "") else None
+                if v is not None and not 1 <= v <= 60:
+                    raise ValueError
+            except (TypeError, ValueError):
+                errors[f] = f"{M.FIELD_RU[f]}: число от 1 до 60"
+                continue
+            put(f, v, str(getattr(a, f) or ""), str(v or ""))
+    if "no_count" in data:
+        v = bool(data["no_count"])
+        put("no_count", v, "да" if a.no_count else "нет", "да" if v else "нет")
     if "note" in data:
         v = str(data["note"] or "")[:20000]
         if v != (a.note or ""):
@@ -425,6 +438,8 @@ async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, 
                 elif "parent_id" not in errors:
                     put("parent_id", pid, label(old_names.parents[a.parent_id]) if a.parent_id in old_names.parents else "", label(p))
                     rel = rel or ("vm" if a.cls == "vm" else "part" if a.cls == "component" else "attached")
+        if pid is None and a.parent_id is not None and "parent_id" in data:
+            put("parent_id", None, label(old_names.parents[a.parent_id]) if a.parent_id in old_names.parents else str(a.parent_id), "")
         if rel not in ("", *M.REL_RU):
             errors["rel"] = "Неизвестный вид связи"
         elif "parent_id" not in errors:
@@ -478,6 +493,8 @@ def kind_of(changes: list[dict]) -> str:
         return "assign"
     if fs == {"status_id"}:
         return "status"
+    if fs <= {"parent_id", "rel"}:
+        return "part"
     return "update"
 
 

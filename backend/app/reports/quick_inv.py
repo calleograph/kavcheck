@@ -21,7 +21,10 @@ TITLE = {"registry": "Реестр ИТ-оборудования", "computers": 
          "warranty": "Оборудование с истекающей гарантией", "writtenoff": "Списанное и выведенное из эксплуатации оборудование", "cost": "Стоимость оборудования",
          "owner_history": "История принадлежности оборудования", "moves": "История перемещений", "hardware": "Аппаратная конфигурация компьютеров", "software": "Реестр установленного ПО",
          "licenses": "Реестр лицензий", "license_usage": "Использование лицензий", "components": "Комплектующие и состав оборудования", "docs": "Журнал документов",
-         "duplicates": "Возможные дубли карточек"}
+         "duplicates": "Возможные дубли карточек", "count": "Результаты инвентаризации", "count_diff": "Расхождения инвентаризации",
+         "infra_registry": "Реестр серверной инфраструктуры", "infra_hypervisors": "Гипервизоры и кластеры", "infra_ips": "IP-адреса, подсети и VLAN", "infra_racks": "Состав оборудования по стойкам",
+         "infra_findings": "Расхождения между источниками", "infra_changes": "Изменения конфигурации", "infra_new_gone": "Новые и исчезнувшие объекты", "infra_sync": "Синхронизация источников",
+         "infra_decom": "Вывод серверов из эксплуатации", "infra_asof": "Состояние инфраструктуры на дату", "infra_review": "Периодическая проверка инфраструктуры"}
 BASE_COLS = [col("inv_no", "Инв. номер"), col("name", "Наименование"), col("type", "Тип"), col("model", "Производитель и модель"), col("serial", "Серийный номер"), col("status", "Статус"),
              col("location", "Местоположение"), col("user", "Пользователь"), col("resp", "Ответственный")]
 MONEY = "num"
@@ -359,6 +362,42 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
                                                                           col("items", "Единиц", "num"), col("basis", "Основание"), col("by", "Оформил")], "rows": data})
             metrics = [metric("rows", "Документов", len(data)), *[metric(f"k{i}", k, v) for i, (k, v) in enumerate(Counter(r["kind"] for r in data).most_common(4))]]
 
+        elif view in ("count", "count_diff"):
+            from ..inventory import counting as K  # noqa: PLC0415
+            from ..models import InvCount, InvCountItem  # noqa: PLC0415
+
+            cnt = await db.get(InvCount, int(p.get("count_id") or 0)) if p.get("count_id") else (await db.execute(select(InvCount).where(InvCount.status != "cancelled").order_by(InvCount.created_at.desc()).limit(1))).scalar_one_or_none()
+            if cnt is None:
+                raise KscError("no_data", "Инвентаризаций ещё не было")
+            sub = f"{cnt.no} · {cnt.title}"
+            items = list((await db.execute(select(InvCountItem).where(InvCountItem.count_id == cnt.id).order_by(InvCountItem.id))).scalars())
+            locs, people = await K.names(db, items)
+            data = [K.item_out(it, locs, people) for it in items]
+            if scopes:
+                allowed = {i for (i,) in (await db.execute(select(InvAsset.id).where(acc.asset_filter())))}
+                data = [r for r in data if r["asset_id"] is None or r["asset_id"] in allowed]
+            for r in data:
+                r["found_at"] = r["found_at"] or None
+            cols = [col("state_ru", "Результат"), col("inv_no", "Инв. номер"), col("name", "Наименование"), col("serial", "Серийный номер"), col("exp_location", "По учёту"),
+                    col("found_location", "Найдено в"), col("user", "Пользователь по учёту"), col("found_user", "Фактический пользователь"), col("found_at", "Отмечено (UTC)", "date"),
+                    col("found_by", "Кто отметил"), col("decision_ru", "Решение"), col("note", "Примечание")]
+            diff = [r for r in data if r["discrepancy"]]
+            if view == "count":
+                tables.append({"id": "rows", "title": "Все строки", "columns": cols, "rows": data})
+            tables.append({"id": "diff", "title": "Расхождения", "columns": cols, "rows": diff, "note": "Найдено в другом месте, не ожидалось, код не найден в учёте, не найдено, другой пользователь."})
+            st = await K.stats(db, cnt) if cnt.status in ("active", "closed") else {"locations": [], "by_state": {}, "expected": 0, "checked": 0}
+            tables.append({"id": "locs", "title": "По местоположениям", "columns": [col("location", "Местоположение"), col("expected", "Ожидалось", "num"), col("found", "Найдено на месте", "num"),
+                                                                                   col("moved_out", "Найдено в другом месте", "num"), col("left", "Не найдено / осталось", "num")], "rows": st["locations"]})
+            tabs = [{"id": t["id"], "title": t["title"]} for t in tables]
+            bs = st.get("by_state", {})
+            metrics = [metric("expected", "Ожидалось", st.get("expected", 0)), metric("checked", "Проверено", st.get("checked", 0)), metric("missing", "Не найдено", bs.get("missing", 0) + bs.get("pending", 0), "", "warn"),
+                       metric("moved", "В другом месте", bs.get("moved", 0)), metric("extra", "Не ожидалось", bs.get("extra", 0) + bs.get("unknown", 0))]
+            notes.append(f"Статус инвентаризации: {M.COUNT_STATUS_RU.get(cnt.status, cnt.status)}. Обнаружение само по себе учёт не меняет: изменения вносятся решениями по расхождениям.")
+        elif view.startswith("infra_"):
+            from .quick_infra import build_infra_view  # noqa: PLC0415
+
+            tables, metrics, tabs, sub, more = await build_infra_view(db, view, p, acc, cfg, ctx)
+            notes += more
         else:                                                           # duplicates
             rows = await _assets(db, p, ctx, acc, cfg)
             n = await C.names_for(db, rows)

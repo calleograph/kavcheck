@@ -115,10 +115,13 @@ async def overview(ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)
     hq = select(InvHistory, InvAsset.inv_no, InvAsset.name).join(InvAsset, InvAsset.id == InvHistory.asset_id).where(*base).order_by(InvHistory.at.desc()).limit(12)
     recent = [{"at": C._iso(h.at), "by": h.by, "kind": h.kind, "title": h.title, "asset_id": h.asset_id, "inv_no": no, "name": nm, "doc_id": h.doc_id} for h, no, nm in (await db.execute(hq)).all()]
     sources = (await db.execute(select(func.count()).select_from(KscSource))).scalar_one()
+    from ..models import InvCount  # noqa: PLC0415
+
+    counts_open = (await db.execute(select(func.count()).select_from(InvCount).where(InvCount.status == "active"))).scalar_one()
     return {"stats": stats, "by_cls": [{"cls": k, "name": M.CLS_RU.get(k, k), "n": v} for k, v in sorted(by_cls.items(), key=lambda x: -x[1])],
             "by_st": [{"st": k, "name": M.ST_RU.get(k, k), "n": by_st.get(k, 0)} for k in M.ST_RU if by_st.get(k)], "licenses_soon": lic_soon,
             "docs_open": [{"kind": k, "name": M.DOC_SHORT.get(k, k), "n": v} for k, v in docs_open.items()], "repair_long": rep_long, "transit_late": transit_late,
-            "recent": recent, "ksc_sources": sources, "cfg": {"warranty_days": ix.cfg.warranty_days, "license_days": ix.cfg.license_days, "stale_days": ix.cfg.stale_days}}
+            "recent": recent, "ksc_sources": sources, "counts_open": counts_open, "cfg": {"warranty_days": ix.cfg.warranty_days, "license_days": ix.cfg.license_days, "stale_days": ix.cfg.stale_days}}
 
 
 # ------------------------------------------------------------------------------------------------ реестр
@@ -282,7 +285,7 @@ class BulkBody(BaseModel):
     dry_run: bool = False
 
 
-BULK_FIELDS = {"status_id", "location_id", "loc_detail", "dept_id", "branch_id", "supplier_id", "warranty_until", "purchase_date", "received_date", "commissioned_date", "props", "type_id", "model_id",
+BULK_FIELDS = {"no_count", "status_id", "location_id", "loc_detail", "dept_id", "branch_id", "supplier_id", "warranty_until", "purchase_date", "received_date", "commissioned_date", "props", "type_id", "model_id",
                *M.PEOPLE_FIELDS}
 
 
@@ -721,3 +724,49 @@ async def import_run(request: Request, mode: str = Query("upsert", pattern=r"^(c
     audit(db, ix, "import", name[:120], {k: st[k] for k in ("rows", "created", "updated", "skipped")})
     await db.commit()
     return {**st, "dry_run": False}
+
+
+# ------------------------------------------------------------------------------------------------ склад
+@router.get("/stock")
+async def stock(ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+    """Склад: единицы по состояниям учёта, свободное на складе по моделям, резерв, комплектующие (установлены / на складе), последние поступления."""
+    f = ix.acc.asset_filter()
+    base = [f] if f is not None else []
+    by_st = dict((await db.execute(select(InvAsset.st_cls, func.count()).where(*base).group_by(InvAsset.st_cls))).all())
+    q = (select(InvAsset.type_id, InvAsset.manufacturer_id, InvAsset.model_id, InvAsset.st_cls, func.count(), func.coalesce(func.sum(InvAsset.cost), 0))
+         .where(*base, InvAsset.st_cls.in_(("stock", "reserve"))).group_by(InvAsset.type_id, InvAsset.manufacturer_id, InvAsset.model_id, InvAsset.st_cls))
+    rows = (await db.execute(q)).all()
+    ids = {x for r in rows for x in r[:3]} - {None}
+    names = dict((await db.execute(select(InvRef.id, InvRef.name).where(InvRef.id.in_(ids)))).all()) if ids else {}
+    agg: dict = {}
+    for t, m, mo, st, n, cost in rows:
+        k = (t, m, mo)
+        a = agg.setdefault(k, {"type_id": t, "type": names.get(t, ""), "model_id": mo, "model": " ".join(x for x in (names.get(m, ""), names.get(mo, "")) if x), "stock": 0, "reserve": 0, "cost": 0})
+        a[st] += n
+        a["cost"] += int(cost or 0)
+    comp = select(func.count()).select_from(InvAsset).where(*base, InvAsset.cls == "component", InvAsset.st_cls.in_(M.ST_ACTIVE))
+    comp_in = (await db.execute(comp.where(InvAsset.parent_id.is_not(None)))).scalar_one()
+    comp_free = (await db.execute(comp.where(InvAsset.parent_id.is_(None)))).scalar_one()
+    rec = (await db.execute(select(InvDoc).where(InvDoc.kind == "receipt").order_by(InvDoc.doc_date.desc(), InvDoc.id.desc()).limit(15))).scalars().all()
+    return {"by_st": {k: by_st.get(k, 0) for k in M.ST_RU}, "models": sorted(agg.values(), key=lambda x: -(x["stock"] + x["reserve"])),
+            "components": {"installed": comp_in, "free": comp_free},
+            "receipts": [{**doc_brief(d), "lines": len((d.data or {}).get("lines") or []), "qty": sum(int(x.get("qty") or 1) for x in (d.data or {}).get("lines") or []),
+                          "created": len((d.data or {}).get("created") or [])} for d in rec]}
+
+
+@router.post("/notify/test")
+async def notify_test(request: Request, ix: Ix = Depends(inv_ctx)):
+    """Отправить сводку сроков сейчас (проверка получателей и SMTP). Только администратор."""
+    from ..inventory import service as SV  # noqa: PLC0415
+
+    if not ix.su.is_admin:
+        raise HTTPException(status_code=403, detail="Только администратор")
+    r = await SV.send_digest(request.app.state.session_maker, request.app.state.settings_svc, by=ix.su.display_name)
+    return r
+
+
+@router.get("/notify/preview")
+async def notify_preview(ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+    from ..inventory import service as SV  # noqa: PLC0415
+
+    return {"sections": await SV.digest(db, ix.cfg)}

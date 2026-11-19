@@ -83,7 +83,7 @@ class DocBody(BaseModel):
 
 def _clean_data(kind: str, data: dict) -> dict:
     keep = {"role", "also_roles", "clear_roles", "status_id", "fault", "found_at", "vendor", "vendor_id", "warranty", "result", "parts", "cost", "returned_at", "work_kind", "executor",
-            "due", "description"}
+            "due", "description", "lines", "supplier_id", "invoice", "checklist"}
     out = {k: v for k, v in data.items() if k in keep and v not in (None, "")}
     for k in ("role",):
         if k in out and out[k] not in ("", *D.ROLE_FIELD):
@@ -96,9 +96,32 @@ def _clean_data(kind: str, data: dict) -> dict:
             out["cost"] = C.parse_money(out["cost"])
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Стоимость ремонта: {exc}") from None
-    for k in ("fault", "result", "parts", "description", "vendor", "executor"):
+    for k in ("fault", "result", "parts", "description", "vendor", "executor", "invoice"):
         if k in out:
             out[k] = str(out[k])[:2000]
+    if "checklist" in out:
+        out["checklist"] = {k: bool(v) for k, v in (out["checklist"] or {}).items() if k in ("monitoring", "backup", "ips", "links")}
+    if "lines" in out:
+        if kind != "receipt" or not isinstance(out["lines"], list):
+            raise HTTPException(status_code=422, detail="Строки поступления — только у документа «Поступление»")
+        lines, total = [], 0
+        for ln in out["lines"][:200]:
+            qty = int(ln.get("qty") or 1)
+            if qty < 1:
+                raise HTTPException(status_code=422, detail="Количество — от 1")
+            total += qty
+            if not (ln.get("type_id") or ln.get("model_id")):
+                raise HTTPException(status_code=422, detail="В каждой строке поступления укажите тип или модель")
+            try:
+                cost = C.parse_money(ln.get("cost")) if ln.get("cost") not in (None, "") else None
+                wu = C.parse_date(ln.get("warranty_until")).isoformat() if ln.get("warranty_until") else None
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=f"Строка поступления: {exc}") from None
+            lines.append({"type_id": ln.get("type_id"), "manufacturer_id": ln.get("manufacturer_id"), "model_id": ln.get("model_id"), "name": str(ln.get("name") or "")[:300], "qty": qty,
+                          "cost": round(cost / 100, 2) if cost is not None else None, "warranty_until": wu, "serials": [str(x).strip()[:120] for x in (ln.get("serials") or []) if str(x).strip()][:qty]})
+        if total > M.RECEIPT_MAX_QTY:
+            raise HTTPException(status_code=422, detail=f"В одном поступлении не больше {M.RECEIPT_MAX_QTY} единиц: разделите его")
+        out["lines"] = lines
     return out
 
 
@@ -151,7 +174,7 @@ async def get_doc(did: int, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depend
             "items": [{"id": i.id, "asset_id": i.asset_id, "snap": i.snap, "condition": i.condition, "note": i.note, "current": C.asset_row(assets[i.asset_id], n) if i.asset_id in assets else None}
                       for i in items],
             "files": [{"id": i, "name": nm, "size": sz, "at": C._iso(at), "by": by} for i, nm, sz, at, by in files],
-            "can": {"edit": ix.acc.can(D.perm_of(d.kind)) and d.status in ("draft", "prepared"), "move": ix.acc.can(D.perm_of(d.kind))}}
+            "can": {"edit": ix.acc.can(D.perm_of(d.kind)) and (d.status in ("draft", "prepared") or (d.kind == "receipt" and d.status == "sent")), "move": ix.acc.can(D.perm_of(d.kind))}}
 
 
 @router.put("/docs/{did}")
@@ -161,7 +184,7 @@ async def edit_doc(did: int, body: DocBody, ix: Ix = Depends(inv_ctx), db: Async
     if d is None:
         raise HTTPException(status_code=404, detail="Документ не найден")
     ix.acc.need(D.perm_of(d.kind))
-    if d.status not in ("draft", "prepared"):
+    if d.status not in ("draft", "prepared") and not (d.kind == "receipt" and d.status == "sent"):
         raise HTTPException(status_code=409, detail="Документ уже отправлен или проведён: изменять его нельзя")
     await _check_refs(db, ix, body)
     if body.date:

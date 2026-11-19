@@ -88,7 +88,7 @@ async def transition(db: AsyncSession, doc: InvDoc, to: str, acc: C.Access, by: 
     if to not in allowed:
         raise HTTPException(status_code=409, detail=f"Из этапа «{M.DOC_STATUS_RU.get(doc.status)}» нельзя перейти в «{M.DOC_STATUS_RU.get(to, to)}»")
     items = list((await db.execute(select(InvDocItem).where(InvDocItem.doc_id == doc.id).order_by(InvDocItem.id))).scalars())
-    if not items and to not in ("cancelled", "draft"):
+    if not items and to not in ("cancelled", "draft") and doc.kind != "receipt":
         raise HTTPException(status_code=422, detail="В документе нет оборудования")
     assets = {a.id: a for a in (await db.execute(select(InvAsset).where(InvAsset.id.in_([i.asset_id for i in items])).with_for_update())).scalars()} if items else {}
     full = C.Access(acc.perms | {"edit", "location", "people"}, acc.scopes, acc.scope_ids)       # право на сам документ уже проверено; область учёта — прежняя
@@ -119,7 +119,9 @@ async def transition(db: AsyncSession, doc: InvDoc, to: str, acc: C.Access, by: 
             data["status_id"] = int(extra_status)
         return data
 
-    if doc.kind == "move":
+    if doc.kind == "receipt" and to == "done":
+        await receive(db, doc, full, by, comment)
+    elif doc.kind == "move":
         if to == "sent":
             for it in items:
                 a = assets[it.asset_id]
@@ -176,6 +178,13 @@ async def transition(db: AsyncSession, doc: InvDoc, to: str, acc: C.Access, by: 
                 acc.need("writeoff")
                 data = {"status_id": int(extra_status) if extra_status else (await _status_of(db, "writeoff")).id, "user_id": None}
                 await change(a, data, "writeoff", "списано")
+            elif doc.kind == "decom":
+                data = {"status_id": (await _status_of(db, "decom")).id, "user_id": None}
+                if a.parent_id and a.rel == "vm":
+                    data["parent_id"] = None                                    # связь с хостом виртуализации снимается, в истории остаётся
+                ck = d.get("checklist") or {}
+                done = [lb for k, lb in (("monitoring", "мониторинг снят"), ("backup", "резервное копирование прекращено"), ("ips", "адреса освобождены"), ("links", "связи сняты")) if ck.get(k)]
+                await change(a, data, "doc", "выведено из эксплуатации" + (f" ({', '.join(done)})" if done else ""))
             elif doc.kind == "work":
                 await change(a, {}, "doc", f"работа выполнена: {M.WORK_KINDS.get(d.get('work_kind', ''), 'работа')}{(' — ' + d['result']) if d.get('result') else ''}")
             else:                                                     # accept, handover, defect
@@ -196,3 +205,39 @@ async def _loc_path(db: AsyncSession, lid: int | None) -> str:
 async def new_number(db: AsyncSession, cfg: InventorySettings, kind: str, d: date) -> str:
     pre = (cfg.doc_prefix.get(kind) or M.DOC_PREFIX[kind]) + f"-{d.year}-"
     return await C.next_number(db, InvDoc.no, pre, 5)
+
+
+async def receive(db: AsyncSession, doc: InvDoc, acc: C.Access, by: str, comment: str) -> list[int]:
+    """Приёмка поступления: по карточке на каждую единицу строк (тип, модель, наименование, стоимость, гарантия, серийные номера), на складе документа,
+    со статусом «На складе», поставщиком и документом приобретения. Карточки становятся строками документа (печатная форма — по ним)."""
+    import uuid  # noqa: PLC0415
+
+    from ..services.settings import InventorySettings  # noqa: PLC0415
+    from ..models import AppSetting  # noqa: PLC0415
+
+    d = doc.data or {}
+    lines = d.get("lines") or []
+    if not lines:
+        raise HTTPException(status_code=422, detail="В поступлении нет строк")
+    if not doc.to_location_id:
+        raise HTTPException(status_code=422, detail="Укажите склад, куда принимается оборудование")
+    row = await db.get(AppSetting, "inventory")
+    cfg = InventorySettings(**{k: v for k, v in ((row.value if row else {}) or {}).items() if k in InventorySettings.model_fields})
+    stock = await C.default_status(db, "stock")
+    created: list[int] = []
+    for ln in lines:
+        serials = [s for s in (ln.get("serials") or []) if s][: int(ln.get("qty") or 1)]
+        for k in range(int(ln.get("qty") or 1)):
+            a = InvAsset(uid=uuid.uuid4(), inv_no=await C.next_inv_no(db, cfg), created_by=by, updated_by=by, version=1)
+            db.add(a)
+            data = {"type_id": ln.get("type_id"), "manufacturer_id": ln.get("manufacturer_id"), "model_id": ln.get("model_id"), "name": ln.get("name") or "", "location_id": doc.to_location_id,
+                    "status_id": stock.id if stock else None, "supplier_id": d.get("supplier_id"), "purchase_doc": (d.get("invoice") or doc.basis or doc.no)[:300],
+                    "purchase_date": doc.doc_date.isoformat(), "received_date": utcnow().date().isoformat(), "cost": ln.get("cost"), "warranty_until": ln.get("warranty_until"),
+                    "serial": serials[k] if k < len(serials) else ""}
+            ch = await C.apply_changes(db, a, {k2: v for k2, v in data.items() if v not in (None, "")}, acc, creating=True)
+            await db.flush()
+            await C.record(db, a, "create", ch, by, comment=comment, basis=doc.basis, doc_id=doc.id, title=f"Поступление {doc.no}: принято на склад")
+            db.add(InvDocItem(doc_id=doc.id, asset_id=a.id, snap=await snap(db, a), condition="новое"))
+            created.append(a.id)
+    doc.data = {**d, "created": created}
+    return created

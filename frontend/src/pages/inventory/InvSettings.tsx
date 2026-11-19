@@ -3,12 +3,13 @@ import { useEffect, useState } from "react";
 import { api, type ApiError } from "../../api";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
-import { SkelRows, Tabs } from "../../components/ui";
+import { SkelRows, Tabs, TagInput } from "../../components/ui";
+import { inv } from "./invApi";
 import { useInv } from "./InvBits";
 
 type S = Record<string, unknown> & { roles: Record<string, string>; grants: { login: string; perms: string[]; location_ids: number[] }[]; forms: Record<string, { title?: string; intro?: string; columns?: string[]; props?: string[]; signatures?: string[]; footer?: string }>;
   doc_prefix: Record<string, string>; label_fields: string[] };
-type T = "access" | "numbers" | "forms" | "labels" | "control";
+type T = "access" | "numbers" | "forms" | "labels" | "control" | "notify";
 const PERM_RU: Record<string, string> = { view: "Просмотр оборудования", create: "Создание карточек", edit: "Изменение учётных свойств", location: "Изменение местоположения", people: "Изменение владельцев и ответственных",
   docs: "Оформление документов (выдача, возврат, перемещение)", repair: "Оформление ремонтов", writeoff: "Списание", count: "Проведение инвентаризации", import: "Импорт из Excel/CSV", refs: "Управление справочниками и местоположениями",
   keys: "Просмотр ключей лицензий", templates: "Печатные формы и этикетки" };
@@ -31,7 +32,7 @@ export default function InvSettings() {
   return (
     <div className="inv-page">
       <div className="inv-head"><h1>Настройки инвентаризации</h1><button className="btn primary" disabled={busy} onClick={() => void save()}><Icon name="save" size={16} />Сохранить</button></div>
-      <Tabs<T> label="Настройки" value={tab} onChange={setTab} items={[{ id: "access", label: "Права доступа" }, { id: "numbers", label: "Нумерация" }, { id: "forms", label: "Печатные формы" }, { id: "labels", label: "Этикетки" }, { id: "control", label: "Сроки и KSC" }]} />
+      <Tabs<T> label="Настройки" value={tab} onChange={setTab} items={[{ id: "access", label: "Права доступа" }, { id: "numbers", label: "Нумерация" }, { id: "forms", label: "Печатные формы" }, { id: "labels", label: "Этикетки" }, { id: "control", label: "Сроки и KSC" }, { id: "notify", label: "Уведомления" }]} />
       {tab === "access" && <div className="stack">
         <div className="card flush"><div className="card-head"><h2>Права по ролям</h2></div>
           <p className="muted small pad">Наименьшая роль KAV Checker, которой разрешено действие. Администратору разрешено всё.</p>
@@ -83,7 +84,30 @@ export default function InvSettings() {
         {num("repair_days", "Ремонт «долго» дольше, дней", 1, 730)}{num("stale_days", "Сведения устарели через, дней", 30, 3650)}
         <label className="check-row wide"><input type="checkbox" checked={!!s.ksc_auto_link} onChange={(e) => set("ksc_auto_link", e.target.checked)} />Предлагать связь с компьютером KSC, если имя совпало ровно с одним компьютером (связь «предполагается», подтверждает пользователь)</label>
       </div></div>}
+      {tab === "notify" && <Notify s={s} set={set} show={show} />}
       {toast}
+    </div>
+  );
+}
+
+function Notify({ s, set, show }: { s: S; set: (k: string, v: unknown) => void; show: (t: string, tone?: "ok" | "error") => void }) {
+  const [pv, setPv] = useState<{ title: string; rows: string[] }[] | null>(null);
+  useEffect(() => { inv.notifyPreview().then((r) => setPv(r.sections)).catch(() => setPv([])); }, []);
+  const test = async () => { try { const r = await inv.notifyTest(); show(r.sent ? "Сводка отправлена" : r.error || "Не отправлено", r.sent ? "ok" : "error"); } catch (e) { show((e as ApiError).message, "error"); } };
+  return (
+    <div className="split">
+      <div className="card"><h2>Ежедневная сводка сроков</h2>
+        <label className="check-row"><input type="checkbox" checked={!!s.notify_enabled} onChange={(e) => set("notify_enabled", e.target.checked)} />Отправлять раз в день</label>
+        <TagInput label="Получатели" value={(s.notify_emails as string[]) ?? []} onChange={(v) => set("notify_emails", v)} placeholder="inventory@example.local — Enter" />
+        <div className="inv-grid"><label className="field">Время<input type="time" value={String(s.notify_time ?? "08:00")} onChange={(e) => set("notify_time", e.target.value)} /></label>
+          <label className="field">Часовой пояс<input value={String(s.notify_timezone ?? "UTC")} onChange={(e) => set("notify_timezone", e.target.value)} placeholder="Europe/Moscow" /></label></div>
+        <label className="check-row"><input type="checkbox" checked={!!s.notify_empty} onChange={(e) => set("notify_empty", e.target.checked)} />Отправлять и тогда, когда сообщать не о чем</label>
+        <p className="muted small">Сервер почты — «Администрирование → Рассылки отчётов». Сроки — во вкладке «Сроки и KSC». Сохраните настройки перед проверкой.</p>
+        <button className="btn" onClick={() => void test()}><Icon name="mail" size={16} />Отправить сейчас</button></div>
+      <div className="card"><h2>Что войдёт в сводку сейчас</h2>
+        {!pv ? <SkelRows rows={3} cols={1} /> : !pv.length ? <p className="muted">Истекающих сроков и просроченных операций нет.</p> :
+          pv.map((sec) => <div key={sec.title} className="mt-sm"><b>{sec.title}</b><ul className="reasons">{sec.rows.slice(0, 8).map((r) => <li key={r}>{r}</li>)}{sec.rows.length > 8 && <li className="muted">… и ещё {sec.rows.length - 8}</li>}</ul></div>)}
+      </div>
     </div>
   );
 }

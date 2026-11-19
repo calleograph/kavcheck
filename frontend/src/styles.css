@@ -2154,3 +2154,25 @@ input.mini { min-height: 28px; padding: 2px 8px; font-size: var(--fs-sm); }
   body::before, body::after, .workspace::before, .workspace::after { display: none !important; }
   .inv-sheet { box-shadow: none; padding: 0; width: auto; min-height: 0; }
 }
+
+/* инвентаризация со сканированием */
+.inv-progress { display: block; height: 6px; border-radius: 3px; background: var(--sunken); overflow: hidden; margin-top: 4px; } .inv-progress i { display: block; height: 100%; background: var(--ok); }
+.inv-scanbar { display: flex; flex-direction: column; gap: 8px; }
+.inv-scanlog { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.inv-scanlog li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-height: 40px; padding: 4px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.inv-scanlog li:first-child { border-color: var(--accent-line); box-shadow: var(--sh-1); }
+.inv-scanlog li.r-found:first-child { border-color: var(--ok); } .inv-scanlog li.r-unknown:first-child, .inv-scanlog li.r-moved:first-child { border-color: var(--warn); }
+.table tr.row-ok td { background: color-mix(in srgb, var(--ok-bg) 55%, transparent); }
+.inv-decide { position: sticky; bottom: 8px; align-items: center; padding: 8px 12px; background: var(--surface); border: 1px solid var(--accent-line); border-radius: var(--radius); box-shadow: var(--sh-2); }
+.inv-line { border-top: 1px dashed var(--line-strong); padding: 12px 0 8px; } .inv-line:first-of-type { border-top: 0; }
+
+/* инфраструктура */
+.inv-infra-filter > * { flex: 1 1 260px; }
+.inv-src .row { align-items: center; }
+.inv-racks { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; align-items: start; }
+.inv-rack-units { list-style: none; margin: 0; padding: 4px; display: grid; grid-auto-rows: minmax(22px, auto); gap: 2px; background: var(--sunken); border: 2px solid var(--line-strong); border-radius: var(--radius-sm); }
+.inv-rack-units li { display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: 3px; font-size: var(--fs-xs); background: var(--surface); }
+.inv-rack-units li .u { width: 36px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.inv-rack-units li.busy { background: var(--accent-soft); border: 1px solid var(--accent-line); } .inv-rack-units li.busy.c-network { background: var(--ok-bg); border-color: var(--ok); }
+.inv-rack-units li a { display: flex; gap: 8px; align-items: baseline; min-width: 0; color: var(--ink); text-decoration: none; overflow: hidden; } .inv-rack-units li a b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-rack-units li.free { background: transparent; }

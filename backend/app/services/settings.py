@@ -545,6 +545,13 @@ class InventorySettings(_Group):
     repair_days: int = Field(default=30, ge=1, le=730)                                         # в ремонте дольше — долго
     stale_days: int = Field(default=365, ge=30, le=3650)                                       # учётные сведения не обновлялись дольше — нужна актуализация
     ksc_auto_link: bool = True                                                                 # однозначное совпадение имени или серийного номера — предполагаемая связь с компьютером KSC
+    notify_enabled: bool = False                                                               # ежедневная сводка сроков на почту (SMTP — «Рассылки отчётов»)
+    notify_emails: list[str] = Field(default_factory=list, max_length=50)
+    notify_time: str = Field(default="08:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    notify_timezone: str = Field(default="UTC", max_length=64)
+    notify_empty: bool = False
+    infra_stale_days: int = Field(default=7, ge=1, le=365)                                     # сведения источников старше — «давно не обновлялись»
+    infra_priority: dict[str, list[str]] = Field(default_factory=dict)                         # поле → порядок видов источников (пусто — встроенный)                                                                 # отправлять и тогда, когда сообщать не о чем
 
     @field_validator("roles")
     @classmethod

@@ -9,16 +9,16 @@ import { BackLink, Empty, SkelRows, Tabs } from "../../components/ui";
 import { fmt, fmtDate, num } from "../../util";
 import { AssetSearch, KscBadge, Kv, LocationPicker, PersonPicker, PropField, RefSelect, StBadge, refsOf, shortLabel, useInv } from "./InvBits";
 import { useInvReport } from "./InvReport";
-import { FieldError, inv, type Asset, type AssetCard, type Hist, type Tech } from "./invApi";
+import { FieldError, inv, type Asset, type AssetCard, type AssetInfra, type Hist, type Tech } from "./invApi";
 
-type Tab = "main" | "place" | "tech" | "soft" | "parts" | "docs" | "history" | "files";
+type Tab = "main" | "place" | "tech" | "infra" | "soft" | "parts" | "docs" | "history" | "files";
 const PEOPLE: [keyof Asset & string, string][] = [["user_id", "Пользователь"], ["owner_id", "Владелец"], ["resp_id", "Ответственный"], ["mol_id", "Материально ответственное лицо"], ["it_id", "Ответственный ИТ-специалист"]];
 
 export default function InvAssetPage({ ctx }: { ctx: Ctx }) {
   const { id } = useParams(); const aid = Number(id);
   const { meta, can } = useInv();
   const [sp, setSp] = useSearchParams();
-  const tab = ((["main", "place", "tech", "soft", "parts", "docs", "history", "files"] as Tab[]).includes(sp.get("tab") as Tab) ? sp.get("tab") : "main") as Tab;
+  const tab = ((["main", "place", "tech", "infra", "soft", "parts", "docs", "history", "files"] as Tab[]).includes(sp.get("tab") as Tab) ? sp.get("tab") : "main") as Tab;
   const [a, setA] = useState<AssetCard | null>(null); const [err, setErr] = useState("");
   const [edit, setEdit] = useState(false);
   const [tech, setTech] = useState<Tech | null>(null); const [techErr, setTechErr] = useState("");
@@ -54,11 +54,12 @@ export default function InvAssetPage({ ctx }: { ctx: Ctx }) {
       </div>
       {edit ? <AssetForm initial={a} onCancel={() => setEdit(false)} onSaved={(x) => { setA(x); setEdit(false); show("Сохранено"); }} /> : <>
         <Tabs<Tab> label="Сведения об оборудовании" value={tab} onChange={go} items={[{ id: "main", label: "Учётные сведения" }, { id: "place", label: "Расположение и ответственные" },
-          { id: "tech", label: "Техника (KSC)" }, { id: "soft", label: "ПО и лицензии", count: a.licenses.length || undefined }, { id: "parts", label: "Состав и связи", count: a.children.length || undefined },
+          { id: "tech", label: "Техника (KSC)" }, ...(["server", "vm", "network", "storage"].includes(a.cls) ? [{ id: "infra" as Tab, label: "Инфраструктура" }] : []), { id: "soft", label: "ПО и лицензии", count: a.licenses.length || undefined }, { id: "parts", label: "Состав и связи", count: a.children.length || undefined },
           { id: "docs", label: "Документы", count: a.docs.length || undefined }, { id: "history", label: "История" }, { id: "files", label: "Вложения", count: a.files.length || undefined }]} />
         {tab === "main" && <MainTab a={a} />}
         {tab === "place" && <PlaceTab a={a} />}
         {tab === "tech" && <TechTab a={a} tech={tech} err={techErr} reload={() => { loadTech(); void load(); }} ctx={ctx} show={show} />}
+        {tab === "infra" && <InfraTab a={a} />}
         {tab === "soft" && <SoftTab a={a} tech={tech} err={techErr} />}
         {tab === "parts" && <PartsTab a={a} reload={load} show={show} />}
         {tab === "docs" && <DocsTab a={a} />}
@@ -77,7 +78,7 @@ function MainTab({ a }: { a: AssetCard }) {
   return (
     <div className="split even">
       <div className="card"><h2>Учётные сведения</h2>
-        <Kv rows={[["Инвентарный номер", <span className="mono">{a.inv_no}</span>], ["Бухгалтерский номер", a.acc_no], ["Наименование", a.name], ["Тип", a.type], ["Производитель", a.manufacturer], ["Модель", a.model],
+        <Kv rows={[["Инвентарный номер", <span className="mono">{a.inv_no}</span>], ["Бухгалтерский номер", a.acc_no], ["Наименование", a.name], ["Назначение", a.purpose], ["Сервис", a.service], ["Тип", a.type], ["Производитель", a.manufacturer], ["Модель", a.model],
           ["Серийный номер", a.serial && <span className="mono">{a.serial}</span>], ["Имя компьютера", a.hostname && <span className="mono">{a.hostname}</span>], ["Статус", a.status],
           ["Создана", `${fmt(a.created_at)}, ${a.created_by}`], ["Изменена", `${fmt(a.updated_at)}, ${a.updated_by}`]]} />
       </div>
@@ -100,7 +101,8 @@ function PlaceTab({ a }: { a: AssetCard }) {
   return (
     <div className="split even">
       <div className="card"><h2>Расположение</h2>
-        <Kv rows={[["Местоположение", a.location ? <Link to={`/inventory/assets?location=${a.location_id}`}>{a.location}</Link> : <span className="muted">не указано</span>], ["Уточнение", a.loc_detail], ["Филиал", a.branch], ["Подразделение", a.dept]]} />
+        <Kv rows={[["Местоположение", a.location ? <Link to={`/inventory/assets?location=${a.location_id}`}>{a.location}</Link> : <span className="muted">не указано</span>], ["Уточнение", a.loc_detail],
+          ["Юниты в стойке", a.rack_unit ? `${a.rack_unit}${a.rack_units && a.rack_units > 1 ? `–${a.rack_unit + a.rack_units - 1}` : ""}` : ""], ["Филиал", a.branch], ["Подразделение", a.dept]]} />
         {can("docs") && <div className="row wrap"><button className="btn mini" onClick={() => nav(`/inventory/docs/new?kind=move&ids=${a.id}`)}><Icon name="arrowR" size={14} />Переместить документом</button></div>}
       </div>
       <div className="card"><h2>Ответственные лица</h2>
@@ -254,7 +256,7 @@ function FilesTab({ a, reload, show }: { a: AssetCard; reload: () => void; show:
 // ------------------------------------------------------------------------------------------------ форма
 type Form = Record<string, unknown>;
 const toForm = (a: Partial<Asset>): Form => ({ ...a, cost: a.cost !== null && a.cost !== undefined ? (a.cost / 100).toFixed(2).replace(".", ",") : "", props: { ...(a.props ?? {}) } });
-const EDITABLE = ["inv_no", "acc_no", "serial", "name", "hostname", "type_id", "model_id", "manufacturer_id", "status_id", "location_id", "loc_detail", "user_id", "owner_id", "resp_id", "mol_id", "it_id", "dept_id", "branch_id",
+const EDITABLE = ["purpose", "service", "rack_unit", "rack_units", "no_count", "inv_no", "acc_no", "serial", "name", "hostname", "type_id", "model_id", "manufacturer_id", "status_id", "location_id", "loc_detail", "user_id", "owner_id", "resp_id", "mol_id", "it_id", "dept_id", "branch_id",
   "purchase_date", "received_date", "commissioned_date", "warranty_until", "cost", "supplier_id", "purchase_doc", "note", "props", "parent_id", "rel"];
 
 export function AssetForm({ initial, onCancel, onSaved }: { initial: Partial<AssetCard>; onCancel: () => void; onSaved: (a: AssetCard, more?: boolean) => void }) {
@@ -302,9 +304,14 @@ export function AssetForm({ initial, onCancel, onSaved }: { initial: Partial<Ass
         <label className={`field ${E("serial") ? "invalid" : ""}`}>Серийный номер<input className="mono" value={String(f.serial ?? "")} onChange={(e) => set("serial", e.target.value)} maxLength={120} disabled={!canF("serial")} /></label>
         {["workstation", "laptop", "server", "vm"].includes(cls) && <label className="field">Имя компьютера<input className="mono" value={String(f.hostname ?? "")} onChange={(e) => set("hostname", e.target.value)} maxLength={255} disabled={!canF("hostname")} placeholder="как в KSC, без домена" /></label>}
         <RefSelect kind="status" label="Статус" value={f.status_id as number | null} onChange={(v) => set("status_id", v)} disabled={!canF("status_id")} empty={creating ? "«На складе»" : "—"} error={E("status_id")} />
+        {["server", "vm", "network", "storage"].includes(cls) && <><label className="field wide">Назначение<input value={String(f.purpose ?? "")} onChange={(e) => set("purpose", e.target.value)} maxLength={500} disabled={!canF("purpose")} placeholder="для чего используется" /></label>
+          <label className="field">Сервис или система<input value={String(f.service ?? "")} onChange={(e) => set("service", e.target.value)} maxLength={300} disabled={!canF("service")} /></label></>}
+        <label className="check-row"><input type="checkbox" checked={!!f.no_count} onChange={(e) => set("no_count", e.target.checked)} disabled={!canF("no_count")} />Не подлежит инвентаризации</label>
       </div></fieldset>
       <fieldset className="inv-fs"><legend>Расположение</legend><div className="inv-grid">
         <LocationPicker label="Местоположение" value={f.location_id as number | null} onChange={(v) => set("location_id", v)} error={E("location_id")} disabled={!canF("location_id")} />
+        {["server", "network", "storage"].includes(cls) && <><label className="field">Юнит в стойке (нижний)<input type="number" min={1} max={60} value={String(f.rack_unit ?? "")} onChange={(e) => set("rack_unit", e.target.value)} disabled={!canF("rack_unit")} /></label>
+          <label className="field">Высота, юнитов<input type="number" min={1} max={60} value={String(f.rack_units ?? "")} onChange={(e) => set("rack_units", e.target.value)} disabled={!canF("rack_units")} /></label></>}
         <label className="field">Уточнение<input value={String(f.loc_detail ?? "")} onChange={(e) => set("loc_detail", e.target.value)} maxLength={300} disabled={!canF("loc_detail")} placeholder="стол у окна, юнит 12…" /></label>
         <RefSelect kind="branch" label="Филиал" value={f.branch_id as number | null} onChange={(v) => set("branch_id", v)} disabled={!canF("branch_id")} />
         <RefSelect kind="dept" label="Подразделение" value={f.dept_id as number | null} onChange={(v) => set("dept_id", v)} disabled={!canF("dept_id")} />
@@ -342,6 +349,32 @@ export function AssetNew() {
       <BackLink to="/inventory/assets" label="Оборудование" />
       <div className="inv-head"><h1>Новая учётная единица</h1></div>
       <AssetForm initial={initial} onCancel={() => nav(-1)} onSaved={(a, more) => { if (!more) nav(`/inventory/assets/${a.id}`, { replace: true }); }} />
+    </div>
+  );
+}
+
+function InfraTab({ a }: { a: AssetCard }) {
+  const [d, setD] = useState<AssetInfra | null>(null); const [err, setErr] = useState("");
+  useEffect(() => { inv.assetInfra(a.id).then(setD).catch((e) => setErr((e as ApiError).message)); }, [a.id, a.version]);
+  if (err) return <p className="field-err">{err}</p>;
+  if (!d) return <div className="card"><SkelRows rows={5} cols={3} /></div>;
+  if (!d.objects.length) return <div className="card"><Empty icon="server" title="Нет сведений источников" action={<Link className="btn" to="/inventory/infra?tab=objects">Объекты источников</Link>}>Объект ещё не сопоставлен ни с одним источником (мониторинг, виртуализация, реестр инфраструктуры). Сопоставить можно во вкладке «Объекты источников».</Empty></div>;
+  const open = d.findings.filter((f) => ["attention", "review", "fixing"].includes(f.status));
+  return (
+    <div className="stack">
+      {open.length > 0 && <div className="alert flat warn"><Icon name="alert" /><div className="alert-body"><b>Открытые расхождения</b><ul className="reasons">{open.map((f) => <li key={f.id}>{f.title}{f.found && ` — ${f.found}`} <span className="muted small">({f.status_ru})</span></li>)}</ul></div></div>}
+      <div className="split">
+        <div className="card flush"><div className="card-head"><h2>Сведения по приоритету источников</h2></div>
+          <div className="table-scroll"><table className="table compact"><thead><tr><th>Поле</th><th>Значение</th><th>Источник</th><th className="hide-sm">Другие источники</th></tr></thead>
+            <tbody>{d.resolved.map((r) => <tr key={r.attr}><td className="small">{r.label}</td><td>{r.value}</td><td className="small">{r.source}<span className="sub">{fmt(r.at)}</span></td>
+              <td className="hide-sm small">{r.conflicts.length ? <span className="warn-text">{r.conflicts.map((c) => `${c.source}: ${c.value}`).join("; ")}</span> : <span className="muted">совпадают</span>}</td></tr>)}</tbody></table></div></div>
+        <div className="card flush"><div className="card-head"><h2>Объекты источников ({d.objects.length})</h2></div>
+          <ul className="inv-list pad">{d.objects.map((o) => <li key={o.id}><b>{o.name}</b><span className="small">{o.source} · {o.kind_ru}</span>{!o.present && <span className="badge">нет в источнике</span>}<span className="muted small">{o.match === "confirmed" ? "подтверждено" : `автоматически: ${o.match_basis}`}</span></li>)}</ul></div>
+      </div>
+      <div className="card flush"><div className="card-head"><h2>История конфигурации</h2></div>
+        {d.changes.length ? <div className="table-scroll"><table className="table compact"><thead><tr><th>Когда</th><th>Объект</th><th>Поле</th><th>Было → стало</th></tr></thead>
+          <tbody>{d.changes.map((c, i) => <tr key={i}><td className="nowrap small">{fmt(c.at)}</td><td className="small">{c.object}</td><td className="small">{c.label}</td><td className="small"><s>{c.old || "—"}</s> → <b>{c.new || "—"}</b></td></tr>)}</tbody></table></div>
+          : <p className="muted small pad">Изменений не было с первой синхронизации.</p>}</div>
     </div>
   );
 }

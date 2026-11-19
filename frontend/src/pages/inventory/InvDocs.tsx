@@ -19,6 +19,7 @@ const TONE: Record<string, string> = { draft: "", prepared: "accent", sent: "war
 /** Что произойдёт с карточками при переходе — пишется на кнопке и в подтверждении. */
 const EFFECT: Record<string, Record<string, string>> = {
   move: { prepared: "Документ готов к отправке. Карточки не меняются.", sent: "Оборудование будет отмечено «в пути»; местоположение пока прежнее.", accepted: "Новое местоположение и ответственные будут записаны в карточки.", done: "Документ закрывается.", cancelled: "Отметка «в пути» будет снята, карточки не меняются." },
+  receipt: { sent: "Поступление отмечено как заказанное. Карточки ещё не создаются; строки можно поправить.", done: "На складе будет создана карточка на каждую единицу (статус «На складе», поставщик, документ приобретения, гарантия).", cancelled: "Поступление отменяется." },
   repair: { sent: "Статус оборудования станет «В ремонте», прежний статус запоминается.", done: "Оборудование возвращено: прежний статус будет восстановлен.", cancelled: "Документ отменяется без изменений карточек." },
   default: { prepared: "Документ подготовлен (можно распечатать и подписать). Карточки не меняются.", done: "Изменения будут записаны в карточки оборудования и их историю.", draft: "Документ вернётся в черновик.", cancelled: "Документ отменяется без изменений карточек.", sent: "Работа в процессе." },
 };
@@ -30,7 +31,9 @@ const DOC_HINT: Record<string, string> = {
   move: "Перемещение в три шага: подготовка → отправка (оборудование «в пути») → приём (новое место и ответственные).",
   accept: "Приём-передача: назначается ответственный (или выбранная роль) и местоположение.", handover: "Передача материальных ценностей: назначается новое МОЛ.",
   defect: "Приём неисправного оборудования: фиксируется состояние, местоположение (например, склад ИТ).", repair: "Ремонт: при отправке — статус «В ремонте», при возврате — прежний статус.",
-  writeoff: "Списание: статус «Списано», пользователь снимается. Карточки не удаляются.", work: "Работа с оборудованием: исполнитель, срок, результат; при выполнении — запись в историю каждой единицы.",
+  writeoff: "Списание: статус «Списано», пользователь снимается. Карточки не удаляются.",
+  decom: "Вывод из эксплуатации: статус «Выведено из эксплуатации», связь ВМ с хостом снимается, проверочный список — в акте. Карточки и история сохраняются.",
+  receipt: "Поступление: заказ (строки — тип или модель, количество, цена, гарантия, серийные номера) → «Заказано» → «Принято»: на складе создаётся карточка на каждую единицу.", work: "Работа с оборудованием: исполнитель, срок, результат; при выполнении — запись в историю каждой единицы.",
 };
 
 export default function InvDocs({ ctx }: { ctx: Ctx }) {
@@ -100,7 +103,7 @@ function DocEditor({ init, onSaved, onCancel, docId }: { init: Draft; onSaved: (
         {["return", "handover", "accept", "defect"].includes(k) && person("from_person_id", k === "return" ? "Сотрудник (сдаёт)" : "Передающая сторона")}
         {["issue", "handover", "accept", "move"].includes(k) && person("to_person_id", k === "issue" ? "Сотрудник (получает)" : k === "move" ? "Получатель" : "Принимающая сторона")}
         {["move"].includes(k) && <LocationPicker label="Откуда" value={d.from_location_id} onChange={(v) => set("from_location_id", v)} placeholder="по текущему месту" />}
-        {["issue", "return", "move", "accept", "handover", "defect"].includes(k) && <LocationPicker label={k === "move" ? "Куда" : k === "return" || k === "defect" ? "Куда принять (склад)" : "Местоположение"} value={d.to_location_id} onChange={(v) => set("to_location_id", v)} placeholder="не менять" />}
+        {["issue", "return", "move", "accept", "handover", "defect", "receipt"].includes(k) && <LocationPicker label={k === "move" ? "Куда" : ["return", "defect", "receipt"].includes(k) ? "Куда принять (склад)" : "Местоположение"} value={d.to_location_id} onChange={(v) => set("to_location_id", v)} placeholder="не менять" />}
         {k === "move" && roleSel("Получатель становится", "")}
         {k === "accept" && roleSel("Принимающая сторона становится", "resp")}
         {k === "issue" && <fieldset className="field"><legend>Также назначить сотрудника</legend><div className="row wrap tight">{(["owner", "resp"] as const).map((r) => {
@@ -128,7 +131,12 @@ function DocEditor({ init, onSaved, onCancel, docId }: { init: Draft; onSaved: (
         <label className="field">Срок<input type="date" value={String(d.data.due ?? "")} onChange={(e) => setData("due", e.target.value)} /></label>
         <label className="field wide">Описание<textarea rows={2} value={String(d.data.description ?? "")} onChange={(e) => setData("description", e.target.value)} /></label>
       </div></fieldset>}
-      <fieldset className="inv-fs"><legend>Оборудование ({d.items.length})</legend>
+      {k === "receipt" && <ReceiptLines d={d} setData={setData} />}
+      {k === "decom" && <fieldset className="inv-fs"><legend>Проверочный список вывода</legend><div className="row wrap tight">{([["monitoring", "Снят с мониторинга"], ["backup", "Резервное копирование прекращено или не требуется"], ["ips", "IP-адреса освобождены"], ["links", "Связи с хостами и кластерами сняты"]] as [string, string][]).map(([key, lb]) => {
+        const ck = (d.data.checklist as Record<string, boolean> | undefined) ?? {};
+        return <label key={key} className="chip-check"><input type="checkbox" checked={!!ck[key]} onChange={(e) => setData("checklist", { ...ck, [key]: e.target.checked })} />{lb}</label>;
+      })}</div><p className="muted small">Действия во внешних системах выполняет администратор; отметки попадают в акт и историю. Если узел остаётся в мониторинге или резервном копировании, сверка покажет это расхождением.</p></fieldset>}
+      {k !== "receipt" && <fieldset className="inv-fs"><legend>Оборудование ({d.items.length})</legend>
         <AssetSearch onPick={add} exclude={d.items.map((i) => i.asset.id)} placeholder="Номер, серийный номер, название — или отсканируйте этикетку и нажмите Enter" />
         {d.items.length > 0 && <div className="table-scroll"><table className="table compact inv-doc-items"><thead><tr><th>Инв. номер</th><th>Наименование</th><th className="hide-sm">Сейчас</th><th>Состояние</th><th className="hide-sm">Примечание</th><th /></tr></thead><tbody>
           {d.items.map((i, n) => <tr key={i.asset.id}><td className="mono nowrap">{i.asset.inv_no}</td><td>{shortLabel(i.asset)}<span className="sub mono">{i.asset.serial}</span></td>
@@ -136,10 +144,10 @@ function DocEditor({ init, onSaved, onCancel, docId }: { init: Draft; onSaved: (
             <td><input className="mini" value={i.condition} aria-label={`Состояние ${i.asset.inv_no}`} onChange={(e) => setD((x) => ({ ...x, items: x.items.map((y, m) => (m === n ? { ...y, condition: e.target.value } : y)) }))} placeholder="исправно" /></td>
             <td className="hide-sm"><input className="mini" value={i.note} aria-label={`Примечание ${i.asset.inv_no}`} onChange={(e) => setD((x) => ({ ...x, items: x.items.map((y, m) => (m === n ? { ...y, note: e.target.value } : y)) }))} /></td>
             <td><button type="button" className="btn ghost icon mini" aria-label={`Убрать ${i.asset.inv_no}`} onClick={() => setD((x) => ({ ...x, items: x.items.filter((_, m) => m !== n) }))}><Icon name="close" size={14} /></button></td></tr>)}</tbody></table></div>}
-      </fieldset>
+      </fieldset>}
       <label className="field wide">Примечание к документу<textarea rows={2} value={d.comment} onChange={(e) => set("comment", e.target.value)} /></label>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
-      <div className="inv-form-foot"><button type="button" className="btn" onClick={onCancel}>Отмена</button><div className="spacer" /><button type="submit" className="btn primary" disabled={busy || !d.items.length}>{docId ? "Сохранить" : "Создать черновик"}</button></div>
+      <div className="inv-form-foot"><button type="button" className="btn" onClick={onCancel}>Отмена</button><div className="spacer" /><button type="submit" className="btn primary" disabled={busy || (k === "receipt" ? !((d.data.lines as unknown[] | undefined) ?? []).length : !d.items.length)}>{docId ? "Сохранить" : "Создать черновик"}</button></div>
     </form>
   );
 }
@@ -154,7 +162,7 @@ export function DocNew() {
     to_person_id: null, resp_id: null, basis: "", comment: "", data: kind === "move" ? { role: "" } : {}, items: items.map((a) => ({ asset: a, condition: "", note: "" })),
     names: { from_person_id: sp.get("from") ? items[0]?.user ?? "" : "" } }), [items, kind, sp]);
   if (!meta.doc_kinds[kind]) return <Empty icon="file" title="Неизвестный вид документа" />;
-  if (!can(kind === "repair" ? "repair" : kind === "writeoff" ? "writeoff" : "docs")) return <div className="card"><Empty icon="key" title="Недостаточно прав">Оформление этого документа недоступно вашей роли.</Empty></div>;
+  if (!can(kind === "repair" ? "repair" : kind === "writeoff" ? "writeoff" : kind === "receipt" ? "create" : "docs")) return <div className="card"><Empty icon="key" title="Недостаточно прав">Оформление этого документа недоступно вашей роли.</Empty></div>;
   return (
     <div className="inv-page">
       <BackLink to="/inventory/docs" label="Документы" />
@@ -176,7 +184,7 @@ export function DocPage() {
   if (!d) return <div className="card"><SkelRows rows={6} cols={3} /></div>;
   const draft: Draft = { kind: d.kind, date: d.date, from_location_id: d.from_location_id, to_location_id: d.to_location_id, from_person_id: d.from_person_id, to_person_id: d.to_person_id, resp_id: d.resp_id, basis: d.basis,
     comment: d.comment, data: d.data, items: d.items.filter((i) => i.current).map((i) => ({ asset: i.current!, condition: i.condition, note: i.note })), names: { from_person_id: d.from_person, to_person_id: d.to_person, resp_id: d.resp } };
-  const steps = d.kind === "move" ? ["draft", "prepared", "sent", "accepted", "done"] : d.kind === "repair" ? ["draft", "sent", "done"] : d.kind === "work" ? ["draft", "sent", "done"] : ["draft", "prepared", "done"];
+  const steps = d.kind === "move" ? ["draft", "prepared", "sent", "accepted", "done"] : ["repair", "work", "receipt"].includes(d.kind) ? ["draft", "sent", "done"] : ["draft", "prepared", "done"];
   const data = d.data as Record<string, string>;
   return (
     <div className="inv-page">
@@ -208,7 +216,8 @@ export function DocPage() {
           <div className="card"><h2>Ход документа</h2>
             <ol className="inv-timeline compact">{[...d.history].reverse().map((h, i) => <li key={i}><div className="inv-tl-head"><b>{meta.doc_status[h.to] ?? h.to}</b><span className="muted small">{fmt(h.at)} · {h.by}</span></div>{h.comment && <p className="small muted">{h.comment}</p>}</li>)}</ol></div>
         </div>
-        <div className="card flush mt"><div className="card-head"><h2>Оборудование ({d.items.length})</h2></div>
+        {d.kind === "receipt" && <ReceiptView d={d} />}
+        <div className="card flush mt"><div className="card-head"><h2>{d.kind === "receipt" ? `Созданные карточки (${d.items.length})` : `Оборудование (${d.items.length})`}</h2></div>
           <div className="table-scroll"><table className="table compact"><thead><tr><th>Инв. номер</th><th>Наименование</th><th className="hide-sm">Серийный номер</th><th>Состояние</th><th className="hide-sm">Сейчас</th></tr></thead><tbody>
             {d.items.map((i) => <tr key={i.id}><td><Link to={`/inventory/assets/${i.asset_id}`} className="mono">{String(i.snap.inv_no ?? "")}</Link></td><td>{String(i.snap.name ?? "")}<span className="sub">{String(i.snap.model ?? "")}</span></td>
               <td className="hide-sm mono small">{String(i.snap.serial ?? "")}</td><td className="small">{i.condition}{i.note && <span className="sub">{i.note}</span>}</td>
@@ -272,5 +281,48 @@ export function DocPrint() {
         <div className="inv-sheet-sigs">{p.signatures.map(([lb, nm], i) => <div key={i}><span className="l">{lb}</span><span className="line">{nm}</span><span className="hint"><span>подпись</span><span>расшифровка подписи</span></span><span className="d">«___» ____________ 20__ г.</span></div>)}</div>
       </article>
     </div>
+  );
+}
+
+interface Line { type_id: number | null; manufacturer_id: number | null; model_id: number | null; name: string; qty: number; cost: string; warranty_until: string; serials: string[] }
+
+/** Строки поступления: тип или модель, наименование, количество, цена за единицу, гарантия, серийные номера (по одному на единицу, необязательно). */
+function ReceiptLines({ d, setData }: { d: { data: Record<string, unknown> }; setData: (k: string, v: unknown) => void }) {
+  const { meta } = useInv();
+  const lines = ((d.data.lines as Line[] | undefined) ?? []).map((l) => ({ ...l, cost: l.cost === null || l.cost === undefined ? "" : String(l.cost).replace(".", ",") }));
+  const set = (i: number, kv: Partial<Line>) => setData("lines", lines.map((l, j) => (j === i ? { ...l, ...kv } : l)));
+  const add = () => setData("lines", [...lines, { type_id: null, manufacturer_id: null, model_id: null, name: "", qty: 1, cost: "", warranty_until: "", serials: [] }]);
+  const total = lines.reduce((a, l) => a + (Number(l.qty) || 0), 0);
+  return (
+    <fieldset className="inv-fs"><legend>Строки поступления ({total} ед.)</legend>
+      <div className="inv-grid"><label className="field">Поставщик<select value={String(d.data.supplier_id ?? "")} onChange={(e) => setData("supplier_id", e.target.value ? Number(e.target.value) : null)}><option value="">—</option>{meta.refs.filter((r) => r.kind === "supplier").map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
+        <label className="field">Документ (счёт, накладная)<input value={String(d.data.invoice ?? "")} onChange={(e) => setData("invoice", e.target.value)} maxLength={300} /></label></div>
+      {lines.map((l, i) => <div key={i} className="inv-line">
+        <div className="inv-grid">
+          <RefSelect kind="type" label="Тип" value={l.type_id} onChange={(v) => set(i, { type_id: v })} />
+          <RefSelect kind="manufacturer" label="Производитель" value={l.manufacturer_id} onChange={(v) => set(i, { manufacturer_id: v, model_id: null })} />
+          <RefSelect kind="model" label="Модель" parent={l.manufacturer_id} value={l.model_id} onChange={(v) => set(i, { model_id: v })} empty={l.manufacturer_id ? "—" : "сначала производитель"} />
+          <label className="field">Наименование<input value={l.name} onChange={(e) => set(i, { name: e.target.value })} maxLength={300} /></label>
+          <label className="field">Количество<input type="number" min={1} max={500} value={l.qty} onChange={(e) => set(i, { qty: Math.max(1, Number(e.target.value) || 1) })} /></label>
+          <label className="field">Цена за единицу, ₽<input inputMode="decimal" value={l.cost} onChange={(e) => set(i, { cost: e.target.value })} placeholder="0,00" /></label>
+          <label className="field">Гарантия до<input type="date" value={l.warranty_until ?? ""} onChange={(e) => set(i, { warranty_until: e.target.value })} /></label>
+          <label className="field wide">Серийные номера (по одному в строке, необязательно)<textarea rows={2} value={(l.serials ?? []).join("\n")} onChange={(e) => set(i, { serials: e.target.value.split(/\n|;/).map((x) => x.trim()) })} /></label>
+        </div>
+        <button type="button" className="btn mini ghost" onClick={() => setData("lines", lines.filter((_, j) => j !== i))}><Icon name="trash" size={14} />Убрать строку</button>
+      </div>)}
+      <button type="button" className="btn mini" onClick={add}><Icon name="plus" size={14} />Добавить строку</button>
+    </fieldset>
+  );
+}
+
+function ReceiptView({ d }: { d: DocCard }) {
+  const { meta } = useInv();
+  const lines = (d.data.lines as Line[] | undefined) ?? [];
+  const ref = (id: number | null) => meta.refs.find((r) => r.id === id)?.name ?? "";
+  return (
+    <div className="card flush mt"><div className="card-head"><h2>Строки поступления</h2><span className="muted small">{String(d.data.invoice ?? "")}</span></div>
+      <div className="table-scroll"><table className="table compact"><thead><tr><th>Тип</th><th>Производитель и модель</th><th>Наименование</th><th className="num">Кол-во</th><th className="num">Цена, ₽</th><th className="hide-sm">Гарантия до</th></tr></thead>
+        <tbody>{lines.map((l, i) => <tr key={i}><td>{ref(l.type_id)}</td><td>{[ref(l.manufacturer_id), ref(l.model_id)].filter(Boolean).join(" ")}</td><td>{l.name}<span className="sub mono">{(l.serials ?? []).join(", ")}</span></td>
+          <td className="num">{l.qty}</td><td className="num">{l.cost ?? ""}</td><td className="hide-sm">{l.warranty_until ? fmtDate(l.warranty_until) : ""}</td></tr>)}</tbody></table></div></div>
   );
 }

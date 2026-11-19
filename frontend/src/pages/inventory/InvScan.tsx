@@ -1,45 +1,27 @@
 /** Сканирование: камера телефона или планшета (распознавание QR и штрихкодов средствами браузера) либо ручной сканер/ввод → карточка учётной единицы.
  *  Без внешних библиотек: если браузер не умеет распознавать коды, остаётся поле ввода (ручные сканеры работают как клавиатура). */
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ApiError } from "../../api";
 import { Icon } from "../../components/Icons";
 import { KscBadge, StBadge, shortLabel } from "./InvBits";
+import { Camera, hasDetector } from "./InvCamera";
 import { inv, type Asset } from "./invApi";
-
-type Detector = { detect: (src: CanvasImageSource) => Promise<{ rawValue: string }[]> };
-const hasDetector = () => typeof window !== "undefined" && "BarcodeDetector" in window;
 
 export default function InvScan() {
   const [code, setCode] = useState(""); const [hit, setHit] = useState<Asset | null>(null); const [err, setErr] = useState("");
   const [cam, setCam] = useState(false); const [camErr, setCamErr] = useState("");
   const [recent, setRecent] = useState<Asset[]>([]);
-  const video = useRef<HTMLVideoElement>(null); const input = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLInputElement>(null);
   const last = useRef("");
   const find = async (c: string) => {
     const v = c.trim(); if (!v || v === last.current) return;
     last.current = v; setErr("");
-    if (v.startsWith("LOC:")) { setErr(`Это этикетка местоположения (${v}). Сканирование помещений для инвентаризации — следующий этап.`); return; }
+    if (v.startsWith("LOC:")) { setErr(`Это этикетка помещения (${v}): она переключает помещение при инвентаризации — раздел «Инвентаризации».`); return; }
     try { const a = await inv.lookup(v); setHit(a); setRecent((r) => [a, ...r.filter((x) => x.id !== a.id)].slice(0, 8)); if (navigator.vibrate) navigator.vibrate(60); }
     catch (e) { setHit(null); setErr((e as ApiError).message); }
     window.setTimeout(() => { last.current = ""; }, 2500);
   };
-  useEffect(() => {
-    if (!cam) return;
-    let stream: MediaStream | null = null; let timer = 0; let alive = true;
-    (async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        if (!video.current || !alive) return;
-        video.current.srcObject = stream; await video.current.play();
-        const Det = (window as unknown as { BarcodeDetector: new (o: { formats: string[] }) => Detector }).BarcodeDetector;
-        const det = new Det({ formats: ["qr_code", "code_128", "ean_13", "code_39", "data_matrix"] });
-        const tick = async () => { if (!alive || !video.current) return; try { const r = await det.detect(video.current); if (r[0]?.rawValue) void find(r[0].rawValue); } catch { /* кадр не распознан */ } timer = window.setTimeout(() => void tick(), 350); };
-        void tick();
-      } catch (e) { setCamErr(`Камера недоступна: ${(e as Error).message}. Разрешите доступ к камере или используйте поле ввода.`); setCam(false); }
-    })();
-    return () => { alive = false; window.clearTimeout(timer); stream?.getTracks().forEach((t) => t.stop()); };
-  }, [cam]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="inv-page inv-scan">
       <div className="inv-head"><h1>Сканирование</h1></div>
@@ -51,7 +33,7 @@ export default function InvScan() {
             : <span className="muted small">Распознавание камерой этот браузер не поддерживает — используйте ручной сканер или камеру телефона (QR откроет карточку).</span>}
         </form>
         {camErr && <p className="field-err">{camErr}</p>}
-        {cam && <div className="inv-cam"><video ref={video} muted playsInline aria-label="Изображение с камеры" /><span className="inv-cam-frame" aria-hidden /></div>}
+        <Camera on={cam} onCode={(c) => void find(c)} onError={(m) => { setCamErr(m); setCam(false); }} />
         {err && <div className="alert flat warn" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       </div>
       {hit && <div className="card inv-scan-hit" aria-live="polite">

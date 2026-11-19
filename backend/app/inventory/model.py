@@ -25,27 +25,30 @@ FIELD_RU = {"inv_no": "Инвентарный номер", "acc_no": "Бухга
             "model_id": "Модель", "manufacturer_id": "Производитель", "status_id": "Статус", "location_id": "Местоположение", "loc_detail": "Уточнение местоположения", "parent_id": "Связь",
             "rel": "Вид связи", "user_id": "Пользователь", "owner_id": "Владелец", "resp_id": "Ответственный", "mol_id": "МОЛ", "it_id": "ИТ-специалист", "dept_id": "Подразделение",
             "branch_id": "Филиал", "purchase_date": "Дата приобретения", "received_date": "Дата поступления", "commissioned_date": "Ввод в эксплуатацию", "warranty_until": "Гарантия до",
-            "cost": "Стоимость", "supplier_id": "Поставщик", "purchase_doc": "Документ приобретения", "note": "Примечание", "ksc": "Компьютер KSC"}
+            "cost": "Стоимость", "supplier_id": "Поставщик", "purchase_doc": "Документ приобретения", "note": "Примечание", "ksc": "Компьютер KSC",
+            "no_count": "Не подлежит инвентаризации", "purpose": "Назначение", "service": "Сервис", "rack_unit": "Юнит в стойке", "rack_units": "Высота, юнитов"}
 PEOPLE_FIELDS = ("user_id", "owner_id", "resp_id", "mol_id", "it_id")
 REF_FIELDS = {"type_id": "type", "model_id": "model", "manufacturer_id": "manufacturer", "status_id": "status", "dept_id": "dept", "branch_id": "branch", "supplier_id": "supplier"}
 DATE_FIELDS = ("purchase_date", "received_date", "commissioned_date", "warranty_until")
-TEXT_FIELDS = {"inv_no": 60, "acc_no": 60, "serial": 120, "name": 300, "hostname": 255, "loc_detail": 300, "purchase_doc": 300}
+TEXT_FIELDS = {"inv_no": 60, "acc_no": 60, "serial": 120, "name": 300, "hostname": 255, "loc_detail": 300, "purchase_doc": 300, "purpose": 500, "service": 300}
 HIST_RU = {"create": "Создание карточки", "update": "Изменение сведений", "move": "Перемещение", "assign": "Смена ответственных лиц", "status": "Смена статуса", "doc": "Документ",
            "repair": "Ремонт", "writeoff": "Списание", "link": "Связь с KSC", "import": "Импорт", "part": "Состав", "count": "Инвентаризация"}
 
 # документы: вид → (название, префикс номера, этапы). Изменения применяются: перемещение — при приёме (accepted), остальные — при проведении (done); ремонт — при отправке и возврате
 DOC_RU = {"issue": "Акт выдачи оборудования сотруднику", "return": "Акт возврата оборудования", "move": "Акт внутреннего перемещения", "accept": "Акт приёма-передачи оборудования",
-          "handover": "Акт передачи материальных ценностей", "defect": "Акт приёма неисправного оборудования", "repair": "Ремонт", "writeoff": "Акт списания", "work": "Работа"}
+          "handover": "Акт передачи материальных ценностей", "defect": "Акт приёма неисправного оборудования", "repair": "Ремонт", "writeoff": "Акт списания", "work": "Работа",
+          "receipt": "Акт приёма оборудования на склад", "decom": "Акт вывода из эксплуатации"}
 DOC_SHORT = {"issue": "Выдача", "return": "Возврат", "move": "Перемещение", "accept": "Приём-передача", "handover": "Передача МЦ", "defect": "Приём неисправного", "repair": "Ремонт",
-             "writeoff": "Списание", "work": "Работа"}
-DOC_PREFIX = {"issue": "ВД", "return": "ВЗ", "move": "ПМ", "accept": "ПП", "handover": "МЦ", "defect": "НИ", "repair": "РМ", "writeoff": "СП", "work": "РБ"}
+             "writeoff": "Списание", "work": "Работа", "receipt": "Поступление", "decom": "Вывод из эксплуатации"}
+DOC_PREFIX = {"issue": "ВД", "return": "ВЗ", "move": "ПМ", "accept": "ПП", "handover": "МЦ", "defect": "НИ", "repair": "РМ", "writeoff": "СП", "work": "РБ", "receipt": "ПС", "decom": "ВЭ"}
 DOC_STATUS_RU = {"draft": "Черновик", "prepared": "Подготовлен", "sent": "Отправлен", "accepted": "Принят", "done": "Завершён", "cancelled": "Отменён"}
 # допустимые переходы по видам; repair: sent — передано в ремонт, done — возвращено
 DOC_FLOW = {"move": {"draft": ("prepared", "cancelled"), "prepared": ("sent", "draft", "cancelled"), "sent": ("accepted", "cancelled"), "accepted": ("done",)},
             "repair": {"draft": ("sent", "cancelled"), "sent": ("done",)},
-            "work": {"draft": ("sent", "done", "cancelled"), "sent": ("done", "cancelled")}}
+            "work": {"draft": ("sent", "done", "cancelled"), "sent": ("done", "cancelled")},
+            "receipt": {"draft": ("sent", "done", "cancelled"), "sent": ("done", "cancelled")}}            # sent — заказано, done — принято (созданы карточки)
 DOC_FLOW_DEFAULT = {"draft": ("prepared", "done", "cancelled"), "prepared": ("done", "draft", "cancelled")}
-DOC_PERM = {"repair": "repair", "work": "docs", "writeoff": "writeoff"}               # остальные — право docs
+DOC_PERM = {"repair": "repair", "work": "docs", "writeoff": "writeoff", "receipt": "create"}               # остальные — право docs
 WORK_KINDS = {"install": "Установка", "setup": "Настройка", "issue": "Выдача", "check": "Проверка", "service": "Обслуживание", "replace": "Замена комплектующих", "count": "Инвентаризация", "other": "Прочее"}
 
 DOC_COLUMNS = {"n": "№", "inv_no": "Инв. номер", "acc_no": "Бух. номер", "name": "Наименование", "type": "Тип", "model": "Модель", "serial": "Серийный номер", "location": "Местоположение",
@@ -68,6 +71,10 @@ FORMS_DEFAULT = {
                  "columns": ["n", "inv_no", "acc_no", "name", "serial", "cost", "note"], "signatures": ["Председатель комиссии", "Член комиссии", "Член комиссии"], "footer": ""},
     "repair": {"title": "Направление в ремонт", "intro": "Оборудование передаётся в ремонт.", "columns": ["n", "inv_no", "name", "model", "serial", "condition"],
                "signatures": ["Передал", "Принял (исполнитель)"], "footer": ""},
+    "decom": {"title": "Акт вывода из эксплуатации", "intro": "Выводится из эксплуатации следующее оборудование. Проверено: мониторинг, резервное копирование, сетевые адреса, связи с хостами и кластерами.",
+              "columns": ["n", "inv_no", "name", "serial", "location", "note"], "signatures": ["Исполнитель", "Ответственный администратор", "Утвердил"], "footer": ""},
+    "receipt": {"title": "Акт приёма оборудования на склад", "intro": "На склад принято следующее оборудование:", "columns": ["n", "inv_no", "name", "model", "serial", "cost"],
+                "signatures": ["Сдал (поставщик)", "Принял (склад)"], "footer": ""},
     "work": {"title": "Наряд на работы", "intro": "", "columns": ["n", "inv_no", "name", "serial", "location"], "signatures": ["Исполнитель", "Принял"], "footer": ""},
 }
 
@@ -79,3 +86,9 @@ SEED_STATUSES = [("На складе", "stock"), ("В эксплуатации",
                  ("Выведено из эксплуатации", "decom"), ("Утрачено", "lost")]
 SEED_LICENSE_TYPES = ["Бессрочная", "Подписка", "Корпоративная (по числу устройств)", "Пользовательская", "OEM", "Свободная / открытая"]
 SEED_SW_CATEGORIES = ["Операционные системы", "Офисные программы", "Средства защиты", "Средства разработки", "Прикладное ПО", "Системное ПО"]
+
+# инвентаризация (сверка наличия)
+COUNT_STATUS_RU = {"draft": "Подготовка", "active": "Идёт сканирование", "closed": "Завершена", "cancelled": "Отменена"}
+COUNT_STATE_RU = {"pending": "Ожидается", "found": "Найдено на месте", "moved": "Найдено в другом месте", "extra": "Не ожидалось", "unknown": "Код не найден в учёте", "missing": "Не найдено"}
+COUNT_DECISION_RU = {"apply": "Принять фактическое", "keep": "Оставить учётное", "lost": "Утрачено", "ignore": "Без изменений"}
+RECEIPT_MAX_QTY = 500                     # строк × количество в одном поступлении (по одной карточке на единицу)

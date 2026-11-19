@@ -32,6 +32,7 @@ export default function InvOverview() {
     ["Без местоположения", s.no_location, "не указано, где находится", "/inventory/assets?no_location=1&st=active"],
     ["В пути", s.in_transit, d.transit_late ? `из них просрочено перемещений: ${d.transit_late}` : "отправлено, ещё не принято", "/inventory/assets?transit=1"],
     ["Долго в ремонте", d.repair_long, "ремонты дольше срока из настроек", "/inventory/docs?kind=repair&status=sent"],
+    ["Незавершённые инвентаризации", d.counts_open, "идёт сканирование", "/inventory/counts"],
     ["Сведения давно не обновлялись", s.stale, `более ${d.cfg.stale_days} дн.`, "/inventory/assets?stale=1&st=active"],
   ];
   const maxCls = Math.max(1, ...d.by_cls.map((c) => c.n));

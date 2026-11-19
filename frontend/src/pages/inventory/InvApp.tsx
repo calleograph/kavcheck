@@ -28,6 +28,10 @@ const Refs = lazy(() => import("./InvRefs"));
 const ImportPage = lazy(() => import("./InvImport"));
 const Settings = lazy(() => import("./InvSettings"));
 const Scan = lazy(() => import("./InvScan"));
+const Counts = lazy(() => import("./InvCounts"));
+const Stock = lazy(() => import("./InvStock"));
+const Infra = lazy(() => import("./InvInfra"));
+const CountPage = lazy(() => import("./InvCounts").then((m) => ({ default: m.CountPage })));
 
 export default function InvApp({ ctx }: { ctx: Ctx }) {
   const [meta, setMeta] = useState<Meta | null>(null); const [err, setErr] = useState("");
@@ -86,6 +90,10 @@ export default function InvApp({ ctx }: { ctx: Ctx }) {
             <Route path="import" element={<ImportPage ctx={ctx} />} />
             <Route path="settings" element={ctx.me.user.is_admin ? <Settings /> : <Navigate to="/inventory" replace />} />
             <Route path="scan" element={<Scan />} />
+            <Route path="counts" element={<Counts />} />
+            <Route path="stock" element={<Stock />} />
+            <Route path="infra" element={<Infra />} />
+            <Route path="counts/:id" element={<CountPage />} />
             <Route path="*" element={<Empty icon="package" title="Страница не найдена">Проверьте адрес или вернитесь к обзору инвентаризации.</Empty>} />
           </Routes>
         </Suspense>

@@ -35,9 +35,9 @@ export const NAV_HIDDEN: Record<string, string> = {
 /** Навигация подсистемы «Инвентаризация» (свои разделы внутри /inventory). perm — право раздела, без которого пункт скрыт; admin — только администратор. */
 export interface InvNavItem { to: string; label: string; icon: IconName; end?: boolean; perm?: "import" | "refs"; admin?: boolean }
 export const INV_NAV: InvNavItem[] = [
-  { to: "/inventory", label: "Обзор", icon: "home", end: true }, { to: "/inventory/assets", label: "Оборудование", icon: "monitor" }, { to: "/inventory/docs", label: "Документы", icon: "file" },
+  { to: "/inventory", label: "Обзор", icon: "home", end: true }, { to: "/inventory/assets", label: "Оборудование", icon: "monitor" }, { to: "/inventory/docs", label: "Документы", icon: "file" }, { to: "/inventory/stock", label: "Склад", icon: "package" }, { to: "/inventory/infra", label: "Инфраструктура", icon: "server" },
   { to: "/inventory/locations", label: "Местоположения", icon: "sitemap" }, { to: "/inventory/people", label: "Сотрудники", icon: "users" }, { to: "/inventory/licenses", label: "Лицензии", icon: "key" },
-  { to: "/inventory/reports", label: "Отчёты", icon: "download" }, { to: "/inventory/scan", label: "Сканирование", icon: "target" }, { to: "/inventory/refs", label: "Справочники", icon: "layers" },
+  { to: "/inventory/counts", label: "Инвентаризации", icon: "checkCircle" }, { to: "/inventory/reports", label: "Отчёты", icon: "download" }, { to: "/inventory/scan", label: "Сканирование", icon: "target" }, { to: "/inventory/refs", label: "Справочники", icon: "layers" },
   { to: "/inventory/import", label: "Импорт", icon: "upload", perm: "import" }, { to: "/inventory/settings", label: "Настройки", icon: "sliders", admin: true },
 ];
 
@@ -73,7 +73,7 @@ const NAV_KW: Record<string, string> = {
   "/devices": "устройства пользователи владелец bi сопоставление сотрудники владельцы принадлежность", "/protection": "защита антивирус базы постоянная защита проблемные компьютеры состояние защиты", "/vulnerabilities": "уязвимости cve kla исправления обнаружения отчёт по уязвимостям игнорировать исключения",
   "/vdb": "база уязвимостей cve nvd kev osv бду поиск план устранения", "/eol": "eol окончание поддержки операционные системы устаревшие исключения", "/events": "события безопасности угрозы обнаружения атаки", "/hunt": "cve hunt целевой поиск уязвимости задание",
   "/pentest": "pentest сканирование находки результаты задания nmap nuclei", "/zones": "зоны ответственности ответственные контакты компьютеры зоны", "/hierarchy": "иерархия предприятия структура организации руководители подразделения граф", "/reports": "отчёты сформированные проверка версий шаблоны сохранённые центр отчётов",
-  "/inventory": "инвентаризация учёт имущества itam активы оборудование инвентарный номер карточка имущества владелец ответственный мол местоположение помещение склад выдача возврат перемещение акт ремонт списание этикетка qr штрихкод лицензии it invent",
+  "/inventory": "инвентаризация учёт имущества itam активы оборудование инвентарный номер карточка имущества владелец ответственный мол местоположение помещение склад выдача возврат перемещение акт ремонт списание этикетка qr штрихкод лицензии",
   "/adaudit": "аудит домена active directory ad учётные записи пароли password never expires бессрочный пароль срок смены сброс пароля reset change 4723 4724 неиспользуемые неактивные последний вход заблокированные административные сервисные временные подрядчики protected users ежемесячная квартальная проверка",
 };
 const ROLE_ADMIN: Role[] = ["admin"];
@@ -95,6 +95,9 @@ export const FUNCTIONS: Fn[] = [
   { title: "Инвентаризация: сотрудники и закреплённое", to: "/inventory/people", kw: "сотрудник пользователь владелец ответственный мол оборудование сотрудника увольнение", icon: "users", group: "Инвентаризация" },
   { title: "Инвентаризация: лицензии ПО", to: "/inventory/licenses", kw: "лицензии программ ключ активации срок действия назначение установки нехватка", icon: "key", group: "Инвентаризация" },
   { title: "Инвентаризация: отчёты", to: "/inventory/reports", kw: "реестр отчёт по сотрудникам ответственным местоположениям склад ремонт гарантия списание стоимость история перемещений дубли", icon: "download", group: "Инвентаризация" },
+  { title: "Инфраструктура: серверы, ВМ, сеть, сверка источников", to: "/inventory/infra", kw: "инфраструктура серверы виртуальные машины гипервизор кластер zabbix мониторинг vsphere proxmox ovirt zvirt hyper-v netbox ip-адреса подсети vlan стойки резервное копирование расхождения сверка источников вывод из эксплуатации", icon: "server", group: "Инвентаризация" },
+  { title: "Инвентаризация: склад и поступления", to: "/inventory/stock", kw: "склад поступление приёмка заказ резерв свободное оборудование комплектующие", icon: "package", group: "Инвентаризация" },
+  { title: "Инвентаризация: сверка наличия со сканированием", to: "/inventory/counts", kw: "инвентаризация сверка наличия сканирование помещения не найдено расхождения опись автономный режим без связи", icon: "checkCircle", group: "Инвентаризация" },
   { title: "Инвентаризация: сканирование QR и штрихкодов", to: "/inventory/scan", kw: "сканер qr штрихкод этикетка камера телефон найти по коду", icon: "target", group: "Инвентаризация" },
   { title: "Инвентаризация: справочники и свойства", to: "/inventory/refs", kw: "типы оборудования производители модели статусы поставщики сервисные организации подразделения филиалы дополнительные свойства поля", icon: "layers", group: "Инвентаризация" },
   { title: "Инвентаризация: импорт Excel/CSV", to: "/inventory/import", kw: "импорт excel csv загрузка таблицы сопоставление столбцов", icon: "upload", group: "Инвентаризация" },

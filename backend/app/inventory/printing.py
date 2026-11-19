@@ -62,6 +62,13 @@ async def build(db: AsyncSession, doc: InvDoc, cfg: InventorySettings, org: dict
 
     cols = [(c, M.DOC_COLUMNS.get(c, c)) for c in (f.get("columns") or []) if c in M.DOC_COLUMNS] + [(f"p.{c}", pdefs[c].name) for c in (f.get("props") or []) if c in pdefs]
     rows = []
+    if not items and doc.kind == "receipt":                        # поступление до приёмки: строки заказа (карточек ещё нет)
+        n = 0
+        for ln in (doc.data or {}).get("lines") or []:
+            n += 1
+            nm = ln.get("name") or ""
+            rows.append({"n": str(n), "inv_no": "", "acc_no": "", "name": f"{nm} × {ln.get('qty', 1)}".strip(" ×") if nm else f"× {ln.get('qty', 1)}", "type": "", "model": "",
+                         "serial": ", ".join(ln.get("serials") or []), "location": "", "condition": "", "cost": C.money_str(int(round((ln.get("cost") or 0) * 100))) if ln.get("cost") else "", "note": ""})
     for n, it in enumerate(items, 1):
         s = it.snap or {}
         a = assets.get(it.asset_id)

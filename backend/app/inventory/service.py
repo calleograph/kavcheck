@@ -21,7 +21,7 @@ from . import model as M
 
 log = logging.getLogger("kavcheck.inventory")
 STATE_KEY = "inv_state"
-EVERY_S = 900
+EVERY_S = 300
 LIC_EVERY = timedelta(hours=6)
 
 
@@ -173,15 +173,177 @@ class InvService:
                     n = await license_usage(db, self.sources, general.activity_days)
                 await set_state(self.sm, lic_at=utcnow().isoformat(), lic_requested=None, lic_count=n)
             await set_state(self.sm, sync_at=utcnow().isoformat(), sync_stats=stats)
+            lease.stage("источники инфраструктуры")
+            async with JOBS.run("inv_infra", "") as il:
+                if il is not None:
+                    await self.infra_tick()
+            async with self.sm() as db:
+                cfg = await self.svc.get(db, "inventory")
+            st = await get_state(self.sm)
+            if await notify_due(cfg, st, utcnow()):
+                lease.stage("сводка сроков на почту")
+                r = await send_digest(self.sm, self.svc)
+                from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+                try:
+                    day = utcnow().astimezone(ZoneInfo(cfg.notify_timezone)).date().isoformat()
+                except Exception:  # noqa: BLE001
+                    day = utcnow().date().isoformat()
+                await set_state(self.sm, notify_at=utcnow().isoformat(), notify_result=r, **({"notify_day": day} if r["sent"] or not r["error"] else {}))
+                if self.journal is not None and r["error"]:
+                    await self.journal.emit("inventory", "notify_failed", level="warn", message=f"Сводка инвентаризации не отправлена: {r['error']}")
+
+    async def infra_tick(self, force: bool = False) -> dict:
+        """Синхронизация источников инфраструктуры, срок которых подошёл (или запрошенных): каждый — отдельно, ошибка одного не останавливает остальные; затем сверка."""
+        from ..infra import connectors as IK  # noqa: PLC0415
+        from ..infra import sync as IS  # noqa: PLC0415
+        from ..models import InfraSource  # noqa: PLC0415
+
+        async with self.sm() as db:
+            srcs = list((await db.execute(select(InfraSource).where(InfraSource.enabled.is_(True)))).scalars())
+            cfg = await self.svc.get(db, "inventory")
+        now = utcnow()
+        ran = 0
+        for s in srcs:
+            due = force or s.requested or s.last_try_at is None or s.last_try_at < now - timedelta(minutes=max(5, s.every_min))
+            if not due or s.kind not in IK.FETCH:
+                continue
+            ran += 1
+            secret = self.svc.decrypt(s.secret_enc, f"infra.{s.id}") if s.secret_enc else ""
+            err, objects = "", None
+            try:
+                objects = await IK.fetch(s, secret)
+            except IK.SourceError as exc:
+                err = str(exc)
+            except Exception as exc:  # noqa: BLE001 — неожиданный сбой коннектора не должен останавливать остальные источники
+                log.exception("Инфраструктура: сбой источника %s", s.name)
+                err = f"Внутренняя ошибка: {type(exc).__name__}"
+            async with self.sm() as db:
+                row = await db.get(InfraSource, s.id)
+                if row is None:
+                    continue
+                row.last_try_at, row.requested = utcnow(), False
+                if objects is not None:
+                    st = await IS.sync_source(db, row, objects)
+                    row.last_ok_at, row.last_error, row.last_stats = utcnow(), "", st
+                else:
+                    row.last_error = err[:2000]
+                await db.commit()
+            if err and self.journal is not None:
+                await self.journal.emit("inventory", "infra_source_failed", level="warn", message=f"Источник «{s.name}»: {err}"[:500])
+        if ran or force:
+            async with self.sm() as db:
+                st = await IS.reconcile(db, cfg.infra_stale_days)
+                await db.commit()
+            return st
+        return {}
 
     async def loop(self) -> None:
+        """Полный проход (связи с KSC, лицензии, источники, сводка) — раз в EVERY_S; между ними раз в 30 с — запрошенные и подошедшие по сроку источники инфраструктуры."""
         await asyncio.sleep(20)
+        last_full = 0.0
         while not self._stop.is_set():
+            now = asyncio.get_running_loop().time()
             try:
-                await self.tick()
+                if now - last_full >= EVERY_S or (await get_state(self.sm)).get("lic_requested"):
+                    await self.tick()
+                    last_full = now
+                else:
+                    async with JOBS.run("inv_infra", "") as lease:
+                        if lease is not None:
+                            await self.infra_tick()
             except Exception:  # noqa: BLE001 — фоновая задача не должна останавливать worker
                 log.exception("Инвентаризация: фоновая сверка не выполнена")
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=EVERY_S if not (await get_state(self.sm)).get("lic_requested") else 30)
+                await asyncio.wait_for(self._stop.wait(), timeout=30)
             except asyncio.TimeoutError:
                 pass
+
+
+# ------------------------------------------------------------------------------------------------ уведомления (ежедневная сводка сроков)
+async def digest(db, cfg) -> list[dict]:
+    """Разделы сводки: что истекает или просрочено. Пустые разделы не включаются. Только чтение внутренней базы."""
+    from datetime import date  # noqa: PLC0415
+
+    from sqlalchemy import func  # noqa: PLC0415
+
+    from ..models import InvCount, InvDoc  # noqa: PLC0415
+
+    today = date.today()
+    out: list[dict] = []
+    act = InvAsset.st_cls.in_(M.ST_ACTIVE)
+    w = (await db.execute(select(InvAsset.inv_no, InvAsset.name, InvAsset.warranty_until).where(act, InvAsset.warranty_until >= today, InvAsset.warranty_until <= today + timedelta(days=cfg.warranty_days))
+                          .order_by(InvAsset.warranty_until).limit(200))).all()
+    if w:
+        out.append({"title": f"Гарантия заканчивается в ближайшие {cfg.warranty_days} дн.", "rows": [f"{no} {nm or ''} — до {d:%d.%m.%Y}".replace("  ", " ") for no, nm, d in w]})
+    lic = (await db.execute(select(InvLicense.name, InvLicense.valid_until).where(InvLicense.active.is_(True), InvLicense.valid_until.is_not(None),
+                                                                                InvLicense.valid_until <= today + timedelta(days=cfg.license_days)).order_by(InvLicense.valid_until))).all()
+    if lic:
+        out.append({"title": "Лицензии: срок истёк или истекает", "rows": [f"{nm} — {'истекла' if d < today else 'до'} {d:%d.%m.%Y}" for nm, d in lic]})
+    tr = (await db.execute(select(InvDoc.no, InvDoc.doc_date).where(InvDoc.kind == "move", InvDoc.status == "sent", InvDoc.doc_date < today - timedelta(days=cfg.transit_days)))).all()
+    if tr:
+        out.append({"title": f"Перемещения «в пути» дольше {cfg.transit_days} дн.", "rows": [f"{no} от {d:%d.%m.%Y}" for no, d in tr]})
+    rp = (await db.execute(select(InvDoc.no, InvDoc.doc_date, InvDoc.data).where(InvDoc.kind == "repair", InvDoc.status == "sent", InvDoc.doc_date < today - timedelta(days=cfg.repair_days)))).all()
+    if rp:
+        out.append({"title": f"В ремонте дольше {cfg.repair_days} дн.", "rows": [f"{no} от {d:%d.%m.%Y}{(' — ' + (dt or {}).get('vendor', '')) if (dt or {}).get('vendor') else ''}" for no, d, dt in rp]})
+    cn = (await db.execute(select(InvCount.no, InvCount.title, InvCount.started_at).where(InvCount.status == "active", InvCount.started_at < utcnow() - timedelta(days=7)))).all()
+    if cn:
+        out.append({"title": "Незавершённые инвентаризации (дольше недели)", "rows": [f"{no} {t} — начата {s:%d.%m.%Y}" for no, t, s in cn]})
+    stale = (await db.execute(select(func.count()).select_from(InvAsset).where(act, InvAsset.updated_at < utcnow() - timedelta(days=cfg.stale_days)))).scalar_one()
+    if stale:
+        out.append({"title": "Учётные сведения давно не обновлялись", "rows": [f"{stale} карточек не менялись более {cfg.stale_days} дн."]})
+    lost = (await db.execute(select(func.count()).select_from(InvAsset).where(act, InvAsset.ksc_link == "lost"))).scalar_one()
+    if lost:
+        out.append({"title": "Компьютеры пропали из KSC", "rows": [f"{lost} действующих карточек связаны с компьютерами, которых больше нет в KSC"]})
+    return out
+
+
+def digest_mail(sections: list[dict], base_url: str) -> tuple[str, str, str]:
+    import html as H  # noqa: PLC0415
+
+    n = sum(len(s["rows"]) for s in sections)
+    subject = f"Инвентаризация: требует внимания — {n}" if sections else "Инвентаризация: сроки в порядке"
+    lines = ["Ежедневная сводка раздела «Инвентаризация».", ""]
+    parts = ["<p>Ежедневная сводка раздела «Инвентаризация».</p>"]
+    for s in sections:
+        lines += [s["title"] + ":", *[f"  • {r}" for r in s["rows"][:50]], *([f"  … и ещё {len(s['rows']) - 50}"] if len(s["rows"]) > 50 else []), ""]
+        parts.append(f"<h3 style='margin:14px 0 4px;font-size:14px'>{H.escape(s['title'])}</h3><ul style='margin:0;padding-left:18px'>" + "".join(f"<li>{H.escape(r)}</li>" for r in s["rows"][:50]) + "</ul>")
+    if not sections:
+        lines.append("Истекающих сроков и просроченных операций нет.")
+        parts.append("<p>Истекающих сроков и просроченных операций нет.</p>")
+    if base_url:
+        lines.append(f"Открыть: {base_url.rstrip('/')}/inventory")
+        parts.append(f"<p><a href='{H.escape(base_url.rstrip('/'))}/inventory'>Открыть раздел</a></p>")
+    return subject, "\n".join(lines), "".join(parts)
+
+
+async def notify_due(cfg, st: dict, now) -> bool:
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    try:
+        local = now.astimezone(ZoneInfo(cfg.notify_timezone))
+    except Exception:  # noqa: BLE001 — неверный часовой пояс: считаем по UTC
+        local = now
+    hh, mm = (int(x) for x in cfg.notify_time.split(":"))
+    return cfg.notify_enabled and bool(cfg.notify_emails) and (local.hour, local.minute) >= (hh, mm) and st.get("notify_day") != local.date().isoformat()
+
+
+async def send_digest(sm, svc, by: str = "") -> dict:
+    """Собрать и отправить сводку получателям из настроек. Возвращает {sent, sections, error}."""
+    from ..services import mail as MAIL  # noqa: PLC0415
+
+    async with sm() as db:
+        cfg = await svc.get(db, "inventory")
+        smtp = await svc.get(db, "smtp")
+        sections = await digest(db, cfg)
+    if not cfg.notify_emails:
+        return {"sent": False, "sections": len(sections), "error": "Не указаны получатели"}
+    if not sections and not cfg.notify_empty and not by:
+        return {"sent": False, "sections": 0, "error": ""}
+    subject, text, htm = digest_mail(sections, getattr(smtp, "base_url", "") or "")
+    try:
+        msg = MAIL.compose(smtp, to=list(cfg.notify_emails), cc=[], subject=subject, text=text, html=htm)
+        res = await MAIL.send(smtp, msg, list(cfg.notify_emails))
+    except Exception as exc:  # noqa: BLE001 — SMTP не настроен или недоступен: причина видна в «Настройках»
+        return {"sent": False, "sections": len(sections), "error": str(exc)[:300]}
+    return {"sent": res.ok, "sections": len(sections), "error": res.error}

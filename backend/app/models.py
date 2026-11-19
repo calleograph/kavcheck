@@ -1922,6 +1922,11 @@ class InvAsset(Base):
     linked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     ext_ids: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)               # идентификаторы других систем (SMBIOS UUID, MAC, мониторинг, виртуализация)
     transit_doc_id: Mapped[int | None] = mapped_column(BigInteger)
+    no_count: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)            # не подлежит инвентаризации (не попадает в ожидаемый список)
+    purpose: Mapped[str] = mapped_column(String(500), nullable=False, default="")              # назначение (серверы, ВМ, сетевое оборудование)
+    service: Mapped[str] = mapped_column(String(300), nullable=False, default="")              # сервис или система, которой принадлежит
+    rack_unit: Mapped[int | None] = mapped_column(Integer)                                     # нижний юнит в стойке (местоположение — стойка)
+    rack_units: Mapped[int | None] = mapped_column(Integer)                                    # высота, юнитов
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
     created_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
@@ -2057,3 +2062,140 @@ class InvView(Base):
     shared: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
     __table_args__ = (Index("ix_inv_views_user", "user_id", "page"),)
+
+
+class InvCount(Base):
+    """Инвентаризация (сверка наличия): область — узел местоположений с вложенными и классы; ожидаемый список фиксируется при начале.
+    draft → active (сканирование) → closed (не найденное становится «не найдено», решения по расхождениям) | cancelled."""
+    __tablename__ = "inv_counts"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    no: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="draft")
+    location_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_locations.id", ondelete="RESTRICT"))
+    cls: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    resp_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    stats: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    closed_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    __table_args__ = (Index("ix_inv_counts_status", "status", "created_at"),)
+
+
+class InvCountItem(Base):
+    """Строка инвентаризации: ожидаемая единица (expected) или найденная сверх списка; неизвестный код — без asset_id.
+    state: pending → found | moved (найдено в другом месте) | extra (не ожидалась) | unknown (код не найден в реестре); при закрытии pending → missing.
+    decision — решение по расхождению: apply (принять фактическое), keep (оставить учётное), lost (утрачено), ignore."""
+    __tablename__ = "inv_count_items"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    count_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("inv_counts.id", ondelete="CASCADE"), nullable=False)
+    asset_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_assets.id", ondelete="CASCADE"))
+    code: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    expected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    exp_location_id: Mapped[int | None] = mapped_column(BigInteger)
+    exp_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    snap: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    state: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")
+    found_location_id: Mapped[int | None] = mapped_column(BigInteger)
+    found_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    found_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    found_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    found_via: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    decision: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    decided_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    __table_args__ = (Index("ux_inv_count_items", "count_id", "asset_id", unique=True), Index("ix_inv_count_items_state", "count_id", "state"),
+                      Index("ix_inv_count_items_loc", "count_id", "exp_location_id"))
+
+
+# ------------------------------------------------------------------------------------------------ инфраструктура: источники, наблюдения, расхождения (app/infra)
+class InfraSource(Base):
+    """Источник сведений об инфраструктуре (только чтение): zabbix | vsphere | proxmox | ovirt | netbox | hyperv (загрузка выгрузки) | backup | generic (JSON по HTTP).
+    Секрет — в зашифрованном виде; результат последней синхронизации и ошибка — для страницы источников."""
+    __tablename__ = "infra_sources"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    username: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    secret_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    verify_tls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    every_min: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    options: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_try_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_ok_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_stats: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+
+
+class InfraObject(Base):
+    """Объект источника (наблюдение): устойчивый идентификатор в источнике, вид, имя, адреса, идентификаторы оборудования и атрибуты на момент синхронизации.
+    asset_id — сопоставленная учётная единица (match: confirmed | auto | ambiguous | none | rejected). Исчезнувший из источника — present = False, не удаляется."""
+    __tablename__ = "infra_objects"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("infra_sources.id", ondelete="CASCADE"), nullable=False)
+    ext_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    fqdn: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    ips: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    macs: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    bios_uuid: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    serial: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    parent_ext: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    attrs: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
+    present: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    first_seen: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    asset_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_assets.id", ondelete="SET NULL"))
+    match: Mapped[str] = mapped_column(String(10), nullable=False, default="none")
+    match_basis: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    search: Mapped[str] = mapped_column(String(1500), nullable=False, default="")
+    __table_args__ = (Index("ux_infra_objects", "source_id", "ext_id", unique=True), Index("ix_infra_objects_asset", "asset_id"), Index("ix_infra_objects_kind", "kind", "present"))
+
+
+class InfraChange(Base):
+    """Изменение атрибута объекта между синхронизациями (история конфигурации: CPU, память, диски, адреса, хост, состояние)."""
+    __tablename__ = "infra_changes"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    object_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("infra_objects.id", ondelete="CASCADE"), nullable=False)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    field: Mapped[str] = mapped_column(String(40), nullable=False)
+    old: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    new: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    __table_args__ = (Index("ix_infra_changes_obj", "object_id", "at"), Index("ix_infra_changes_at", "at"))
+
+
+class InfraFinding(Base):
+    """Расхождение сверки: вид (code), объект или учётная единица, что найдено и что ожидалось, рекомендация; status — attention | review | confirmed | fixing | fixed | exception.
+    Повторное обнаружение обновляет строку (key уникален); не обнаруженное при очередной сверке закрывается как «устранено» (кроме исключений)."""
+    __tablename__ = "infra_findings"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    code: Mapped[str] = mapped_column(String(24), nullable=False)
+    severity: Mapped[str] = mapped_column(String(8), nullable=False, default="medium")
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="attention")
+    asset_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_assets.id", ondelete="CASCADE"))
+    object_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("infra_objects.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    found: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    expected: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    action: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    first_seen: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    comment: Mapped[str] = mapped_column(String(2000), nullable=False, default="")
+    owner: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    due: Mapped[date | None] = mapped_column(Date)
+    decided_by: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    history: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    __table_args__ = (Index("ix_infra_findings_status", "status", "code"), Index("ix_infra_findings_asset", "asset_id"))

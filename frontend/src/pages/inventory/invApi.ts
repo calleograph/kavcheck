@@ -19,7 +19,7 @@ export interface Asset {
   user: string; owner: string; resp: string; mol: string; it: string; dept_id: number | null; dept: string; branch_id: number | null; branch: string;
   purchase_date: string | null; received_date: string | null; commissioned_date: string | null; warranty_until: string | null; cost: number | null; cost_text: string; supplier_id: number | null; supplier: string;
   purchase_doc: string; parent_id: number | null; parent: string; rel: string; rel_ru: string; props: Record<string, unknown>; props_text: Record<string, string>; note: string;
-  ksc_source_id: string | null; ksc_host_id: number | null; ksc_link: "" | "confirmed" | "auto" | "lost"; ksc_name: string; ext_ids: Record<string, unknown>; in_transit: boolean; transit_doc_id: number | null;
+  ksc_source_id: string | null; ksc_host_id: number | null; ksc_link: "" | "confirmed" | "auto" | "lost"; ksc_name: string; ext_ids: Record<string, unknown>; no_count: boolean; purpose: string; service: string; rack_unit: number | null; rack_units: number | null; in_transit: boolean; transit_doc_id: number | null;
   created_at: string; created_by: string; updated_at: string; updated_by: string; version: number;
 }
 export interface DocBrief { id: number; no: string; kind: string; kind_ru: string; status: string; status_ru: string; date: string }
@@ -59,7 +59,7 @@ export interface LicenseCard extends License { assignments: { id: number; asset_
 export interface Install { source_id: string; source: string; host_id: number; name: string; product: string; version: string; assigned: boolean; asset_id: number | null; inv_no: string }
 export interface Overview {
   stats: { total: number; active: number; cost: number; cost_text: string; warranty_soon: number; no_owner: number; no_location: number; no_resp: number; computers: number; ksc_linked: number; ksc_unlinked: number; ksc_lost: number; in_transit: number; stale: number };
-  by_cls: { cls: string; name: string; n: number }[]; by_st: { st: string; name: string; n: number }[]; licenses_soon: number; docs_open: { kind: string; name: string; n: number }[]; repair_long: number; transit_late: number;
+  by_cls: { cls: string; name: string; n: number }[]; by_st: { st: string; name: string; n: number }[]; licenses_soon: number; docs_open: { kind: string; name: string; n: number }[]; repair_long: number; transit_late: number; counts_open: number;
   recent: { at: string; by: string; kind: string; title: string; asset_id: number; inv_no: string; name: string; doc_id: number | null }[]; ksc_sources: number; cfg: { warranty_days: number; license_days: number; stale_days: number };
 }
 export interface Group { id: number | string | null; name: string; n: number; cost: number; cost_text: string }
@@ -67,6 +67,27 @@ export interface KscHost { host_id: number; name: string; os: string; ip: string
 export interface View { id: number; name: string; params: Record<string, string>; shared: boolean; mine: boolean }
 export interface ImportPreview { headers: string[]; rows: string[][]; total: number; mapping: Record<string, string>; fields: Record<string, string>; props: Record<string, string> }
 export interface ImportResult { rows: number; created: number; updated: number; unchanged: number; skipped: number; errors: { row: number; error: string }[]; created_refs: { refs: number; locations: number; people: number }; dry_run: boolean }
+export interface CountStats { by_state: Record<"pending" | "found" | "moved" | "extra" | "unknown" | "missing", number>; expected: number; checked: number; user_diff: number;
+  locations: { location_id: number | null; location: string; expected: number; found: number; left: number; moved_out: number; done: boolean }[] }
+export interface Count { id: number; no: string; title: string; status: "draft" | "active" | "closed" | "cancelled"; status_ru: string; location_id: number | null; location: string; cls: string; resp_id: number | null; resp: string;
+  note: string; created_at: string; created_by: string; started_at: string | null; closed_at: string | null; closed_by: string; stats: CountStats | Record<string, unknown> }
+export interface CountItem { id: number; asset_id: number | null; code: string; expected: boolean; state: string; state_ru: string; inv_no: string; serial: string; name: string; uid: string; exp_location_id: number | null;
+  exp_location: string; found_location_id: number | null; found_location: string; user: string; found_user_id: number | null; found_user: string; user_diff: boolean; found_at: string | null; found_by: string;
+  found_via: string; decision: string; decision_ru: string; decided_by: string; note: string; discrepancy: boolean }
+export interface Stock { by_st: Record<string, number>; models: { type_id: number | null; type: string; model_id: number | null; model: string; stock: number; reserve: number; cost: number }[];
+  components: { installed: number; free: number }; receipts: (DocBrief & { lines: number; qty: number; created: number })[] }
+export interface InfraSource { id: number; kind: string; kind_ru: string; name: string; url: string; username: string; secret_set: boolean; verify_tls: boolean; enabled: boolean; every_min: number;
+  options: Record<string, unknown>; requested: boolean; last_try_at: string | null; last_ok_at: string | null; last_error: string; last_stats: Record<string, unknown>; upload: boolean; network: boolean }
+export interface InfraObject { id: number; source_id: number; source: string; source_kind: string; ext_id: string; kind: string; kind_ru: string; name: string; fqdn: string; ips: string[]; macs: string[];
+  bios_uuid: string; serial: string; parent_ext: string; attrs: Record<string, unknown>; present: boolean; first_seen: string; last_seen: string; asset_id: number | null; match: string; match_basis: string;
+  asset: { id: number; inv_no: string; name: string } | null }
+export interface InfraFinding { id: number; code: string; title: string; severity: string; status: string; status_ru: string; asset_id: number | null; asset: { inv_no: string; name: string } | null; object_id: number | null;
+  found: string; expected: string; source: string; action: string; first_seen: string; last_seen: string; closed_at: string | null; comment: string; owner: string; due: string | null; decided_by: string }
+export interface InfraOverview { counts: Record<"server" | "vm" | "network" | "storage" | "active" | "decom" | "hypervisors" | "clusters" | "sites" | "resources" | "objects", number>;
+  findings: Record<string, number>; findings_total: number; codes: Record<string, { title: string; severity: string }>; sources: InfraSource[]; source_errors: number }
+export interface Rack { id: number; name: string; path: string; units: number; used: number; free: number; items: { id: number; inv_no: string; name: string; cls: string; unit: number | null; units: number; status: string }[]; unplaced: { inv_no: string }[] }
+export interface AssetInfra { objects: InfraObject[]; resolved: { attr: string; label: string; value: string; source: string; at: string; conflicts: { value: string; source: string }[] }[];
+  changes: { at: string; object: string; label: string; old: string; new: string }[]; findings: InfraFinding[] }
 export type Page<T> = { items: T[]; total: number; offset?: number; limit?: number };
 
 export class FieldError extends ApiError { constructor(message: string, public errors: Record<string, string>) { super(422, message); } }
@@ -147,6 +168,36 @@ export const inv = {
   unassign: (id: number, aid: number) => req<{ ok: boolean }>("DELETE", `/inv/licenses/${id}/assign/${aid}`),
   licKey: (id: number) => req<{ key: string }>("GET", `/inv/licenses/${id}/key`),
   recount: () => req<{ queued: boolean }>("POST", "/inv/licenses/recount"),
+  counts: () => req<{ items: Count[] }>("GET", "/inv/counts"),
+  count: (id: number) => req<Count>("GET", `/inv/counts/${id}`),
+  addCount: (b: Record<string, unknown>) => req<Count>("POST", "/inv/counts", b),
+  closeCount: (id: number) => req<Count>("POST", `/inv/counts/${id}/close`),
+  countItems: (id: number, p: Q) => req<Page<CountItem>>("GET", `/inv/counts/${id}/items${qs(p)}`),
+  countScan: (id: number, b: { code: string; location_id: number | null; user_id?: number | null }) => req<{ result: string; item: CountItem }>("POST", `/inv/counts/${id}/scan`, b),
+  countSync: (id: number, scans: { code: string; location_id: number | null; user_id: number | null; at: string }[]) => req<{ results: { code: string; result: string }[] }>("POST", `/inv/counts/${id}/sync`, { scans }),
+  countUnscan: (id: number, iid: number) => req<{ ok: boolean }>("DELETE", `/inv/counts/${id}/items/${iid}`),
+  countDecide: (id: number, item_ids: number[], decision: string, note = "") => req<{ changed: number }>("POST", `/inv/counts/${id}/decide`, { item_ids, decision, note }),
+  countOffline: (id: number) => req<Record<string, unknown>>("GET", `/inv/counts/${id}/offline`),
+  stock: () => req<Stock>("GET", "/inv/stock"),
+  notifyPreview: () => req<{ sections: { title: string; rows: string[] }[] }>("GET", "/inv/notify/preview"),
+  notifyTest: () => req<{ sent: boolean; sections: number; error: string }>("POST", "/inv/notify/test"),
+  infraOverview: (p: Q) => req<InfraOverview>("GET", `/inv/infra/overview${qs(p)}`),
+  infraSources: () => req<{ items: (InfraSource & { objects: number })[]; kinds: Record<string, string> }>("GET", "/inv/infra/sources"),
+  infraAddSource: (b: Record<string, unknown>) => req<InfraSource>("POST", "/inv/infra/sources", b),
+  infraEditSource: (id: number, b: Record<string, unknown>) => req<InfraSource>("PUT", `/inv/infra/sources/${id}`, b),
+  infraDelSource: (id: number) => req<{ ok: boolean }>("DELETE", `/inv/infra/sources/${id}`),
+  infraTest: (id: number) => req<Record<string, unknown>>("POST", `/inv/infra/sources/${id}/test`),
+  infraSync: (id: number) => req<{ queued: boolean }>("POST", `/inv/infra/sources/${id}/sync`),
+  infraUpload: (id: number, f: File) => upload<{ received: number; created: number }>(`/inv/infra/sources/${id}/upload`, f, f.name),
+  infraReconcile: () => req<Record<string, number>>("POST", "/inv/infra/reconcile"),
+  infraObjects: (p: Q) => req<{ items: InfraObject[]; total: number; kinds: Record<string, string> }>("GET", `/inv/infra/objects${qs(p)}`),
+  infraObject: (id: number) => req<InfraObject & { changes: { at: string; field: string; label: string; old: string; new: string }[] }>("GET", `/inv/infra/objects/${id}`),
+  infraMatch: (id: number, action: string, asset_id?: number) => req<{ ok: boolean }>("PUT", `/inv/infra/objects/${id}/match`, { action, asset_id }),
+  infraFindings: (p: Q) => req<{ items: InfraFinding[]; total: number; codes: Record<string, string>; statuses: Record<string, string> }>("GET", `/inv/infra/findings${qs(p)}`),
+  infraDecide: (b: Record<string, unknown>) => req<{ updated: number }>("PUT", "/inv/infra/findings", b),
+  infraIps: (p: Q) => req<{ items: { ip: string; objects: string[]; assets: { id: number; inv_no: string; name: string }[]; sources: string[]; dup: boolean }[]; total: number; prefixes: InfraObject[]; vlans: InfraObject[] }>("GET", `/inv/infra/ips${qs(p)}`),
+  infraRacks: () => req<{ items: Rack[] }>("GET", "/inv/infra/racks"),
+  assetInfra: (id: number) => req<AssetInfra>("GET", `/inv/assets/${id}/infra`),
   importPreview: (f: File) => upload<ImportPreview>("/inv/import/preview", f, f.name),
   importRun: (f: File, mapping: Record<string, string>, p: { mode: "create" | "upsert"; create_refs: boolean; dry_run: boolean }) =>
     upload<ImportResult>(`/inv/import/run${qs(p)}`, f, f.name, { "X-Mapping": encodeURIComponent(JSON.stringify(mapping)) }),
