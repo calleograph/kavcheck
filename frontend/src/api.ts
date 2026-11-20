@@ -200,18 +200,27 @@ export interface AdRun { id: string; started_at: string; finished_at: string | n
 export interface AdCodeAgg { code: string; title: string; severity: AdSev; status: "violation" | "review"; total: number; open: number; exception: number; in_progress: number }
 export interface AdState { latest: AdRun | null; previous: AdRun | null; last: AdRun | null; requested: boolean; next_run: string | null; schedule: { enabled: boolean; day: number; time: string; timezone: string };
   import: { at: string; by: string; file_name: string; events: number; added: number; dcs: { name: string; log_from: string | null; log_to: string | null; error: string }[] } | null;
-  open: number | null; exceptions: number | null; carried: number; by_code: AdCodeAgg[]; policy: { pwd_days: Record<string, number>; inactive_days: number; new_days: number; grace_days: number }; can_admin: boolean }
+  open: number | null; exceptions: number | null; carried: number; by_code: AdCodeAgg[]; policy: AdPolicy; can_admin: boolean }
+/** Политика проверки домена: сроки паролей по категориям, пороги, основание; у каждой проверки сохраняется своя. */
+export interface AdPolicy { pwd_days: Record<string, number>; inactive_days: number; new_days: number; grace_days: number; protected_users?: boolean; policy_note?: string; admin_groups?: string[]; per_dc_logon?: boolean; ldap_filter?: string }
+export interface AdAuditMember { guid: string; login: string; name: string; ou: string; enabled: boolean; locked: boolean; state: string; category: AdCategory; category_ru: string; last_logon: string | null; idle_days: number | null;
+  pwd_age: number | null; pne: boolean; protected: boolean | null; created: string | null }
+export interface AdGroupMembers { group: string; members: (AdAuditMember & { added: boolean })[]; removed: AdAuditMember[] }
+export type AdChangeKind = "new" | "removed" | "disabled" | "enabled" | "category" | "moved" | "priv_add" | "priv_del";
+export interface AdChange extends AdAuditMember { kind: AdChangeKind; kind_ru: string; before: string; after: string }
 export interface AdPwdOp { state: "change" | "reset" | "no_event" | "before_logs" | "no_logs" | "no_pwd"; at: string | null; kind: string | null; by: string; dc: string; reset_pending: boolean; basis: string; attempts_failed: number }
-export interface AdAccount { guid: string; login: string; name: string; upn: string; mail: string; dn: string; description: string; title: string; department: string; manager: string; category: AdCategory; category_ru: string;
+export interface AdAccount { guid: string; login: string; name: string; upn: string; mail: string; dn: string; ou: string; description: string; title: string; department: string; manager: string; category: AdCategory; category_ru: string;
   category_basis: string[]; enabled: boolean; locked: boolean; pne: boolean; must_change: boolean; pwd_expired: boolean; pwd_last_set: string | null; pwd_age: number | null; pwd_bucket: string; pwd_bucket_ru: string;
   expires: string | null; last_logon: string | null; last_logon_src: "dc" | "llt" | "none"; idle_days: number | null; created: string | null; privileged: string[]; protected: boolean | null; spn: boolean;
   workstations: string; groups: string[]; pwd_op: AdPwdOp; findings_n: number; max_sev: number }
 export interface AdDecision { state: "open" | "in_progress" | "fixed" | "exception"; state_ru: string; comment: string; owner: string; due: string | null; by: string; at: string; expired: boolean;
   history: { at: string; by: string; state: string; comment: string; owner: string; due: string | null }[] }
-export interface AdFinding { key: string; guid: string; login: string; name: string; category: AdCategory; category_ru: string; code: string; title: string; severity: AdSev; severity_ru: string; status: "violation" | "review";
+export interface AdFinding { key: string; guid: string; login: string; name: string; ou: string; enabled: boolean | null; category: AdCategory; category_ru: string; code: string; title: string; severity: AdSev; severity_ru: string; status: "violation" | "review";
   status_ru: string; basis: string; first_seen: string; runs_n: number; decision: AdDecision | null }
 export interface AdAccountCard extends AdAccount { run: { id: string; started_at: string }; findings: AdFinding[]; events: { at: string; kind: string; kind_ru: string; success: boolean; by: string; dc: string }[];
   history: { at: string; kind_ru: string; category_ru: string; enabled: boolean; pwd_last_set: string | null; last_logon: string | null; findings: number }[]; override: { category: AdCategory; note: string; by: string; at: string } | null }
+/** Подразделение (OU) проверки: учётных записей, активных, замечаний, требующих внимания, из них критических и высоких, учётных записей с ними. */
+export interface AdOu { ou: string; accounts: number; enabled: number; open: number; high: number; with_findings: number }
 export interface AdEvent { at: string; kind: "change" | "reset"; kind_ru: string; event_id: number; success: boolean; target: string; target_guid: string; target_name: string; by: string; dc: string }
 export interface VdbMapping { id: string; vendor_key: string; product_key: string; catalog_key: string; action: "map" | "exclude"; note: string | null; created_by: string | null; created_at: string }
 export type VdbCategory = "os" | "system" | "application" | "unclassified";
@@ -671,6 +680,11 @@ export const api = {
     accounts: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<AdAccount> & { run: AdRun | null }>("GET", `/adaudit/accounts${qs(p)}`),
     account: (guid: string, run?: string) => req<AdAccountCard>("GET", `/adaudit/accounts/${encodeURIComponent(guid)}${qs({ run })}`),
     findings: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<AdFinding>>("GET", `/adaudit/findings${qs(p)}`),
+    ous: (run?: string) => req<{ items: AdOu[] }>("GET", `/adaudit/ous${qs({ run })}`),
+    groups: (run?: string) => req<{ prev: string | null; items: AdGroupMembers[] }>("GET", `/adaudit/groups${qs({ run })}`),
+    changes: (run?: string) => req<{ prev: string | null; counts: Partial<Record<AdChangeKind, number>>; items: AdChange[]; truncated: boolean }>("GET", `/adaudit/changes${qs({ run })}`),
+    policies: () => req<{ items: { id: string; started_at: string; kind_ru: string; by: string; policy: Partial<AdPolicy> }[] }>("GET", "/adaudit/policies"),
+    savePolicy: (body: { pwd_days: Record<string, number>; inactive_days: number; new_days: number; grace_days: number; protected_users: boolean; policy_note: string }) => req<{ changed: string[]; policy: AdPolicy }>("PUT", "/adaudit/policy", body),
     decide: (body: { keys: string[]; state: AdDecision["state"]; comment: string; owner: string; due: string | null }) => req<{ updated: number }>("PUT", "/adaudit/decisions", body),
     category: (guid: string, category: AdCategory | null, note: string) => req<{ ok: boolean }>("PUT", `/adaudit/accounts/${encodeURIComponent(guid)}/category`, { category, note }),
     events: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<AdEvent>>("GET", `/adaudit/events${qs(p)}`),

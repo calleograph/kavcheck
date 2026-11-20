@@ -21,7 +21,7 @@ router = APIRouter(prefix="/ad", tags=["ad"])
 
 
 def ad_allowed(su: SessionUser, cfg) -> bool:
-    return su.is_admin or (su.role in cfg.roles and su.role in cfg.ad_roles)
+    return su.is_admin or su.is_security or (su.role in cfg.roles and su.role in cfg.ad_roles)       # специалисту по ИБ каталог нужен в «Аудите домена»
 
 
 async def ad_user(request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):

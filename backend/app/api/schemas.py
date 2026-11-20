@@ -364,13 +364,15 @@ class QuickHier(Params):
 
 
 class QuickAdAudit(Params):
-    """Аудит домена: вид отчёта, проверка (пусто — последняя), отбор по логину или имени, категория, вид и важность замечания."""
-    view: str = Field(default="findings", pattern=r"^(accounts|active|pne|pwd_age|resets|unused|privileged|findings|audit|summary)$")
+    """Аудит домена: вид отчёта, проверка (пусто — последняя), отбор по логину, имени или OU, категория, вид и важность замечания, подразделение (OU), состояние учётной записи."""
+    view: str = Field(default="findings", pattern=r"^(accounts|active|pne|pwd_age|resets|unused|privileged|findings|audit|summary|groups|changes)$")
     run: str = Field(default="", max_length=40)
     q: str = Field(default="", max_length=200)
     category: str = Field(default="", pattern=r"^(|user|admin|service|temp|contractor|undefined)$")
     code: str = Field(default="", max_length=24)
     severity: str = Field(default="", pattern=r"^(|critical|high|medium|low)$")
+    ou: str = Field(default="", max_length=200)
+    state: str = Field(default="", pattern=r"^(|enabled|disabled)$")
 
 
 class QuickInv(Params):

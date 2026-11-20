@@ -120,6 +120,12 @@ def test_category_is_not_decided_by_name_alone():
     assert [K.bucket(x) for x in (0, 30, 31, 90, 91, 180, 181, None)] == ["le30", "le30", "le90", "le90", "le180", "le180", "gt180", "unknown"]
 
 
+def test_ou_path_is_readable_container_path():
+    assert F.ou_path(f"CN=Иванов\\, И.,OU=Бухгалтерия,OU=Офис,{BASE}") == "Офис/Бухгалтерия"
+    assert F.ou_path(f"CN=svc,CN=Users,{BASE}") == "Users"
+    assert F.ou_path(f"CN=root,{BASE}") == "" and F.ou_path("") == ""
+
+
 def test_no_conclusion_about_password_method_without_logs():
     acc = {"pwd_last_set": ago(10)}
     reset = [{"kind": "reset", "success": True, "at": ago(10), "by": "CORP\\hd", "dc": "dc1"}]
@@ -196,6 +202,16 @@ async def test_full_audit_run_findings_decisions_reports_and_access(client, app,
     assert {"pwd_not_set", "never_logon"} <= codes["stale.user"]
     assert "reset" in codes["reset.me"] and "reset" not in codes.get("changed.me", set()) and "reset" not in codes.get("ivanova", set())   # неуспешный сброс — не операция
     assert codes.get("off.user", set()) == set()                                                                         # отключённая: только опасные флаги
+    # подразделение (OU): в замечаниях, отборе, перечне подразделений и карточке
+    assert accs["petrov"]["ou"] == "Users"
+    users_f = (await client.get("/api/v1/adaudit/findings", params={"ou": "users", "limit": 500})).json()
+    assert users_f["total"] > 0 and all(f["ou"] == "Users" and f["enabled"] is not None for f in users_f["items"])
+    assert (await client.get("/api/v1/adaudit/findings", params={"ou": "Бухгалтерия"})).json()["total"] == 0
+    assert (await client.get("/api/v1/adaudit/findings", params={"q": "users", "limit": 500})).json()["total"] == users_f["total"]   # поиск — и по OU
+    assert (await client.get("/api/v1/adaudit/findings", params={"state": "disabled"})).json()["total"] == 0                        # у отключённой нет замечаний
+    assert (await client.get("/api/v1/adaudit/accounts", params={"ou": "Users*"})).json()["total"] == len(U)
+    ous = (await client.get("/api/v1/adaudit/ous")).json()["items"]
+    assert ous[0]["ou"] == "Users" and ous[0]["accounts"] == len(U) and ous[0]["open"] == users_f["total"] and ous[0]["high"] > 0
     # решения
     key = next(f["key"] for f in (await client.get("/api/v1/adaudit/findings", params={"q": "svc_backup", "code": "pne"})).json()["items"])
     assert (await client.put("/api/v1/adaudit/decisions", json={"keys": [key], "state": "exception"})).status_code == 422     # исключение — только с основанием
@@ -205,6 +221,16 @@ async def test_full_audit_run_findings_decisions_reports_and_access(client, app,
     card = (await client.get(f"/api/v1/adaudit/accounts/{accs['reset.me']['guid']}")).json()
     assert any(e["kind"] == "reset" and e["by"] == "CORP\\helpdesk1" for e in card["events"]) and any(f["code"] == "reset" for f in card["findings"])
     assert (await client.put(f"/api/v1/adaudit/accounts/{accs['svc_lonely']['guid']}/category", json={"category": "service", "note": "заявка 12"})).status_code == 200
+    # политика из раздела: срок для администраторов 90 дней с основанием; применяется со следующей проверки, история — по проверкам
+    r = await client.put("/api/v1/adaudit/policy", json={"pwd_days": {"admin": 90}, "inactive_days": 90, "new_days": 30, "grace_days": 14, "protected_users": True, "policy_note": "Приказ № 12 от 01.10.2026"})
+    assert r.status_code == 200 and r.json()["policy"]["pwd_days"]["admin"] == 90 and r.json()["policy"]["pwd_days"]["user"] == 90
+    assert (await client.put("/api/v1/adaudit/policy", json={"pwd_days": {"robot": 5}, "inactive_days": 90, "new_days": 30, "grace_days": 14})).status_code == 422
+    st = (await client.get("/api/v1/adaudit/state")).json()
+    assert st["policy"]["policy_note"] == "Приказ № 12 от 01.10.2026"
+    grp = (await client.get("/api/v1/adaudit/groups")).json()
+    da = next(g for g in grp["items"] if g["group"] == "Domain Admins")
+    assert [m["login"] for m in da["members"]] == ["adm.sidorov"] and grp["prev"] is None
+    assert (await client.get("/api/v1/adaudit/changes")).json()["prev"] is None                                          # первая проверка — сравнивать не с чем
     # вторая проверка через месяц: замечания переносятся, устранённые видны
     U["petrov"]["pwd"] = 3
     app.state.__dict__.pop("_unused", None)
@@ -217,16 +243,29 @@ async def test_full_audit_run_findings_decisions_reports_and_access(client, app,
     assert accs2["svc_lonely"]["category"] == "service"                                                                  # ручная классификация применена
     carried = (await client.get("/api/v1/adaudit/findings", params={"carried": True, "limit": 500})).json()["items"]
     assert carried and all(f["runs_n"] == 2 for f in carried)
+    pols = (await client.get("/api/v1/adaudit/policies")).json()["items"]
+    assert pols[0]["policy"]["pwd_days"]["admin"] == 90 and pols[0]["policy"]["policy_note"] and pols[1]["policy"]["pwd_days"]["admin"] == 30
+    assert not any(f["login"] == "adm.sidorov" and f["code"] == "pwd_age" for f in (await client.get("/api/v1/adaudit/findings", params={"limit": 500})).json()["items"])   # 75 дн. < 90
+    ch = (await client.get("/api/v1/adaudit/changes")).json()
+    assert ch["prev"] and any(x["kind"] == "category" and x["login"] == "svc_lonely" and x["after"] == "Сервисная" for x in ch["items"])
+    assert ch["counts"].get("new", 0) == 0 and ch["counts"].get("removed", 0) == 0
     gone = (await client.get("/api/v1/adaudit/findings", params={"gone": True, "limit": 500})).json()["items"]
     assert any(f["login"] == "petrov" and f["code"] == "pwd_age" for f in gone)
     assert len((await client.get("/api/v1/adaudit/runs")).json()["items"]) == 2
     # отчёты: все виды строятся, в строках — основания и решения
-    for view in ("accounts", "active", "pne", "pwd_age", "resets", "unused", "privileged", "findings", "audit", "summary"):
+    for view in ("accounts", "active", "pne", "pwd_age", "resets", "unused", "privileged", "findings", "audit", "summary", "groups", "changes"):
         r = await client.post("/api/v1/quick/preview", json={"kind": "quick_adaudit", "params": {"view": view}})
         assert r.status_code == 200, (view, r.text)
     doc = (await client.post("/api/v1/quick/preview", json={"kind": "quick_adaudit", "params": {"view": "findings"}})).json()
     rows = doc["items"]
     assert any(x.get("decision") == "согласованное исключение" and x.get("comment") == "Согласовано ИБ 01.11" for x in rows)
+    assert all(x.get("ou") == "Users" and x.get("acc_state") for x in rows)
+    doc = (await client.post("/api/v1/quick/preview", json={"kind": "quick_adaudit", "params": {"view": "groups"}})).json()
+    assert any(x["group"] == "Domain Admins" and x["login"] == "adm.sidorov" for x in doc["items"])
+    doc = (await client.post("/api/v1/quick/preview", json={"kind": "quick_adaudit", "params": {"view": "findings", "ou": "нет-такого"}})).json()
+    assert doc["items"] == []
+    doc = (await client.post("/api/v1/quick/preview", json={"kind": "quick_adaudit", "params": {"view": "pne", "ou": "users"}})).json()
+    assert doc["items"] and all(x["ou"] == "Users" for x in doc["items"])
     # права: аналитику раздел и отчёт недоступны, специалисту по ИБ — доступны
     await login(client, "an1", "Sec-Passw0rd-1234")
     assert (await client.get("/api/v1/adaudit/state")).status_code == 403
@@ -234,6 +273,8 @@ async def test_full_audit_run_findings_decisions_reports_and_access(client, app,
     await login(client, "sec1", "Sec-Passw0rd-1234")
     assert (await client.get("/api/v1/adaudit/state")).status_code == 200
     assert (await client.post("/api/v1/adaudit/run", json={"kind": "quarterly"})).status_code == 202
+    assert (await client.put("/api/v1/adaudit/policy", json={"pwd_days": {"admin": 60}, "inactive_days": 90, "new_days": 30, "grace_days": 14})).status_code == 403   # политику меняет администратор
+    assert (await client.get("/api/v1/ad/status")).status_code != 403                                                  # каталог AD — в разделе аудита
 
 
 async def test_without_logs_no_reset_is_claimed_and_failed_directory_is_reported(client, app, monkeypatch, dirfake):

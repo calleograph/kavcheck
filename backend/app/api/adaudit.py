@@ -9,19 +9,21 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Integer, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..adaudit import checks as K
+from ..adaudit import diff as DF
 from ..adaudit import events as EV
 from ..adaudit import service as AS
-from ..auth.deps import SessionUser, get_db, require_security
+from ..auth.deps import SessionUser, get_db, require_admin, require_security
 from ..models import AdAuditAccount as A
 from ..models import AdAuditDecision as D
 from ..models import AdAuditFinding as Fd
 from ..models import AdAuditRun, AdClassOverride, AdEventImport, AdPwdEvent, utcnow
 from ..search import column_like
 from ..services.audit import write_audit
+from ..services.settings import SettingsError
 
 router = APIRouter(prefix="/adaudit", tags=["adaudit"])
 DECISION_RU = {"open": "Открыто", "in_progress": "В работе", "fixed": "Отмечено устранённым", "exception": "Согласованное исключение"}
@@ -93,7 +95,55 @@ async def state(request: Request, su: SessionUser = Depends(require_security), d
     return {"latest": _run_out(latest), "previous": _run_out(prev), "last": _run_out(last_any) if last_any is not None and (latest is None or last_any.id != latest.id) else None,
             "requested": bool(st.get("requested")), "next_run": st.get("next_run") if cfg.enabled else None, "schedule": {"enabled": cfg.enabled, "day": cfg.day_of_month, "time": cfg.schedule_time, "timezone": cfg.timezone},
             "import": {"at": _iso(imp.at), "by": imp.by, "file_name": imp.file_name, "events": imp.events, "added": imp.added, "dcs": imp.dcs} if imp else None,
-            "open": open_n, "exceptions": exc_n, "carried": carried, "by_code": by_code, "policy": cfg.model_dump(include={"pwd_days", "inactive_days", "new_days", "grace_days"}), "can_admin": su.is_admin}
+            "open": open_n, "exceptions": exc_n, "carried": carried, "by_code": by_code, "policy": cfg.model_dump(include=AS.POLICY_FIELDS), "can_admin": su.is_admin}
+
+
+class PolicyBody(BaseModel):
+    pwd_days: dict[str, int] = Field(default_factory=dict)
+    inactive_days: int = Field(ge=14, le=3650)
+    new_days: int = Field(ge=1, le=365)
+    grace_days: int = Field(ge=1, le=365)
+    protected_users: bool = True
+    policy_note: str = Field(default="", max_length=1000)
+
+
+@router.put("/policy")
+async def put_policy(body: PolicyBody, request: Request, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Политика проверки из раздела: сроки паролей по категориям, пороги и основание (приказ, требования предприятия). Применяется со следующей проверки;
+    у каждой проверки хранится политика, по которой она выполнена. Остальные настройки раздела (подключение, правила) не затрагиваются."""
+    if set(body.pwd_days) - set(K.CATEGORY_RU) or any(not 1 <= v <= 3650 for v in body.pwd_days.values()):
+        raise HTTPException(status_code=422, detail="Срок пароля — от 1 до 3650 суток для категорий: пользователь, административная, сервисная, временная, подрядчик")
+    svc = request.app.state.settings_svc
+    cur = await svc.get(db, "adaudit")
+    patch = body.model_dump() | {"pwd_days": {**cur.pwd_days, **body.pwd_days}}
+    try:
+        changed = await svc.update(db, "adaudit", patch, actor=su.display_name)
+    except SettingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="adaudit.policy", target_type="settings", target_id="adaudit", details={"changed": changed, **{k: patch[k] for k in changed if k in patch}})
+    await db.commit()
+    return {"changed": changed, "policy": (await svc.get(db, "adaudit")).model_dump(include=AS.POLICY_FIELDS)}
+
+
+@router.get("/groups")
+async def priv_groups(run: str | None = None, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+    """Состав привилегированных групп в проверке и изменения с предыдущей (добавленные, исключённые)."""
+    r = await _run(db, run)
+    return {"prev": None, "items": []} if r is None else await DF.groups(db, r)
+
+
+@router.get("/changes")
+async def changes(run: str | None = None, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+    """Изменения учётных записей с предыдущей проверки."""
+    r = await _run(db, run)
+    return {"prev": None, "counts": {}, "items": [], "truncated": False} if r is None else await DF.changes(db, r)
+
+
+@router.get("/policies")
+async def policies(su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+    """Политика, по которой выполнена каждая успешная проверка (история изменений сроков и порогов)."""
+    rows = (await db.execute(select(AdAuditRun).where(AdAuditRun.status == "ok").order_by(AdAuditRun.started_at.desc()).limit(120))).scalars().all()
+    return {"items": [{"id": str(r.id), "started_at": _iso(r.started_at), "kind_ru": AS.KIND_RU.get(r.kind, r.kind), "by": r.by, "policy": r.policy} for r in rows]}
 
 
 class RunBody(BaseModel):
@@ -118,10 +168,12 @@ ACC_SORT = {"name": A.name, "login": A.login, "pwd_age": A.pwd_age, "idle": A.id
 VIEWS = ("enabled", "disabled", "locked", "must_change", "expired", "new", "pne", "privileged", "inactive", "never", "with_findings", "reset", "no_logs_op")
 
 
-def _acc_filter(stmt, run: AdAuditRun, *, q: str, category: str, view: str, bucket: str, now: datetime):
+def _acc_filter(stmt, run: AdAuditRun, *, q: str, category: str, view: str, bucket: str, now: datetime, ou: str = ""):
     pol = run.policy or {}
     if q:
-        stmt = stmt.where(or_(column_like(A.login, q), column_like(A.name, q), column_like(A.upn, q), column_like(A.description, q), column_like(A.department, q)))
+        stmt = stmt.where(or_(column_like(A.login, q), column_like(A.name, q), column_like(A.upn, q), column_like(A.description, q), column_like(A.department, q), column_like(A.ou, q)))
+    if ou.strip():
+        stmt = stmt.where(column_like(A.ou, ou.strip()))
     if category:
         stmt = stmt.where(A.category == category)
     if bucket:
@@ -157,7 +209,7 @@ def _acc_filter(stmt, run: AdAuditRun, *, q: str, category: str, view: str, buck
 
 
 def _acc_out(a: A) -> dict:
-    return {"guid": a.guid, "login": a.login, "name": a.name, "upn": a.upn, "mail": a.mail, "dn": a.dn, "description": a.description, "title": a.title, "department": a.department, "manager": a.manager,
+    return {"guid": a.guid, "login": a.login, "name": a.name, "upn": a.upn, "mail": a.mail, "dn": a.dn, "ou": a.ou, "description": a.description, "title": a.title, "department": a.department, "manager": a.manager,
             "category": a.category, "category_ru": K.CATEGORY_RU.get(a.category, a.category), "category_basis": a.category_basis, "enabled": a.enabled, "locked": a.locked, "pne": a.pne,
             "must_change": a.must_change, "pwd_expired": a.pwd_expired, "pwd_last_set": _iso(a.pwd_last_set), "pwd_age": a.pwd_age, "pwd_bucket": a.pwd_bucket, "pwd_bucket_ru": K.BUCKET_RU.get(a.pwd_bucket, ""),
             "expires": _iso(a.expires), "last_logon": _iso(a.last_logon), "last_logon_src": a.last_logon_src, "idle_days": a.idle_days, "created": _iso(a.created), "privileged": a.privileged,
@@ -166,13 +218,13 @@ def _acc_out(a: A) -> dict:
 
 @router.get("/accounts")
 async def accounts(run: str | None = None, q: str = Query("", max_length=200), category: str = Query("", pattern=r"^(|user|admin|service|temp|contractor|undefined)$"),
-                   view: str = Query("", pattern=r"^(|" + "|".join(VIEWS) + ")$"), bucket: str = Query("", pattern=r"^(|le30|le90|le180|gt180|unknown)$"),
+                   view: str = Query("", pattern=r"^(|" + "|".join(VIEWS) + ")$"), bucket: str = Query("", pattern=r"^(|le30|le90|le180|gt180|unknown)$"), ou: str = Query("", max_length=200),
                    sort: str = Query("risk", pattern=r"^(name|login|pwd_age|idle|created|risk|findings)$"), desc: bool = True, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500),
                    su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     r = await _run(db, run)
     if r is None:
         return {"items": [], "total": 0, "offset": offset, "limit": limit, "run": None}
-    stmt = _acc_filter(select(A).where(A.run_id == r.id), r, q=q.strip(), category=category, view=view, bucket=bucket, now=utcnow())
+    stmt = _acc_filter(select(A).where(A.run_id == r.id), r, q=q.strip(), category=category, view=view, bucket=bucket, now=utcnow(), ou=ou)
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     col = ACC_SORT[sort]
     order = [col.desc().nulls_last() if desc else col.asc().nulls_last(), A.login]
@@ -202,13 +254,13 @@ async def account_card(guid: str, run: str | None = None, su: SessionUser = Depe
     hist_q = select(AdAuditRun.started_at, AdAuditRun.kind, A.category, A.enabled, A.pwd_last_set, A.last_logon, A.findings_n).join(AdAuditRun, AdAuditRun.id == A.run_id).where(A.guid == guid, AdAuditRun.status == "ok").order_by(AdAuditRun.started_at.desc()).limit(24)
     hist = [{"at": _iso(at), "kind_ru": AS.KIND_RU.get(k, k), "category_ru": K.CATEGORY_RU.get(c, c), "enabled": en, "pwd_last_set": _iso(p), "last_logon": _iso(ll), "findings": n} for at, k, c, en, p, ll, n in (await db.execute(hist_q)).all()]
     ov = await db.get(AdClassOverride, guid)
-    return {**_acc_out(a), "run": {"id": str(r.id), "started_at": _iso(r.started_at)}, "findings": [{**_find_out(f), "decision": _dec_out(d)} for f, d in fs],
+    return {**_acc_out(a), "run": {"id": str(r.id), "started_at": _iso(r.started_at)}, "findings": [{**_find_out(f, a.ou, a.enabled), "decision": _dec_out(d)} for f, d in fs],
             "events": [{"at": _iso(e.at), "kind": e.kind, "kind_ru": "Сброс пароля (4724)" if e.kind == "reset" else "Смена пароля (4723)", "success": e.success, "by": f"{e.by_domain}\\{e.by}" if e.by_domain else e.by, "dc": e.dc} for e in evs],
             "history": hist, "override": {"category": ov.category, "note": ov.note, "by": ov.by, "at": _iso(ov.at)} if ov else None}
 
 
-def _find_out(f: Fd) -> dict:
-    return {"key": f.key, "guid": f.guid, "login": f.login, "name": f.name, "category": f.category, "category_ru": K.CATEGORY_RU.get(f.category, f.category), "code": f.code, "title": f.title,
+def _find_out(f: Fd, ou: str | None = None, enabled: bool | None = None) -> dict:
+    return {"ou": ou or "", "enabled": enabled, "key": f.key, "guid": f.guid, "login": f.login, "name": f.name, "category": f.category, "category_ru": K.CATEGORY_RU.get(f.category, f.category), "code": f.code, "title": f.title,
             "severity": f.severity, "severity_ru": K.SEV_RU.get(f.severity, f.severity), "status": f.status, "status_ru": K.STATUS_RU.get(f.status, f.status), "basis": f.basis,
             "first_seen": _iso(f.first_seen), "runs_n": f.runs_n}
 
@@ -217,9 +269,10 @@ def _find_out(f: Fd) -> dict:
 async def findings(run: str | None = None, q: str = Query("", max_length=200), code: str = Query("", max_length=24), severity: str = Query("", pattern=r"^(|critical|high|medium|low)$"),
                    status: str = Query("", pattern=r"^(|violation|review)$"), category: str = Query("", pattern=r"^(|user|admin|service|temp|contractor|undefined)$"),
                    decision: str = Query("", pattern=r"^(|open|in_progress|fixed|exception|unresolved)$"), carried: bool = False, gone: bool = False,
+                   ou: str = Query("", max_length=200), state: str = Query("", pattern=r"^(|enabled|disabled)$"),
                    offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     """Замечания проверки. decision=unresolved — без решения, «в работе» и «отмечено устранённым», но обнаруженные снова (исключения не входят); carried — остались с прошлых проверок;
-    gone — были в предыдущей проверке и в этой не обнаружены (устранены)."""
+    gone — были в предыдущей проверке и в этой не обнаружены (устранены). ou — подразделение (часть пути или маска), state — состояние учётной записи."""
     r = await _run(db, run)
     if r is None:
         return {"items": [], "total": 0, "offset": offset, "limit": limit}
@@ -229,25 +282,49 @@ async def findings(run: str | None = None, q: str = Query("", max_length=200), c
         if prev is None:
             return {"items": [], "total": 0, "offset": offset, "limit": limit}
         rid = prev
-    stmt = select(Fd, D).outerjoin(D, D.key == Fd.key).where(Fd.run_id == rid)
+    stmt = select(Fd, D, A.ou, A.enabled).outerjoin(D, D.key == Fd.key).outerjoin(A, and_(A.run_id == Fd.run_id, A.guid == Fd.guid)).where(Fd.run_id == rid)
     if gone:
         stmt = stmt.where(Fd.key.not_in(select(Fd.key).where(Fd.run_id == r.id)))
     if q.strip():
-        stmt = stmt.where(or_(column_like(Fd.login, q.strip()), column_like(Fd.name, q.strip())))
+        stmt = stmt.where(or_(column_like(Fd.login, q.strip()), column_like(Fd.name, q.strip()), column_like(A.ou, q.strip())))
+    if ou.strip():
+        stmt = stmt.where(column_like(A.ou, ou.strip()))
+    if state:
+        stmt = stmt.where(A.enabled.is_(state == "enabled"))
     for colm, val in ((Fd.code, code), (Fd.severity, severity), (Fd.status, status), (Fd.category, category)):
         if val:
             stmt = stmt.where(colm == val)
     if carried:
         stmt = stmt.where(Fd.runs_n > 1)
     if decision == "unresolved":
-        stmt = stmt.where(or_(D.key.is_(None), D.state.in_(("open", "in_progress", "fixed")), and_(D.state == "exception", D.due.is_not(None), D.due < date.today())))
+        stmt = stmt.where(_unresolved())
     elif decision == "open":
         stmt = stmt.where(or_(D.key.is_(None), D.state == "open"))
     elif decision:
         stmt = stmt.where(D.state == decision)
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (await db.execute(stmt.order_by(Fd.sev_rank.desc(), Fd.runs_n.desc(), Fd.login).offset(offset).limit(limit))).all()
-    return {"items": [{**_find_out(f), "decision": _dec_out(d)} for f, d in rows], "total": total, "offset": offset, "limit": limit}
+    return {"items": [{**_find_out(f, o, en), "decision": _dec_out(d)} for f, d, o, en in rows], "total": total, "offset": offset, "limit": limit}
+
+
+def _unresolved():
+    """Замечание требует внимания: без решения, «в работе», «отмечено устранённым», но найдено снова, или исключение с истёкшим сроком."""
+    return or_(D.key.is_(None), D.state.in_(("open", "in_progress", "fixed")), and_(D.state == "exception", D.due.is_not(None), D.due < date.today()))
+
+
+@router.get("/ous")
+async def ous(run: str | None = None, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+    """Подразделения (OU) проверки: учётных записей, активных, замечаний, требующих внимания (в т. ч. критических и высоких) — для отбора и обзора «где больше всего проблем»."""
+    r = await _run(db, run)
+    if r is None:
+        return {"items": []}
+    acc = {o: (n, en) for o, n, en in (await db.execute(select(A.ou, func.count(), func.sum(func.cast(A.enabled, Integer))).where(A.run_id == r.id).group_by(A.ou))).all()}
+    fq = (select(A.ou, func.count(), func.sum(func.cast(Fd.sev_rank >= 3, Integer)), func.count(func.distinct(Fd.guid)))
+          .select_from(Fd).join(A, and_(A.run_id == Fd.run_id, A.guid == Fd.guid)).outerjoin(D, D.key == Fd.key).where(Fd.run_id == r.id, _unresolved()).group_by(A.ou))
+    fnd = {o: (n, hi or 0, g) for o, n, hi, g in (await db.execute(fq)).all()}
+    items = [{"ou": o, "accounts": n, "enabled": int(en or 0), "open": fnd.get(o, (0, 0, 0))[0], "high": fnd.get(o, (0, 0, 0))[1], "with_findings": fnd.get(o, (0, 0, 0))[2]} for o, (n, en) in acc.items()]
+    items.sort(key=lambda x: (-x["high"], -x["open"], -x["accounts"], x["ou"]))
+    return {"items": items}
 
 
 class DecisionBody(BaseModel):

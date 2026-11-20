@@ -66,6 +66,9 @@ def next_run(cfg: AdAuditSettings, after: datetime) -> datetime:
     return cand.astimezone(timezone.utc)
 
 
+POLICY_FIELDS = {"pwd_days", "inactive_days", "new_days", "grace_days", "protected_users", "policy_note", "admin_groups", "per_dc_logon", "ldap_filter"}     # политика, сохраняемая в каждой проверке
+
+
 def policy_of(cfg: AdAuditSettings) -> K.Policy:
     return K.Policy(pwd_days=dict(cfg.pwd_days), inactive_days=cfg.inactive_days, new_days=cfg.new_days, grace_days=cfg.grace_days, protected_users=cfg.protected_users)
 
@@ -226,7 +229,7 @@ class AdAuditService:
                 return None
             now = now or utcnow()
             async with self._sm() as db:
-                run = AdAuditRun(started_at=now, status="running", kind=kind, by=by[:160], period=f"{now:%Y-%m}", policy=cfg.model_dump(include={"pwd_days", "inactive_days", "new_days", "grace_days", "protected_users"}))
+                run = AdAuditRun(started_at=now, status="running", kind=kind, by=by[:160], period=f"{now:%Y-%m}", policy=cfg.model_dump(include=POLICY_FIELDS))
                 db.add(run)
                 await db.commit()
                 rid = run.id

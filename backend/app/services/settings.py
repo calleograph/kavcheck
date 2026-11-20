@@ -454,6 +454,7 @@ class AdAuditSettings(_Group):
     inactive_days: int = Field(default=90, ge=14, le=3650)                      # не входила дольше — неиспользуемая
     new_days: int = Field(default=30, ge=1, le=365)                             # создана не раньше — «недавно созданная»
     grace_days: int = Field(default=14, ge=1, le=365)                           # новой учётной записи даётся столько суток на первый вход и смену пароля
+    policy_note: str = Field(default="", max_length=1000)                      # основание политики (приказ, требования предприятия): сохраняется в каждой проверке
     protected_users: bool = True                                                # административная учётная запись вне группы Protected Users — замечание
     admin_groups: list[str] = Field(default_factory=list, max_length=50)        # дополнительные привилегированные группы (CN или DN) к встроенным (Domain Admins, Enterprise Admins, Administrators…)
     rules: list[AdClassRule] = Field(default_factory=_default_ad_rules, max_length=300)

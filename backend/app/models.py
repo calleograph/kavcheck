@@ -1696,6 +1696,7 @@ class AdAuditAccount(Base):
     upn: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     mail: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     dn: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ou: Mapped[str] = mapped_column(String(1000), nullable=False, default="")                     # подразделение: путь контейнеров от корня домена (ad.filters.ou_path)
     description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     department: Mapped[str] = mapped_column(String(300), nullable=False, default="")

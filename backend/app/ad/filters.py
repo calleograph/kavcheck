@@ -149,6 +149,13 @@ def cn_of(dn: str) -> str:
     return re.sub(r"\\(.)", r"\1", m.group(1)) if m else dn
 
 
+def ou_path(dn: str) -> str:
+    """Подразделение записи по DN — путь контейнеров от корня домена, без самой записи и DC:
+    «CN=Иванов\\, И.,OU=Бухгалтерия,OU=Офис,DC=example,DC=local» → «Офис/Бухгалтерия»; запись прямо в корне домена — пустая строка."""
+    parts = re.findall(r"(?:\\.|[^,])+", dn)[1:]
+    return "/".join(re.sub(r"\\(.)", r"\1", p.split("=", 1)[1]).strip() for p in reversed(parts) if "=" in p and not p.strip().lower().startswith("dc="))
+
+
 def values(entry: dict) -> dict[str, tuple[str, list[bytes]]]:
     """Атрибуты записи: имя в нижнем регистре → (исходное имя, значения в байтах)."""
     raw = entry.get("raw_attributes")

@@ -60,7 +60,7 @@ def account(e: dict, login_attr: str, priv: dict[str, set[str]], protected: set[
     if F.int_of(v, "primaryGroupID") == 512 and "Domain Admins" not in privileged:
         privileged.append("Domain Admins")
     member_of = F.many(v, "memberOf")
-    return {"guid": F.first(v, "objectGUID")[:40], "sid": F.first(v, "objectSid")[:190], "dn": dn, "ou": dn.split(",", 1)[1] if "," in dn else "",
+    return {"guid": F.first(v, "objectGUID")[:40], "sid": F.first(v, "objectSid")[:190], "dn": dn, "ou": F.ou_path(dn)[:1000],
             "login": (F.first(v, login_attr) or F.first(v, "sAMAccountName"))[:256], "name": (F.first(v, "displayName") or F.first(v, "cn"))[:300], "upn": F.first(v, "userPrincipalName")[:300],
             "mail": F.first(v, "mail")[:300], "description": F.first(v, "description")[:500], "title": F.first(v, "title")[:300], "department": F.first(v, "department")[:300], "company": F.first(v, "company")[:300],
             "manager": (F.cn_of(F.first(v, "manager")) if F.first(v, "manager") else "")[:300], "info": F.first(v, "info")[:300],
