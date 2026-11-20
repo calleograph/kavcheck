@@ -147,6 +147,7 @@ export function VirtualRows<T>({ list, colSpan, row, estimate = 44, scrollEl, gr
     // мгновенно: плавную прокрутку (scroll-behavior: smooth у html) обрывают поправки виртуализатора после измерения строк
     window.requestAnimationFrame(() => { if (el) el.scrollTop = boxScroll.get(list.key) ?? 0; else window.scrollTo({ top: list.restoreY ?? 0, behavior: "instant" }); });
   }, [list.items.length, list.restoreY, scrollEl]); // eslint-disable-line react-hooks/exhaustive-deps
+  useStableCols(anchor, vis.length > 0, list.items[0]);
   const top = vis.length ? vis[0].start - margin : 0;
   const bottom = vis.length ? v.getTotalSize() - (vis[vis.length - 1].end - margin) : 0;
   return (
@@ -157,6 +158,37 @@ export function VirtualRows<T>({ list, colSpan, row, estimate = 44, scrollEl, gr
       {Pad({ h: bottom })}
     </>
   );
+}
+
+/** Закреплённые ширины столбцов виртуализированной таблицы. Без них браузер считает ширины по видимым строкам: при прокрутке и подгрузке
+ *  они меняются, строки переносятся иначе, виртуализатор перемеряет высоты — таблица «дрожит». Ширины снимаются с первых строк и задаются
+ *  заголовкам как наименьшие; пересчёт — при смене ширины контейнера, набора столбцов, данных (новый отбор, сортировка) или когда строке
+ *  не хватило места (неразрывное значение расширило столбец, таблица вышла за контейнер) — один раз, а не на каждой прокрутке. */
+function useStableCols(anchor: RefObject<HTMLElement | null>, ready: boolean, first: unknown) {
+  const st = useRef<{ wrap: number; table: number; n: number } | null>(null);
+  const lock = (table: HTMLTableElement) => {
+    const cells = Array.from(table.tHead?.rows[0]?.cells ?? []);
+    if (!cells.length || !table.parentElement) return;
+    for (const c of cells) c.style.width = "";
+    const w = cells.map((c) => Math.floor(c.getBoundingClientRect().width));   // вниз: сумма не больше ширины таблицы
+    cells.forEach((c, i) => { c.style.width = `${w[i]}px`; });
+    st.current = { wrap: table.parentElement.clientWidth, table: table.offsetWidth, n: cells.length };
+  };
+  useLayoutEffect(() => {
+    const table = anchor.current?.closest("table");
+    if (!table || !ready || !table.parentElement) return;
+    lock(table);
+    const ro = new ResizeObserver(() => {
+      const s = st.current;
+      if (!s || !table.parentElement || Math.abs(table.parentElement.clientWidth - s.wrap) > 1 || Math.abs(table.offsetWidth - s.table) > 1) lock(table);
+    });
+    ro.observe(table); ro.observe(table.parentElement);
+    return () => ro.disconnect();
+  }, [ready, first]); // eslint-disable-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {                                                // столбцы показали или скрыли
+    const table = anchor.current?.closest("table");
+    if (table && st.current && (table.tHead?.rows[0]?.cells.length ?? 0) !== st.current.n) lock(table);
+  });
 }
 
 /** Под списком: сколько показано из скольких, автоматическая подгрузка следующей порции при подходе к концу, ошибка с повтором, конец списка.
