@@ -12,6 +12,7 @@ import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Spectrum } fr
 import { fmt, fmtDate, num, plural } from "../util";
 import { ZoneSelect } from "../components/ZoneBits";
 import { OwnerSub } from "../components/OwnerBlock";
+import { UserSub } from "../components/HostPeople";
 
 export const PROBLEM_TONE: Record<ProblemKey, "err" | "warn"> = { no_av: "err", rtp_off: "err", infected: "err", license: "err", bases_old: "warn", scan_old: "warn", reboot: "warn", hw_cpu: "warn", hw_ram: "warn" };
 export const PROBLEM_SHORT: Record<ProblemKey, string> = { no_av: "нет антивируса", rtp_off: "защита не работает", infected: "невылеченные объекты", bases_old: "старые базы", license: "лицензия истекла", scan_old: "нет полной проверки", reboot: "нужна перезагрузка", hw_cpu: "мало ядер CPU", hw_ram: "мало ОЗУ" };
@@ -162,7 +163,7 @@ export default function ProtectionPage({ ctx }: { ctx: Ctx }) {
                   <tr className={`clickable ${sel.has(h.host_id) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("a, input, button")) navigate(`/hosts/${h.host_id}`); }}>
                     <td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td>
                     <ExpandCell id={`p${h.host_id}`} open={ex.has(h.host_id)} onToggle={() => ex.toggle(h.host_id)} label={h.name} />
-                    <td><Link to={`/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono">{h.ip}</span>{h.zone && <span className="sub zone-sub" title="Зона ответственности">{h.zone}</span>}<OwnerSub o={h.owner} /></td>
+                    <td><Link to={`/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono nowrap">{h.ip}</span>{h.zone && <span className="sub zone-sub" title="Зона ответственности">{h.zone}</span>}<OwnerSub o={h.owner} /><UserSub u={h.user} /></td>
                     <td className="nowrap"><OnlineBadge online={h.online} seen={h.last_visible} />{h.online === false && h.last_info_update && <span className="sub">сведения от {fmtDate(h.last_info_update)}</span>}</td>
                     <td>{h.av ? <>{shortProduct(h.av.product)}<span className="sub mono">{h.av.build}</span></> : <span className="bad-text">нет</span>}{h.agent_build && <span className="sub nowrap">Агент <span className="mono">{h.agent_build}</span></span>}</td>
                     <td className="small hide-sm">{h.av ? (h.problems.includes("rtp_off") ? <span className="bad-text">{h.av.state_label && h.av.state_label !== "запущен" ? `продукт ${h.av.state_label}` : h.rtp_label || "не работает"}</span> : h.rtp_label || h.av.state_label || "—") : "—"}</td>

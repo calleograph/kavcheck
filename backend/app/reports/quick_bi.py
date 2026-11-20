@@ -180,7 +180,7 @@ async def _problems(db, p: dict, ctx: Ctx) -> dict:
         trunc |= len(hs) > LIMIT
         hs = hs[:LIMIT]
         linked = {int(h) for (h,) in (await db.execute(select(BiMatch.host_id).where(BiMatch.ksc_source_id == sid, BiMatch.level.in_(LINKED)))).all()}
-        own = await R.owners_for(db, sid, [h.host_id for h in hs if h.host_id in linked], pd=True)                                     # владельцы — только у сопоставленных с BI
+        own = await R.owners_for(db, sid, [h.host_id for h in hs if h.host_id in linked], pd=True, inv=False)                                    # владельцы — только у сопоставленных с BI
         users: dict = {}
         ids = [h.host_id for h in hs]
         for i in range(0, len(ids), 1000):

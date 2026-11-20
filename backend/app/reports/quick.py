@@ -584,7 +584,8 @@ async def build_protection(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         av = h["av"] or {}
         rows.append({**host_part(h, p, ctx), "problems": "; ".join(P.PROBLEMS[x][0] for x in h["problems"]) or "защита в порядке", "problems_n": len(h["problems"]), "av": av.get("product") or "нет",
                      "av_build": av.get("build") or "", "rtp": h["rtp_label"] or av.get("state_label") or "—", "bases": av.get("bases"), "last_full_scan": h["last_full_scan"], "agent": h["agent_build"],
-                     "ksc_status": h["ksc_status"] or "—", "reasons": "; ".join(P.STATUS_MASK[b] for b in P.STATUS_MASK if h["mask"] & b)})
+                     "ksc_status": h["ksc_status"] or "—", "reasons": "; ".join(P.STATUS_MASK[b] for b in P.STATUS_MASK if h["mask"] & b), "host_id": h["host_id"]})
+    await _people(ctx, rows, pd=bool(p.get("pd", True)))
     title = P.PROBLEMS[problem][0] if problem in P.PROBLEMS else "Без проблем" if problem == "ok" else "Состояние защиты"
     conds = [{"label": "Категория", "text": title if problem else "все компьютеры области"}]
     if p.get("product"):
@@ -602,12 +603,31 @@ async def build_protection(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     prob_rows = [{"problem": P.PROBLEMS[k][0], "hosts": counts.get(k, 0), "share": f"{round(counts.get(k, 0) / len(hosts) * 100) if hosts else 0}%"} for k in P.PROBLEMS]
     return {"title": f"Состояние защиты: {title}" if problem else "Состояние защиты", "subtitle": "Компьютеры по проблемам защиты Kaspersky", "conditions": conds, "metrics": metrics, "severity": None,
             "notes": notes, "tables": [
-                {"id": "hosts", "title": "Компьютеры", "columns": [col("name", "Компьютер"), col("ip", "IP-адрес", "mono"), col("os", "ОС"), col("group", "Группа администрирования"), col("online", "В сети сейчас"),
+                {"id": "hosts", "title": "Компьютеры", "columns": [col("name", "Компьютер"), col("ip", "IP-адрес", "mono"), col("owner", "Владелец"), col("owner_src", "Источник сведений о владельце"),
+                                                                  col("user", "Пользователь (по спискам вошедших KSC)"), col("os", "ОС"), col("group", "Группа администрирования"), col("online", "В сети сейчас"),
                                                                   col("last_connected", "Последнее подключение к KSC (UTC)", "date"), col("active", "Связь за период"), col("problems", "Проблемы защиты"),
                                                                   col("av", "Защитный продукт"), col("av_build", "Версия", "mono"), col("rtp", "Постоянная защита"), col("bases", "Базы (UTC)", "date"),
                                                                   col("last_full_scan", "Полная проверка (UTC)", "date"), col("agent", "Агент", "mono"), col("ksc_status", "Статус KSC"),
                                                                   col("reasons", "Причины статуса KSC")], "rows": rows},
                 {"id": "problems", "title": "Проблемы в области отчёта", "columns": [col("problem", "Проблема"), col("hosts", "Компьютеров", "num"), col("share", "Доля")], "rows": prob_rows}]}
+
+
+async def _people(ctx: Ctx, rows: list[dict], pd: bool = True) -> None:
+    """Владелец и пользователь в строках отчёта — так же, как в списке на странице (BI, иначе карточка учёта; пользователь — сейчас в системе или последний замеченный)."""
+    if ctx.sm is None or ctx.source_id is None:
+        return
+    from ..api.hosts import people_of  # noqa: PLC0415
+
+    async with ctx.sm() as db:
+        for i in range(0, len(rows), 2000):
+            part = rows[i:i + 2000]
+            await people_of(db, ctx.source_id, part, pd=pd)
+            for r in part:
+                o, u = r.pop("owner", None), r.pop("user", None)
+                r["owner"] = ((o["name"] + (f" · {o['department']}" if o.get("department") else "") + (f" · {o['email']}" if o.get("email") else "")) if o else "не определён")
+                r["owner_src"] = "" if not o else "карточка учёта" if o["level"] == "inv" else "BI, " + {"confirmed": "подтверждено", "auto": "предполагаемое"}.get(o["level"], "по актуальной записи KSC этого устройства") \
+                    + ("" if o["state"] == "current" else f" ({o['state_ru'].lower()})")
+                r["user"] = (u["login"] + ("" if u["now"] else " (последний замеченный)")) if u else ""
 
 
 # ------------------------------------------------------------------------------------------------ события безопасности

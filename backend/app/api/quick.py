@@ -259,6 +259,7 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         params = QUICK_PARAMS[body.kind].model_validate(body.params).model_dump()
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
+    params["pd"] = su.is_analyst                       # почта владельца — как на странице: не для роли «Просмотр»
     general = await request.app.state.settings_svc.get(db, "general")
     rcfg = await request.app.state.settings_svc.get(db, "reports")
     hw = await request.app.state.settings_svc.get(db, "hardware")

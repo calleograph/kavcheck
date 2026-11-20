@@ -10,7 +10,7 @@ from app.bi import match as M
 from app.bi import read as R
 from app.bi import service as SV
 from app.bi import smb as S
-from app.models import BiImport, BiMatch, BiSource, DeviceUser, KscSource, ZcHost, ZcSource, utcnow
+from app.models import BiImport, BiMatch, BiSource, DeviceUser, InvAsset, InvPerson, KscSource, ZcHost, ZcSource, utcnow
 from tests.test_bi_import import BASE, T0, row, run, source, xlsx
 
 NOW = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
@@ -68,6 +68,16 @@ async def test_matching_levels_never_merge_on_name_alone(app, tmp_path):
         blk = await R.host_block(db, k1, 1, pd=False)
         assert blk["devices"][0]["owner"]["person"]["name"] == "Иванов Иван Иванович" and blk["devices"][0]["owner"]["person"]["email"] == ""     # почта скрыта без прав
         assert (await R.owners_for(db, k1, [1, 2, 4], pd=True)).keys() == {1, 2}     # WS-002 — по входу владельца
+        # без BI-владельца — владелец карточки учёта, связанной с этим компьютером KSC; блок BI в самой карточке учёта (inv=False) его не подставляет
+        pers = InvPerson(name="Сидоров Олег", email="o.sidorov@example.local", dept="Склад")
+        db.add(pers)
+        await db.flush()
+        db.add(InvAsset(uid=uuid.uuid4(), inv_no="T-OWN-4", created_by="t", updated_by="t", version=1, name="WS-004", owner_id=pers.id, ksc_source_id=k1, ksc_host_id=4, ksc_link="confirmed"))
+        await db.flush()
+        own = await R.owners_for(db, k1, [1, 4], pd=False)
+        assert own[4]["level"] == "inv" and own[4]["name"] == "Сидоров Олег" and own[4]["email"] == "" and own[1]["level"] != "inv"     # текущий по BI важнее учёта
+        assert 4 not in await R.owners_for(db, k1, [4], pd=True, inv=False)
+        await db.rollback()
     _ = k2
 
 

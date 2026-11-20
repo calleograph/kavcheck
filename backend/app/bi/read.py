@@ -17,7 +17,7 @@ from sqlalchemy import String, and_, case, cast, exists, false, func, or_, selec
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ksc.protection import PROBLEMS
-from ..models import BiDevice, BiImport, BiMatch, BiOwner, BiPerson, BiRecord, BiSource, DeviceUser, KscSource, ZcHost, ZcSource
+from ..models import BiDevice, BiImport, BiMatch, BiOwner, BiPerson, BiRecord, BiSource, DeviceUser, InvAsset, InvPerson, KscSource, ZcHost, ZcSource
 from ..devices.read import zone_names
 from ..search import any_of, column_like, local_like
 from .match import ACT_RU, LEVEL_RU, LINKED
@@ -158,8 +158,9 @@ async def host_block(db: AsyncSession, ksc_sid: uuid.UUID, host_id: int, *, pd: 
     return {"devices": cards, "candidates": cands, "note": note, "bi_sources": len(bi)}
 
 
-async def owners_for(db: AsyncSession, ksc_sid: uuid.UUID, host_ids: list[int], *, pd: bool) -> dict[int, dict]:
-    """Владелец по BI для списка компьютеров KSC (столбец «Владелец» в списках): текущий владелец, иначе последний известный с пометкой состояния."""
+async def owners_for(db: AsyncSession, ksc_sid: uuid.UUID, host_ids: list[int], *, pd: bool, inv: bool = True) -> dict[int, dict]:
+    """Владелец для списка компьютеров KSC (строка «владелец» в списках): текущий по BI; иначе — владелец карточки учёта (инвентаризация, связь с этим компьютером KSC);
+    иначе — последний известный по BI с пометкой состояния. inv=False — только BI (блок BI в самой карточке учёта)."""
     out: dict[int, dict] = {}
     if not host_ids:
         return out
@@ -177,6 +178,14 @@ async def owners_for(db: AsyncSession, ksc_sid: uuid.UUID, host_ids: list[int], 
                 rank[hid] = k
                 out[int(hid)] = {"name": name or (email if pd else ""), "email": email if pd else "", "department": dept, "state": st, "state_ru": STATE_RU[st], "level": level,
                                  "multi": st == "current" and n_now > 1, "seen_at": last, "old_record": level not in LINKED}
+    if inv:
+        need = [h for h in host_ids if (out.get(int(h)) or {}).get("state") != "current"]
+        for i in range(0, len(need), 1000):
+            q = (select(InvAsset.ksc_host_id, InvPerson.name, InvPerson.email, InvPerson.dept).join(InvPerson, InvPerson.id == InvAsset.owner_id)
+                 .where(InvAsset.ksc_source_id == ksc_sid, InvAsset.ksc_host_id.in_(need[i:i + 1000]), InvAsset.ksc_link.in_(("confirmed", "auto"))))
+            for hid, name, email, dept in (await db.execute(q)).all():
+                out[int(hid)] = {"name": name, "email": email if pd else "", "department": dept, "state": "current", "state_ru": "Владелец по карточке учёта (инвентаризация)", "level": "inv",
+                                 "multi": False, "seen_at": None, "old_record": False}
     return out
 
 

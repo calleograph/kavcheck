@@ -613,7 +613,7 @@ async def tech(aid: int, request: Request, ix: Ix = Depends(inv_ctx), db: AsyncS
     if a.hostname and nm and a.hostname.casefold() != nm:
         issues.append(f"Имя компьютера в карточке ({a.hostname}) отличается от KSC ({nm})")
     out["issues"] = issues
-    owners = await BR.owners_for(db, src.id, [a.ksc_host_id], pd=ix.su.is_analyst)
+    owners = await BR.owners_for(db, src.id, [a.ksc_host_id], pd=ix.su.is_analyst, inv=False)
     out["bi_owner"] = owners.get(a.ksc_host_id)
     return out
 
