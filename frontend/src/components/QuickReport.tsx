@@ -247,6 +247,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
 
   const doc = data?.doc ?? null;
   const hosts = doc?.metrics.find((m) => m.key === "hosts");
+  const employeeTotal = kind === "quick_employee_protection" && data ? (params.view === "devices" ?
+    plural(data.total, "устройство", "устройства", "устройств") : plural(data.total, "сотрудник", "сотрудника", "сотрудников")) : null;
   const cols = (data?.columns ?? []).slice(0, 7);
   const showScope = options.scope !== false && !options.zone;
   const zoneCats = (params.categories as string[] | undefined) ?? [];
@@ -263,7 +265,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
       <div className="qr">
         {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
         {msg && <div className="alert info" role="status">{busy ? <span className="spin accent" /> : <Icon name="check" />}<div className="alert-body">{msg}</div></div>}
-        {!data && !err && <div className="qr-loading" role="status"><span className="spin accent" />Считаем затронутые компьютеры…</div>}
+        {!data && !err && <div className="qr-loading" role="status"><span className="spin accent" />{kind === "quick_employee_protection" ? "Готовим предпросмотр…" : "Считаем затронутые компьютеры…"}</div>}
         {data?.unsupported && <div className="alert warn"><Icon name="alert" /><div className="alert-body">В базе источника нет нужных объектов KSC ({data.unsupported.join(", ")}): отчёт недоступен.</div></div>}
         {options.hunt && <fieldset className="qr-sections"><legend>Результаты в отчёте</legend>
           {([["confirmed", "Подтверждено"], ["probable", "Вероятно"], ["needs_check", "Требует проверки"]] as [string, string][]).map(([k, l]) => {
@@ -277,8 +279,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
         {options.levels && <SeverityLevels value={(params.levels as string[] | undefined) ?? ["critical"]} onChange={(v) => setExtra({ ...extra, levels: v })} />}
         {doc && (<>
           <div className="qr-hero">
-            <span className="qr-big">{hosts ? num(Number(hosts.value)) : num(data!.total)}</span>
-            <span className="qr-cap">{hosts ? (kind === "quick_eol" ? plural(Number(hosts.value), "устройство с проблемой поддержки", "устройства с проблемой поддержки", "устройств с проблемой поддержки") : kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : kind === "quick_devices" ? plural(Number(hosts.value), "устройство", "устройства", "устройств") : kind === "quick_overview" ? plural(Number(hosts.value), "компьютер в списке", "компьютера в списке", "компьютеров в списке") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк")}
+            <span className="qr-big">{hosts && !employeeTotal ? num(Number(hosts.value)) : num(data!.total)}</span>
+            <span className="qr-cap">{employeeTotal ?? (hosts ? (kind === "quick_eol" ? plural(Number(hosts.value), "устройство с проблемой поддержки", "устройства с проблемой поддержки", "устройств с проблемой поддержки") : kind === "quick_vulns" || kind === "quick_extvulns" || kind === "version_audit" ? plural(Number(hosts.value), "затронутый компьютер", "затронутых компьютера", "затронутых компьютеров") : kind === "quick_devices" ? plural(Number(hosts.value), "устройство", "устройства", "устройств") : kind === "quick_overview" ? plural(Number(hosts.value), "компьютер в списке", "компьютера в списке", "компьютеров в списке") : plural(Number(hosts.value), "компьютер", "компьютера", "компьютеров")) : plural(data!.total, "строка", "строки", "строк"))}
               {hosts?.hint && <span className="muted small"> · {hosts.hint}</span>}</span>
           </div>
           {BUILDABLE.includes(kind) && <Builder kind={kind} params={params} columnsAll={doc.columns_all ?? []} onChange={(patch) => setExtra({ ...extra, ...patch })} canSave={canReport} />}

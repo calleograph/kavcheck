@@ -17,7 +17,8 @@ export const NAV_GROUPS: NavGroup[] = [
   { id: "infra", label: "Инфраструктура", icon: "monitor", items: [
     { to: "/hosts", label: "Компьютеры", icon: "monitor" }, { to: "/software", label: "Программы", icon: "layers" }, { to: "/devices", label: "Устройства и пользователи", icon: "users" }] },
   { id: "sec", label: "Защита и уязвимости", icon: "shieldPulse", items: [
-    { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" }, { to: "/vulnerabilities", label: "Уязвимости", icon: "bug" }, { to: "/vdb", label: "База уязвимостей", icon: "vault" },
+    { to: "/protection", label: "Состояние защиты", icon: "shieldPulse" }, { to: "/employee-protection", label: "Антивирусная защита сотрудников", icon: "users", roles: ["security", "admin"] },
+    { to: "/vulnerabilities", label: "Уязвимости", icon: "bug" }, { to: "/vdb", label: "База уязвимостей", icon: "vault" },
     { to: "/eol", label: "EOL", icon: "clock" }, { to: "/events", label: "События безопасности", icon: "bell" },
     { to: "/hunt", label: "CVE Hunt", icon: "search", roles: ["analyst", "security", "admin"] }, { to: "/pentest", label: "Pentest", icon: "target", roles: ["analyst", "security", "admin"] }, { to: "/adaudit", label: "Аудит домена", icon: "key", roles: ["security", "admin"] }] },
   { id: "org", label: "Организация", icon: "sitemap", items: [
@@ -71,6 +72,7 @@ const ADMIN_KW: Record<string, string> = {
 const NAV_KW: Record<string, string> = {
   "/": "быстрый доступ старт избранное главная панель", "/overview": "обзор главная сводка показатели лицензии динамика", "/hosts": "компьютеры устройства рабочие станции серверы состояние найти компьютер", "/software": "программы версии установленное по реестр найти программу",
   "/devices": "устройства пользователи владелец bi сопоставление сотрудники владельцы принадлежность", "/protection": "защита антивирус базы постоянная защита проблемные компьютеры состояние защиты", "/vulnerabilities": "уязвимости cve kla исправления обнаружения отчёт по уязвимостям игнорировать исключения",
+  "/employee-protection": "сотрудники использование антивируса kaspersky защищённость департаменты личная техника корпоративные компьютеры охват отчёт",
   "/vdb": "база уязвимостей cve nvd kev osv бду поиск план устранения", "/eol": "eol окончание поддержки операционные системы устаревшие исключения", "/events": "события безопасности угрозы обнаружения атаки", "/hunt": "cve hunt целевой поиск уязвимости задание",
   "/pentest": "pentest сканирование находки результаты задания nmap nuclei", "/zones": "зоны ответственности ответственные контакты компьютеры зоны", "/hierarchy": "иерархия предприятия структура организации руководители подразделения граф", "/reports": "отчёты сформированные проверка версий шаблоны сохранённые центр отчётов",
   "/inventory": "инвентаризация учёт имущества itam активы оборудование инвентарный номер карточка имущества владелец ответственный мол местоположение помещение склад выдача возврат перемещение акт ремонт списание этикетка qr штрихкод лицензии",
@@ -120,6 +122,7 @@ export const QUICK_ACTIONS: QuickAction[] = [
   { id: "find-user", title: "Найти пользователя", hint: "владелец и устройства", icon: "users", search: "users" },
   { id: "find-vuln", title: "Найти уязвимость или CVE", hint: "CVE, KLA, БДУ", icon: "bug", search: "vuln" },
   { id: "protection", title: "Состояние защиты", hint: "проблемы Kaspersky по компьютерам", icon: "shieldPulse", to: "/protection" },
+  { id: "employee-protection", title: "Антивирусная защита сотрудников", hint: "охват защиты и сотрудники, по которым требуется проверка", icon: "users", to: "/employee-protection", roles: ["security", "admin"] },
   { id: "problem-hosts", title: "Проблемные компьютеры", hint: "защита не работает", icon: "alert", to: "/protection?problem=rtp_off" },
   { id: "devices", title: "Устройства и владельцы", hint: "кто чем пользуется", icon: "users", to: "/devices" },
   { id: "zones", title: "Зоны ответственности", hint: "ответственные и состояние зон", icon: "grid", to: "/zones" },
@@ -149,6 +152,7 @@ export const DEFAULT_ITEMS: Record<Role, string[]> = {
 export interface QuickReportDef { id: string; title: string; hint: string; icon: IconName; kind?: QuickKind; params: Record<string, unknown>; options: QuickScopeOpts; section: string; roles?: Role[]; needsSource?: boolean }
 /** Готовые отчёты — только реально существующие виды. С `kind` — «Настроить» открывает тот же конструктор с фильтрами; без `kind` отчёт строится в самом разделе (нужен выбор программы, зоны или подразделения), карточка ведёт туда. */
 export const QUICK_REPORTS: QuickReportDef[] = [
+  { id: "r-employee-protection", title: "Антивирусная защита сотрудников", hint: "охват защиты по сотрудникам, подразделениям и устройствам", icon: "users", kind: "quick_employee_protection", params: { view: "employees" }, options: { scope: false }, section: "/employee-protection", roles: ["security", "admin"] },
   { id: "r-rtp", title: "Компьютеры без работающей защиты", hint: "постоянная защита остановлена", icon: "shieldPulse", kind: "quick_protection", params: { problem: "rtp_off" }, options: { scope: true, zoneFilter: true }, section: "/protection?problem=rtp_off", needsSource: true },
   { id: "r-noav", title: "Компьютеры без антивируса", hint: "нет продукта Kaspersky", icon: "alert", kind: "quick_protection", params: { problem: "no_av" }, options: { scope: true, zoneFilter: true }, section: "/protection?problem=no_av", needsSource: true },
   { id: "r-bases", title: "Компьютеры с устаревшими базами", hint: "базы старше порога", icon: "clock", kind: "quick_protection", params: { problem: "bases_old" }, options: { scope: true, zoneFilter: true }, section: "/protection?problem=bases_old", needsSource: true },

@@ -15,6 +15,7 @@ from sqlalchemy import select
 from starlette.datastructures import MutableHeaders
 
 from .api import ad as ad_api, adaudit as adaudit_api, inv as inv_api, inv_dirs as inv_dirs_api, inv_geo as inv_geo_api, inv_docs as inv_docs_api, inv_lic as inv_lic_api, inv_counts as inv_counts_api, infra as infra_api, admin, admin_ldap, bi as bi_api, admin_updates, auth, auth_totp, catalog, dashboard, devices as devices_api, eol as eol_api, events, health, hier as hier_api, hosts, logs as logs_api, hunt as hunt_api, components as components_api, overview, pentest as pentest_api, protection, quick, reports, software, tech as tech_api, vdb as vdb_api, vulns, zones as zones_api
+from .api import employee_protection as employee_protection_api
 from .auth.deps import client_ip
 from .search import MaskError
 from .auth.service import AuthService
@@ -190,7 +191,7 @@ def create_app(settings: Settings | None = None, *, start_workers: bool = True, 
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
     prefix = "/api/v1"
-    for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, overview.router, overview.lic_router, pentest_api.router, admin.router, hier_api.router, ad_api.router, adaudit_api.router, inv_api.router, inv_dirs_api.router, inv_geo_api.router, inv_docs_api.router, inv_lic_api.router, inv_counts_api.router, infra_api.router, tech_api.router, logs_api.router, components_api.router, hunt_api.router, bi_api.router,
+    for r in (auth.router, auth_totp.router, admin_ldap.router, software.router, catalog.router, hosts.router, vulns.router, protection.router, events.router, quick.router, reports.router, reports.templates, reports.checks, dashboard.router, overview.router, overview.lic_router, pentest_api.router, admin.router, hier_api.router, ad_api.router, adaudit_api.router, employee_protection_api.router, inv_api.router, inv_dirs_api.router, inv_geo_api.router, inv_docs_api.router, inv_lic_api.router, inv_counts_api.router, infra_api.router, tech_api.router, logs_api.router, components_api.router, hunt_api.router, bi_api.router,
               admin_updates.router, vdb_api.router, eol_api.router, devices_api.router, zones_api.router, zones_api.admin_router, zones_api.mail_router, zones_api.triage_router, health.router):
         app.include_router(r, prefix=prefix)
     return app

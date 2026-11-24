@@ -214,7 +214,7 @@ class Runner:
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
         if src is None:
-            src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_hier": "Иерархия", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "KAV Checker", "quick_inv": "Инвентаризация"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
+            src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_hier": "Иерархия", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "KAV Checker", "quick_inv": "Инвентаризация", "quick_employee_protection": "Защита сотрудников"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
             client = None
         else:
             client = self.sources.client(src)
@@ -256,7 +256,7 @@ class Runner:
             ctx.records_for = records_for
         try:
             zone = (job.params or {}).get("zone") or ""
-            if zone and job.kind not in ("quick_eol", "quick_devices", "quick_overview", "quick_sessions"):
+            if zone and job.kind not in ("quick_eol", "quick_devices", "quick_overview", "quick_sessions", "quick_employee_protection"):
                 from ..zones.reporter import ZoneData  # noqa: PLC0415
 
                 if getattr(self, "_zones", None) is None:

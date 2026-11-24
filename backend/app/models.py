@@ -1123,6 +1123,7 @@ class DeviceUser(Base):
     first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)       # первое наблюдение KAV Checker
     last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)        # последнее наблюдение в любом списке KSC
     last_session_at: Mapped[datetime | None] = mapped_column(UTCDateTime)                              # последнее наблюдение в списке вошедших сейчас (bActual=1)
+    identity_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))  # доменная запись сеанса однозначна среди строк опроса
     session_now: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     seen_n: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     initial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)           # замечен при первом опросе источника: дата входа неизвестна, в «за 7 суток» не входит, пока не появился в списке вошедших
@@ -2221,3 +2222,29 @@ class InfraFinding(Base):
     decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     history: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
     __table_args__ = (Index("ix_infra_findings_status", "status", "code"), Index("ix_infra_findings_asset", "asset_id"))
+
+
+class EmployeeProtectionPerson(Base):
+    __tablename__ = "employee_protection_people"
+    generation: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    search: Mapped[str] = mapped_column(Text, nullable=False)
+    data: Mapped[dict] = mapped_column(JSONType, nullable=False)
+
+
+class EmployeeProtectionDevice(Base):
+    __tablename__ = "employee_protection_devices"
+    generation: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    search: Mapped[str] = mapped_column(Text, nullable=False)
+    zone_keys: Mapped[str] = mapped_column(Text, nullable=False)
+    data: Mapped[dict] = mapped_column(JSONType, nullable=False)
+
+
+class EmployeeProtectionLink(Base):
+    __tablename__ = "employee_protection_links"
+    generation: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    person_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    evidence: Mapped[list] = mapped_column(JSONType, nullable=False)
+    __table_args__ = (Index("ix_employee_protection_link_device", "generation", "device_id"),)

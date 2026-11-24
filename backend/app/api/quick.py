@@ -19,6 +19,7 @@ from ..models import KscSource
 from ..reports import quick, quick_export
 from ..vdb import store as vdb_store
 from .catalog import audit_preview
+from .employee_protection import require_allowed as require_employee_protection
 from .hier import allowed as hier_allowed
 from .schemas import QUICK_PARAMS, AuditParams, QuickZone as AuditParamsZone
 from .vulns import _ksc, groups_cached, unsupported
@@ -28,7 +29,7 @@ PREVIEW_ROWS = 1000          # строк в просмотре; полный с
 
 
 class QuickPreviewIn(BaseModel):
-    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions|quick_inv)$")
+    kind: str = Field(pattern=r"^(version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions|quick_inv|quick_employee_protection)$")
     params: dict
     source_ids: list[str] = Field(default_factory=list, max_length=50)
     refresh: bool = False
@@ -48,7 +49,7 @@ async def maybe_source(request: Request, su: SessionUser = Depends(require_user)
 
 
 @router.post("/preview")
-async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depends(require_user), src: KscSource | None = Depends(maybe_source), db: AsyncSession = Depends(get_db)):
+async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     if su.is_zone:                                     # портал ответственного: только отчёт по своим зонам, из подготовленных данных (без чтения KSC)
         if body.kind != "quick_zone":
             raise HTTPException(status_code=403, detail="Ответственному за зону доступен отчёт по своей зоне")
@@ -66,6 +67,24 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         except KscError as exc:
             raise HTTPException(status_code=409, detail=exc.message) from None
         return _answer(doc, doc.get("data_at") or doc.get("generated_at"))
+    if body.kind == "quick_employee_protection":
+        await require_employee_protection(request, su, db)
+        try:
+            params = QUICK_PARAMS[body.kind].model_validate(body.params).model_dump()
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:300]) from None
+        ctx = quick.Ctx(source_name="Защита сотрудников", activity_days=0, sm=request.app.state.session_maker, light=True)
+        try:
+            doc = await quick.build(body.kind, None, params, ctx)
+        except KscError as exc:
+            raise HTTPException(status_code=409 if exc.code == "no_data" else 422, detail=exc.message) from None
+        total = doc.pop("selection_total", None)
+        out = _answer(doc, ctx.now)
+        if total is not None:
+            out.update(total=total, preview_rows=20)
+            out["doc"]["tables"][0]["n"] = total
+        return out
+    src = await maybe_source(request, su, db)
     if src is None and body.kind not in quick.NO_KSC:
         raise HTTPException(status_code=409, detail={"code": "no_source", "message": "Источник KSC не выбран."})
     if body.kind == "version_audit":

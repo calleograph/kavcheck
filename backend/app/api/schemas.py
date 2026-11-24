@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
 
+from ..employee_protection.filters import Filters as EmployeeProtectionFilters
 from ..inventory.geography import GeoFilters
 from ..roles import ROLE_PATTERN
 
@@ -497,11 +498,15 @@ class QuickOverview(Params):
     source_id: str = Field(default="", max_length=40)
 
 
-QUICK_PARAMS = {"quick_sessions": QuickSessions, "quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_hier": QuickHier, "quick_ad": QuickAd, "quick_adaudit": QuickAdAudit, "quick_inv": QuickInv, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
+class QuickEmployeeProtection(EmployeeProtectionFilters, Params):
+    view: Literal["employees", "devices"] = "employees"
+
+
+QUICK_PARAMS = {"quick_employee_protection": QuickEmployeeProtection, "quick_sessions": QuickSessions, "quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_hier": QuickHier, "quick_ad": QuickAd, "quick_adaudit": QuickAdAudit, "quick_inv": QuickInv, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
 
 
 class ReportIn(BaseModel):
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions|quick_inv)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions|quick_inv|quick_employee_protection)$")
     title: str = Field(default="", max_length=300)
     params: dict
     source_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
@@ -533,7 +538,7 @@ class OverrideIn(BaseModel):
 
 class TemplateIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions|quick_inv)$")
+    kind: str = Field(pattern=r"^(software_hosts|hosts|version_audit|quick_zone|quick_vulns|quick_hosts|quick_protection|quick_events|quick_extvulns|quick_eol|quick_devices|quick_overview|quick_pentest|quick_hunt|quick_bi|quick_hier|quick_ad|quick_adaudit|quick_admin|quick_sessions|quick_inv|quick_employee_protection)$")
     params: dict
     shared: bool = True
 

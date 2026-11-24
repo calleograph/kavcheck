@@ -10,9 +10,9 @@ import { Empty, MaskHint, SkelRows, SortTh, ToTop } from "./ui";
 import { fmt, num, plural } from "../util";
 import { OwnerSub } from "./OwnerBlock";
 
-export interface DrawerHost { host_id: number; name: string; ip: string; os: string; group: string; last_connected: string | null; days_since_connection?: number | null;
+export interface DrawerHost { id?: string; host_id: number; name: string; ip: string; os: string; group: string; last_connected: string | null; days_since_connection?: number | null;
   online?: boolean | null; last_visible?: string | null; versions?: { app_name: string; app_version: string }[]; app_name?: string; app_version?: string;
-  source_id?: string; source?: string; zones?: string[]; active?: boolean; note?: ReactNode; owner?: BiOwnerBrief | null }
+  source_id?: string; source?: string; zones?: string[]; active?: boolean; note?: ReactNode; owner?: BiOwnerBrief | null; href?: string | null }
 
 export interface PanelQuery { q: string; sort: string; desc: boolean }
 
@@ -41,7 +41,7 @@ export function HostsDrawer({ title, lede, listKey, deps, fetchPage, onClose, ac
   const th = (k: keyof NonNullable<typeof sortKeys>, label: string, cls = "") => (sortKeys?.[k] ? <SortTh k={sortKeys[k]!} label={label} sort={sort} desc={desc} onSort={onSort} className={cls} /> : <th className={cls}>{label}</th>);
   const hasState = list.items.some((h) => h.online !== undefined || h.active !== undefined);        // столбец «Состояние» только если источник списка отдаёт признак сети или активности
   const cols = 4 + (hasState ? 1 : 0) + (withVersions ? 1 : 0) + (multiSource ? 1 : 0);
-  const cardLink = (h: DrawerHost) => (h.source_id ? `/devices?card=${h.source_id}:${h.host_id}` : `/hosts/${h.host_id}`);
+  const cardLink = (h: DrawerHost) => h.href === undefined ? (h.source_id ? `/devices?card=${h.source_id}:${h.host_id}` : `/hosts/${h.host_id}`) : h.href;
   return (
     <Modal side title={title} lede={lede} onClose={onClose} scrollRef={scroll}>
       <div className="dp-bar">
@@ -55,14 +55,16 @@ export function HostsDrawer({ title, lede, listKey, deps, fetchPage, onClose, ac
           <thead><tr>{th("name", "Компьютер")}{hasState && <th>Состояние</th>}{withVersions && <th>Установленная версия</th>}{th("os", "ОС", "hide-sm")}{th("group", multiSource ? "Группа и зоны" : "Группа KSC", "hide-sm")}
             {multiSource && <th className="hide-sm">Источник</th>}{th("last_connected", "Подключение к KSC")}</tr></thead>
           <tbody>
-            <VirtualRows list={list} colSpan={cols} estimate={44} scrollEl={scroll} row={(h) => (
-              <tr><td><Link to={cardLink(h)} className="strong-link">{h.name}</Link><span className="sub mono nowrap">{h.ip || "—"}</span>
+            <VirtualRows list={list} colSpan={cols} estimate={44} scrollEl={scroll} row={(h) => {
+              const href = cardLink(h);
+              return <tr><td>{href ? <Link to={href} className="strong-link">{h.name}</Link> : <b>{h.name}</b>}<span className="sub mono nowrap">{h.ip || "—"}</span>
                 <OwnerSub o={h.owner} /></td>
                 {hasState && <td>{h.online !== undefined ? <OnlineBadge online={h.online} seen={h.last_visible ?? null} /> : <span className="muted small">{h.active === false ? "давно не подключался" : h.active ? "активен" : "—"}</span>}</td>}
                 {withVersions && <td className="mono small">{vers(h).map((v, i) => <span key={i} className="block" title={v.app_name}>{v.app_version}</span>)}</td>}
                 <td className="small hide-sm">{h.os || "—"}</td><td className="small hide-sm">{[h.group, ...(h.zones ?? [])].filter(Boolean).join(" · ") || "—"}</td>
                 {multiSource && <td className="small hide-sm">{h.source ?? ""}</td>}
-                <td className="nowrap small">{fmt(h.last_connected)}{h.days_since_connection !== undefined && <span className="sub"><ActivityBadge days={h.days_since_connection} activityDays={activityDays} /></span>}{h.note}</td></tr>)} />
+                <td className="nowrap small">{fmt(h.last_connected)}{h.days_since_connection !== undefined && <span className="sub"><ActivityBadge days={h.days_since_connection} activityDays={activityDays} /></span>}{h.note}</td></tr>;
+            }} />
           </tbody>
         </table>)}
       <ListFoot list={list} scrollEl={scroll} />

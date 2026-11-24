@@ -74,7 +74,7 @@ export interface SessionRow { login: string; domain: string; upn: string; user_n
   online: boolean | null; last_connected: string | null; source_id: string; source: string }
 export interface SessionsNow { items: SessionRow[]; total: number; more: boolean; fetched_at: string; note: string; sources: { source_id: string; source: string; rows: number; more: boolean; error: string }[];
   choices: { id: string; name: string }[] }
-export type QuickKind = "quick_sessions" | "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_ad" | "quick_adaudit" | "quick_admin" | "quick_inv";
+export type QuickKind = "quick_sessions" | "quick_zone" | "quick_vulns" | "quick_hosts" | "quick_protection" | "quick_events" | "quick_extvulns" | "quick_eol" | "quick_devices" | "quick_overview" | "quick_pentest" | "quick_hunt" | "quick_bi" | "quick_hier" | "quick_ad" | "quick_adaudit" | "quick_admin" | "quick_inv" | "quick_employee_protection";
 
 export type OvMetric = "total" | "active" | "inactive" | "never" | "servers" | "workstations" | "other_os" | "av_installed" | "no_av" | "rtp_off" | "offline" | "unknown" | "bases_old" | "stale_info" | "protected" | "license_expired" | "crit_vuln" | "eol_os" | "eol_apps";
 export interface OvPeriod { days: number; connected: number; visible: number; av_installed: number; av_running: number; servers: number; workstations: number }

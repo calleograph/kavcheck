@@ -22,6 +22,7 @@ from ..reports import audit, quick
 from ..reports.export import read_all_jsonl
 from ..reports.runner import job_dir
 from ..services.audit import write_audit
+from .employee_protection import allowed as employee_allowed, require_allowed as require_employee_protection
 from .schemas import QUICK_PARAMS, AuditParams, ReportIn, ReportParams, SavedCheckIn, TemplateIn
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -38,12 +39,14 @@ def job_out(j: ReportJob) -> dict:
             "started_at": j.started_at, "finished_at": j.finished_at, "data_fetched_at": j.data_fetched_at, "rows": j.rows, "summary": j.summary, "error": j.error}
 
 
-def can_see(su: SessionUser, j: ReportJob, hier=None) -> bool:
+def can_see(su: SessionUser, j: ReportJob, hier=None, employee=False) -> bool:
     """hier — настройки группы «hier» (для отчётов иерархии и AD: доступ по ролям раздела; не переданы — такие отчёты не показываются)."""
     if su.is_zone:                                         # ответственный за зону — только свои отчёты по своим зонам
         return j.created_by_id == su.user_id and j.kind == "quick_zone" and set((j.params or {}).get("zone_ids") or []) <= su.zone_ids
     if j.kind == "quick_adaudit":                         # аудит домена: специалист по ИБ и администратор
         return su.is_security
+    if j.kind == "quick_employee_protection":
+        return employee and (su.is_admin or j.created_by_id == su.user_id)
     if j.kind == "quick_inv":                             # инвентаризация: отчёт строится по области учёта автора — виден автору и администратору
         if not (su.is_admin or j.created_by_id == su.user_id):
             return False
@@ -79,7 +82,8 @@ async def _hier_cfg(request: Request | None, db: AsyncSession):
 
 async def _job(db: AsyncSession, job_id: uuid.UUID, su: SessionUser, request: Request | None = None) -> ReportJob:
     j = await db.get(ReportJob, job_id)
-    if j is None or not can_see(su, j, await _hier_cfg(request, db) if j.kind in ("quick_hier", "quick_ad") else None):
+    employee = bool(j and j.kind == "quick_employee_protection" and request is not None and await employee_allowed(request, db, su))
+    if j is None or not can_see(su, j, await _hier_cfg(request, db) if j.kind in ("quick_hier", "quick_ad") else None, employee):
         raise HTTPException(status_code=404, detail="Отчёт не найден")
     return j
 
@@ -122,7 +126,8 @@ async def enqueue(request: Request, db: AsyncSession, su: SessionUser, *, kind: 
     same = next((j for j in live if list(j.source_ids or [str(j.source_id)]) == ids and (j.params or {}) == params and j.title == title[:300]), None)
     if same is not None:                                   # двойной щелчок или повторная отправка: тот же отчёт уже формируется — второе задание не создаётся
         return same
-    job = ReportJob(id=uuid.uuid4(), source_id=sources[0].id if sources else None, source_ids=[str(s.id) for s in sources], source_name=(", ".join(s.name for s in sources) or "Pentest")[:600], kind=kind,
+    source_name = ", ".join(s.name for s in sources) or ("Защита сотрудников" if kind == "quick_employee_protection" else "Pentest")
+    job = ReportJob(id=uuid.uuid4(), source_id=sources[0].id if sources else None, source_ids=[str(s.id) for s in sources], source_name=source_name[:600], kind=kind,
                     title=title[:300], params=params, created_by=su.display_name, created_by_id=su.user_id)
     db.add(job)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action=audit_action, target_type="report", target_id=str(job.id), source_id=sources[0].id if sources else None,
@@ -147,7 +152,8 @@ async def list_jobs(request: Request, source_only: bool = True, offset: int = Qu
     rows = (await db.execute(select(ReportJob).order_by(ReportJob.created_at.desc()).offset(offset).limit(limit * 3))).scalars().all()
     cur = str(su.current_source_id) if su.current_source_id else None
     hier = await _hier_cfg(request, db)
-    out = [j for j in rows if can_see(su, j, hier) and (su.is_zone or not source_only or not cur or cur in job_sources(j) or j.kind in quick.NO_KSC)]
+    employee = any(j.kind == "quick_employee_protection" for j in rows) and await employee_allowed(request, db, su)
+    out = [j for j in rows if can_see(su, j, hier, employee) and (su.is_zone or not source_only or not cur or cur in job_sources(j) or j.kind in quick.NO_KSC)]
     return {"items": [job_out(j) for j in out[:limit]]}
 
 
@@ -189,6 +195,8 @@ async def create_job(body: ReportIn, request: Request, su: SessionUser = Depends
         raise HTTPException(status_code=403, detail="Аудит домена доступен специалисту по ИБ и администратору")
     if body.kind == "quick_admin" and not su.is_admin:
         raise HTTPException(status_code=403, detail="Отчёты администрирования доступны администратору")
+    if body.kind == "quick_employee_protection":
+        await require_employee_protection(request, su, db)
     if body.kind == "quick_inv":                                                   # область учёта автора — с сервера
         from .quick import inv_params  # noqa: PLC0415
 
@@ -367,9 +375,10 @@ def tpl_out(t: ReportTemplate) -> dict:
 
 
 @templates.get("")
-async def list_templates(su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
+async def list_templates(request: Request, su: SessionUser = Depends(require_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(ReportTemplate).order_by(ReportTemplate.name))).scalars().all()
-    return {"items": [tpl_out(t) for t in rows if t.shared or t.owner_id == su.user_id]}
+    employee = any(t.kind == "quick_employee_protection" for t in rows) and await employee_allowed(request, db, su)
+    return {"items": [tpl_out(t) for t in rows if (t.shared or t.owner_id == su.user_id) and (t.kind != "quick_employee_protection" or employee)]}
 
 
 # Выбор строк и фильтры страницы шаблон не хранит: они берутся с той страницы, откуда открыт конструктор. В шаблоне — настройки отчёта (подробность, столбцы, состояния, критичность…).
@@ -388,8 +397,11 @@ def template_settings(params: dict) -> dict:
 
 
 @templates.post("", status_code=201)
-async def create_template(body: TemplateIn, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
+async def create_template(body: TemplateIn, request: Request, su: SessionUser = Depends(require_analyst), db: AsyncSession = Depends(get_db)):
     params = template_settings(body.params) if body.kind in QUICK_PARAMS else validate_params(body.kind, body.params)
+    if body.kind == "quick_employee_protection":
+        await require_employee_protection(request, su, db)
+        params = {key: value for key, value in params.items() if key in {"view", "detail", "columns", "sort", "desc", "group"}}
     t = ReportTemplate(name=body.name, kind=body.kind, params=params, shared=body.shared, owner_id=su.user_id)
     db.add(t)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="template.create", target_type="template", target_id=str(t.id), details={"name": body.name})

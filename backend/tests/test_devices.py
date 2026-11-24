@@ -89,6 +89,25 @@ async def test_poll_accumulates_observations_and_never_invents_dates(app):
         guard.check(s)
 
 
+async def test_session_identity_requires_unambiguous_actual_domain(app, monkeypatch):
+    src = await _src(app)
+    sm = app.state.session_maker
+    monkeypatch.setattr(U, "PAGE", 1)
+    first = FakeUsers([vrow(1, 1, "alex", False, "alex@other.example.local"),
+                       vrow(2, 1, "alex", True, "alex@example.local"),
+                       vrow(3, 1, "alex", False, "alex@other.example.local")])
+    await U.poll_source(sm, first, src, MASKS)
+    async with sm() as db:
+        row = await db.get(DeviceUser, (src.id, 1, "alex"))
+        assert row.identity_verified and row.domain == "example.local" and row.session_now
+
+    conflict = FakeUsers([vrow(1, 1, "alex", True, "alex@example.local"), vrow(2, 1, "alex", True, "alex@other.example.local")])
+    await U.poll_source(sm, conflict, src, MASKS)
+    async with sm() as db:
+        row = await db.get(DeviceUser, (src.id, 1, "alex"))
+        assert row.session_now and not row.identity_verified
+
+
 async def _zone_data(app, src, hosts):
     async with app.state.session_maker() as db:
         db.add(ZcSource(source_id=src.id, gen=1, status="ready"))

@@ -23,6 +23,7 @@ const VulnHostPage = lazy(() => import("./pages/VulnsPage").then((m) => ({ defau
 const ProductPage = lazy(() => import("./pages/ProductPage"));
 const EventsPage = lazy(() => import("./pages/EventsPage"));
 const ProtectionPage = lazy(() => import("./pages/ProtectionPage"));
+const EmployeeProtectionPage = lazy(() => import("./pages/EmployeeProtectionPage"));
 const ZonesPage = lazy(() => import("./pages/ZonesPage"));
 const PortalApp = lazy(() => import("./pages/PortalApp"));
 const ReportsPage = lazy(() => import("./pages/ReportsPage"));
@@ -42,7 +43,7 @@ export interface Ctx { me: Me; sources: SourceRef[]; current: SourceRef | null; 
 /** Разделы, работающие со всеми источниками сразу; остальные показывают выбранный источник. */
 export const ALL_PAGES = ["/eol", "/devices", "/reports", "/zones"];
 /** Страницы, для которых «Все источники» не требуют пояснения: главная и независимые от KSC разделы. */
-const scopeAware = (pathname: string) => pathname === "/" || pathname === "/overview" || pathname.startsWith("/inventory") || pathname.startsWith("/pentest") || pathname.startsWith("/hunt") || ALL_PAGES.some((p) => pathname.startsWith(p));
+const scopeAware = (pathname: string) => pathname === "/" || pathname === "/overview" || pathname === "/employee-protection" || pathname.startsWith("/inventory") || pathname.startsWith("/pentest") || pathname.startsWith("/hunt") || ALL_PAGES.some((p) => pathname.startsWith(p));
 
 export { ADMIN_TABS };
 
@@ -263,7 +264,7 @@ export default function App() {
   useEffect(() => { if (me) void reloadSources(); }, [me, reloadSources]);
   useEffect(() => { setUnauthorizedHandler(() => { setCsrf(""); setMe(null); }); return () => setUnauthorizedHandler(null); }, []);
   useEffect(() => {
-    const titles: [string, string][] = [["/overview", "Обзор"], ["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/devices", "Устройства и пользователи"], ["/eol", "EOL"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/pentest", "Pentest"], ["/hunt", "CVE Hunt"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
+    const titles: [string, string][] = [["/overview", "Обзор"], ["/software", "Программное обеспечение"], ["/hosts", "Компьютеры"], ["/devices", "Устройства и пользователи"], ["/eol", "EOL"], ["/vulnerabilities", "Уязвимости"], ["/protection", "Состояние защиты"], ["/employee-protection", "Антивирусная защита сотрудников"], ["/events", "События безопасности"], ["/zones", "Зоны ответственности"], ["/pentest", "Pentest"], ["/hunt", "CVE Hunt"], ["/reports", "Отчёты"], ["/admin", "Администрирование"], ["/security", "Безопасность входа"]];
     const t = me ? (titles.find(([p]) => pathname.startsWith(p))?.[1] ?? "Быстрый доступ") : "Вход";
     document.title = `${t} — ${me?.site_name || "KAV Checker"}`;
   }, [pathname, me]);
@@ -299,6 +300,7 @@ export default function App() {
           <Route path="/vulnerabilities/hosts/:hostId" element={<VulnHostPage key={currentId} ctx={ctx} />} />
           <Route path="/vdb" element={<VdbPage key={currentId} ctx={ctx} />} />
           <Route path="/protection" element={<ProtectionPage key={currentId} ctx={ctx} />} />
+          <Route path="/employee-protection" element={isSecurity(me.user.role) ? <EmployeeProtectionPage key={me.user.id} ctx={ctx} /> : <Navigate to="/" replace />} />
           <Route path="/events" element={<EventsPage key={currentId} ctx={ctx} />} />
           <Route path="/hunt" element={me.user.role === "viewer" ? <Navigate to="/" replace /> : <HuntPage ctx={ctx} />} />
           <Route path="/adaudit" element={isSecurity(me.user.role) ? <AdAuditPage ctx={ctx} /> : <Navigate to="/" replace />} />

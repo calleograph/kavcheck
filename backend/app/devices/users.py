@@ -93,10 +93,13 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
             k = (int(r["host_id"]), key)
             a = agg.get(k)
             actual = bool(r.get("actual"))
-            if a is None:
-                agg[k] = {"login": login, "domain": domain, "resolved": resolved, "actual": actual, "kind": classify(login, domain, masks) if resolved else "user"}
-            else:
-                a["actual"] = a["actual"] or actual
+            remote = not r.get("local_host")
+            verified = actual and resolved and bool(domain) and remote
+            if a is None or (actual and not a["actual"]):
+                agg[k] = {"login": login, "domain": domain, "resolved": resolved, "actual": actual, "kind": classify(login, domain, masks) if resolved else "user",
+                          "verified": verified, "remote": remote}
+            elif actual and (not verified or a["domain"] != domain):
+                a["verified"] = False
         seen_active |= {k for k, a in agg.items() if a["actual"]}
         user_active |= {k for k, a in agg.items() if a["actual"] and a["kind"] == "user" and a["resolved"]}
         hosts = sorted({h for h, _ in agg})
@@ -107,14 +110,23 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
                 u = have.get((h, key))
                 if u is None:
                     db.add(DeviceUser(source_id=sid, host_id=h, user_key=key, login=a["login"][:256], domain=a["domain"][:256], kind=a["kind"], resolved=a["resolved"], first_seen_at=started,
-                                      last_seen_at=started, seen_n=1, initial=first, session_now=a["actual"], last_session_at=started if a["actual"] else None))
+                                      last_seen_at=started, seen_n=1, initial=first, session_now=a["actual"], last_session_at=started if a["actual"] else None,
+                                      identity_verified=a["verified"]))
                     written += 1
                     continue
                 ls = u.last_seen_at.replace(tzinfo=timezone.utc) if u.last_seen_at.tzinfo is None else u.last_seen_at
-                if (u.session_now != a["actual"] or a["actual"] or u.kind != a["kind"] or u.login != a["login"][:256] or u.domain != a["domain"][:256] or ls < stale):
+                same_identity = u.login.casefold() == a["login"][:256].casefold() and u.domain == a["domain"][:256]
+                seen_this_poll = u.last_session_at == started
+                if seen_this_poll and not a["actual"]:
+                    continue
+                # Один короткий логин может принадлежать нескольким доменам, включая две страницы одного опроса.
+                verified = a["verified"] and (not seen_this_poll or (u.identity_verified and same_identity)) if a["actual"] else (u.identity_verified and same_identity and a["remote"])
+                if (u.session_now != a["actual"] or a["actual"] or u.kind != a["kind"] or u.login != a["login"][:256] or u.domain != a["domain"][:256] or ls < stale
+                        or u.identity_verified != verified):
                     u.session_now, u.last_seen_at, u.seen_n = a["actual"], started, (u.seen_n or 0) + 1
                     if a["actual"]:
                         u.last_session_at = started
+                    u.identity_verified = verified
                     u.kind, u.login, u.domain = a["kind"], a["login"][:256], a["domain"][:256]
                     written += 1
             await db.commit()
