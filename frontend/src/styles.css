@@ -1317,6 +1317,7 @@ button.kpi .kpi-v, a.kpi .kpi-v { text-decoration: underline; text-decoration-co
 .ep-filter { margin: 0; min-width: 0; }
 .ep-filter select { max-width: min(100%, 240px); }
 .ep .qr-metric .ep-perc { font-size: var(--fs-sm); }
+@media (max-width: 720px) { .ep .sp-tip { display: none; } }
 .ep-chart { list-style: none; padding: 0; margin: 0; max-height: 320px; overflow: auto; }
 .ep-chart-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 10px; align-items: center; padding: 5px 2px; }
 .ep-chart-row + .ep-chart-row { border-top: 1px solid var(--line); }
