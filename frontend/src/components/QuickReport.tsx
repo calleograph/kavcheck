@@ -246,6 +246,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
   };
 
   const doc = data?.doc ?? null;
+  const previewRows = data?.items.slice(0, PREVIEW_SHOWN) ?? [];
   const hosts = doc?.metrics.find((m) => m.key === "hosts");
   const employeeTotal = kind === "quick_employee_protection" && data ? (params.view === "devices" ?
     plural(data.total, "устройство", "устройства", "устройств") : plural(data.total, "сотрудник", "сотрудника", "сотрудников")) : null;
@@ -298,10 +299,10 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
         </>)}
         {data && !data.unsupported && data.total === 0 && <div className="alert info"><Icon name="info" /><div className="alert-body">По этим условиям данных нет. Измените условия в «Дополнительно» или выбор в таблице.</div></div>}
         {data && data.total > 0 && (<>
-          <h3 className="qr-h">Предпросмотр{data.total > PREVIEW_SHOWN ? `: первые ${PREVIEW_SHOWN} из ${num(data.total)}` : `: ${num(data.total)}`}</h3>
+          <h3 className="qr-h">Предпросмотр{data.total > previewRows.length ? `: первые ${previewRows.length} из ${num(data.total)}` : `: ${num(data.total)}`}</h3>
           <div className="table-scroll"><table className="table compact">
             <thead><tr>{cols.map((c) => <th key={c.key} className={c.type === "num" ? "num" : ""}>{c.title}</th>)}</tr></thead>
-            <tbody>{data.items.slice(0, PREVIEW_SHOWN).map((r, i) => <tr key={i}>{cols.map((c) => <td key={c.key} className={c.type === "num" ? "num" : ""}>{cell(c, r[c.key])}</td>)}</tr>)}</tbody>
+            <tbody>{previewRows.map((r, i) => <tr key={i}>{cols.map((c) => <td key={c.key} className={c.type === "num" ? "num" : ""}>{cell(c, r[c.key])}</td>)}</tr>)}</tbody>
           </table></div>
           <p className="muted small">В файле — полный набор столбцов и дополнительные листы со сводкой.</p>
         </>)}
