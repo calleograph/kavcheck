@@ -13,6 +13,7 @@ from sqlalchemy import func, or_, select
 from ..inventory import core as C
 from ..inventory import geography as G
 from ..inventory import model as M
+from ..inventory.overview import read_overview
 from ..inventory.query import Filters, where_of
 from ..ksc.driver import KscError
 from ..models import InvAsset, InvDoc, InvDocItem, InvGeo, InvHistory, InvLicAssign, InvLicense, InvLocation, InvPerson, InvProp, InvRef, KscSource
@@ -20,7 +21,7 @@ from ..services.resources import RES
 from .quick import Ctx, col, metric
 from .quick_inventory_geo import ADDRESS_SCOPE, observation_tables, rules_table, table
 
-TITLE = {"registry": "Реестр ИТ-оборудования", "computers": "Реестр компьютеров и серверов", "card": "Карточка учётной единицы", "by_person": "Оборудование по сотрудникам",
+TITLE = {"overview": "Обзор оборудования", "registry": "Реестр ИТ-оборудования", "computers": "Реестр компьютеров и серверов", "card": "Карточка учётной единицы", "by_person": "Оборудование по сотрудникам",
          "by_resp": "Оборудование по ответственным", "by_location": "Оборудование по местоположениям", "stock": "Оборудование на складе", "repair": "Оборудование в ремонте",
          "warranty": "Оборудование с истекающей гарантией", "writtenoff": "Списанное и выведенное из эксплуатации оборудование", "cost": "Стоимость оборудования",
          "owner_history": "История принадлежности оборудования", "moves": "История перемещений", "hardware": "Аппаратная конфигурация компьютеров", "software": "Реестр установленного ПО",
@@ -98,7 +99,34 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
         props = list((await db.execute(select(InvProp).where(InvProp.active.is_(True), InvProp.in_list.is_(True)).order_by(InvProp.sort))).scalars())
         pcols = [col(f"p.{x.code}", x.name) for x in props]
 
-        if view in ("registry", "computers", "stock", "repair", "warranty", "writtenoff", "components"):
+        if view == "overview":
+            data = await read_overview(db, acc, cfg, actor=p.get("overview_actor", ""))
+            stats = data["stats"]
+            values = [
+                ("Всего карточек", stats["total"]), ("Действующее оборудование", stats["active"]),
+                ("Учётная стоимость действующих карточек, ₽", stats["cost"] / 100),
+                ("Действующие компьютеры и серверы", stats["computers"]), ("Из них связано с KSC", stats["ksc_linked"]),
+                ("Из них без связи с KSC", stats["ksc_unlinked"]), ("Пропало из KSC", stats["ksc_lost"]),
+                (f"Гарантия заканчивается в ближайшие {cfg.warranty_days} дн.", stats["warranty_soon"]),
+                (f"Лицензии истекают в ближайшие {cfg.license_days} дн.", data["licenses_soon"] - data["licenses_expired"]),
+                ("Просроченные лицензии", data["licenses_expired"]),
+                ("Выдано без пользователя и владельца", stats["no_owner"]),
+                ("Без ответственного", stats["no_resp"]), ("Без местоположения", stats["no_location"]),
+                ("В пути", stats["in_transit"]), ("Просрочено перемещений", data["transit_late"]),
+                ("Открытые ремонты", data["repair_open"]), ("Долго в ремонте", data["repair_long"]),
+                ("Незавершённые инвентаризации", data["counts_open"]),
+                (f"Сведения старше {cfg.stale_days} дн.", stats["stale"]),
+            ]
+            tables.append({"id": "rows", "title": "Показатели", "columns": [col("name", "Показатель"), col("value", "Значение", "num")],
+                           "rows": [{"name": name, "value": value} for name, value in values]})
+            for key, title, label in [("by_cls", "Действующее оборудование по классам", "Класс"), ("by_st", "Карточки по состояниям", "Состояние"),
+                                       ("docs_open", "Документы в работе", "Вид документа")]:
+                tables.append({"id": key, "title": title, "columns": [col("name", label), col("n", "Количество", "num")], "rows": data[key]})
+            tables.append({"id": "recent", "title": "Последние изменения", "columns": [col("at", "Когда (UTC)", "date"), col("inv_no", "Инв. номер"),
+                                                                                       col("name", "Единица"), col("title", "Событие"), col("by", "Кто")], "rows": data["recent"]})
+            tabs = [{"id": t["id"], "title": t["title"]} for t in tables]
+
+        elif view in ("registry", "computers", "stock", "repair", "warranty", "writtenoff", "components"):
             extra, order = [], [InvAsset.inv_no]
             q = dict(p)
             if view == "computers":
@@ -205,12 +233,13 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             for a, g in pairs:
                 r = g.result if g else {}
                 rows.append({"inv_no": a.inv_no, "name": a.name or a.hostname, "account_location": names.loc(a.location_id),
+                             "proposal_fields": ", ".join(G.empty_proposal_labels(a, g, ctx.now)),
                              "site": locations.get(r.get("site_id"), ""), "country": r.get("country"), "region": r.get("region"), "city": r.get("city"),
                              "status": G.LABELS[r.get("status", "unknown")], "network": r.get("network"), "source": sources.get(g.source_id, "") if g else "",
                              "observed_at": g.observed_at if g else None, "fresh": "да" if g and G.fresh(g.observed_at, ctx.now) else "нет",
                              "lat": r.get("lat"), "lon": r.get("lon"), "radius_km": r.get("radius_km"), "operator": r.get("operator"), "asn": r.get("asn"),
                              "provider": r.get("provider"), "database_at": r.get("database_at")})
-            columns = [col(k, label) for k, label in (("inv_no", "Инв. номер"), ("name", "Наименование"), ("account_location", "Учётное местоположение"),
+            columns = [col(k, label) for k, label in (("inv_no", "Инв. номер"), ("name", "Наименование"), ("account_location", "Учётное местоположение"), ("proposal_fields", "Пустые поля с предложениями"),
                        ("site", "Сетевая площадка"), ("country", "Страна"), ("region", "Регион"), ("city", "Город"), ("status", "Оценка"), ("network", "Сеть"),
                        ("source", "Источник"), ("fresh", "Актуально"), ("lat", "Широта"), ("lon", "Долгота"), ("radius_km", "Погрешность, км"), ("operator", "Организация ASN"), ("asn", "ASN"),
                        ("provider", "Источник геолокации"), ("database_at", "Срез базы"))]
@@ -232,9 +261,9 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
                 tabs = [{"id": t["id"], "title": t["title"]} for t in tables]
             metrics = [metric("rows", "Устройств", len(rows)), metric("known", "С координатами", sum(r["lat"] is not None for r in rows))]
             notes.append("География публичного адреса описывает выход в сеть. Известные площадки привязаны вручную через правила и справочник.")
-            dbip_attribution = any(row["provider"] == G.DBIP_LABEL for row in rows)
-            if dbip_attribution:
-                notes.append(G.DBIP_CREDIT)
+            providers = {row["provider"] for row in rows}
+            dbip_attribution = G.DBIP_LABEL in providers
+            notes.extend(credit for provider, credit in G.GEOIP_CREDITS.items() if provider in providers)
 
         elif view == "geography_rules":
             rules = await rules_table(db)

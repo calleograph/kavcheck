@@ -11,6 +11,7 @@ import { FilterBar, ReportButton } from "../components/FilterBar";
 import { OwnerBlock, OwnerSub } from "../components/OwnerBlock";
 import { InvHostBlock } from "../components/InvHostBlock";
 import { SessionsTable, UserChip, UserSub, UsersKv } from "../components/HostPeople";
+import { WorkplaceLink } from "../components/WorkplaceLink";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel } from "../components/QuickReport";
 import { maskMatcher } from "../mask";
 import { Empty, HiddenNote, PageHead, Segmented, SkelRows, SortTh, Tabs, MaskHint, BackLink } from "../components/ui";
@@ -161,6 +162,8 @@ export function HostPage({ ctx }: { ctx: Ctx }) {
     <section>
       <PageHead title={h.name} back={back} lede={<span className="row tight wrap"><OnlineBadge online={h.online} seen={h.last_visible} /><ActivityBadge days={h.days_since_connection} activityDays={d.activity_days} />{st && <span className={`badge ${st.status === "OK" ? "ok" : st.status === "критический" ? "err" : "warn"}`}>Статус KSC: {st.status}</span>}{h.protection && <ProblemBadges problems={h.protection.problems} />}<HostZones sourceId={ctx.current?.id} hostId={h.host_id} /></span>}>
         <Fetched at={d.fetched_at} />
+        {(ctx.me.user.is_admin || ctx.me.user.role === "security") &&
+          <WorkplaceLink className="btn" deviceId={`ksc:${ctx.current.id}:${h.host_id}`} />}
         {ctx.me.user.role !== "viewer" && <ReportButton onClick={() => setReport(true)} title="Отчёт по этому компьютеру: состояние, защита, установленное ПО, уязвимости" />}
       </PageHead>
       {report && <QuickReportPanel kind="quick_hosts" title={`Отчёт: ${h.name}`} lede="Состояние, защита, установленное ПО и все уязвимости компьютера" options={{ sections: true, scope: false }}

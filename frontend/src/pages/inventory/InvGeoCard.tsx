@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { type ApiError, req } from "../../api";
-import { DB_IP_LITE, DbIpAttribution } from "../../components/DbIpAttribution";
+import { GeoIpAttribution } from "../../components/DbIpAttribution";
 import { ReportButton } from "../../components/FilterBar";
 import { fmt } from "../../util";
 import { useInv } from "./InvBits";
@@ -85,7 +85,7 @@ export default function InvGeoCard({ id, onApplied }: { id: number; onApplied?: 
         <p className="muted small">{CONNECTION_SCOPE[connection.scope][1]}</p>
       </div>}
       {row.status === "approx" && <p className="small">Достоверность низкая. Показана примерная география выхода в сеть{row.radius_km != null ? ` · радиус оценки ${row.radius_km} км` : ""}.</p>}
-      {row.provider && <p className="muted small">{row.provider === DB_IP_LITE ? <DbIpAttribution /> : row.provider}
+      {row.provider && <p className="muted small"><GeoIpAttribution provider={row.provider} />
         {row.database_at && ` · база от ${row.database_at}`}{row.asn && ` · AS${row.asn}`}{row.operator && ` · ${row.operator}`}</p>}
       {row.network && <p className="small">Сеть <span className="mono">{row.network}</span></p>}
       {!!row.rules?.length && <p className="small">Правила · {row.rules.map((r) => r.name).join(", ")}</p>}

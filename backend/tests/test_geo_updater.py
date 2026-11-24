@@ -1,9 +1,10 @@
 """Управление географическими базами из приложения. Сетевые запросы подменяются."""
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from app.inventory import geo_download, geo_updater
+from app.inventory import geo_download, geo_mirror, geo_service, geo_updater
 from app.inventory.geo_service import REQUEST
 from app.models import AppSetting
 from tests.conftest import login
@@ -27,7 +28,7 @@ async def test_geoip_configuration_initial_update_and_failed_refresh_keep_previo
     invalid = await client.put(CONFIG, json={"license_key": f"{KEY} invalid"})
     assert invalid.status_code == 422 and KEY not in invalid.text
     saved = await client.put(CONFIG, json={"enabled": True, "account_id": "12345", "license_key": KEY})
-    assert saved.status_code == 200 and saved.json() == {"provider": "maxmind", "enabled": True, "account_id": "12345", "license_key_set": True}
+    assert saved.status_code == 200 and saved.json() == {"provider": "maxmind", "enabled": True, "mirror_url": "", "account_id": "12345", "license_key_set": True}
     assert KEY not in (await client.get(CONFIG)).text
     assert (await client.get(PATH)).json()["pending"] is True
 
@@ -92,13 +93,11 @@ async def test_geoip_configuration_initial_update_and_failed_refresh_keep_previo
     assert not cleared.json()["license_key_set"]
 
 
-async def test_default_dbip_starts_without_settings_row_and_keeps_last_pair(client, app, tmp_path, monkeypatch):
+async def test_dbip_keeps_last_pair(client, app, tmp_path, monkeypatch):
     await login(client, "admin", "Admin-Passw0rd-123")
-    assert (await client.get(CONFIG)).json() == {"provider": "dbip", "enabled": True, "account_id": "", "license_key_set": False}
+    assert (await client.put(CONFIG, json={"provider": "dbip"})).status_code == 200
     assert (await client.get(PATH)).json()["pending"]
     worker = app.state
-    async with worker.session_maker() as db:
-        assert await db.get(AppSetting, "geoip") is None
 
     now = datetime(2026, 11, 24, 10, tzinfo=timezone.utc)
     monkeypatch.setattr(geo_updater, "utcnow", lambda: now)
@@ -142,8 +141,84 @@ async def test_legacy_maxmind_selection_and_secret_are_preserved(client, app):
         encrypted = svc.encrypt(KEY, "geoip.license_key")
         db.add(AppSetting(group="geoip", value={"enabled": True, "account_id": "12345", "license_key_enc": encrypted}))
         await db.commit()
-    assert (await client.get(CONFIG)).json() == {"provider": "maxmind", "enabled": True, "account_id": "12345", "license_key_set": True}
-    switched = await client.put(CONFIG, json={"provider": "dbip"})
-    assert switched.status_code == 200 and switched.json()["provider"] == "dbip" and switched.json()["license_key_set"]
+    assert (await client.get(CONFIG)).json() == {"provider": "maxmind", "enabled": True, "mirror_url": "", "account_id": "12345", "license_key_set": True}
+    switched = await client.put(CONFIG, json={"provider": "mirror"})
+    assert switched.status_code == 200 and switched.json()["provider"] == "mirror" and switched.json()["license_key_set"]
     async with app.state.session_maker() as db:
         assert (await db.get(AppSetting, "geoip")).value["license_key_enc"] == encrypted
+
+
+async def test_default_mirror_installs_without_settings_and_survives_outage(client, app, tmp_path, monkeypatch):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    assert (await client.get(CONFIG)).json() == {"provider": "mirror", "enabled": True, "mirror_url": "",
+                                                "account_id": "", "license_key_set": False}
+    assert (await client.get(PATH)).json()["pending"]
+    worker = app.state
+    async with worker.session_maker() as db:
+        assert await db.get(AppSetting, "geoip") is None
+
+    now = start = datetime(2026, 11, 24, 8, tzinfo=timezone.utc)
+    monkeypatch.setattr(geo_updater, "utcnow", lambda: now)
+    monkeypatch.setattr(geo_service, "utcnow", lambda: now)
+    directory = tmp_path / "mirror"
+    current = directory / (".geolite2-" + "0" * 32)
+    databases = {edition: {"build_epoch": int(now.timestamp())} for edition in geo_mirror.MIRROR_EDITIONS}
+    attempts = []
+
+    async def update_mirror(target, alternative, *, guard, now):
+        assert target == directory and not alternative
+        attempts.append(now)
+        if len(attempts) > 1:
+            raise geo_download.DownloadError("Зеркало недоступно")
+        async with guard():
+            current.mkdir(parents=True)
+            for edition in databases:
+                (current / f"{edition}.mmdb").touch()
+            (current / geo_download.MANIFEST).write_text(json.dumps(databases))
+            (directory / geo_download.CURRENT).symlink_to(current.name)
+        return {"changed": True, "databases": databases}
+
+    monkeypatch.setattr(geo_mirror, "update_mirror", update_mirror)
+    await geo_updater.tick(worker.session_maker, worker.settings_svc, tmp_path, worker.journal)
+    status = (await client.get(PATH)).json()
+    assert status["active_provider"] == "mirror" and status["databases"] == databases
+    assert status["next_check_at"] == "2026-11-25T08:00:00+00:00"
+    assert geo_service.reader_location(tmp_path / "manual", tmp_path, "mirror", True) == (current, "mirror")
+    await geo_updater.tick(worker.session_maker, worker.settings_svc, tmp_path, worker.journal)
+    assert attempts == [start]
+
+    now = start + timedelta(days=1)
+    await geo_updater.tick(worker.session_maker, worker.settings_svc, tmp_path, worker.journal)
+    failed = (await client.get(PATH)).json()
+    assert failed["error"] == "Зеркало недоступно" and failed["databases"] == databases
+    assert failed["next_check_at"] == "2026-11-25T14:00:00+00:00"
+    assert geo_service.managed_pair(tmp_path, "mirror") == current
+
+    now = start + timedelta(days=31)
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    (manual / f"{geo_download.EDITIONS[0]}.mmdb").touch()
+    await geo_updater.tick(worker.session_maker, worker.settings_svc, tmp_path, worker.journal)
+    expired = (await client.get(PATH)).json()
+    assert expired["mirror_expired"] and not expired["databases"] and expired["active_provider"] is None
+    assert geo_service.reader_location(manual, tmp_path, "mirror", True) == (manual, "maxmind")
+    assert not (directory / geo_download.CURRENT).exists() and list(manual.iterdir())
+
+
+async def test_alternative_url_saved_without_credentials(client):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    bad = await client.put(CONFIG, json={"mirror_url": "https://geo.example.local/?sample=1"})
+    assert bad.status_code == 422
+    saved = await client.put(CONFIG, json={"mirror_url": "https://geo.example.local/geodata"})
+    assert saved.status_code == 200 and saved.json()["mirror_url"] == "https://geo.example.local/geodata/"
+    assert (await client.get(PATH)).json()["pending"]
+
+
+async def test_geographic_database_status_report_is_admin_only(client):
+    params = {"kind": "quick_admin", "params": {"view": "geoip"}}
+    await login(client, "viewer", "Viewer-Passw0rd-123")
+    assert (await client.post("/api/v1/quick/preview", json=params)).status_code == 403
+    await login(client, "admin", "Admin-Passw0rd-123")
+    result = await client.post("/api/v1/quick/preview", json=params)
+    assert result.status_code == 200
+    assert {item["edition"] for item in result.json()["items"]} == set(geo_mirror.MIRROR_EDITIONS)

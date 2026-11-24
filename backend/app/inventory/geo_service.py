@@ -125,25 +125,30 @@ async def status(sm, sid, data):
 
 
 def managed_root(directory: Path, provider: str) -> Path:
-    return directory / "dbip" if provider == "dbip" else directory
+    return directory if provider == "maxmind" else directory / provider
 
 
 def managed_pair(directory: Path, provider: str) -> Path | None:
     from .geo_download import DBIP_EDITIONS, EDITIONS, database_directory
+    from .geo_mirror import MIRROR_EDITIONS, fresh_directory
 
     root = managed_root(directory, provider)
     active = database_directory(root, managed=True)
-    editions = DBIP_EDITIONS if provider == "dbip" else EDITIONS
+    if provider == "mirror" and not fresh_directory(active, utcnow()):
+        return None
+    editions = {"dbip": DBIP_EDITIONS, "mirror": MIRROR_EDITIONS, "maxmind": EDITIONS}[provider]
     if active != root and all((active / f"{edition}.mmdb").is_file() for edition in editions):
         return active
     return None
 
 
 def reader_location(manual: Path, managed: Path, provider: str, enabled: bool) -> tuple[Path, str]:
-    if provider == "maxmind" and not enabled and any(manual.glob("GeoLite2-*.mmdb")):
-        return manual, "maxmind"
-    fallback = "maxmind" if provider == "dbip" else "dbip"
-    for candidate in (provider, fallback):
+    if provider != "dbip" and not enabled:
+        from .geo_download import EDITIONS, _epoch
+
+        if all(_epoch(manual / f"{edition}.mmdb", edition) for edition in EDITIONS):
+            return manual, "maxmind"
+    for candidate in dict.fromkeys((provider, "mirror", "maxmind", "dbip")):
         if active := managed_pair(managed, candidate):
             return active, candidate
     return manual, "maxmind"

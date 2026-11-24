@@ -56,6 +56,7 @@ async def geography(request: Request, filters: Annotated[GeoPage, Query()], ctx:
     page = (await db.execute(base.order_by(InvAsset.inv_no, InvAsset.id).offset(filters.offset).limit(filters.limit))).all()
     names = await C.names_for(db, [a for a, _ in page], props=False)
     items = [{"id": a.id, "inv_no": a.inv_no, "name": a.name or a.hostname, "account_location": names.loc(a.location_id),
+              "proposal_fields": G.empty_proposal_labels(a, g, now),
               **observation(g, now)} for a, g in page]
     if not filters.overview:
         locations = {k: v for k, v in (await db.execute(select(InvLocation.id, InvLocation.path).where(
@@ -81,9 +82,11 @@ async def geography(request: Request, filters: Annotated[GeoPage, Query()], ctx:
         InvLocation.id.in_({g["site_id"] for g in groups if g["site_id"]} | {i["site_id"] for i in items if i.get("site_id")})))).all()}
     for row in groups + items:
         row["site"] = locations.get(row.get("site_id"), "")
-    dbip = await db.scalar(select(base.where(r["provider"].as_string() == G.DBIP_LABEL).exists()))
+    provider = r["provider"].as_string()
+    attributions = list((await db.scalars(select(provider).select_from(InvAsset).outerjoin(InvGeo, join)
+                                        .where(*w, provider.in_(G.GEOIP_CREDITS)).distinct())).all())
     return {"items": items, "total": total, "groups": groups, "groups_limited": len(grouped) > len(groups),
-            "dbip_attribution": bool(dbip),
+            "dbip_attribution": G.DBIP_LABEL in attributions, "geo_attributions": attributions,
             "sources": [{"id": str(s.id), "name": s.name, **(states.get(state_key(s.id)) or {})} for s in srcs]}
 
 

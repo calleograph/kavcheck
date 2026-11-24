@@ -1,5 +1,5 @@
 {
- "reviewed_for": "0.40.0",
+ "reviewed_for": "0.41.0",
  "reviewed_at": "2026-11-24",
  "note": "Реестр проверяется при подготовке каждого выпуска (docs/RELEASE.md): verified — версия, проверенная в выпуске; decision — решение разработчика.",
  "components": [
@@ -459,7 +459,7 @@
    "verified": "3.3.0",
    "release_notes": "https://github.com/maxmind/MaxMind-DB-Reader-python/releases",
    "compat": "Диапазон версий — backend/requirements.txt",
-   "limits": "DB-IP Lite загружается без учётных данных. Для автоматического GeoLite2 нужна учётная запись MaxMind.",
+   "limits": "GeoLite2 загружается из зеркала без учётных данных. Реквизиты нужны только для прямой загрузки MaxMind.",
    "decision": {
     "status": "ok",
     "reason": "",

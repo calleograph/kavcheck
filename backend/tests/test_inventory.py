@@ -248,6 +248,25 @@ async def test_reports_build_with_tabs_and_respect_scope(client, app):
     assert job.status_code == 201 and job.json()["params"]["scope_ids"] == [s["region"]["id"]]
 
 
+async def test_overview_report_matches_scoped_inventory(client, app):
+    s = await setup(client, app)
+    for location, kind in ((s["room"], "issue"), (s["store"], "return")):
+        asset = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["laptop"], "location_id": location["id"]}})).json()
+        assert (await client.post(f"{API}/docs", json={"kind": kind, "items": [{"asset_id": asset["id"]}]})).status_code == 201
+        assert (await client.post(f"{API}/counts", json={"location_id": location["id"]})).status_code == 201
+    await client.put("/api/v1/admin/settings/inventory", json={"grants": [{"login": "analyst1", "perms": [], "location_ids": [s["room"]["id"]]}]})
+    await login(client, "analyst1", "Analyst-Passw0rd-123")
+    overview = (await client.get(f"{API}/overview")).json()
+    assert overview["stats"]["total"] == overview["counts_open"] == 1
+    assert [(d["kind"], d["n"]) for d in overview["docs_open"]] == [("issue", 1)]
+    report = await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": "overview", "scope_ids": []}})
+    assert report.status_code == 200, report.text
+    result = report.json()
+    values = {r["name"]: r["value"] for r in result["items"]}
+    assert values["Всего карточек"] == values["Незавершённые инвентаризации"] == 1
+    assert [t["id"] for t in result["doc"]["tables"]] == ["rows", "by_cls", "by_st", "docs_open", "recent"]
+
+
 
 async def test_rerun_of_inventory_report_applies_current_scope(client, app):
     s = await setup(client, app)

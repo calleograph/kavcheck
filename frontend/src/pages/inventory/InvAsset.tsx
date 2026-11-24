@@ -99,7 +99,7 @@ function MainTab({ a }: { a: AssetCard }) {
 }
 
 function PlaceTab({ a, reload }: { a: AssetCard; reload: () => void }) {
-  const { can } = useInv(); const nav = useNavigate();
+  const { can, workplacesAccess } = useInv(); const nav = useNavigate();
   return (
     <div className="split even">
       <div className="stack"><div className="card"><h2>Учётное местоположение</h2>
@@ -108,7 +108,8 @@ function PlaceTab({ a, reload }: { a: AssetCard; reload: () => void }) {
           ["Зона ответственности", a.zone_id && a.zone ? <Link to={`/inventory/assets?zone_id=${encodeURIComponent(a.zone_id)}`}>{a.zone}</Link> : ""]]} />
         {can("docs") && <div className="row wrap"><button className="btn mini" onClick={() => nav(`/inventory/docs/new?kind=move&ids=${a.id}`)}><Icon name="arrowR" size={14} />Переместить документом</button></div>}
       </div><InvGeoCard id={a.id} onApplied={reload} /></div>
-      <div className="card"><h2>Ответственные лица</h2>
+      <div className="card"><div className="card-head"><h2>Ответственные лица</h2><div className="spacer" />
+        {workplacesAccess && a.ksc_host_id && <Link className="btn mini" to={`/inventory/workplaces?asset_id=${a.id}`}><Icon name="users" size={14} />Связи с сотрудниками</Link>}</div>
         <Kv rows={PEOPLE.map(([f, lb]) => [lb, (a as unknown as Record<string, number | null>)[f] ? <Link to={`/inventory/people/${(a as unknown as Record<string, number>)[f]}`}>{(a as unknown as Record<string, string>)[f.replace("_id", "")]}</Link> : <span className="muted">не указан</span>] as [string, ReactNode])} />
         {can("docs") && <div className="row wrap">{a.user_id ? <button className="btn mini" onClick={() => nav(`/inventory/docs/new?kind=return&ids=${a.id}&from=${a.user_id}`)}>Оформить возврат</button>
           : <button className="btn mini primary" onClick={() => nav(`/inventory/docs/new?kind=issue&ids=${a.id}`)}>Выдать сотруднику</button>}</div>}

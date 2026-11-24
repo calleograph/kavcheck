@@ -10,6 +10,7 @@ import { ListFoot, useInfinite, useKept, usePanel, type Chunk } from "../compone
 import { QuickReportPanel } from "../components/QuickReport";
 import { useToast } from "../components/Toast";
 import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
+import { WorkplaceLink } from "../components/WorkplaceLink";
 import { fmt, fmtDate, num, plural } from "../util";
 import AdTab, { type AdSel } from "./hier/AdTab";
 
@@ -611,6 +612,7 @@ function AccountPanel({ guid, run, onClose, onChanged, onCatalog }: { guid: stri
         <div className="vdb-badges"><span className="badge accent">{c.category_ru}</span>{!c.enabled ? <span className="badge">отключена</span> : c.locked ? <span className="badge warn">заблокирована</span> : <span className="badge ok">активна</span>}
           {c.spn && <span className="badge">есть SPN</span>}<span className="muted small">по проверке от {fmtDate(c.run.started_at)}</span>
           <div className="spacer" /><button type="button" className="btn mini ghost" onClick={() => onCatalog(c.guid)} title="Свойства и группы учётной записи сейчас — из каталога AD">Открыть в каталоге AD</button>
+          {c.enabled && c.category === "user" && <WorkplaceLink className="btn mini ghost" employeeId={c.guid} />}
           <button type="button" className="btn mini ghost" onClick={() => { setCatEdit(!catEdit); setNewCat(c.override?.category ?? ""); setNote(c.override?.note ?? ""); }}>Изменить категорию</button></div>
         {catEdit && <div className="ada-decide">
           <Segmented label="Категория" value={newCat as AdCategory} onChange={(v) => setNewCat(v)} options={(["user", "admin", "service", "temp", "contractor"] as AdCategory[]).map((k) => [k, CAT_RU[k]] as [AdCategory, string])} />

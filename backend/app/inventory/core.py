@@ -11,11 +11,11 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import xact_lock
-from ..models import InvAsset, InvHistory, InvLocation, InvPerson, InvProp, InvRef, Zone, utcnow
+from ..models import InvAsset, InvDoc, InvDocItem, InvHistory, InvLocation, InvPerson, InvProp, InvRef, Zone, utcnow
 from ..roles import ROLE_RANK
 from ..services.settings import INV_PERMS, InventorySettings
 from . import model as M
@@ -45,6 +45,19 @@ class Access:
         if not self.scopes:
             return None
         return InvAsset.location_id.in_(self.loc_ids())
+
+    def document_filter(self, actor: str):
+        """Документы со строками в области учёта, пустые — по местоположению или автору."""
+        af = self.asset_filter()
+        if af is None:
+            return None
+        items = select(InvDocItem.id).where(InvDocItem.doc_id == InvDoc.id)
+        locs = self.loc_ids()
+        empty = [InvDoc.from_location_id.in_(locs), InvDoc.to_location_id.in_(locs)]
+        if actor:
+            empty.append(InvDoc.created_by == actor)
+        return or_(and_(items.exists(), ~items.where(InvDocItem.asset_id.not_in(select(InvAsset.id).where(af))).exists()),
+                   and_(~items.exists(), or_(*empty)))
 
     def loc_ok(self, loc: InvLocation | None) -> bool:
         return not self.scopes or (loc is not None and any(loc.ids_path.startswith(p) for p in self.scopes))

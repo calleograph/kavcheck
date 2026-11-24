@@ -63,7 +63,11 @@ def test_geoip_is_only_an_approximate_egress_observation(monkeypatch):
     assert "site_id" not in result and result["proposals"] == {}
 
 
-async def test_dbip_attribution_follows_geographic_results_into_reports(client, app, tmp_path):
+@pytest.mark.parametrize("provider, full_credit, link", [
+    (G.DBIP_LABEL, G.DBIP_CREDIT, '<a href="https://db-ip.com/">IP Geolocation by DB-IP</a>'),
+    (G.GEOLITE_LABEL, G.GEOLITE_CREDIT, '<a href="https://www.maxmind.com/">Геоданные GeoLite от MaxMind</a>'),
+])
+async def test_attribution_follows_geographic_results_into_reports(client, app, tmp_path, provider, full_credit, link):
     config = await setup(client, app)
     now, sid = utcnow(), uuid4()
     async with app.state.session_maker() as db:
@@ -74,22 +78,21 @@ async def test_dbip_attribution_follows_geographic_results_into_reports(client, 
         aid = asset.id
         db.add(InvGeo(asset_id=aid, host_id=1, source_id=sid, checked_at=now, observed_at=now,
                       evidence={"addresses": [{"kind": "connection", "ip": "192.0.2.19"}]},
-                      result={"status": "approx", "city": "Пример", "provider": G.DBIP_LABEL}))
+                      result={"status": "approx", "city": "Пример", "provider": provider}))
         await db.commit()
 
-    assert (await client.get(GEO)).json()["dbip_attribution"]
-    assert not (await client.get(GEO, params={"q": "отсутствует"})).json()["dbip_attribution"]
+    assert (await client.get(GEO)).json()["geo_attributions"] == [provider]
+    assert not (await client.get(GEO, params={"q": "отсутствует"})).json()["geo_attributions"]
     report = await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": "geography"}})
-    assert report.json()["doc"]["dbip_attribution"]
+    assert full_credit in report.json()["doc"]["notes"]
     ctx = quick.Ctx(source_name="Инвентаризация", activity_days=0, sm=app.state.session_maker)
     doc = await quick.build("quick_inv", None, {"view": "geography"}, ctx)
-    credit = '<a href="https://db-ip.com/">IP Geolocation by DB-IP</a>'
-    assert credit in quick_export.render_html(doc)
+    assert link in quick_export.render_html(doc)
     tabbed = await quick.build("quick_inv", None, {"view": "geography_card", "asset_id": aid}, ctx)
-    assert tabbed["tabs"] and credit in quick_export.render_html(tabbed)
+    assert tabbed["tabs"] and link in quick_export.render_html(tabbed)
     out = tmp_path / "geography.csv"
     quick_export.write_csv_main(out, doc)
-    assert G.DBIP_CREDIT in out.read_text(encoding="utf-8-sig")
+    assert full_credit in out.read_text(encoding="utf-8-sig")
 
 
 async def test_geography_rule_report_uses_unsaved_draft_and_full_matches(client, app, tmp_path):
@@ -233,6 +236,10 @@ async def test_geography_from_collection_to_rule_preview_and_scoped_apply(client
     hidden = (await client.get(f"{url}/{restricted_id}")).json()
     assert hidden["status"] == "unknown" and "evidence" not in hidden and "connection_ip" not in hidden
     assert (await client.get(GEO, params={"observation_source": str(other_sid)})).json()["total"] == 0
+    proposals = (await client.get(GEO, params={"fill_available": True})).json()
+    assert [(i["id"], i["proposal_fields"]) for i in proposals["items"]] == [(aid, ["Филиал"])]
+    proposals_report = (await report_for("geography", geography={"fill_available": True})).json()
+    assert [(i["inv_no"], i["proposal_fields"]) for i in proposals_report["items"]] == [("ТС-001", "Филиал")]
     params = {"view": "geography", "geography": {"site_id": site, "freshness": "stale"}, "geo_source_ids": [str(other_sid)]}
     report = await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": params})
     assert report.status_code == 200, report.text

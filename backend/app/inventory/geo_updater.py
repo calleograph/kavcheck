@@ -51,21 +51,27 @@ def publications(state: dict) -> dict:
 def next_check(now: datetime, provider: str, result: dict | None) -> datetime:
     if result is None or (provider == "dbip" and result.get("month") != now.strftime("%Y-%m")):
         return now + RETRY
-    if provider == "maxmind":
+    if provider in ("maxmind", "mirror"):
         return now + timedelta(days=1)
     return (now.replace(day=28) + timedelta(days=4)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
 async def info(db, svc) -> dict:
+    from .geo_mirror import current_release
+
     cfg, revision, state, request = await snapshot(db, svc)
     lease = await db.get(JobLease, (KIND, ""))
     running = bool(lease and lease.lease_until > utcnow())
     published = publications(state)
-    active = cfg.provider if cfg.provider in published else next(iter(published), None)
+    mirror_expired = "mirror" in published and not current_release(published["mirror"]["databases"], utcnow())
+    if mirror_expired:
+        del published["mirror"]
+    active = next((p for p in (cfg.provider, "mirror", "maxmind", "dbip") if p in published), None)
     selected = published.get(active, {})
     current = state.get("provider", "maxmind") == cfg.provider
     return {
         "provider": cfg.provider, "active_provider": active, "enabled": cfg.enabled, "account_id": cfg.account_id, "license_key_set": bool(cfg.license_key),
+        "mirror_url": cfg.mirror_url, "mirror_expired": mirror_expired,
         "running": running, "pending": due(cfg, revision, state, request) and not running,
         "stage": lease.stage if running and lease else "", "checked_at": state.get("checked_at") if current else None,
         "success_at": selected.get("success_at"), "next_check_at": state.get("next_check_at") if cfg.enabled and current else None,
@@ -113,10 +119,13 @@ async def finish(sm, lease, revision: str, request: str, provider: str, result: 
 
 async def tick(sm, svc, directory: Path, journal):
     from .geo_download import DownloadError, update, update_dbip
+    from .geo_mirror import cleanup, needs_cleanup, update_mirror
 
+    mirror = managed_root(directory, "mirror")
     async with sm() as db:
         cfg, revision, state, request = await snapshot(db, svc)
-        if not due(cfg, revision, state, request, missing=managed_pair(directory, cfg.provider) is None):
+        if not needs_cleanup(mirror, utcnow()) and not due(
+                cfg, revision, state, request, missing=managed_pair(directory, cfg.provider) is None):
             return
     try:
         async with JOBS.run_heavy(KIND, task="географические базы") as lease:
@@ -126,10 +135,7 @@ async def tick(sm, svc, directory: Path, journal):
                 cfg, revision, state, request = await snapshot(db, svc)
             provider = cfg.provider
             directory_missing = managed_pair(directory, provider) is None
-            if not due(cfg, revision, state, request, missing=directory_missing):
-                return
             label = GEOIP_LABELS[provider]
-            await lease.stage(f"проверка и загрузка {label}")
 
             @asynccontextmanager
             async def publish_guard():
@@ -140,14 +146,26 @@ async def tick(sm, svc, directory: Path, journal):
                     if actual != revision:
                         raise DownloadError(f"Настройки {label} изменились во время загрузки")
                     await lease.fence(db)
-                    yield
+                    yield db
                     await db.commit()
 
+            if needs_cleanup(mirror, utcnow()):
+                async with publish_guard() as db:
+                    expired = cleanup(mirror, utcnow())
+                    if expired:
+                        await request_refresh(db)
+                if expired:
+                    await journal.emit("inventory", "geoip_expired", level="warn", message="Комплект GeoLite2 из зеркала устарел")
+            if not due(cfg, revision, state, request, missing=directory_missing):
+                return
+            await lease.stage(f"проверка и загрузка {label}")
             try:
                 async with asyncio.timeout(8 * 60):
                     target = managed_root(directory, provider)
                     if provider == "dbip":
                         result = await update_dbip(target, guard=publish_guard, now=utcnow())
+                    elif provider == "mirror":
+                        result = await update_mirror(target, cfg.mirror_url, guard=publish_guard, now=utcnow())
                     else:
                         result = await update(target, cfg.account_id, cfg.license_key, guard=publish_guard)
             except Exception as exc:

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api, type ApiError, type QuickCol, type QuickKind, type QuickPreview, type Template } from "../api";
 import { fmt, num, plural } from "../util";
 import { CompactList } from "./CompactList";
-import { DB_IP_CREDIT, DbIpAttribution } from "./DbIpAttribution";
+import { geoCreditProvider, GeoIpAttribution } from "./DbIpAttribution";
 import { Modal } from "./Dialogs";
 import { Icon } from "./Icons";
 import { Dock, Segmented } from "./ui";
@@ -247,10 +247,12 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
   };
 
   const doc = data?.doc ?? null;
-  const notes = doc?.notes.filter((note) => !doc.dbip_attribution || !note.startsWith(DB_IP_CREDIT)) ?? [];
+  const notes = doc?.notes.filter((note) => !geoCreditProvider(note)) ?? [];
+  const credits = doc?.notes.map(geoCreditProvider).filter(Boolean) ?? [];
   const previewRows = data?.items.slice(0, PREVIEW_SHOWN) ?? [];
   const hosts = doc?.metrics.find((m) => m.key === "hosts");
-  const employeeTotal = kind === "quick_employee_protection" && data ? (params.view === "devices" ?
+  const employeeTotal = kind === "quick_employee_protection" && data ? (params.view === "workplaces" ?
+    plural(data.total, "связь", "связи", "связей") : params.view === "devices" ?
     plural(data.total, "устройство", "устройства", "устройств") : plural(data.total, "сотрудник", "сотрудника", "сотрудников")) : null;
   const cols = (data?.columns ?? []).slice(0, 7);
   const showScope = options.scope !== false && !options.zone;
@@ -298,7 +300,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
               <p className="muted small">{doc.severity.title}</p>
             </div>)}
           {notes.length > 0 && <div className="alert warn qr-notes"><Icon name="info" /><div className="alert-body"><ul>{notes.map((n) => <li key={n}>{n}</li>)}</ul></div></div>}
-          {doc.dbip_attribution && <p className="muted small"><DbIpAttribution /></p>}
+          {credits.map((provider) => <p key={provider} className="muted small"><GeoIpAttribution provider={provider} /></p>)}
         </>)}
         {data && !data.unsupported && data.total === 0 && <div className="alert info"><Icon name="info" /><div className="alert-body">По этим условиям данных нет. Измените условия в «Дополнительно» или выбор в таблице.</div></div>}
         {data && data.total > 0 && (<>

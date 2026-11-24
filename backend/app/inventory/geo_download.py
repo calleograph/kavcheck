@@ -25,6 +25,7 @@ import maxminddb
 
 log = logging.getLogger(__name__)
 EDITIONS = ("GeoLite2-City", "GeoLite2-ASN")
+COUNTRY_EDITION = "GeoLite2-Country"
 DBIP_EDITIONS = ("DBIP-City-Lite", "DBIP-ASN-Lite")
 DBIP_HOST = "download.db-ip.com"
 DBIP_MAX_MMDB = 256 * 1024**2

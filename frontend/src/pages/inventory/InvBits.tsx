@@ -5,7 +5,7 @@ import type { ApiError } from "../../api";
 import { Icon } from "../../components/Icons";
 import { inv, type Asset, type BiCandidate, type Loc, type Meta, type Perm, type Person, type Prop, type Ref } from "./invApi";
 
-export interface InvCtxValue { meta: Meta; reload: () => void; can: (p: Perm) => boolean; isAdmin: boolean; role: string; locs: Loc[] | null; reloadLocs: () => void; activityDays: number }
+export interface InvCtxValue { meta: Meta; reload: () => void; can: (p: Perm) => boolean; isAdmin: boolean; role: string; locs: Loc[] | null; reloadLocs: () => void; activityDays: number; workplacesAccess: boolean | null }
 export const InvCtx = createContext<InvCtxValue | null>(null);
 export const useInv = () => { const c = useContext(InvCtx); if (!c) throw new Error("InvCtx"); return c; };
 export const refsOf = (m: Meta, kind: string, parent?: number | null) => m.refs.filter((r) => r.kind === kind && (parent === undefined || parent === null || r.parent_id === parent));

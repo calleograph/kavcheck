@@ -22,13 +22,22 @@ export default function InvPeople({ ctx }: { ctx: Ctx }) {
   useEffect(() => { const t = window.setTimeout(() => setAq(q), 300); return () => window.clearTimeout(t); }, [q]);
   const list = useInfinite<Person>("inv-people", [aq], (offset, limit) => inv.people({ q: aq, offset, limit, with_bi: false }) as unknown as Promise<Chunk<Person>>);
   const [form, setForm] = useState<Partial<Person> | null>(null);
+  const [importing, setImporting] = useState(false);
   const [toast, show] = useToast();
   const rep = useInvReport();
-  const hier = async () => { try { const r = await inv.importHier(); show(`Перенесено из адресной книги: новых ${r.added}, обновлено ${r.updated}`); list.reload(); } catch (e) { show((e as ApiError).message, "error"); } };
+  const hier = async () => {
+    setImporting(true);
+    try {
+      const r = await inv.importHier();
+      show(`Перенос из адресной книги завершён. Добавлено ${r.added}, обновлено ${r.updated}`);
+      list.reload();
+    } catch (e) { show((e as ApiError).message, "error"); }
+    finally { setImporting(false); }
+  };
   return (
     <div className="inv-page">
       <div className="inv-head"><h1>Сотрудники</h1>
-        <div className="row wrap">{can("refs") && <button className="btn" onClick={() => void hier()} title="Из последней выгрузки раздела «Иерархия предприятия»: ФИО, почта, должность, подразделение"><Icon name="sitemap" size={16} />Из адресной книги</button>}
+        <div className="row wrap">{can("refs") && <button className="btn" disabled={importing} onClick={() => void hier()} title="ФИО, почта, должность и подразделение из последней выгрузки «Иерархии предприятия»"><Icon name="sitemap" size={16} />{importing ? "Перенос…" : "Перенести из адресной книги"}</button>}
           {can("people") && <button className="btn primary" onClick={() => setForm({ name: "", active: true })}><Icon name="plus" size={16} />Добавить</button>}</div></div>
       <FilterBar search={{ value: q, onChange: setQ, placeholder: "ФИО, логин, почта, подразделение", label: "Поиск сотрудника" }} count={{ n: list.initial ? null : list.total, noun: ["сотрудник", "сотрудника", "сотрудников"] }}
         onRefresh={() => list.reload()} refreshing={list.refreshing} report={{ onClick: () => rep.open(["by_person", "by_resp", "owner_history"], {}, "Оборудование по сотрудникам"), title: "Отчёт по сотрудникам" }} />

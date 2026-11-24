@@ -7,7 +7,8 @@ import { CountButton, FilterBar, ReportButton } from "../components/FilterBar";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { ListFoot, VirtualRows, useInfinite, useKept, usePanel, type Chunk } from "../components/Infinite";
 import { QuickReportPanel } from "../components/QuickReport";
-import { Empty, PageHead, SkelRows, Spectrum, Tabs } from "../components/ui";
+import { BackLink, Empty, PageHead, SkelRows, Spectrum, Tabs } from "../components/ui";
+import { WorkplaceReview } from "../components/WorkplaceReview";
 import { fmt, fmtDate, num, plural } from "../util";
 
 const PATH = "/employee-protection";
@@ -53,6 +54,7 @@ interface Employee {
   id: string; name: string; login: string; email: string; organization: string; department: string; division: string; title: string;
   account_created: string | null; status: string; reason: string; uses_av: boolean; device_count: number;
   protected_devices: number; installed_devices: number; freshness: string; last_seen: string | null;
+  pending_device_count?: number;
 }
 interface Device {
   id: string; source_id: string | null; host_id: number | null; asset_id: number | null; name: string; ip: string;
@@ -69,7 +71,8 @@ function deviceHref(d: Device) {
 }
 
 function Status({ status, reason, labels, scope }: { status: string; reason: string; labels: Labels; scope: "employee_status" | "device_status" }) {
-  return <><span className={`badge ${TONE[status] ?? ""}`}>{labels[scope][status] || "Состояние неизвестно"}</span>
+  const label = reason === "workplace_review" ? "Рабочее место требует проверки" : labels[scope][status];
+  return <><span className={`badge ${TONE[status] ?? ""}`}>{label || "Состояние неизвестно"}</span>
     {labels.reason[reason] && <span className="sub">{labels.reason[reason]}</span>}</>;
 }
 
@@ -111,6 +114,9 @@ function EmployeeTable({ filters, userId, revision, labels, onDevices }: { filte
           <span className="sub">С антивирусом {num(e.installed_devices)}</span>
           <span className="sub">Защищены <CountButton n={e.protected_devices} label={`Защищённые устройства сотрудника ${e.name}`}
             onClick={() => onDevices({ title: `Защищённые устройства · ${e.name}`, filters: { employee_id: e.id, device_status: "protected" } })} /></span>
+          <Link className="sub link-btn" to={`${PATH}${qs({ view: "workplaces", employee_id: e.id })}`}>
+            {e.pending_device_count ? `На проверку · ${num(e.pending_device_count)}` : "Рабочие места"}
+          </Link>
         </td>
         <td><Status status={e.status} reason={e.reason} labels={labels} scope="employee_status" /></td>
         <td className="small">{labels.freshness[e.freshness] || "—"}<span className="sub">{fmt(e.last_seen)}</span></td>
@@ -134,7 +140,8 @@ function DeviceTable({ filters, userId, revision, labels, onEmployee }: { filter
           <td><CompactList items={d.employees} sep="" label="сотрудники" render={(e) => <span className="ep-user">
             <button type="button" className="link-btn" onClick={() => onEmployee(e.id)}>{e.name || e.login}</button>
             <span className="sub">{e.evidence.join(" · ")}</span></span>} />
-            {d.shared_count > 1 && <span className="sub">Общее устройство · {num(d.shared_count)} {plural(d.shared_count, "сотрудник", "сотрудника", "сотрудников")}</span>}</td>
+            {d.shared_count > 1 && <span className="sub">Общее устройство · {num(d.shared_count)} {plural(d.shared_count, "сотрудник", "сотрудника", "сотрудников")}</span>}
+            <Link className="sub link-btn" to={`${PATH}${qs({ view: "workplaces", device_id: d.id })}`}>Рабочие места</Link></td>
           <td>{OWNERSHIP[d.ownership] ?? "Не установлено"}<span className="sub"><CompactList items={d.zones.map((z) => z.name)} label="зоны ответственности" /></span></td>
           <td>{d.os || "—"}{d.os_version && d.os_version !== d.os && <span className="sub">{d.os_version}</span>}</td>
           <td>{d.av_product || "—"}<span className="sub mono">{d.av_version}</span></td>
@@ -230,6 +237,7 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
 
   return <section className="ov ep">
     <PageHead title={TITLE} lede="Охват защиты Kaspersky по сотрудникам и их известным устройствам из всех источников KSC.">
+      <Link to={`${PATH}?view=workplaces`} className="btn">Рабочие места</Link>
       {canRefresh && <button type="button" className="btn" onClick={() => void refresh()} disabled={queuing || data?.running}>
         {queuing || data?.running ? "Идёт пересчёт…" : "Пересчитать"}
       </button>}
@@ -341,6 +349,7 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
 }
 
 export default function EmployeeProtectionPage({ ctx }: { ctx: Ctx }) {
+  const [params] = useSearchParams();
   const [access, setAccess] = useState<{ allowed: boolean; can_refresh: boolean } | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -351,6 +360,10 @@ export default function EmployeeProtectionPage({ ctx }: { ctx: Ctx }) {
       .catch((e: ApiError) => { if (active) setError(e.message); });
     return () => { active = false; };
   }, [retry]);
+  if (access?.allowed && params.get("view") === "workplaces") return <section className="ep">
+    <PageHead title="Рабочие места сотрудников" back={<BackLink to={PATH} label={TITLE} />} />
+    <WorkplaceReview employeeId={params.get("employee_id") ?? undefined} deviceId={params.get("device_id") ?? undefined} />
+  </section>;
   if (access?.allowed) return <ReportDashboard ctx={ctx} canRefresh={access.can_refresh} />;
   return <section><PageHead title={TITLE} />
     {error ? <div className="alert error" role="alert"><div className="alert-body">{error} <button type="button" className="link-btn" onClick={() => setRetry((n) => n + 1)}>Повторить</button></div></div> :

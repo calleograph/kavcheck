@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -21,7 +21,8 @@ from ..models import AuditLog, BiImport, BiSource, EventLog, KscSource, User
 from ..services.logq import SPANS, audit_stmt, journal_stmt
 from .quick import Ctx, col, metric
 
-TITLE = {"licenses": "Лицензии", "journal": "Журнал событий", "audit": "Журнал действий", "users": "Пользователи KAV Checker", "components": "Компоненты", "bi_imports": "Журнал импорта BI"}
+TITLE = {"licenses": "Лицензии", "journal": "Журнал событий", "audit": "Журнал действий", "users": "Пользователи KAV Checker", "components": "Компоненты", "bi_imports": "Журнал импорта BI",
+         "geoip": "Географические базы"}
 LIC_STATE = {"active": "действует", "expiring": "скоро истекает", "expired": "истекла", "perpetual": "бессрочная", "unknown": "срок неизвестен"}
 LEVEL_RU = {"debug": "отладка", "info": "сведения", "warn": "предупреждение", "error": "ошибка"}
 ROLE_RU = {"admin": "Администратор", "security": "Специалист по ИБ", "analyst": "Аналитик", "viewer": "Просмотр"}
@@ -156,7 +157,46 @@ async def _bi_imports(db, p: dict, ctx: Ctx) -> dict:
                                                                    col("rows_rejected", "Отклонено", "num"), col("warnings", "Предупреждений", "num"), col("ms", "мс", "num"), col("message", "Сообщение")], "rows": rows}]}
 
 
-VIEWS = {"licenses": _licenses, "journal": _journal, "audit": _audit, "users": _users, "components": _components, "bi_imports": _bi_imports}
+async def _geoip(db, _p: dict, ctx: Ctx) -> dict:
+    from ..inventory.geo_download import DBIP_EDITIONS, EDITIONS
+    from ..inventory.geo_mirror import MIRROR_EDITIONS
+    from ..inventory.geo_updater import info
+    from ..inventory.geography import DBIP_CREDIT, GEOLITE_CREDIT, GEOIP_LABELS
+    from ..security.secretbox import SecretBox, SecretBoxError
+    from ..services.settings import SettingsService
+
+    key = getattr(ctx.settings, "app_master_key", "")
+    try:
+        box = SecretBox(key) if key else None
+    except SecretBoxError:
+        box = None
+    status = await info(db, SettingsService(box))
+    provider, active = status["provider"], status["active_provider"]
+    editions = {"dbip": DBIP_EDITIONS, "maxmind": EDITIONS, "mirror": MIRROR_EDITIONS}[active or provider]
+    rows = []
+    for edition in editions:
+        tag = status["databases"].get(edition, {})
+        epoch = tag.get("build_epoch")
+        rows.append({"edition": edition, "built_at": datetime.fromtimestamp(epoch, timezone.utc) if epoch else None,
+                     "modified_at": tag.get("last_modified")})
+    conditions = [{"label": "Настроенный источник", "text": GEOIP_LABELS[provider]},
+                  {"label": "Загруженный источник", "text": GEOIP_LABELS.get(active, "Ожидает загрузки")},
+                  {"label": "Автообновление", "text": "включено" if status["enabled"] else "выключено"}]
+    for label, value in (("Последняя проверка (UTC)", status["checked_at"]), ("Последняя успешная проверка (UTC)", status["success_at"]),
+                         ("Следующая проверка (UTC)", status["next_check_at"]), ("Альтернативный HTTPS-каталог", status["mirror_url"])):
+        if value:
+            conditions.append({"label": label, "text": value})
+    notes = [DBIP_CREDIT if active == "dbip" else GEOLITE_CREDIT] if active else []
+    if status["mirror_expired"]:
+        notes.append("Комплект GeoLite2 из зеркала устарел.")
+    if status["error"]:
+        notes.append(status["error"])
+    return {"conditions": conditions, "notes": notes, "metrics": [metric("installed", "Загружено баз", len(status["databases"]))],
+            "tables": [{"id": "rows", "title": "Географические базы",
+                        "columns": [col("edition", "База"), col("built_at", "Сборка (UTC)", "date"), col("modified_at", "Публикация (UTC)", "date")], "rows": rows}]}
+
+
+VIEWS = {"licenses": _licenses, "journal": _journal, "audit": _audit, "users": _users, "components": _components, "bi_imports": _bi_imports, "geoip": _geoip}
 
 
 async def build_admin(client: SourceClient, p: dict, ctx: Ctx) -> dict:

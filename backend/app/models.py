@@ -2247,4 +2247,13 @@ class EmployeeProtectionLink(Base):
     person_id: Mapped[str] = mapped_column(String(120), primary_key=True)
     device_id: Mapped[str] = mapped_column(String(120), primary_key=True)
     evidence: Mapped[list] = mapped_column(JSONType, nullable=False)
+    assessment: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     __table_args__ = (Index("ix_employee_protection_link_device", "generation", "device_id"),)
+
+
+class EmployeeWorkplaceDecision(Base):
+    __tablename__ = "employee_workplace_decisions"
+    person_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    decision: Mapped[str] = mapped_column(String(10), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)

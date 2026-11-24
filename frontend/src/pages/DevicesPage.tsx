@@ -13,6 +13,7 @@ import { useToast } from "../components/Toast";
 import { ZoneField } from "../components/ZoneBits";
 import { OwnerBlock, OwnerSub } from "../components/OwnerBlock";
 import { SessionsTable, UserChip, UsersKv, who } from "../components/HostPeople";
+import { WorkplaceLink } from "../components/WorkplaceLink";
 import { Empty, PageHead, Segmented, SkelRows, SortTh, Tabs } from "../components/ui";
 import BiPeople from "./people/BiPeople";
 import KscUsers from "./people/KscUsers";
@@ -149,7 +150,8 @@ function CardModal({ id, service, onClose, ctx }: { id: string; service: boolean
           <div><dt>Последнее подключение к KSC (UTC)</dt><dd>{fmt(d.last_connected)}{d.online !== null && <> · {d.online ? "в сети" : "не в сети"}</>}</dd></div>
         </dl>
         {d.source_id === ctx.current?.id && <p className="small"><Link to={`/hosts/${d.host_id}`}>Открыть полную карточку компьютера (данные KSC)</Link></p>}
-        <h3 className="h3">Пользователи</h3>
+        <div className="row"><h3 className="h3">Пользователи</h3>{(ctx.me.user.is_admin || ctx.me.user.role === "security") &&
+          <WorkplaceLink className="btn mini ghost" deviceId={`ksc:${d.source_id}:${d.host_id}`} />}</div>
         <UsersKv d={d} />
         <h3 className="h3">Сеансы</h3>
         <SessionsTable d={d} max={10} />

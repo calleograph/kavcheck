@@ -17,4 +17,7 @@ class Filters(BaseModel):
     freshness: Literal["", "fresh", "stale", "unknown"] = ""
     employee_id: str = Field(default="", max_length=120)
     device_id: str = Field(default="", max_length=120)
+    confidence: Literal["", "confirmed", "likely", "possible", "rejected"] = ""
+    inventory: bool = False
+    asset_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
     metric: Literal["", "employees", "uses_av", "protected", "partial", "no_av", "insufficient", "devices", "corporate", "personal"] = ""

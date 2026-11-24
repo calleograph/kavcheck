@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ApiError } from "../../api";
 import { Modal } from "../../components/Dialogs";
+import { FilterBar } from "../../components/FilterBar";
 import { Icon } from "../../components/Icons";
 import { CheckAll, useRowSel } from "../../components/QuickReport";
 import { useToast } from "../../components/Toast";
@@ -19,13 +20,23 @@ const RES_RU: Record<string, string> = { found: "Найдено на месте"
 
 export default function InvCounts() {
   const { can, meta } = useInv(); const nav = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const activeOnly = params.get("status") === "active";
   const [items, setItems] = useState<Count[] | null>(null); const [err, setErr] = useState(""); const [form, setForm] = useState(false);
-  useEffect(() => { inv.counts().then((r) => setItems(r.items)).catch((e) => setErr((e as ApiError).message)); }, []);
+  useEffect(() => {
+    let active = true;
+    setItems(null); setErr("");
+    inv.counts(activeOnly ? "active" : undefined).then((r) => { if (active) setItems(r.items); })
+      .catch((e: ApiError) => { if (active) setErr(e.message); });
+    return () => { active = false; };
+  }, [activeOnly]);
   return (
     <div className="inv-page">
       <div className="inv-head"><h1>Инвентаризации</h1>{can("count") && <button className="btn primary" onClick={() => setForm(true)}><Icon name="plus" size={16} />Новая инвентаризация</button>}</div>
+      <FilterBar primary={<label className="field"><span className="sr-only">Состояние инвентаризации</span><select value={activeOnly ? "active" : ""} onChange={(e) => setParams(e.target.value ? { status: e.target.value } : {}, { replace: true })}>
+        <option value="">Все состояния</option><option value="active">В работе</option></select></label>} />
       {err && <p className="field-err">{err}</p>}
-      {!items ? <div className="card"><SkelRows rows={4} cols={5} /></div> : !items.length ? <div className="card"><Empty icon="target" title="Инвентаризаций ещё не было"
+      {!items ? !err && <div className="card"><SkelRows rows={4} cols={5} /></div> : !items.length && activeOnly ? <div className="card"><Empty icon="target" title="Инвентаризаций в работе нет" /></div> : !items.length ? <div className="card"><Empty icon="target" title="Инвентаризаций ещё не было"
         action={can("count") ? <button className="btn primary" onClick={() => setForm(true)}>Начать первую</button> : undefined}>
         Выберите здание или помещение — список ожидаемого оборудования зафиксируется. Затем отмечайте найденное камерой телефона или сканером; этикетка помещения переключает текущее помещение.</Empty></div> :
         <div className="table-scroll"><table className="table"><thead><tr><th>Номер</th><th>Область</th><th>Статус</th><th className="num">Ожидалось</th><th className="hide-sm">Начата</th><th className="hide-sm">Завершена</th></tr></thead>

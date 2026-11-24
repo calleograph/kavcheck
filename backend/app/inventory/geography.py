@@ -11,17 +11,19 @@ from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 
 from ..models import InfraSource, InvAsset, InvGeo, InvGeoRule, InvLocation, InvPerson, InvRef, KscSource, Zone
 from ..search import matcher
 from ..zones.match import ip_int, normalize_rule, parse_net
+from .model import FIELD_RU
 
 FRESH = timedelta(days=7)
 LABELS = {"unknown": "Недостаточно данных", "site": "Площадка по правилу", "approx": "Примерно по IP подключения",
           "vpn": "VPN или прокси по правилу", "conflict": "Противоречивые правила"}
 RULE_REFS = {"source_id": KscSource, "infra_source_id": InfraSource, "site_id": InvLocation, "location_id": InvLocation,
              "branch_id": InvRef, "dept_id": InvRef, "type_id": InvRef, "resp_id": InvPerson, "zone_id": Zone}
+PROPOSAL_FIELDS = ("location_id", "dept_id", "branch_id", "resp_id", "zone_id")
 
 
 class Rule(BaseModel):
@@ -69,7 +71,7 @@ class Rule(BaseModel):
 
     def proposals(self) -> dict:
         return {field: str(value) if isinstance(value, UUID) else value
-                for field in ("location_id", "branch_id", "dept_id", "resp_id", "zone_id")
+                for field in PROPOSAL_FIELDS
                 if (value := getattr(self, field)) is not None}
 
 
@@ -126,13 +128,16 @@ async def invalid_rule_ref(db, rule: Rule) -> str | None:
 
 
 async def proposal_fields(db, asset: InvAsset, values: dict) -> dict:
-    from .model import FIELD_RU  # noqa: PLC0415
-
     out = {}
-    for field in ("location_id", "dept_id", "branch_id", "resp_id", "zone_id"):
+    for field in PROPOSAL_FIELDS:
         if values.get(field) and (row := await db.get(RULE_REFS[field], UUID(values[field]) if field == "zone_id" else values[field])):
             out[field] = {"label": FIELD_RU[field], "value": row.path if field == "location_id" else row.name, "empty": not getattr(asset, field)}
     return out
+
+
+def empty_proposal_labels(asset: InvAsset, row: InvGeo | None, now: datetime) -> list[str]:
+    values = row.result.get("proposals", {}) if row and fresh(row.observed_at, now) else {}
+    return [FIELD_RU[field] for field in PROPOSAL_FIELDS if values.get(field) and getattr(asset, field) is None]
 
 
 AddressScope = Literal["public", "private", "shared", "special"]
@@ -308,6 +313,9 @@ def geo_where(filters, now: datetime) -> list:
         out.append(InvGeo.observed_at < now - FRESH)
     elif filters.freshness == "unknown":
         out.append(InvGeo.observed_at.is_(None))
+    if filters.fill_available:
+        out.append(InvGeo.observed_at >= now - FRESH)
+        out.append(or_(*(and_(getattr(InvAsset, field).is_(None), r["proposals"][field].as_string().is_not(None)) for field in PROPOSAL_FIELDS)))
     return out
 
 
@@ -320,11 +328,15 @@ class GeoFilters(BaseModel):
     site_id: int | None = Field(default=None, gt=0)
     observation_source: UUID | None = None
     freshness: Literal["", "fresh", "stale", "unknown"] = ""
+    fill_available: bool = False
 
 
 DBIP_LABEL = "DB-IP Lite"
 DBIP_CREDIT = "IP Geolocation by DB-IP — https://db-ip.com/ · CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/"
-GEOIP_LABELS = {"dbip": DBIP_LABEL, "maxmind": "GeoLite2"}
+GEOLITE_LABEL = "GeoLite2"
+GEOLITE_CREDIT = "Геоданные GeoLite от MaxMind — https://www.maxmind.com/ · https://www.maxmind.com/en/geolite/eula"
+GEOIP_LABELS = {"dbip": DBIP_LABEL, "maxmind": GEOLITE_LABEL, "mirror": "GeoLite2 (зеркало)"}
+GEOIP_CREDITS = {DBIP_LABEL: DBIP_CREDIT, GEOLITE_LABEL: GEOLITE_CREDIT}
 
 
 class GeoIP(ExitStack):
@@ -332,15 +344,21 @@ class GeoIP(ExitStack):
     def __init__(self, directory: Path, provider: str = "maxmind"):
         super().__init__()
         import maxminddb
-        from .geo_download import DBIP_EDITIONS, EDITIONS
+        from .geo_download import COUNTRY_EDITION, DBIP_EDITIONS, EDITIONS
 
-        self.city, self.asn = None, None
-        self.provider = GEOIP_LABELS[provider]
+        self.city, self.asn, self.country = None, None, None
+        self.provider = DBIP_LABEL if provider == "dbip" else GEOLITE_LABEL
         self.errors = []
-        for key, edition in zip(("city", "asn"), DBIP_EDITIONS if provider == "dbip" else EDITIONS, strict=True):
+        editions = DBIP_EDITIONS if provider == "dbip" else (*EDITIONS, COUNTRY_EDITION)
+        for key, edition in zip(("city", "asn", "country"), editions):
             filename = f"{edition}.mmdb"
             try:
-                setattr(self, key, self.enter_context(maxminddb.open_database(str(directory / filename))))
+                reader = self.enter_context(maxminddb.open_database(str(directory / filename)))
+                compatible = edition == "DBIP-ASN-Lite" and reader.metadata().database_type == "DBIP-ASN-Lite (compat=GeoLite2-ASN)"
+                if not compatible and reader.metadata().database_type != edition:
+                    self.errors.append(filename)
+                    continue
+                setattr(self, key, reader)
             except FileNotFoundError:
                 continue
             except (OSError, ValueError, maxminddb.InvalidDatabaseError):
@@ -350,7 +368,8 @@ class GeoIP(ExitStack):
     def _lookup(self, ip: str) -> dict:
         city = (self.city.get(ip) or {}) if self.city else {}
         asn = (self.asn.get(ip) or {}) if self.asn else {}
-        if not city and not asn:
+        country = city.get("country") or ((self.country.get(ip) or {}).get("country") if self.country else {})
+        if not city and not asn and not country:
             return {}
         location = city.get("location") or {}
         subdivisions = city.get("subdivisions") or [{}]
@@ -358,8 +377,9 @@ class GeoIP(ExitStack):
             names = (row or {}).get("names") or {}
             return str(names.get("ru") or names.get("en") or (row or {}).get("iso_code") or "")[:200]
 
-        return {"country": name(city.get("country")), "region": name(subdivisions[0]), "city": name(city.get("city")),
-                "country_code": (city.get("country") or {}).get("iso_code"), "lat": location.get("latitude"), "lon": location.get("longitude"),
+        source = self.city if city else self.country if country else self.asn
+        return {"country": name(country), "region": name(subdivisions[0]), "city": name(city.get("city")),
+                "country_code": (country or {}).get("iso_code"), "lat": location.get("latitude"), "lon": location.get("longitude"),
                 "radius_km": location.get("accuracy_radius"), "asn": asn.get("autonomous_system_number"),
                 "operator": str(asn.get("autonomous_system_organization") or "")[:300], "provider": self.provider,
-                "database_at": datetime.fromtimestamp((self.city if city else self.asn).metadata().build_epoch, timezone.utc).date().isoformat()}
+                "database_at": datetime.fromtimestamp(source.metadata().build_epoch, timezone.utc).date().isoformat()}

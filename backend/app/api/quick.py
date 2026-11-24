@@ -347,6 +347,8 @@ async def inv_params(request: Request, db: AsyncSession, su: SessionUser, raw: d
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
     params["scope_ids"] = list(acc.scope_ids)
+    if params["view"] == "overview" and acc.scopes:
+        params["overview_actor"] = su.display_name
     if params["view"] in ("geography_rules", "geography_preview") and not su.is_admin:
         raise HTTPException(status_code=403, detail="Правила принадлежности доступны администратору")
     if params["view"] == "geography_preview":

@@ -569,10 +569,19 @@ class InventorySettings(_Group):
 
 class GeoIPSettings(_Group):
     SECRETS: ClassVar[tuple[str, ...]] = ("license_key",)
-    provider: Literal["dbip", "maxmind"] = "dbip"
+    provider: Literal["mirror", "dbip", "maxmind"] = "mirror"
     enabled: bool = True
+    mirror_url: str = Field(default="", max_length=2048)
     account_id: str = Field(default="", pattern=r"^(|[1-9][0-9]{0,17})$")
     license_key: str = ""
+
+    @field_validator("mirror_url")
+    @classmethod
+    def _mirror_url(cls, value: str) -> str:
+        if not value.strip():
+            return ""
+        from ..inventory.geo_mirror import source_url
+        return str(source_url(value.strip()))
 
     @model_validator(mode="before")
     @classmethod

@@ -64,7 +64,7 @@ export interface LicenseCard extends License { assignments: { id: number; asset_
 export interface Install { source_id: string; source: string; host_id: number; name: string; product: string; version: string; assigned: boolean; asset_id: number | null; inv_no: string }
 export interface Overview {
   stats: { total: number; active: number; cost: number; cost_text: string; warranty_soon: number; no_owner: number; no_location: number; no_resp: number; computers: number; ksc_linked: number; ksc_unlinked: number; ksc_lost: number; in_transit: number; stale: number };
-  by_cls: { cls: string; name: string; n: number }[]; by_st: { st: string; name: string; n: number }[]; licenses_soon: number; docs_open: { kind: string; name: string; n: number }[]; repair_long: number; transit_late: number; counts_open: number;
+  by_cls: { cls: string; name: string; n: number }[]; by_st: { st: string; name: string; n: number }[]; licenses_soon: number; licenses_expired: number; docs_open: { kind: string; name: string; n: number }[]; repair_open: number; repair_long: number; transit_late: number; counts_open: number;
   recent: { at: string; by: string; kind: string; title: string; asset_id: number; inv_no: string; name: string; doc_id: number | null }[]; ksc_sources: number; cfg: { warranty_days: number; license_days: number; stale_days: number };
 }
 export interface Group { id: number | string | null; name: string; n: number; cost: number; cost_text: string }
@@ -174,7 +174,7 @@ export const inv = {
   unassign: (id: number, aid: number) => req<{ ok: boolean }>("DELETE", `/inv/licenses/${id}/assign/${aid}`),
   licKey: (id: number) => req<{ key: string }>("GET", `/inv/licenses/${id}/key`),
   recount: () => req<{ queued: boolean }>("POST", "/inv/licenses/recount"),
-  counts: () => req<{ items: Count[] }>("GET", "/inv/counts"),
+  counts: (status?: string) => req<{ items: Count[] }>("GET", `/inv/counts${qs({ status })}`),
   count: (id: number) => req<Count>("GET", `/inv/counts/${id}`),
   addCount: (b: Record<string, unknown>) => req<Count>("POST", "/inv/counts", b),
   closeCount: (id: number) => req<Count>("POST", `/inv/counts/${id}/close`),

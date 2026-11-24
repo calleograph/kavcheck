@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { type ApiError, qs, req } from "../../api";
-import { DB_IP_LITE, DbIpAttribution } from "../../components/DbIpAttribution";
+import { DB_IP_LITE, GEOLITE, GeoIpAttribution } from "../../components/DbIpAttribution";
 import { FilterBar } from "../../components/FilterBar";
 import { ListFoot, useInfinite, VirtualRows } from "../../components/Infinite";
 import { useToast } from "../../components/Toast";
@@ -13,16 +13,16 @@ import InvGeoMap, { type GeoGroup } from "./InvGeoMap";
 import InvGeoRules from "./InvGeoRules";
 import { useInvReport } from "./InvReport";
 
-type GeoRow = GeoObservation & { id: number; inv_no: string; name: string; account_location: string };
+type GeoRow = GeoObservation & { id: number; inv_no: string; name: string; account_location: string; proposal_fields: string[] };
 type Source = { id: string; name: string; count?: number; finished_at?: string; geoip?: boolean; asn?: boolean; geo_provider?: string; error?: string; geo_errors?: string[] };
-type OverviewSummary = { groups?: GeoGroup[]; groups_limited?: boolean; sources?: Source[]; dbip_attribution?: boolean };
+type OverviewSummary = { groups?: GeoGroup[]; groups_limited?: boolean; sources?: Source[]; dbip_attribution?: boolean; geo_attributions?: string[] };
 type Overview = { items: GeoRow[]; total: number } & OverviewSummary;
 type Filters = Record<string, string | number>;
 type Level = "country" | "region" | "city" | "site";
 const LEVELS: Record<Level, string> = { country: "Страны", region: "Регионы", city: "Города", site: "Площадки" };
 const LABELS: Record<string, string> = {
   q: "Поиск", dept_id: "Подразделение", zone_id: "Зона", type_id: "Тип", country: "Страна", region: "Регион", city: "Город", site_id: "Площадка",
-  freshness: "Актуальность", network: "Сеть", observation_source: "Источник", status: "Состояние наблюдения",
+  freshness: "Актуальность", network: "Сеть", observation_source: "Источник", status: "Состояние наблюдения", fill_available: "Предложения для пустых полей",
 };
 const FRESH: Record<string, string> = { fresh: "Актуально", stale: "Старше 7 дней", unknown: "Время неизвестно" };
 const ACCOUNT = new Set(["q", "dept_id", "zone_id", "type_id"]);
@@ -42,7 +42,14 @@ function pickGroup(g: GeoGroup, level?: Level): Filters {
 export default function InvGeography() {
   const { meta, locs, isAdmin } = useInv();
   const rep = useInvReport();
-  const [f, setF] = useState<Filters>({});
+  const [params, setParams] = useSearchParams();
+  const [filters, setF] = useState<Filters>({});
+  const fill = params.get("fill_available") === "1";
+  const f = fill ? { ...filters, fill_available: 1 } : filters;
+  const setFill = (enabled: boolean) => setParams((prev) => {
+    if (enabled) prev.set("fill_available", "1"); else prev.delete("fill_available");
+    return prev;
+  }, { replace: true });
   const [version, reload] = useState(0);
   const [level, setLevel] = useState<Level>("city");
   const [rulesOpen, showRules] = useState(false);
@@ -56,7 +63,9 @@ export default function InvGeography() {
   const data = list.extra as (OverviewSummary & { filterKey: string }) | null;
   const groups = data?.filterKey === filterKey ? data.groups ?? [] : [];
   const source = data?.sources ?? [];
-  const dbIp = (data?.filterKey === filterKey && data.dbip_attribution) || list.items.some((item) => item.provider === DB_IP_LITE);
+  const credits = [DB_IP_LITE, GEOLITE].filter((provider) =>
+    (data?.filterKey === filterKey && (data.geo_attributions?.includes(provider) || (provider === DB_IP_LITE && data.dbip_attribution))) ||
+    list.items.some((item) => item.provider === provider));
   const change = (key: string, value: string | number) => setF((prev) => {
     const next = { ...prev };
     if (value === "") delete next[key];
@@ -82,6 +91,7 @@ export default function InvGeography() {
     <label className="field">{LABELS[key]}<select value={f[key] ?? ""} onChange={(e) => change(key, e.target.value)}>
       <option value="">{empty}</option>{opts.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select></label>);
   const titles = (key: string, value: string | number) => {
+    if (key === "fill_available") return "Есть";
     if (key === "status") return GEO_STATUS[value];
     if (key === "freshness") return FRESH[value];
     if (key === "observation_source") return source.find((s) => s.id === value)?.name ?? String(value);
@@ -113,7 +123,8 @@ export default function InvGeography() {
     </div>
     {isAdmin && rulesOpen && <InvGeoRules sources={source} onChanged={() => reload((v) => v + 1)} />}
     <FilterBar search={{ value: String(f.q ?? ""), onChange: (v) => change("q", v), placeholder: "Инвентарный номер или имя" }}
-      primary={option("freshness", Object.entries(FRESH).map(([id, name]) => ({ id, name })), "Любая")}
+      primary={<>{option("freshness", Object.entries(FRESH).map(([id, name]) => ({ id, name })), "Любая")}
+        <label className="chip-check"><input type="checkbox" checked={fill} onChange={(e) => setFill(e.target.checked)} />Есть предложения</label></>}
       more={<>
         {option("dept_id", meta.refs.filter((r) => r.kind === "dept" && r.active), "Все подразделения")}
         {option("zone_id", meta.zones, "Все зоны")}
@@ -122,15 +133,15 @@ export default function InvGeography() {
         {option("status", Object.entries(GEO_STATUS).map(([id, name]) => ({ id, name })), "Все состояния")}
         <label className="field">Сеть из правила<input value={f.network ?? ""} onChange={(e) => change("network", e.target.value)} maxLength={300} placeholder="192.0.2.0/24" /></label>
       </>}
-      moreActive={Object.keys(f).filter((k) => !["q", "freshness"].includes(k)).length}
-      chips={Object.entries(f).map(([key, value]) => ({ id: key, label: `${LABELS[key]} · ${titles(key, value)}`, onRemove: () => change(key, "") }))}
-      onReset={() => setF({})} count={{ n: list.initial ? null : list.total, noun: ["устройство", "устройства", "устройств"] }}
+      moreActive={Object.keys(filters).filter((k) => !["q", "freshness"].includes(k)).length}
+      chips={Object.entries(f).map(([key, value]) => ({ id: key, label: `${LABELS[key]} · ${titles(key, value)}`, onRemove: () => key === "fill_available" ? setFill(false) : change(key, "") }))}
+      onReset={() => { setF({}); setFill(false); }} count={{ n: list.initial ? null : list.total, noun: ["устройство", "устройства", "устройств"] }}
       onRefresh={() => reload((v) => v + 1)} refreshing={list.initial} report={{ onClick: report, disabled: list.initial || !list.total }} />
     {list.error && list.initial && <p className="field-err" role="alert">{list.error}</p>}
     <div className="card stack">
       <InvGeoMap groups={groups} select={(g) => drill(pickGroup(g))} />
       <p className="small muted">Точки площадок заданы в справочнике. Область вокруг точки показывает приблизительную погрешность географии выхода в сеть. Подложка Natural Earth.</p>
-      {dbIp && <p className="small muted"><DbIpAttribution /></p>}
+      {credits.map((provider) => <p key={provider} className="small muted"><GeoIpAttribution provider={provider} /></p>)}
       {!!groups.length && <div className="row wrap inv-geo-groups">
         <label className="field">Сгруппировать<select value={level} onChange={(e) => setLevel(e.target.value as Level)}>
           {Object.entries(LEVELS).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
@@ -147,7 +158,8 @@ export default function InvGeography() {
         <thead><tr><th>Оборудование</th><th>Учётное местоположение</th><th>Сетевое местоположение</th><th>Наблюдение</th></tr></thead>
         <tbody><VirtualRows list={list} colSpan={4} estimate={64} row={(item) => <tr key={item.id}>
           <td><Link to={`/inventory/assets/${item.id}?tab=place`}>{item.name || item.inv_no}</Link><span className="sub mono">{item.inv_no}</span></td>
-          <td>{item.account_location || "—"}</td><td>{placeOf(item) || "—"}<span className="sub">{GEO_STATUS[item.status]}{item.network && ` · ${item.network}`}</span></td>
+          <td>{item.account_location || "—"}{!!item.proposal_fields?.length && <span className="sub">Предложения · {item.proposal_fields.join(", ")}</span>}</td>
+          <td>{placeOf(item) || "—"}<span className="sub">{GEO_STATUS[item.status]}{item.network && ` · ${item.network}`}</span></td>
           <td>{fmt(item.observed_at)}<span className="sub">{source.find((s) => s.id === item.source_id)?.name}{item.observed_at && !item.fresh && " · устарело"}</span></td>
         </tr>} /></tbody></table><ListFoot list={list} /></div>}
     {!!source.length && <details className="card"><summary>Источники наблюдений</summary>

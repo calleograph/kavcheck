@@ -9,7 +9,7 @@ import html
 from datetime import date, datetime
 from pathlib import Path
 
-from ..inventory.geography import DBIP_CREDIT, DBIP_LABEL
+from ..inventory.geography import DBIP_CREDIT, GEOLITE_CREDIT, GEOIP_CREDITS
 from . import layout as L
 from .export import _cell, _text, write_csv
 from .hier_render import CSS as HIER_CSS, html_section
@@ -38,9 +38,10 @@ def write_csv_main(path: Path, doc: dict) -> None:
     t = doc["tables"][0]
     rows = t["rows"]
     columns = [(c["key"], c["title"]) for c in t["columns"]]
-    if doc.get("dbip_attribution") and any(row.get("provider") == DBIP_LABEL for row in rows):
-        columns.append(("dbip_credit", "Атрибуция геоданных"))
-        rows = [{**row, "dbip_credit": DBIP_CREDIT if row.get("provider") == DBIP_LABEL else ""} for row in rows]
+    credits = {provider: credit for provider, credit in GEOIP_CREDITS.items() if credit in doc.get("notes", [])}
+    if credits and any(row.get("provider") in credits for row in rows):
+        columns.append(("geo_credit", "Атрибуция геоданных"))
+        rows = [{**row, "geo_credit": credits.get(row.get("provider"), "")} for row in rows]
     write_csv(path, rows, columns)
 
 
@@ -278,6 +279,9 @@ def _note_html(note: str) -> str:
     if note == DBIP_CREDIT:
         return ('<a href="https://db-ip.com/">IP Geolocation by DB-IP</a> · '
                 '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>')
+    if note == GEOLITE_CREDIT:
+        return ('<a href="https://www.maxmind.com/">Геоданные GeoLite от MaxMind</a> · '
+                '<a href="https://www.maxmind.com/en/geolite/eula">Лицензия GeoLite</a>')
     return html.escape(note)
 
 

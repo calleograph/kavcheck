@@ -386,7 +386,7 @@ class QuickAdAudit(Params):
 
 class QuickInv(Params):
     """Инвентаризация: вид отчёта и отбор страницы (те же параметры, что у списка оборудования); scope_ids проставляет сервер (область учёта пользователя)."""
-    view: str = Field(default="registry", pattern=r"^(registry|computers|card|by_person|by_resp|by_location|geography|geography_card|geography_rules|geography_preview|stock|repair|warranty|writtenoff|cost|owner_history|moves|hardware|software|licenses|license_usage|components|docs|duplicates|count|count_diff|infra_registry|infra_hypervisors|infra_ips|infra_racks|infra_findings|infra_changes|infra_new_gone|infra_sync|infra_decom|infra_asof|infra_review|infra_netscan)$")
+    view: str = Field(default="registry", pattern=r"^(overview|registry|computers|card|by_person|by_resp|by_location|geography|geography_card|geography_rules|geography_preview|stock|repair|warranty|writtenoff|cost|owner_history|moves|hardware|software|licenses|license_usage|components|docs|duplicates|count|count_diff|infra_registry|infra_hypervisors|infra_ips|infra_racks|infra_findings|infra_changes|infra_new_gone|infra_sync|infra_decom|infra_asof|infra_review|infra_netscan)$")
     q: str = Field(default="", max_length=300)
     cls: str = Field(default="", max_length=200)
     type_id: int | None = None
@@ -438,7 +438,7 @@ class QuickAd(Params):
 
 class QuickAdmin(Params):
     """Таблицы администрирования: вид и фильтры страницы (журнал событий — текст, уровень, компонент, период; журнал действий — текст, действие, период; компоненты — статус; импорт BI — источник)."""
-    view: str = Field(default="journal", pattern=r"^(licenses|journal|audit|users|components|bi_imports)$")
+    view: str = Field(default="journal", pattern=r"^(licenses|journal|audit|users|components|bi_imports|geoip)$")
     q: str = Field(default="", max_length=200)
     level: str = Field(default="", pattern=r"^(|debug|info|warn|error)$")
     category: str = Field(default="", max_length=24)
@@ -509,7 +509,8 @@ class QuickOverview(Params):
 
 
 class QuickEmployeeProtection(EmployeeProtectionFilters, Params):
-    view: Literal["employees", "devices"] = "employees"
+    view: Literal["employees", "devices", "workplaces"] = "employees"
+    pairs: list[Annotated[str, Field(pattern=r"^[^|]{1,120}\|[^|]{1,120}$")]] = Field(default_factory=list, max_length=100)
 
 
 QUICK_PARAMS = {"quick_employee_protection": QuickEmployeeProtection, "quick_sessions": QuickSessions, "quick_admin": QuickAdmin, "quick_pentest": QuickPentest, "quick_hunt": QuickHunt, "quick_bi": QuickBi, "quick_hier": QuickHier, "quick_ad": QuickAd, "quick_adaudit": QuickAdAudit, "quick_inv": QuickInv, "quick_overview": QuickOverview, "quick_zone": QuickZone, "quick_vulns": QuickVulns, "quick_hosts": QuickHosts, "quick_protection": QuickProtection, "quick_events": QuickEvents, "quick_extvulns": QuickExtVulns, "quick_eol": QuickEol, "quick_devices": QuickDevices}
