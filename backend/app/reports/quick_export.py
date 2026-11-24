@@ -9,6 +9,7 @@ import html
 from datetime import date, datetime
 from pathlib import Path
 
+from ..inventory.geography import DBIP_CREDIT, DBIP_LABEL
 from . import layout as L
 from .export import _cell, _text, write_csv
 from .hier_render import CSS as HIER_CSS, html_section
@@ -35,7 +36,12 @@ def _fmt(v, kind: str) -> str:
 
 def write_csv_main(path: Path, doc: dict) -> None:
     t = doc["tables"][0]
-    write_csv(path, t["rows"], [(c["key"], c["title"]) for c in t["columns"]])
+    rows = t["rows"]
+    columns = [(c["key"], c["title"]) for c in t["columns"]]
+    if doc.get("dbip_attribution") and any(row.get("provider") == DBIP_LABEL for row in rows):
+        columns.append(("dbip_credit", "Атрибуция геоданных"))
+        rows = [{**row, "dbip_credit": DBIP_CREDIT if row.get("provider") == DBIP_LABEL else ""} for row in rows]
+    write_csv(path, rows, columns)
 
 
 def org_lines(doc: dict) -> dict:
@@ -345,7 +351,10 @@ def render_html(doc: dict) -> str:
         for i, b in enumerate(detail):
             block(b, i)
         out.append("</section>")
-    out.append('<section id="method"><h2>Методика, источники и ограничения</h2><div class="panel"><ul class="notes">' + "".join(f"<li>{esc(n)}</li>" for n in doc["notes"]) + "</ul></div></section>"
+    credit = ('<a href="https://db-ip.com/">IP Geolocation by DB-IP</a> · '
+              '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>')
+    out.append('<section id="method"><h2>Методика, источники и ограничения</h2><div class="panel"><ul class="notes">' +
+               "".join(f"<li>{credit if n == DBIP_CREDIT else esc(n)}</li>" for n in doc["notes"]) + "</ul></div></section>"
                if doc["notes"] else '<section id="method"></section>')
     foot = [f"<p>KAV Checker · отчёт сформирован {gen} UTC · данные Kaspersky Security Center «{esc(doc.get('source') or '')}». Файл самодостаточен: открывается без подключения к приложению, для PDF используйте печать браузера.</p>"]
     if org["footnote"]:

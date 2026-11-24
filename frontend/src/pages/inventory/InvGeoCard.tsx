@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { type ApiError, req } from "../../api";
+import { DB_IP_LITE, DbIpAttribution } from "../../components/DbIpAttribution";
+import { ReportButton } from "../../components/FilterBar";
 import { fmt } from "../../util";
 import { useInv } from "./InvBits";
+import { useInvReport } from "./InvReport";
 
 export const GEO_STATUS: Record<string, string> = {
   unknown: "Недостаточно данных", site: "Площадка по правилу", approx: "Примерно по IP подключения",
@@ -39,6 +42,7 @@ export function placeOf(o: GeoObservation) {
 
 export default function InvGeoCard({ id, onApplied }: { id: number; onApplied?: () => void }) {
   const { can } = useInv();
+  const report = useInvReport();
   const [row, setRow] = useState<GeoObservation | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -65,7 +69,10 @@ export default function InvGeoCard({ id, onApplied }: { id: number; onApplied?: 
   const e = row?.evidence;
   const connection = row?.connection_ip;
   return <section className="card">
-    <h2>Последнее сетевое местоположение</h2>
+    <div className="card-head">
+      <h2>Последнее сетевое местоположение</h2><div className="spacer" />
+      <ReportButton onClick={() => report.open(["geography_card"], { asset_id: id })} disabled={!row} title="Сформировать отчёт по сетевому наблюдению этого оборудования" />
+    </div>
     {error && <p className="field-err" role="alert">{error}</p>}
     {!row && !error && <p className="muted">Загрузка…</p>}
     {row && <>
@@ -78,7 +85,8 @@ export default function InvGeoCard({ id, onApplied }: { id: number; onApplied?: 
         <p className="muted small">{CONNECTION_SCOPE[connection.scope][1]}</p>
       </div>}
       {row.status === "approx" && <p className="small">Достоверность низкая. Показана примерная география выхода в сеть{row.radius_km != null ? ` · радиус оценки ${row.radius_km} км` : ""}.</p>}
-      {row.provider && <p className="muted small">{row.provider}{row.database_at && ` · база от ${row.database_at}`}{row.asn && ` · AS${row.asn}`}{row.operator && ` · ${row.operator}`}</p>}
+      {row.provider && <p className="muted small">{row.provider === DB_IP_LITE ? <DbIpAttribution /> : row.provider}
+        {row.database_at && ` · база от ${row.database_at}`}{row.asn && ` · AS${row.asn}`}{row.operator && ` · ${row.operator}`}</p>}
       {row.network && <p className="small">Сеть <span className="mono">{row.network}</span></p>}
       {!!row.rules?.length && <p className="small">Правила · {row.rules.map((r) => r.name).join(", ")}</p>}
       {e && <details><summary>Исходные наблюдения</summary>
@@ -96,5 +104,6 @@ export default function InvGeoCard({ id, onApplied }: { id: number; onApplied?: 
           mayApply && row.fresh && <div><button type="button" className="btn" disabled={busy} onClick={() => void apply()}>Заполнить пустые поля</button></div>}
       </div>}
     </>}
+    {report.node}
   </section>;
 }

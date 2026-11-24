@@ -109,7 +109,8 @@ async def collect(sm, source_id, client, geo: GeoIP, lease):
                 await lease.stage("публикация сетевых наблюдений")
             await lease.fence(db)
             await db.commit()
-    return {"count": n, "capabilities": sorted(caps), "geoip": bool(geo.city), "asn": bool(geo.asn), "geo_errors": geo.errors}
+    return {"count": n, "capabilities": sorted(caps), "geoip": bool(geo.city), "asn": bool(geo.asn), "geo_errors": geo.errors,
+            "geo_provider": getattr(geo, "provider", "") if geo.city or geo.asn else ""}
 
 
 async def status(sm, sid, data):
@@ -123,8 +124,32 @@ async def status(sm, sid, data):
         await db.commit()
 
 
-async def tick(sm, sources, manual: Path, managed: Path, managed_enabled: bool, journal) -> None:
-    from .geo_download import database_directory
+def managed_root(directory: Path, provider: str) -> Path:
+    return directory / "dbip" if provider == "dbip" else directory
+
+
+def managed_pair(directory: Path, provider: str) -> Path | None:
+    from .geo_download import DBIP_EDITIONS, EDITIONS, database_directory
+
+    root = managed_root(directory, provider)
+    active = database_directory(root, managed=True)
+    editions = DBIP_EDITIONS if provider == "dbip" else EDITIONS
+    if active != root and all((active / f"{edition}.mmdb").is_file() for edition in editions):
+        return active
+    return None
+
+
+def reader_location(manual: Path, managed: Path, provider: str, enabled: bool) -> tuple[Path, str]:
+    if provider == "maxmind" and not enabled and any(manual.glob("GeoLite2-*.mmdb")):
+        return manual, "maxmind"
+    fallback = "maxmind" if provider == "dbip" else "dbip"
+    for candidate in (provider, fallback):
+        if active := managed_pair(managed, candidate):
+            return active, candidate
+    return manual, "maxmind"
+
+
+async def tick(sm, sources, manual: Path, managed: Path, cfg, journal) -> None:
 
     async with sm() as db:
         targets = list((await db.scalars(select(KscSource).where(KscSource.is_active.is_(True), exists(select(InvAsset.id).where(*linked(KscSource.id)))))).all())
@@ -142,10 +167,8 @@ async def tick(sm, sources, manual: Path, managed: Path, managed_enabled: bool, 
             async with JOBS.run_heavy("inv_geo", str(src.id), task="сетевые наблюдения инвентаризации") as lease:
                 if lease is None:
                     continue
-                directory = database_directory(managed, managed=True)
-                if directory == managed or (not managed_enabled and any(manual.glob("GeoLite2-*.mmdb"))):
-                    directory = manual
-                with GeoIP(directory) as geo:
+                directory, provider = reader_location(manual, managed, cfg.provider, cfg.enabled)
+                with GeoIP(directory, provider) as geo:
                     result = await collect(sm, src.id, sources.client(src), geo, lease)
                 await status(sm, src.id, {**result, "attempt_at": utcnow().isoformat(), "finished_at": utcnow().isoformat(), "request": request, "error": ""})
                 await journal.emit("inventory", "geo_done", source=src.name, message=f"Сетевых наблюдений: {result['count']}")
@@ -162,7 +185,7 @@ async def loop(sm, sources, settings, svc, journal) -> None:
         try:
             async with sm() as db:
                 cfg = await svc.get(db, "geoip")
-            await tick(sm, sources, manual, managed, cfg.enabled, journal)
+            await tick(sm, sources, manual, managed, cfg, journal)
         except Exception:
             log.exception("Не удалось запустить обновление сетевых наблюдений")
         await asyncio.sleep(60)

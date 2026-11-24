@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { qs, req, type ApiError } from "../api";
 import type { Ctx } from "../App";
 import { CompactList } from "../components/CompactList";
-import { CountButton, FilterBar } from "../components/FilterBar";
+import { CountButton, FilterBar, ReportButton } from "../components/FilterBar";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { ListFoot, VirtualRows, useInfinite, useKept, usePanel, type Chunk } from "../components/Infinite";
 import { QuickReportPanel } from "../components/QuickReport";
@@ -28,6 +28,11 @@ const METRICS: Record<Metric, string> = {
   partial: "Частично защищены", no_av: "Подтверждено отсутствие Kaspersky", insufficient: "Недостаточно данных",
   devices: "Известные устройства", corporate: "Корпоративные устройства", personal: "Личные устройства",
 };
+const METRIC_GROUPS: { title: string; metrics: Metric[] }[] = [
+  { title: "Охват сотрудников", metrics: ["employees", "uses_av", "protected"] },
+  { title: "Требуется внимание", metrics: ["partial", "no_av", "insufficient"] },
+  { title: "Оборудование", metrics: ["devices", "corporate", "personal"] },
+];
 const OWNERSHIP: Record<string, string> = { corporate: "Корпоративное", personal: "Личное", unknown: "Не установлено" };
 const TONE: Record<string, string> = { protected: "ok", partial: "warn", problems: "warn", no_av: "err", stale: "warn" };
 const percent = (n: number, all: number) => all > 0 ? Math.round(n / all * 1000) / 10 : 0;
@@ -56,7 +61,7 @@ interface Device {
   installed: boolean | null; freshness: string; employees: { id: string; name: string; login: string; evidence: string[] }[]; shared_count: number;
 }
 type Panel = { title: string; filters: Filters };
-type Report = { view: View; filters: Filters };
+type Report = { view: View | "summary"; filters: Filters };
 
 function deviceHref(d: Device) {
   if (d.asset_id != null) return `/inventory/assets/${d.asset_id}`;
@@ -221,6 +226,7 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
   } });
   const revision = `${data?.built_at ?? ""}:${nonce}`;
   const statusFilter = (key: string) => update({ status: criteria.status === key ? "" : key, metric: "", view: "employees" }, true);
+  const reportBusy = loading || applied !== q.trim();
 
   return <section className="ov ep">
     <PageHead title={TITLE} lede="Охват защиты Kaspersky по сотрудникам и их известным устройствам из всех источников KSC.">
@@ -228,9 +234,13 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
         {queuing || data?.running ? "Идёт пересчёт…" : "Пересчитать"}
       </button>}
     </PageHead>
-    {data?.built_at && <p className="ov-note">Расчёт {fmt(data.built_at)} · Список сотрудников {fmt(data.census_at)}{data.census_source && ` · ${data.census_source}`}</p>}
-    {data?.running && <div className="alert info" role="status"><span className="spin sm" /><div className="alert-body">Фоновый расчёт выполняется.</div></div>}
-    {data?.warnings.map((warning, i) => <div className="alert warn" key={i}><div className="alert-body">{warning}</div></div>)}
+    {(data?.built_at || data?.running) && <p className="ov-note">
+      {data.built_at && <>Расчёт {fmt(data.built_at)} · Список сотрудников {fmt(data.census_at)}{data.census_source && ` · ${data.census_source}`}</>}
+      {data.running && <span role="status">{data.built_at && " · "}Фоновый расчёт выполняется.</span>}
+    </p>}
+    {data && data.warnings.length > 0 && <div className="alert warn"><div className="alert-body">
+      <ul className="ep-notes">{data.warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul>
+    </div></div>}
     {error && <div className="alert error" role="alert"><div className="alert-body">{error} <button type="button" className="link-btn" onClick={() => setNonce((n) => n + 1)}>Повторить</button></div></div>}
     {data?.ready ? <>
       <FilterBar search={{ value: q, onChange: (value) => setQ(value.slice(0, 200)), placeholder: "Сотрудник, логин, устройство или IP", label: "Поиск по сотрудникам и устройствам" }}
@@ -244,21 +254,30 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
         ]}
         onReset={clear} count={{ n: loading ? null : data.totals[view], noun: view === "employees" ? ["сотрудник", "сотрудника", "сотрудников"] : ["устройство", "устройства", "устройств"] }}
         onRefresh={() => setNonce((n) => n + 1)} refreshing={loading}
-        report={{ onClick: () => setReport({ view, filters }), disabled: loading || data.totals[view] === 0 }} />
+        report={{ onClick: () => setReport({ view, filters }), disabled: reportBusy,
+          title: view === "employees" ? "Отчёт по выбранным сотрудникам" : "Отчёт по выбранным устройствам" }} />
 
-      <section className="card" aria-label="Показатели отчёта">
-        <div className="qr-metrics ep-metrics">
-          {(Object.keys(METRICS) as Metric[]).map((key) => {
-            const n = data.totals[key];
-            const device = key === "devices" || key === "corporate" || key === "personal";
-            const showPercent = key === "uses_av" || key === "protected";
-            return <div className="qr-metric" key={key}>
-              <span>{METRICS[key]}</span>
-              <b><CountButton n={n} label={METRICS[key]} onClick={() => device ? deviceMetric(key) : employeeMetric(key)} />
-                {showPercent && <span className="ep-perc"> · {data.totals.employees ? `${num(percent(n, data.totals.employees))}%` : "—"}</span>}
-              </b>
-            </div>;
-          })}
+      <section className="card ep-summary" aria-labelledby="ep-summary-title">
+        <header className="ov-head ep-summary-head">
+          <h2 id="ep-summary-title">Сводка защиты</h2>
+          <ReportButton onClick={() => setReport({ view: "summary", filters })} disabled={reportBusy}
+            title="Отчёт по показателям и диаграммам текущей выборки" />
+        </header>
+        <div className="ep-metric-grid">
+          {METRIC_GROUPS.map(({ title, metrics }) => <div className="ep-metric-group" key={title}>
+            <h3>{title}</h3>
+            <dl>{metrics.map((key) => {
+              const n = data.totals[key];
+              const device = key === "devices" || key === "corporate" || key === "personal";
+              const showPercent = (key === "uses_av" || key === "protected") && data.totals.employees > 0;
+              return <div key={key}>
+                <dt>{METRICS[key]}</dt>
+                <dd><CountButton n={n} label={METRICS[key]} onClick={() => device ? deviceMetric(key) : employeeMetric(key)} />
+                  {showPercent && <span className="muted small"> · {num(percent(n, data.totals.employees))}%</span>}
+                </dd>
+              </div>;
+            })}</dl>
+          </div>)}
         </div>
       </section>
 
@@ -314,8 +333,10 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
           note: <span className="sub">{data.labels.device_status[d.status] || "Состояние неизвестно"}</span>, id: d.id }));
         return { ...page, items };
       }} />}
-    {report && <QuickReportPanel kind="quick_employee_protection" title={`${TITLE} · ${report.view === "employees" ? "сотрудники" : "устройства"}`}
-      params={{ ...report.filters, view: report.view }} options={{ scope: false }} activityDays={ctx.me.activity_days} canReport onClose={() => setReport(null)} />}
+    {report && <QuickReportPanel kind="quick_employee_protection"
+      title={`${TITLE} · ${{ summary: "сводка", employees: "сотрудники", devices: "устройства" }[report.view]}`}
+      params={{ ...report.filters, ...(report.view === "summary" ? { view: "employees", detail: "summary" } : { view: report.view }) }}
+      options={{ scope: false }} activityDays={ctx.me.activity_days} canReport onClose={() => setReport(null)} />}
   </section>;
 }
 

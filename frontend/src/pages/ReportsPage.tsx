@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from "reac
 import { api, type ApiError, type AuditParams, type Job, type ReportParams, type SavedCheck, type VersionOp } from "../api";
 import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
+import { DB_IP_CREDIT, DbIpAttribution } from "../components/DbIpAttribution";
 import { ListFoot, VirtualRows, useInfinite, type Chunk } from "../components/Infinite";
 import { ConfirmDialog } from "../components/Dialogs";
 import { Icon } from "../components/Icons";
@@ -217,6 +218,7 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
   const fam = (j.params.items ?? []).some((it) => (it.product_keys?.length ?? 0) > 1);   // пункт из нескольких продуктов — нужен столбец «Продукт»
   const cols = (quickJob ? qcols.map((c): [string, string, string?] => [c.key, c.title, c.type === "mono" ? "mono nowrap" : c.type === "num" ? "num" : undefined]) : audit ? AUDIT_COLS.filter(([k]) => (multi || k !== "source") && (fam || k !== "product")) : j.kind === "software_hosts" ? SOFT_COLS : HOST_COLS);
   const s = j.summary;
+  const notes = s?.notes?.filter((note) => !s.dbip_attribution || !note.startsWith(DB_IP_CREDIT));
   const s0 = s ?? {} as NonNullable<typeof s>;
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(false); } };
   const canEdit = ctx.me.user.role !== "viewer";
@@ -234,7 +236,8 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
           <div className="alert-body">{j.status === "queued" ? "Отчёт в очереди: задания выполняются по порядку." : `Формируется: ${j.progress ?? "чтение данных"}.`}</div>
           {canEdit && <button className="btn mini" onClick={async () => { await api.reports.cancel(j.id); void load(); }}><Icon name="stop" size={14} />Отменить</button>}</div>)}
       {j.error && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{j.error}</div></div>}
-      {s?.notes?.map((n) => <div key={n} className="alert warn"><Icon name="info" /><div className="alert-body">{n}</div></div>)}
+      {notes?.map((n) => <div key={n} className="alert warn"><Icon name="info" /><div className="alert-body">{n}</div></div>)}
+      {s?.dbip_attribution && <p className="muted small"><DbIpAttribution /></p>}
       {audit && s?.programs?.filter((p) => p.explain).map((p) => <div key={p.program} className="alert info"><Icon name="info" /><div className="alert-body"><b>{p.program}:</b> {p.explain}</div></div>)}
       {s && audit && s.programs && (<>
         <div className="meters">

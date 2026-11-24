@@ -20,6 +20,7 @@ export function Modal({ title, onClose, children, wide, footer, side, scrollRef,
     const first = ref.current?.querySelector<HTMLElement>("[autofocus], input, select, textarea, button:not(.modal-x)");
     (first ?? ref.current)?.focus();
     const key = (e: KeyboardEvent) => {
+      if (ref.current?.parentElement !== [...document.querySelectorAll(".modal-back")].at(-1)) return;
       if (e.key === "Escape") { e.stopPropagation(); request(); return; }
       if (e.key !== "Tab" || !ref.current) return;
       const els = Array.from(ref.current.querySelectorAll<HTMLElement>("a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])"));

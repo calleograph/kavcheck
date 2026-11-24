@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, type ApiError, type QuickCol, type QuickKind, type QuickPreview, type Template } from "../api";
 import { fmt, num, plural } from "../util";
 import { CompactList } from "./CompactList";
+import { DB_IP_CREDIT, DbIpAttribution } from "./DbIpAttribution";
 import { Modal } from "./Dialogs";
 import { Icon } from "./Icons";
 import { Dock, Segmented } from "./ui";
@@ -107,7 +108,7 @@ export const HIER_VIEWS: [string, [string, string][]][] = [
 const HIER_FILTERS: [string, string][] = [["branch", "Только выбранный руководитель"], ["q", "Только найденные по поиску"]];
 const BUILDABLE = ["quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_hunt", "quick_bi", "quick_hier", "quick_ad"];
 // выбор строк и фильтры страницы в шаблон не попадают: они берутся с той страницы, откуда открыт конструктор
-const CONTEXT_KEYS = ["host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "zone", "group_contains", "threat", "product", "build", "problem", "dept", "branch"];
+const CONTEXT_KEYS = ["host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "host_q", "zone", "group_contains", "threat", "product", "build", "problem", "dept", "branch"];
 
 /** Конструктор отчёта: подробность (краткий — показатели и сводные таблицы, подробный — все записи, полные перечни CVE, устройств и пользователей), столбцы основной таблицы и шаблоны. */
 function Builder({ kind, params, columnsAll, onChange, canSave }: { kind: string; params: Record<string, unknown>; columnsAll: { key: string; title: string }[]; onChange: (patch: Record<string, unknown>) => void; canSave: boolean }) {
@@ -246,6 +247,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
   };
 
   const doc = data?.doc ?? null;
+  const notes = doc?.notes.filter((note) => !doc.dbip_attribution || !note.startsWith(DB_IP_CREDIT)) ?? [];
   const previewRows = data?.items.slice(0, PREVIEW_SHOWN) ?? [];
   const hosts = doc?.metrics.find((m) => m.key === "hosts");
   const employeeTotal = kind === "quick_employee_protection" && data ? (params.view === "devices" ?
@@ -295,7 +297,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
               <ul className="qr-sev-legend">{doc.severity.levels.map((l) => <li key={l.key} className={l.value ? "" : "zero"}><span className={`dot-sev qs-${l.key}`} />{l.label}: <b>{num(l.value)}</b></li>)}</ul>
               <p className="muted small">{doc.severity.title}</p>
             </div>)}
-          {doc.notes.length > 0 && <div className="alert warn qr-notes"><Icon name="info" /><div className="alert-body"><ul>{doc.notes.map((n) => <li key={n}>{n}</li>)}</ul></div></div>}
+          {notes.length > 0 && <div className="alert warn qr-notes"><Icon name="info" /><div className="alert-body"><ul>{notes.map((n) => <li key={n}>{n}</li>)}</ul></div></div>}
+          {doc.dbip_attribution && <p className="muted small"><DbIpAttribution /></p>}
         </>)}
         {data && !data.unsupported && data.total === 0 && <div className="alert info"><Icon name="info" /><div className="alert-body">По этим условиям данных нет. Измените условия в «Дополнительно» или выбор в таблице.</div></div>}
         {data && data.total > 0 && (<>

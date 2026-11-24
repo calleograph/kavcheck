@@ -2,10 +2,12 @@ import { useEffect, useId, useState } from "react";
 import { Link } from "react-router-dom";
 import { req } from "../../api";
 import { ConfirmDialog, Modal } from "../../components/Dialogs";
+import { ReportButton } from "../../components/FilterBar";
 import { Icon } from "../../components/Icons";
 import { Empty, MaskHint, SkelRows } from "../../components/ui";
 import { num } from "../../util";
 import { InvZoneSelect, LocationPicker, PersonPicker, RefSelect, useInv } from "./InvBits";
+import { useInvReport } from "./InvReport";
 import { inv } from "./invApi";
 
 interface Rule {
@@ -69,6 +71,7 @@ const MASKS = [
 
 export default function InvGeoRules({ sources, onChanged }: { sources: Sources; onChanged: () => void }) {
   const { locs } = useInv();
+  const report = useInvReport();
   const [rules, setRules] = useState<SavedRule[] | null>(null);
   const [infraSources, setInfraSources] = useState<InfraSources>([]);
   const [edit, setEdit] = useState<SavedRule | "new" | null>(null);
@@ -101,6 +104,7 @@ export default function InvGeoRules({ sources, onChanged }: { sources: Sources; 
       <div className="card-head">
         <h2>Правила принадлежности</h2><div className="spacer" />
         <button type="button" className="btn mini primary" disabled={!rules} onClick={() => setEdit("new")}><Icon name="plus" size={15} />Добавить правило</button>
+        <ReportButton onClick={() => report.open(["geography_rules"], {})} disabled={!rules || !!error} title="Сформировать отчёт по правилам принадлежности" />
       </div>
       <p className="muted small pad">Меньшее число даёт правилу больший приоритет. При равенстве применяется самый узкий диапазон. Противоречие между равными правилами требует проверки. Правило VPN имеет преимущество перед остальными.</p>
       {error ? <div className="pad"><p className="field-err" role="alert">{error}</p>
@@ -121,16 +125,18 @@ export default function InvGeoRules({ sources, onChanged }: { sources: Sources; 
         sources={sources} infraSources={infraSources} onSave={save} onClose={() => setEdit(null)} />}
       {remove && <ConfirmDialog title="Удалить правило?" body={remove.name} confirmLabel="Удалить"
         onConfirm={() => deleteRule(remove.id)} onClose={() => setRemove(null)} />}
+      {report.node}
     </div>
   );
 }
 
 function RuleEditor({ rule, sources, infraSources, onSave, onClose }: { rule: SavedRule | null; sources: Sources; infraSources: InfraSources; onSave: (rule: SavedRule) => void; onClose: () => void }) {
   const { id: ruleId, ...initial } = rule ?? { id: null, ...NEW_RULE };
+  const report = useInvReport();
   const [draft, setDraft] = useState<Rule>(initial);
   const [networkText, setNetworkText] = useState(initial.networks.join("\n"));
   const [person, setPerson] = useState("");
-  const [plan, setPlan] = useState<Preview | null>(null);
+  const [plan, setPlan] = useState<{ result: Preview; input: { id: number | null; rule: Rule } } | null>(null);
   const [busy, setBusy] = useState<"preview" | "save" | null>(null);
   const [error, setError] = useState("");
   const formId = useId();
@@ -154,7 +160,8 @@ function RuleEditor({ rule, sources, infraSources, onSave, onClose }: { rule: Sa
     setBusy(action);
     try {
       if (action === "preview") {
-        setPlan(await req<Preview>("POST", `${PATH}/preview`, { id: ruleId, rule: data }));
+        const input = { id: ruleId, rule: data };
+        setPlan({ result: await req<Preview>("POST", `${PATH}/preview`, input), input });
       } else {
         onSave(await req<SavedRule>(ruleId ? "PUT" : "POST", ruleId ? `${PATH}/${ruleId}` : PATH, data));
       }
@@ -165,7 +172,7 @@ function RuleEditor({ rule, sources, infraSources, onSave, onClose }: { rule: Sa
     }
   };
 
-  return (
+  return (<>
     <Modal title={ruleId ? "Изменить правило" : "Новое правило принадлежности"} wide onClose={busy ? () => undefined : onClose}
       footer={<div className="row wrap"><button type="button" className="btn" disabled={!!busy} onClick={onClose}>Отмена</button>
         <div className="spacer" />
@@ -221,16 +228,20 @@ function RuleEditor({ rule, sources, infraSources, onSave, onClose }: { rule: Sa
           </>}
         </fieldset>
         {error && <p className="field-err" role="alert">{error}</p>}
-        {plan && <PreviewResult plan={plan} />}
+        {plan && <PreviewResult plan={plan.result} onReport={() => report.open(["geography_preview"], {
+          geo_rule_preview: plan.input, detail: plan.result.matched ? "full" : "summary",
+        })} />}
       </form>
     </Modal>
-  );
+    {report.node}
+  </>);
 }
 
-function PreviewResult({ plan }: { plan: Preview }) {
+function PreviewResult({ plan, onReport }: { plan: Preview; onReport: () => void }) {
   return (
     <div className="inv-fs" aria-live="polite">
-      <p><b>Предпросмотр</b></p>
+      <div className="card-head"><h3>Предпросмотр</h3><div className="spacer" />
+        <ReportButton onClick={onReport} title="Сформировать отчёт по проверенному правилу" /></div>
       <p className="small">
         Совпадений: <b>{num(plan.matched)}</b> · Сработает: <b>{num(plan.effective)}</b> · Противоречия: <b>{num(plan.conflicts)}</b> ·
         Можно заполнить учётные поля: <b>{num(plan.would_fill)}</b> · Устаревшие наблюдения: <b>{num(plan.stale)}</b>

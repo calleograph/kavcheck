@@ -4,7 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ApiError } from "../../api";
 import type { Ctx } from "../../App";
 import { ConfirmDialog, Modal } from "../../components/Dialogs";
-import { FilterBar } from "../../components/FilterBar";
+import { FilterBar, ReportButton } from "../../components/FilterBar";
 import { Icon } from "../../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, type Chunk } from "../../components/Infinite";
 import { CheckAll } from "../../components/QuickReport";
@@ -94,7 +94,11 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
     try { await inv.addView("assets", name, Object.fromEntries([...sp.entries()]), false); show("Фильтр сохранён"); void loadViews(); } catch (e) { show((e as ApiError).message, "error"); }
   };
   const ids = whole ? [] : [...marks];
-  const reportParams = ids.length ? { ids } : params;
+  const hasSelection = whole || ids.length > 0;
+  const reportParams = ids.length ? { ids } : { ...filtersForBulk(params), ...(whole ? { exclude_ids: [...marks] } : {}) };
+  const reportDisabled = !selectable || (hasSelection && !count);
+  const openReport = () => rep.open(["registry", "computers", "by_person", "by_resp", "by_location", "cost", "warranty", "hardware", "software", "owner_history", "moves", "duplicates", "components"],
+    reportParams, hasSelection ? `Выбрано: ${num(count)}` : "Все единицы, подходящие под фильтры");
   return (
     <div className="inv-page">
       <div className="inv-head">
@@ -136,8 +140,7 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
         moreActive={chips.length - (f.q ? 1 : 0) - (f.cls ? 1 : 0) - (f.st ? 1 : 0)} chips={chips} onReset={reset}
         count={{ n: list.initial ? null : list.total, noun: ["единица", "единицы", "единиц"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
         extra={<label className="field inline"><span className="sr-only">Группировка</span><select value={groupBy} onChange={(e) => set({ group: e.target.value })}>{GROUP_BY.map(([k, v]) => <option key={k} value={k}>{k ? `Группа: ${v}` : v}</option>)}</select></label>}
-        report={{ onClick: () => rep.open(["registry", "computers", "by_person", "by_resp", "by_location", "cost", "warranty", "hardware", "software", "owner_history", "moves", "duplicates", "components"], reportParams, ids.length ? `Выбрано: ${ids.length}` : "Все единицы, подходящие под фильтры"),
-          title: ids.length ? `Отчёт по отмеченным (${ids.length})` : "Отчёт по текущей выборке" }} />
+        report={{ onClick: openReport, disabled: reportDisabled, title: hasSelection ? `Отчёт по отмеченным (${num(count)})` : "Отчёт по текущей выборке" }} />
       {groupBy && <div className="inv-groups card">
         {groups === null ? <SkelRows rows={2} cols={4} /> : groups.length === 0 ? <p className="muted small">Нет данных для группировки.</p> :
           <ul>{groups.map((g) => <li key={String(g.id)}><button type="button" disabled={g.id === null} onClick={() => g.id !== null && set({ [GROUP_PARAM[groupBy]]: String(g.id), ...(["user", "resp", "mol"].includes(groupBy) ? { role: groupBy, person_name: g.name } : {}), group: null })}>
@@ -180,7 +183,7 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
         {!whole && can("docs") && <select className="mini" value="" aria-label="Оформить документ" onChange={(e) => e.target.value && nav(`/inventory/docs/new?kind=${e.target.value}&ids=${ids.join(",")}`)}>
           <option value="">Оформить документ…</option>{["issue", "return", "move", "accept", "handover", "defect", ...(can("repair") ? ["repair"] : []), ...(can("writeoff") ? ["writeoff"] : []), "work"].map((k) => <option key={k} value={k}>{meta.doc_short[k]}</option>)}</select>}
         {!whole && <a className="btn mini" href={inv.labelsUrl(ids)} target="_blank" rel="noopener"><Icon name="file" size={15} />Этикетки</a>}
-        {(!whole || !marks.size) && <button className="btn mini primary" onClick={() => rep.open(["registry", "computers", "by_person", "by_location", "hardware", "software", "owner_history", "moves"], reportParams, `Выбрано: ${count}`)}><Icon name="download" size={15} />Отчёт</button>}
+        <ReportButton onClick={openReport} disabled={reportDisabled} />
         <button className="btn mini icon" onClick={clear} aria-label="Снять выбор"><Icon name="close" size={15} /></button>
       </Dock>}
       {bulk && <InvBulkEdit {...bulk} onClose={closeBulk} onDone={(n) => { closeBulk(); clear(); list.reload(); loadGroups(); show(`Изменено карточек: ${num(n)}`); }} />}

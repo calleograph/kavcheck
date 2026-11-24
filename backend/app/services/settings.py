@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import AppSetting, utcnow
@@ -569,9 +569,17 @@ class InventorySettings(_Group):
 
 class GeoIPSettings(_Group):
     SECRETS: ClassVar[tuple[str, ...]] = ("license_key",)
-    enabled: bool = False
+    provider: Literal["dbip", "maxmind"] = "dbip"
+    enabled: bool = True
     account_id: str = Field(default="", pattern=r"^(|[1-9][0-9]{0,17})$")
     license_key: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_provider(cls, data):
+        if isinstance(data, dict) and "provider" not in data and (data.get("account_id") or data.get("license_key")):
+            return {**data, "provider": "maxmind"}
+        return data
 
 
 GROUPS: dict[str, type[_Group]] = {"hier": HierSettings, "tech": TechSettings, "appearance": AppearanceSettings, "bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
@@ -631,7 +639,8 @@ class SettingsService:
             key = patch.get("license_key")
             if key is not None and (not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{0,128}", key)):
                 raise SettingsError("Лицензионный ключ MaxMind содержит недопустимые символы или слишком длинный")
-            if validated.enabled and not (validated.account_id and (key if key is not None else self.decrypt(cur.get("license_key_enc"), "geoip.license_key"))):
+            if validated.provider == "maxmind" and validated.enabled and not (
+                    validated.account_id and (key if key is not None else self.decrypt(cur.get("license_key_enc"), "geoip.license_key"))):
                 raise SettingsError("Для автоматического обновления укажите номер учётной записи и ключ MaxMind")
         data = validated.model_dump()
         for s in model.SECRETS:

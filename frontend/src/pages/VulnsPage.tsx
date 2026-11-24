@@ -7,7 +7,7 @@ import { api, type ApiError, type HostVuln, type QuickKind, type SavedCheck, typ
 import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
 import { CountButton, FilterBar } from "../components/FilterBar";
-import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
+import { HostsDrawer, type DrawerHost, type PanelQuery } from "../components/HostsDrawer";
 import { OwnerSub } from "../components/OwnerBlock";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel, type QuickScopeOpts } from "../components/QuickReport";
 import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
@@ -138,7 +138,7 @@ function HostsView({ ctx }: { ctx: Ctx }) {
 }
 
 /** Боковая панель компьютеров уязвимости или программы: серверные поиск, сортировка и страницы; имя ведёт в карточку, отчёт — по этим же компьютерам. */
-function VulnHostsPanel({ title, lede, filters, all, ctx, onClose, report }: { title: string; lede: string; filters: Record<string, string | number | undefined>; all: boolean; ctx: Ctx; onClose: () => void; report?: () => void }) {
+function VulnHostsPanel({ title, lede, filters, all, ctx, onClose, report }: { title: string; lede: string; filters: Record<string, string | number | boolean | undefined>; all: boolean; ctx: Ctx; onClose: () => void; report?: (query: PanelQuery) => void }) {
   return (
     <HostsDrawer title={title} lede={lede} listKey={`vuln-panel:${ctx.current?.id}:${JSON.stringify(filters)}:${all}`} deps={[filters, all]} search="Компьютер или IP-адрес" sortKeys={{ name: "name", last_connected: "last_connected" }}
       activityDays={ctx.me.activity_days} defaultSort="name"
@@ -146,7 +146,7 @@ function VulnHostsPanel({ title, lede, filters, all, ctx, onClose, report }: { t
         const r = await api.vulns.hosts({ ...filters, q: qy.q, all_hosts: all, sort: qy.sort === "last_connected" ? "last_connected" : "name", desc: qy.desc, offset, limit }) as unknown as Chunk<VulnHost>;
         return { items: r.items.map((h) => ({ ...h, note: <span className="sub"><SevCounts critical={h.critical} high={h.high} warning={h.warning} compact /></span> })), total: r.total } as unknown as Chunk<DrawerHost>;
       }}
-      report={report ? { onClick: report } : null} onClose={onClose} />
+      report={report ? { onClick: (query) => report({ ...query, desc: query.sort === "name" ? !query.desc : query.desc }) } : null} onClose={onClose} />
   );
 }
 
@@ -250,7 +250,10 @@ function ListView({ ctx }: { ctx: Ctx }) {
       <ReportDock label="Выбранные уязвимости" count={sel.count} noun={["уязвимость выбрана", "уязвимости выбраны", "уязвимостей выбрано"]} canReport={canReport} onClear={sel.clear}
         onReport={() => setReport(reportFor(sel.ids, sel.count === 1 ? "Отчёт по выбранной уязвимости" : `Отчёт по выбранным уязвимостям (${sel.count})`))} />
       {panel && <VulnHostsPanel title={panel.cve[0] ?? panel.kla_id} lede={`${panel.severity_label ?? ""} · ${panel.products.slice(0, 3).join(", ")}${panel.products.length > 3 ? ` и ещё ${panel.products.length - 3}` : ""}. ${all ? "Все устройства" : `Компьютеры, подключавшиеся к KSC за ${ctx.me.activity_days} сут`}.`}
-        filters={{ cve: panel.cve[0] ?? panel.kla_id }} all={all} ctx={ctx} onClose={() => setPanel(null)} report={canReport ? () => setReport(reportFor([panel.descr_id], `Отчёт по уязвимости ${panel.cve[0] ?? panel.kla_id}`)) : undefined} />}
+        filters={{ descr_id: panel.descr_id, patchable }} all={all} ctx={ctx} onClose={() => setPanel(null)} report={canReport ? (query) => {
+          const r = reportFor([panel.descr_id], `Отчёт по уязвимости ${panel.cve[0] ?? panel.kla_id}`);
+          setReport({ ...r, params: { ...r.params, ...query, patchable } });
+        } : undefined} />}
       {report && <QuickReportPanel {...report} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)} />}
     </>
   );
@@ -315,7 +318,10 @@ function ProductsView({ ctx }: { ctx: Ctx }) {
         onReport={() => setReport(reportFor(sel.ids, `Уязвимости выбранных программ (${sel.count})`))} />
       {panel && <VulnHostsPanel title={panel.name} lede={`${num(panel.total)} обнаружений. ${all ? "Все устройства" : `Компьютеры, подключавшиеся к KSC за ${ctx.me.activity_days} сут`}.`}
         filters={panel.product_id ? { product_id: panel.product_id, severity } : { product_name: panel.name, severity }} all={all} ctx={ctx} onClose={() => setPanel(null)}
-        report={canReport ? () => setReport(reportFor([pk(panel)], `Уязвимости программы: ${panel.name}`)) : undefined} />}
+        report={canReport ? (query) => {
+          const r = reportFor([pk(panel)], `Уязвимости программы: ${panel.name}`);
+          setReport({ ...r, params: { ...r.params, ...query } });
+        } : undefined} />}
       {report && <QuickReportPanel {...report} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)} />}
     </>
   );

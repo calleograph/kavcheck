@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
 
 from ..employee_protection.filters import Filters as EmployeeProtectionFilters
-from ..inventory.geography import GeoFilters
+from ..inventory.geography import GeoFilters, RulePreview
 from ..roles import ROLE_PATTERN
 
 from ..search import clean
@@ -295,10 +295,17 @@ class QuickEol(Params):
     severity: Literal["", "critical", "high", "warning"] = ""
     publisher: MaskText = None
     q: MaskText = None
+    host_q: MaskText = None
     include_inactive: bool = False
     devices: bool = True
     active_days: int | None = Field(default=None, ge=1, le=3650)
     zone: str = Field(default="", max_length=40)
+
+    @model_validator(mode="after")
+    def _host_search_for_finding(self):
+        if self.host_q and not self.finding:
+            raise ValueError("Поиск по устройствам доступен для отчёта по находке EOL")
+        return self
 
 
 class QuickZone(Params):
@@ -379,7 +386,7 @@ class QuickAdAudit(Params):
 
 class QuickInv(Params):
     """Инвентаризация: вид отчёта и отбор страницы (те же параметры, что у списка оборудования); scope_ids проставляет сервер (область учёта пользователя)."""
-    view: str = Field(default="registry", pattern=r"^(registry|computers|card|by_person|by_resp|by_location|geography|stock|repair|warranty|writtenoff|cost|owner_history|moves|hardware|software|licenses|license_usage|components|docs|duplicates|count|count_diff|infra_registry|infra_hypervisors|infra_ips|infra_racks|infra_findings|infra_changes|infra_new_gone|infra_sync|infra_decom|infra_asof|infra_review|infra_netscan)$")
+    view: str = Field(default="registry", pattern=r"^(registry|computers|card|by_person|by_resp|by_location|geography|geography_card|geography_rules|geography_preview|stock|repair|warranty|writtenoff|cost|owner_history|moves|hardware|software|licenses|license_usage|components|docs|duplicates|count|count_diff|infra_registry|infra_hypervisors|infra_ips|infra_racks|infra_findings|infra_changes|infra_new_gone|infra_sync|infra_decom|infra_asof|infra_review|infra_netscan)$")
     q: str = Field(default="", max_length=300)
     cls: str = Field(default="", max_length=200)
     type_id: int | None = None
@@ -403,6 +410,7 @@ class QuickInv(Params):
     stale: bool = False
     parent: int | None = None
     ids: list[int] = Field(default_factory=list, max_length=5000)
+    exclude_ids: list[Annotated[int, Field(ge=1, le=2**63 - 1)]] = Field(default_factory=list, max_length=5000)
     props: dict[str, str] = Field(default_factory=dict)
     asset_id: int | None = None
     date_from: str = Field(default="", max_length=10)
@@ -415,6 +423,7 @@ class QuickInv(Params):
     on: str = Field(default="", max_length=10)
     scope_ids: list[int] = Field(default_factory=list, max_length=200)
     geography: GeoFilters | None = None
+    geo_rule_preview: RulePreview | None = None
     geo_source_ids: list[str] | None = None  # доступ к KSC проставляет сервер
 
 
@@ -494,6 +503,7 @@ class QuickSessions(Params):
 class QuickOverview(Params):
     """Сводка инфраструктуры: условия главной страницы (период активности, показатель, источник)."""
     days: int = Field(default=30, ge=1, le=365)
+    q: MaskText = None
     metric: str = Field(default="", max_length=20, pattern=r"^[a-z_]*$")
     source_id: str = Field(default="", max_length=40)
 

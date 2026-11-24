@@ -7,7 +7,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +18,7 @@ from ..inventory import geography as G
 from ..inventory.geo_service import REQUEST, request_refresh, state_key
 from ..inventory import geo_updater
 from ..inventory.query import where_of
-from ..models import AppSetting, InfraSource, InvAsset, InvGeo, InvGeoRule, InvLocation, InvPerson, InvRef, KscSource, Zone, utcnow
+from ..models import AppSetting, InfraSource, InvAsset, InvGeo, InvGeoRule, InvLocation, KscSource, utcnow
 from ..services.sources import visible_sources
 from .inv import Ix, audit, bad, filters_from, get_asset, inv_ctx
 
@@ -81,7 +81,9 @@ async def geography(request: Request, filters: Annotated[GeoPage, Query()], ctx:
         InvLocation.id.in_({g["site_id"] for g in groups if g["site_id"]} | {i["site_id"] for i in items if i.get("site_id")})))).all()}
     for row in groups + items:
         row["site"] = locations.get(row.get("site_id"), "")
+    dbip = await db.scalar(select(base.where(r["provider"].as_string() == G.DBIP_LABEL).exists()))
     return {"items": items, "total": total, "groups": groups, "groups_limited": len(grouped) > len(groups),
+            "dbip_attribution": bool(dbip),
             "sources": [{"id": str(s.id), "name": s.name, **(states.get(state_key(s.id)) or {})} for s in srcs]}
 
 
@@ -105,13 +107,7 @@ async def asset_observation(aid: int, ctx: Ix = Depends(inv_ctx), db: AsyncSessi
         addresses = [{**a, "scope": G.address_scope(a["ip"])} for a in evidence.get("addresses", [])]
         out.update(source=src.name if src else "", site=site.path if site else "", evidence={**evidence, "addresses": addresses},
                    connection_ip=G.connection_observation(evidence))
-        values = out.get("proposals", {})
-        display = {}
-        for field, model in (("location_id", InvLocation), ("dept_id", InvRef), ("branch_id", InvRef), ("resp_id", InvPerson), ("zone_id", Zone)):
-            if values.get(field) and (row := await db.get(model, UUID(values[field]) if field == "zone_id" else values[field])):
-                display[field] = {"label": C.M.FIELD_RU[field], "value": row.path if field == "location_id" else row.name,
-                                  "empty": not getattr(asset, field)}
-        out["fields"] = display
+        out["fields"] = await G.proposal_fields(db, asset, out.get("proposals", {}))
     return out
 
 
@@ -182,49 +178,15 @@ async def rules(ctx: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
 
 
 async def check_rule(db, body: G.Rule):
-    for key in ("source_id", "infra_source_id", "site_id", "location_id", "branch_id", "dept_id", "type_id", "resp_id", "zone_id"):
-        value = getattr(body, key)
-        if value is None:
-            continue
-        model = {"source_id": KscSource, "infra_source_id": InfraSource, "site_id": InvLocation, "location_id": InvLocation,
-                 "branch_id": InvRef, "dept_id": InvRef, "type_id": InvRef, "resp_id": InvPerson, "zone_id": Zone}[key]
-        row = await db.get(model, value)
-        if row is None or (model is InvRef and row.kind != key.removesuffix("_id")) or (model is InvLocation and not row.active):
-            raise HTTPException(status_code=422, detail=f"Проверьте значение поля {key}")
-
-
-class Preview(BaseModel):
-    id: int | None = None
-    rule: G.Rule
+    if key := await G.invalid_rule_ref(db, body):
+        raise HTTPException(status_code=422, detail=f"Проверьте значение поля {key}")
 
 
 @router.post("/rules/preview")
-async def preview(body: Preview, ctx: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+async def preview(body: G.RulePreview, ctx: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
     admin(ctx)
     await check_rule(db, body.rule)
-    proposed = G.Compiled(body.id or -1, body.rule)
-    rules = [r for r in await G.rules_for(db) if r.id != proposed.id] + [proposed]
-    now = utcnow()
-    q = select(InvAsset, InvGeo).join(InvGeo, G.selection(allowed_sources(ctx.su))).order_by(InvAsset.id)
-    if (scope := ctx.acc.asset_filter()) is not None:
-        q = q.where(scope)
-    counts = dict(matched=0, effective=0, conflicts=0, would_fill=0, stale=0)
-    sample = []
-    async for a, g in await db.stream(q.execution_options(yield_per=500)):
-        addresses = [(ip, r["kind"]) for r in g.evidence.get("addresses", []) if (ip := G.ip_int(r["ip"])) is not None]
-        if proposed.match(g.evidence, g.source_id, a.type_id, addresses) is None:
-            continue
-        counts["matched"] += 1
-        res = G.locate(g.evidence, g.source_id, a.type_id, rules, lambda _ip: {})
-        effective = proposed.id in {r["id"] for r in res["rules"]}
-        is_fresh = G.fresh(g.observed_at, now)
-        counts["effective"] += effective and res["status"] != "conflict"
-        counts["conflicts"] += effective and res["status"] == "conflict"
-        counts["stale"] += not is_fresh
-        counts["would_fill"] += bool(effective and is_fresh and any(getattr(a, field) is None for field in res["proposals"]))
-        if len(sample) < 20:
-            sample.append({"id": a.id, "inv_no": a.inv_no, "name": a.name or a.hostname, "status": res["status"], "effective": effective, "fresh": is_fresh})
-    return {**counts, "items": sample}
+    return await G.preview_rule(db, G.Compiled(body.id or -1, body.rule), allowed_sources(ctx.su), ctx.acc.asset_filter(), utcnow(), 20)
 
 
 @router.post("/rules", status_code=201)

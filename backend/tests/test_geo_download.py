@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import gzip
 import io
 import os
 import tarfile
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -157,3 +159,84 @@ def test_archive_traversal_and_uncompressed_limit(tmp_path, monkeypatch):
     archive.write_bytes(_archive(city, b"x" * 2048))
     with pytest.raises(gd.DownloadError, match="Распакованный архив"):
         gd._extract(archive, target)
+
+
+async def test_dbip_monthly_pair_without_credentials_and_fallback(tmp_path, monkeypatch):
+    @contextmanager
+    def open_fake(path):
+        edition, build = Path(path).read_text().split(":")
+        yield SimpleNamespace(metadata=lambda: SimpleNamespace(database_type=edition, build_epoch=int(build)))
+
+    monkeypatch.setattr(gd.maxminddb, "open_database", open_fake)
+    now = datetime(2026, 12, 1, tzinfo=timezone.utc)
+    city, asn = gd.DBIP_EDITIONS
+    editions = {edition.lower(): edition for edition in gd.DBIP_EDITIONS}
+    missing_dec_asn = True
+    damaged_dec_asn = False
+    body_requests = []
+
+    async def handle(request):
+        assert request.url.scheme == "https" and request.url.host == gd.DBIP_HOST
+        prefix, filename = request.url.path.rsplit("/", 1)
+        assert prefix == "/free" and "Authorization" not in request.headers
+        name, year, month = filename.removesuffix(".mmdb.gz").rsplit("-", 2)
+        assert year == "2026"
+        if name == asn.lower() and month == "12" and missing_dec_asn:
+            return httpx.Response(404)
+        headers = {"Last-Modified": "Wed, 02 Dec 2026 02:00:00 GMT"}
+        if request.method == "HEAD":
+            return httpx.Response(200, headers=headers)
+        assert request.method == "GET"
+        edition = editions[name]
+        body_requests.append((month, edition))
+        compat = " (compat=GeoLite2-ASN)" if edition == asn else ""
+        archive = gzip.compress(f"{edition}{compat}:{month}".encode())
+        if month == "12" and edition == asn and damaged_dec_asn:
+            archive = archive[:-8] + bytes([archive[-8] ^ 1]) + archive[-7:]
+        return httpx.Response(200, headers=headers, stream=httpx.ByteStream(archive))
+
+    transport = httpx.MockTransport(handle)
+    first = await gd.update_dbip(tmp_path, transport=transport, now=now)
+    assert first["changed"] and first["month"] == "2026-11" and first["databases"][asn]["build_epoch"] == 11
+    installed = gd.database_directory(tmp_path, managed=True)
+    assert body_requests == [("11", city), ("11", asn)]
+
+    body_requests.clear()
+    assert await gd.update_dbip(tmp_path, transport=transport, now=now) == {**first, "changed": False}
+    assert not body_requests and gd.database_directory(tmp_path, managed=True) == installed
+
+    missing_dec_asn = False
+    damaged_dec_asn = True
+    with pytest.raises(gd.DownloadError, match="распаковать"):
+        await gd.update_dbip(tmp_path, transport=transport, now=now)
+    assert gd.database_directory(tmp_path, managed=True) == installed
+    assert not list(tmp_path.glob(".dbip-stage-*"))
+
+    damaged_dec_asn = False
+    body_requests.clear()
+    updated = await gd.update_dbip(tmp_path, transport=transport, now=now)
+    assert updated["changed"] and updated["month"] == "2026-12" and updated["databases"][asn]["build_epoch"] == 12
+    assert body_requests == [("12", city), ("12", asn)]
+    current = gd.database_directory(tmp_path, managed=True)
+    assert current != installed and (current / f"{city}.mmdb").read_text() == f"{city}:12"
+
+
+async def test_dbip_does_not_follow_redirect_or_publish_unbounded_archives(tmp_path, monkeypatch):
+    async def redirect(request):
+        assert request.url.host == gd.DBIP_HOST
+        return httpx.Response(302, headers={"Location": "https://elsewhere.example.local/file"})
+
+    with pytest.raises(gd.DownloadError, match="HTTP 302"):
+        await gd.update_dbip(tmp_path, transport=httpx.MockTransport(redirect))
+    assert gd.database_directory(tmp_path, managed=True) == tmp_path
+
+    monkeypatch.setattr(gd, "DBIP_MAX_MMDB", 5)
+
+    async def archive(request):
+        payload = httpx.ByteStream(gzip.compress(b"unbounded")) if request.method == "GET" else None
+        return httpx.Response(200, stream=payload)
+
+    with pytest.raises(gd.DownloadError, match="превышает допустимый размер"):
+        await gd.update_dbip(tmp_path, transport=httpx.MockTransport(archive))
+    assert gd.database_directory(tmp_path, managed=True) == tmp_path
+    assert not list(tmp_path.glob(".dbip-stage-*"))

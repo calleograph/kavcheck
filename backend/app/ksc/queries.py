@@ -213,6 +213,7 @@ GROUP BY d.nId, COALESCE(vp.wstrName, N'')"""
 VULN_DESCR_BY_CVE = "SELECT n.nVulnerabilityDescrId AS descr_id, n.wstrName AS name FROM dbo.vapm_vulnerability_names n WHERE n.nSense = 3 AND n.wstrName IN ({names})"
 VULN_NAMES = "SELECT n.nVulnerabilityDescrId AS descr_id, n.nSense AS sense, n.wstrName AS name FROM dbo.vapm_vulnerability_names n WHERE n.nSense IN (3, 5, 6) AND n.nVulnerabilityDescrId IN ({ids})"
 VULN_CVE_EXISTS = "EXISTS (SELECT 1 FROM dbo.vapm_vulnerability_names n WHERE n.nVulnerabilityDescrId = d.nId AND n.nSense = 3 AND n.wstrName LIKE %(cve)s)"
+VULN_DESCR_EQ = "d.nId = %(descr_id)s"
 
 # Состояние защиты: компьютеры со статусом KSC (1:1) и защитные продукты на них — два чтения небольших таблиц, проверки — в приложении (ksc/protection.py)
 PROTECTION_HOSTS = (f"SELECT {HOST_COLS}, s.nStatus AS ksc_status, s.nStatusMask AS status_mask, h.nUncured AS uncured "

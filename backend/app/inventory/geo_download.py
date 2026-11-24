@@ -1,4 +1,4 @@
-"""Локальная установка проверенной пары GeoLite2 City / ASN из официальных архивов."""
+"""Локальная установка проверенных пар City / ASN из официальных архивов."""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +13,7 @@ import time
 import zlib
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -25,6 +25,9 @@ import maxminddb
 
 log = logging.getLogger(__name__)
 EDITIONS = ("GeoLite2-City", "GeoLite2-ASN")
+DBIP_EDITIONS = ("DBIP-City-Lite", "DBIP-ASN-Lite")
+DBIP_HOST = "download.db-ip.com"
+DBIP_MAX_MMDB = 256 * 1024**2
 HOST = "download.maxmind.com"
 STORAGE = "mm-prod-geoip-databases.a2649acb697e2c09b632799562c076f2.r2.cloudflarestorage.com"
 CURRENT = ".geolite2-current"
@@ -132,13 +135,13 @@ def _extract(archive: Path, target: Path) -> None:
             raise DownloadError("В архиве GeoLite2 отсутствует файл базы")
 
 
-def _epoch(path: Path, edition: str) -> int | None:
+def _epoch(path: Path, edition: str, *, limit: int | None = None, compatible: str = "") -> int | None:
     try:
-        if not 0 < path.stat().st_size <= MAX_MMDB:
+        if not 0 < path.stat().st_size <= (MAX_MMDB if limit is None else limit):
             return None
         with maxminddb.open_database(str(path)) as reader:
             metadata = reader.metadata()
-            if metadata.database_type == edition and metadata.build_epoch > 0:
+            if (metadata.database_type == edition or (compatible and metadata.database_type == compatible)) and metadata.build_epoch > 0:
                 return metadata.build_epoch
     except (OSError, ValueError, maxminddb.InvalidDatabaseError):
         pass
@@ -147,17 +150,21 @@ def _epoch(path: Path, edition: str) -> int | None:
 
 async def _download(client: httpx.AsyncClient, edition: str, auth: httpx.BasicAuth, archive: Path) -> dict:
     async with _response(client, "GET", edition, auth) as response:
-        header = response.headers.get("content-length", "")
-        if header.isascii() and header.isdecimal() and (len(header) > 12 or int(header) > MAX_DOWNLOAD):
-            raise DownloadError("Архив GeoLite2 превышает допустимый размер")
-        total = 0
-        with archive.open("xb") as out:
-            async for chunk in response.aiter_raw(CHUNK):
-                total += len(chunk)
-                if total > MAX_DOWNLOAD:
-                    raise DownloadError("Архив GeoLite2 превышает допустимый размер")
-                out.write(chunk)
+        await _save_archive(response, archive, "GeoLite2")
         return _validators(response)
+
+
+async def _save_archive(response: httpx.Response, archive: Path, source: str) -> None:
+    header = response.headers.get("content-length", "")
+    if header.isascii() and header.isdecimal() and (len(header) > 12 or int(header) > MAX_DOWNLOAD):
+        raise DownloadError(f"Архив {source} превышает допустимый размер")
+    total = 0
+    with archive.open("xb") as out:
+        async for chunk in response.aiter_raw(CHUNK):
+            total += len(chunk)
+            if total > MAX_DOWNLOAD:
+                raise DownloadError(f"Архив {source} превышает допустимый размер")
+            out.write(chunk)
 
 
 def _metadata(directory: Path) -> dict:
@@ -177,7 +184,7 @@ def _prune(directory: Path, keep: tuple[Path, ...]) -> None:
                     and path.is_dir() and path.stat().st_mtime < cutoff):
                 shutil.rmtree(path)
     except OSError:
-        log.warning("Не удалось удалить старое поколение GeoLite2")
+        log.warning("Не удалось удалить прежнюю пару географических баз")
 
 
 def _publish(directory: Path, staged: Path, previous: Path) -> None:
@@ -253,3 +260,93 @@ async def update(directory: Path, account_id: str, license_key: str, *, transpor
     except (OSError, EOFError, tarfile.TarError, zlib.error):
         raise DownloadError(f"{edition}: не удалось распаковать или сохранить базы GeoLite2") from None
     return {"changed": changed, "databases": {name: {k: v for k, v in data.items() if k != "etag"} for name, data in result.items()}}
+
+
+class _EditionUnavailable(DownloadError):
+    """Этот ежемесячный выпуск пока не доступен по прямой ссылке."""
+
+
+@asynccontextmanager
+async def _dbip_response(client: httpx.AsyncClient, method: str, edition: str, month: str):
+    url = f"https://{DBIP_HOST}/free/{edition.lower()}-{month}.mmdb.gz"
+    async with client.stream(method, url, follow_redirects=False) as response:
+        if response.status_code in (404, 410):
+            raise _EditionUnavailable(f"{edition} за {month} недоступна")
+        if response.status_code != 200:
+            raise DownloadError(f"{edition}: DB-IP вернул HTTP {response.status_code}")
+        yield response
+
+
+def _unpack_dbip(archive: Path, target: Path) -> None:
+    size = 0
+    with gzip.open(archive, "rb") as src, target.open("xb") as out:
+        while chunk := src.read(CHUNK):
+            size += len(chunk)
+            if size > DBIP_MAX_MMDB:
+                raise DownloadError("Распакованная база DB-IP Lite превышает допустимый размер")
+            out.write(chunk)
+        out.flush()
+        os.fsync(out.fileno())
+
+
+def _dbip_epoch(directory: Path, edition: str) -> int | None:
+    compatible = "DBIP-ASN-Lite (compat=GeoLite2-ASN)" if edition == "DBIP-ASN-Lite" else ""
+    return _epoch(directory / f"{edition}.mmdb", edition, limit=DBIP_MAX_MMDB, compatible=compatible)
+
+
+async def update_dbip(directory: Path, *, transport: httpx.AsyncBaseTransport | None = None,
+                      guard: Callable[[], AbstractAsyncContextManager] | None = None,
+                      now: datetime | None = None) -> dict:
+    """Скачать пару DB-IP Lite за один месяц, сохраняя действующие файлы до публикации."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    months = (now.strftime("%Y-%m"), (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m"))
+    current = database_directory(directory, managed=True)
+    manifest = _metadata(current) if current != directory else {}
+    installed_month = manifest.get("month", "")
+    if not isinstance(installed_month, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}", installed_month):
+        installed_month = ""
+    epochs = {edition: _dbip_epoch(current, edition) if current != directory else None for edition in DBIP_EDITIONS}
+    installed = all(epochs.values())
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        async with asyncio.timeout(300), httpx.AsyncClient(transport=transport, timeout=30,
+                                                          headers={"Accept-Encoding": "identity"}) as client:
+            for month in months:
+                if installed_month >= month and installed:
+                    databases = {}
+                    for edition, value in epochs.items():
+                        tag = manifest.get(edition)
+                        databases[edition] = {"build_epoch": value, "last_modified": tag.get("last_modified", "") if isinstance(tag, dict) else ""}
+                    async with guard() if guard else nullcontext():
+                        _prune(directory, (current,))
+                    return {"changed": False, "databases": databases, "month": installed_month}
+                try:
+                    for edition in DBIP_EDITIONS:
+                        async with _dbip_response(client, "HEAD", edition, month):
+                            pass
+                    databases = {}
+                    with TemporaryDirectory(prefix=".dbip-stage-", dir=directory) as temp:
+                        staged = Path(temp)
+                        for edition in DBIP_EDITIONS:
+                            path = staged / f"{edition}.mmdb"
+                            archive = path.with_suffix(".mmdb.gz")
+                            async with _dbip_response(client, "GET", edition, month) as response:
+                                await _save_archive(response, archive, "DB-IP Lite")
+                                stamp = _validators(response)["last_modified"]
+                            await asyncio.to_thread(_unpack_dbip, archive, path)
+                            archive.unlink()
+                            epoch = _dbip_epoch(staged, edition)
+                            if epoch is None or (installed and epoch < (epochs[edition] or 0)):
+                                raise DownloadError(f"{edition}: DB-IP предоставил повреждённый или устаревший выпуск базы")
+                            databases[edition] = {"build_epoch": epoch, "last_modified": stamp}
+                        (staged / MANIFEST).write_text(json.dumps({"month": month, **databases}), encoding="utf-8")
+                        async with guard() if guard else nullcontext():
+                            _publish(directory, staged, current)
+                    return {"changed": True, "databases": databases, "month": month}
+                except _EditionUnavailable:
+                    continue
+    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError):
+        raise DownloadError("Не удалось получить ответ DB-IP") from None
+    except (OSError, EOFError, zlib.error):
+        raise DownloadError("Не удалось распаковать или сохранить базы DB-IP Lite") from None
+    raise DownloadError("DB-IP Lite за текущий и предыдущий месяцы недоступны")

@@ -43,11 +43,19 @@ export const REPORT_VIEWS: ReportView[] = [
   { view: "docs", title: "Журнал документов", hint: "выдачи, возвраты, перемещения, ремонты", group: "Документы" },
 ];
 
+const CONTEXT_VIEWS: ReportView[] = [
+  { view: "geography_card", title: "Сетевое местоположение оборудования", hint: "оценка, исходные наблюдения и предложения по карточке", group: "Инфраструктура" },
+  { view: "geography_rules", title: "Правила принадлежности", hint: "приоритеты, условия и предлагаемые учётные значения", group: "Инфраструктура" },
+  { view: "geography_preview", title: "Проверка правила принадлежности", hint: "совпадения и сводка по проверенному правилу", group: "Инфраструктура" },
+];
+
+const VIEWS = [...REPORT_VIEWS, ...CONTEXT_VIEWS];
+
 export function useInvReport() {
   const [pick, setPick] = useState<{ params: Record<string, unknown>; views: string[]; label: string } | null>(null);
   const [run, setRun] = useState<{ view: ReportView; params: Record<string, unknown> } | null>(null);
   const open = (views: string[], params: Record<string, unknown>, label = "") => {
-    if (views.length === 1) { const v = REPORT_VIEWS.find((x) => x.view === views[0])!; setRun({ view: v, params: { ...params, view: v.view } }); }
+    if (views.length === 1) { const v = VIEWS.find((x) => x.view === views[0])!; setRun({ view: v, params: { ...params, view: v.view } }); }
     else setPick({ views, params, label });
   };
   const node = <ReportNodes pick={pick} run={run} onPick={(v) => { setRun({ view: v, params: { ...pick!.params, view: v.view } }); setPick(null); }} onClose={() => { setPick(null); setRun(null); }} />;
@@ -60,7 +68,7 @@ function ReportNodes({ pick, run, onPick, onClose }: { pick: { params: Record<st
   const can = role !== "viewer";
   if (run) return <QuickReportPanel kind="quick_inv" title={run.view.title} lede={run.view.hint} params={run.params} options={{ scope: false }} activityDays={activityDays} canReport={can} onClose={onClose} />;
   if (!pick) return null;
-  const views = REPORT_VIEWS.filter((v) => pick.views.includes(v.view));
+  const views = VIEWS.filter((v) => pick.views.includes(v.view));
   const groups = [...new Set(views.map((v) => v.group))];
   return (
     <Modal title="Сформировать отчёт" lede={pick.label || "Отчёт по текущей выборке страницы"} onClose={onClose}>

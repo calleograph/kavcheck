@@ -42,6 +42,16 @@ async def test_vulns_by_cve_activity_and_online(client, app):
     assert m(on, "online") == 2
 
 
+async def test_vulnerability_drawer_report_uses_same_description_and_host_search(client, app):
+    await _setup(client, app)
+    selected = (await client.get("/api/v1/vulnerabilities/hosts", params={"descr_id": 5001})).json()
+    assert {i["host_id"] for i in selected["items"]} == {1, 6, 7}
+    page = (await client.get("/api/v1/vulnerabilities/hosts", params={"descr_id": 5001, "q": "ws-001"})).json()
+    report = await preview(client, "quick_vulns", {"descr_ids": [5001], "q": "ws-001"})
+    assert page["total"] == m(report, "hosts") == 1
+    assert {i["host_id"] for i in page["items"]} == {i["host_id"] for i in report["items"]} == {6}
+
+
 async def test_multi_selection_has_no_double_counting(client, app):
     await _setup(client, app)
     p = await preview(client, "quick_vulns", {"descr_ids": [5001, 5903]})        # KLA10001 на 7, 6, 1 и KLA10903 на 6, 2

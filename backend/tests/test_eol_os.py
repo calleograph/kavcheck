@@ -270,7 +270,7 @@ async def test_finding_devices_panel_is_searchable_sortable_and_paged_on_the_ser
     """Боковая панель устройств находки: поиск, сортировка и страницы выполняет сервер (а не страница в браузере), устройства без подготовленных данных зон не пропадают."""
     from datetime import datetime, timedelta, timezone
 
-    from app.models import ZcHost, ZcSource
+    from app.models import ZcHost, ZcHostZone, ZcSource
 
     await login(client, "admin", "Admin-Passw0rd-123")
     sid = await seed_os(app)
@@ -279,7 +279,8 @@ async def test_finding_devices_panel_is_searchable_sortable_and_paged_on_the_ser
         db.add(ZcSource(source_id=sid, gen=1, status="ready"))
         now = datetime.now(timezone.utc)
         for hid, name, os_, ago in ((13, "zeta-host", "Linux", 5), (14, "alpha-host", "Linux", 1)):
-            db.add(ZcHost(source_id=sid, host_id=hid, gen=1, name=name, search=name, ip_num=1, os=os_, active=True, last_connected=now - timedelta(hours=ago), data={"ip": "192.0.2.9", "group": "Серверы", "zones": []}))
+            db.add(ZcHost(source_id=sid, host_id=hid, gen=1, name=name, search=name, ip_num=1, os=os_, active=hid == 13, last_connected=now - timedelta(hours=ago), data={"ip": "192.0.2.9", "group": "Серверы", "zones": []}))
+        db.add(ZcHostZone(source_id=sid, host_id=14, gen=1, zone_id="none"))
         await db.commit()
     h = {"X-Source-Id": str(sid)}
     base = {"source_id": str(sid), "kind": "os", "subject": "CentOS 7", "version": "7"}
@@ -291,6 +292,11 @@ async def test_finding_devices_panel_is_searchable_sortable_and_paged_on_the_ser
     assert await names() == (["alpha-host", "zeta-host"], 2)                                  # по имени по умолчанию
     assert (await names(desc=True))[0] == ["zeta-host", "alpha-host"] and (await names(sort="last_connected"))[0] == ["zeta-host", "alpha-host"]
     assert await names(q="alp*") == (["alpha-host"], 1)                                      # поиск — на сервере
+    assert await names(q="*host", zone="none") == (["alpha-host"], 1)
+    report = await client.post("/api/v1/quick/preview", json={"kind": "quick_eol", "params": {"finding": base, "host_q": "*host", "zone": "none"}, "source_ids": [str(sid)]}, headers=h)
+    assert report.status_code == 200, report.text
+    assert report.json()["total"] == 1 and [item["name"] for item in report.json()["items"]] == ["alpha-host"]
+    assert report.json()["doc"]["tables"][0]["id"] == "devices"
     assert await names(limit=1, offset=1) == (["zeta-host"], 2)                              # страница, а не весь список
     assert (await client.get("/api/v1/eol/infra/hosts", params={**base, "sort": "bogus"}, headers=h)).status_code == 422
     # у находки без подготовленных данных зон устройства всё равно перечислены (по идентификаторам)

@@ -163,7 +163,7 @@ export interface PtHostCard { ip: string; names: string[]; job: { id: string; ti
 export interface QuickCol { key: string; title: string; type: string }
 export interface QuickMetric { key: string; label: string; value: number | string; hint: string; tone: string }
 /** Документ быстрого отчёта без строк: один источник правды для просмотра, XLSX, HTML и CSV. */
-export interface QuickDoc { kind?: string; title: string; subtitle: string; conditions: { label: string; text: string }[]; metrics: QuickMetric[]; notes: string[]; generated_at?: string; source?: string;
+export interface QuickDoc { kind?: string; title: string; subtitle: string; conditions: { label: string; text: string }[]; metrics: QuickMetric[]; notes: string[]; generated_at?: string; source?: string; dbip_attribution?: boolean;
   severity: { title: string; levels: { key: string; label: string; value: number; hint: string }[] } | null; columns_all?: { key: string; title: string }[]; tables: { id: string; title: string; columns: QuickCol[]; n: number; note: string }[] }
 export interface QuickPreview { doc: QuickDoc | null; items: Record<string, string | number | null>[]; total: number; columns: QuickCol[]; fetched_at?: string; preview_rows?: number; html_row_limit?: number; unsupported?: string[] }
 export interface VulnDescr { descr_id: number; kla_id: string; severity: "critical" | "high" | "warning"; severity_label?: string; cve: string[]; kb: string[]; products: string[]; hosts: number; total: number; patchable: number; last_detected: string | null; url?: string }

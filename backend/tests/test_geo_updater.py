@@ -1,4 +1,6 @@
-"""Управление GeoLite2 из приложения. Сетевые запросы провайдера подменяются."""
+"""Управление географическими базами из приложения. Сетевые запросы подменяются."""
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 
 from app.inventory import geo_download, geo_updater
@@ -19,12 +21,13 @@ async def test_geoip_configuration_initial_update_and_failed_refresh_keep_previo
     assert (await client.put(CONFIG, json={"license_key": KEY})).status_code == 403
 
     await login(client, "admin", "Admin-Passw0rd-123")
+    assert (await client.put(CONFIG, json={"provider": "maxmind", "enabled": False})).status_code == 200
     assert (await client.post(f"{PATH}/refresh")).status_code == 422
     assert (await client.put(CONFIG, json={"enabled": True, "account_id": "12345"})).status_code == 422
     invalid = await client.put(CONFIG, json={"license_key": f"{KEY} invalid"})
     assert invalid.status_code == 422 and KEY not in invalid.text
     saved = await client.put(CONFIG, json={"enabled": True, "account_id": "12345", "license_key": KEY})
-    assert saved.status_code == 200 and saved.json() == {"enabled": True, "account_id": "12345", "license_key_set": True}
+    assert saved.status_code == 200 and saved.json() == {"provider": "maxmind", "enabled": True, "account_id": "12345", "license_key_set": True}
     assert KEY not in (await client.get(CONFIG)).text
     assert (await client.get(PATH)).json()["pending"] is True
 
@@ -87,3 +90,60 @@ async def test_geoip_configuration_initial_update_and_failed_refresh_keep_previo
 
     cleared = await client.put(CONFIG, json={"license_key": ""})
     assert not cleared.json()["license_key_set"]
+
+
+async def test_default_dbip_starts_without_settings_row_and_keeps_last_pair(client, app, tmp_path, monkeypatch):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    assert (await client.get(CONFIG)).json() == {"provider": "dbip", "enabled": True, "account_id": "", "license_key_set": False}
+    assert (await client.get(PATH)).json()["pending"]
+    worker = app.state
+    async with worker.session_maker() as db:
+        assert await db.get(AppSetting, "geoip") is None
+
+    now = datetime(2026, 11, 24, 10, tzinfo=timezone.utc)
+    monkeypatch.setattr(geo_updater, "utcnow", lambda: now)
+    root = tmp_path / "dbip"
+    active = root / (".geolite2-" + "0" * 32)
+    editions = geo_download.DBIP_EDITIONS
+    databases = {edition: {"build_epoch": 1793501546} for edition in editions}
+    attempts = []
+
+    async def update_dbip(directory, *, guard, now):
+        assert directory == root
+        attempts.append(now)
+        if len(attempts) > 1:
+            raise geo_download.DownloadError("DB-IP Lite недоступен")
+        async with guard():
+            active.mkdir(parents=True)
+            for edition in editions:
+                (active / f"{edition}.mmdb").touch()
+            (root / geo_download.CURRENT).symlink_to(active.name)
+        return {"changed": True, "month": "2026-11", "databases": databases}
+
+    monkeypatch.setattr(geo_download, "update_dbip", update_dbip)
+    await geo_updater.tick(worker.session_maker, worker.settings_svc, tmp_path, worker.journal)
+    status = (await client.get(PATH)).json()
+    assert status["active_provider"] == "dbip" and status["databases"] == databases
+    assert status["next_check_at"] == "2026-12-01T00:00:00+00:00"
+    await geo_updater.tick(worker.session_maker, worker.settings_svc, tmp_path, worker.journal)
+    assert len(attempts) == 1
+
+    now = datetime(2026, 12, 1, tzinfo=timezone.utc)
+    await geo_updater.tick(worker.session_maker, worker.settings_svc, tmp_path, worker.journal)
+    status = (await client.get(PATH)).json()
+    assert status["active_provider"] == "dbip" and status["databases"] == databases
+    assert status["error"] and status["next_check_at"] == "2026-12-01T06:00:00+00:00"
+
+
+async def test_legacy_maxmind_selection_and_secret_are_preserved(client, app):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    svc = app.state.settings_svc
+    async with app.state.session_maker() as db:
+        encrypted = svc.encrypt(KEY, "geoip.license_key")
+        db.add(AppSetting(group="geoip", value={"enabled": True, "account_id": "12345", "license_key_enc": encrypted}))
+        await db.commit()
+    assert (await client.get(CONFIG)).json() == {"provider": "maxmind", "enabled": True, "account_id": "12345", "license_key_set": True}
+    switched = await client.put(CONFIG, json={"provider": "dbip"})
+    assert switched.status_code == 200 and switched.json()["provider"] == "dbip" and switched.json()["license_key_set"]
+    async with app.state.session_maker() as db:
+        assert (await db.get(AppSetting, "geoip")).value["license_key_enc"] == encrypted

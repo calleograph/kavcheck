@@ -216,7 +216,11 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
             doc = await quick.build(body.kind, None, params, ctx)  # type: ignore[arg-type]
         except KscError as exc:
             raise HTTPException(status_code=409 if exc.code == "no_data" else 422, detail=exc.message) from None
-        return _answer(doc, ctx.now)
+        total = doc.pop("selection_total", None)
+        out = _answer(doc, ctx.now)
+        if total is not None:
+            out["total"] = out["doc"]["tables"][0]["n"] = total
+        return out
     if body.kind == "quick_admin":                     # таблицы администрирования: только администратор, внутренняя база
         if not su.is_admin:
             raise HTTPException(status_code=403, detail="Отчёты администрирования доступны администратору")
@@ -343,6 +347,15 @@ async def inv_params(request: Request, db: AsyncSession, su: SessionUser, raw: d
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
     params["scope_ids"] = list(acc.scope_ids)
-    if params["view"] == "geography" and not (su.is_admin or su.all_sources):
+    if params["view"] in ("geography_rules", "geography_preview") and not su.is_admin:
+        raise HTTPException(status_code=403, detail="Правила принадлежности доступны администратору")
+    if params["view"] == "geography_preview":
+        from ..inventory import geography as G  # noqa: PLC0415
+
+        if not params["geo_rule_preview"]:
+            raise HTTPException(status_code=422, detail="Укажите правило для проверки")
+        if key := await G.invalid_rule_ref(db, G.RulePreview.model_validate(params["geo_rule_preview"]).rule):
+            raise HTTPException(status_code=422, detail=f"Проверьте значение поля {key}")
+    if params["view"] in ("geography", "geography_card") and not (su.is_admin or su.all_sources):
         params["geo_source_ids"] = sorted(su.source_ids)
     return params

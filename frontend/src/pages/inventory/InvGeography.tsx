@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { type ApiError, qs, req } from "../../api";
+import { DB_IP_LITE, DbIpAttribution } from "../../components/DbIpAttribution";
 import { FilterBar } from "../../components/FilterBar";
 import { ListFoot, useInfinite, VirtualRows } from "../../components/Infinite";
 import { useToast } from "../../components/Toast";
@@ -13,8 +14,8 @@ import InvGeoRules from "./InvGeoRules";
 import { useInvReport } from "./InvReport";
 
 type GeoRow = GeoObservation & { id: number; inv_no: string; name: string; account_location: string };
-type Source = { id: string; name: string; count?: number; finished_at?: string; geoip?: boolean; asn?: boolean; error?: string; geo_errors?: string[] };
-type OverviewSummary = { groups?: GeoGroup[]; groups_limited?: boolean; sources?: Source[] };
+type Source = { id: string; name: string; count?: number; finished_at?: string; geoip?: boolean; asn?: boolean; geo_provider?: string; error?: string; geo_errors?: string[] };
+type OverviewSummary = { groups?: GeoGroup[]; groups_limited?: boolean; sources?: Source[]; dbip_attribution?: boolean };
 type Overview = { items: GeoRow[]; total: number } & OverviewSummary;
 type Filters = Record<string, string | number>;
 type Level = "country" | "region" | "city" | "site";
@@ -55,6 +56,7 @@ export default function InvGeography() {
   const data = list.extra as (OverviewSummary & { filterKey: string }) | null;
   const groups = data?.filterKey === filterKey ? data.groups ?? [] : [];
   const source = data?.sources ?? [];
+  const dbIp = (data?.filterKey === filterKey && data.dbip_attribution) || list.items.some((item) => item.provider === DB_IP_LITE);
   const change = (key: string, value: string | number) => setF((prev) => {
     const next = { ...prev };
     if (value === "") delete next[key];
@@ -128,6 +130,7 @@ export default function InvGeography() {
     <div className="card stack">
       <InvGeoMap groups={groups} select={(g) => drill(pickGroup(g))} />
       <p className="small muted">Точки площадок заданы в справочнике. Область вокруг точки показывает приблизительную погрешность географии выхода в сеть. Подложка Natural Earth.</p>
+      {dbIp && <p className="small muted"><DbIpAttribution /></p>}
       {!!groups.length && <div className="row wrap inv-geo-groups">
         <label className="field">Сгруппировать<select value={level} onChange={(e) => setLevel(e.target.value as Level)}>
           {Object.entries(LEVELS).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
@@ -149,7 +152,8 @@ export default function InvGeography() {
         </tr>} /></tbody></table><ListFoot list={list} /></div>}
     {!!source.length && <details className="card"><summary>Источники наблюдений</summary>
       <ul>{source.map((s) => <li key={s.id}><b>{s.name}</b> · {s.finished_at ? fmt(s.finished_at) : "снимок ожидается"}
-        {s.count !== undefined && ` · наблюдений ${num(s.count)}`}{s.finished_at && (s.geoip ? " · база GeoLite2 City доступна" : " · база GeoLite2 City отсутствует")}
+        {s.count !== undefined && ` · наблюдений ${num(s.count)}`}{s.geo_provider && ` · ${s.geo_provider}`}
+        {s.finished_at && (s.geoip ? " · база City доступна" : " · база City отсутствует")}
         {s.error && " · последнее обновление завершилось ошибкой"}{!!s.geo_errors?.length && " · ошибка базы GeoIP"}</li>)}</ul>
     </details>}
     {rep.node}{toast}

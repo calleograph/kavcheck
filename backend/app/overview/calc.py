@@ -18,6 +18,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from ..ksc import protection as P
+from ..search import any_field
 
 PERIODS = (7, 30, 60, 90)
 STALE_DAYS = 7
@@ -76,10 +77,11 @@ METRICS: dict[str, tuple[str, object]] = {
 }
 
 
-def pick(records: list[dict], metric: str, days: int, now: datetime | None = None) -> list[dict]:
+def pick(records: list[dict], metric: str, days: int, now: datetime | None = None, *, q: str = "") -> list[dict]:
     pred = METRICS[metric][1]
     n = now or datetime.now(timezone.utc)
-    return [r for r in records if pred(r, days, n)]
+    needle = any_field(q)
+    return [r for r in records if pred(r, days, n) and (needle is None or needle(r["name"], r["fqdn"], r["ip"]))]
 
 
 def summarize(records: list[dict], days: int, now: datetime | None = None) -> dict:

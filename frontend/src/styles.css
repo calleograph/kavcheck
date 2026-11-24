@@ -1316,13 +1316,25 @@ button.kpi .kpi-v, a.kpi .kpi-v { text-decoration: underline; text-decoration-co
 .ov-empty b { font-size: 18px; color: var(--ink-2); }
 .ep-filter { margin: 0; min-width: 0; }
 .ep-filter select { max-width: min(100%, 240px); }
-.ep .qr-metric .ep-perc { font-size: var(--fs-sm); }
+.ep-notes { margin: 0; padding-inline-start: 16px; }
+.ep-summary { display: grid; gap: 8px; }
+.ep-summary-head { justify-content: space-between; align-items: center; }
+.ep-metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.ep-metric-group { display: grid; grid-template-rows: auto 1fr; gap: 4px; min-width: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); }
+.ep-metric-group h3 { font-size: var(--fs-sm); }
+.ep-metric-group dl { display: grid; grid-template-rows: repeat(3, minmax(28px, 1fr)); margin: 0; }
+.ep-metric-group dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-block: 4px; }
+.ep-metric-group dl > div + div { border-top: 1px solid var(--line); }
+.ep-metric-group dt { min-width: 0; font-size: var(--fs-sm); color: var(--ink-2); }
+.ep-metric-group dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 960px) { .ep-metric-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; } }
 @media (max-width: 720px) { .ep .sp-tip { display: none; } }
+.ep .split.even { align-items: stretch; }
 .ep-chart { list-style: none; padding: 0; margin: 0; max-height: 320px; overflow: auto; }
-.ep-chart-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 10px; align-items: center; padding: 5px 2px; }
+.ep-chart-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; align-items: center; padding: 4px 2px; }
 .ep-chart-row + .ep-chart-row { border-top: 1px solid var(--line); }
 .ep-chart-name { text-align: left; overflow-wrap: anywhere; }
-.ep-chart-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 3px; border: 0; border-radius: var(--radius-sm); background: none; color: inherit; cursor: pointer; }
+.ep-chart-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px; border: 0; border-radius: var(--radius-sm); background: none; color: inherit; cursor: pointer; }
 .ep-chart-bar:hover:not(:disabled) { background: var(--surface-2); }
 .ep-chart-bar:disabled { cursor: default; }
 .ep-chart-details { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 12px; }

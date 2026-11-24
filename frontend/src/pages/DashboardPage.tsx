@@ -51,7 +51,7 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = usePanel<{ metric: OvMetric; title: string }>("overview");
-  const [report, setReport] = useState<{ metric?: OvMetric } | null>(null);
+  const [report, setReport] = useState<{ metric?: OvMetric; title?: string; q?: string; sort?: string; desc?: boolean } | null>(null);
   const [recent, setRecent] = useState<Job[]>([]);
   const canReport = ctx.me.user.role !== "viewer";
   const load = useCallback(async (refresh = false) => {
@@ -233,10 +233,10 @@ export default function DashboardPage({ ctx }: { ctx: Ctx }) {
           const r = await api.overviewHosts(panel.metric, days, offset, limit, qy.q, qy.sort, qy.desc);
           return { items: r.items.map((h) => ({ ...h, source_id: multi ? h.source_id : undefined, source: h.source, days_since_connection: h.days_since_connection ?? undefined })), total: r.total } as unknown as Chunk<DrawerHost>;
         }}
-        report={canReport ? { onClick: () => setReport({ metric: panel.metric }) } : null} onClose={() => setPanel(null)} />}
-      {report && <QuickReportPanel kind="quick_overview" title={report.metric ? `Сводка: ${d?.labels[report.metric] ?? report.metric}` : "Сводка инфраструктуры"}
+        report={canReport ? { onClick: (query) => setReport({ metric: panel.metric, title: panel.title, ...query }) } : null} onClose={() => setPanel(null)} />}
+      {report && <QuickReportPanel kind="quick_overview" title={report.title ? `Сводка: ${report.title}` : "Сводка инфраструктуры"}
         lede="Активные компьютеры, серверы и станции, защита, лицензии и источники данных — с условиями главной страницы" options={{ scope: false }}
-        params={{ days, ...(report.metric && !["crit_vuln", "eol_os", "eol_apps"].includes(report.metric) ? { metric: report.metric } : {}) }} sourceIds={multi ? ctx.sources.map((s) => s.id) : [ctx.current.id]}
+        params={{ days, metric: report.metric, q: report.q, sort: report.sort, desc: report.desc }} sourceIds={multi ? ctx.sources.map((s) => s.id) : [ctx.current.id]}
         activityDays={days} canReport={canReport} onClose={() => setReport(null)} />}
       <p className="sr-only" role="status">{d ? `Активных компьютеров за ${days} суток: ${d.totals?.active ?? "нет данных"}` : "Загрузка"}</p>
     </section>

@@ -12,11 +12,14 @@ SEVERITY = {1: "предупреждение", 2: "высокая", 4: "крит
 SEVERITY_KEY = {1: "warning", 2: "high", 4: "critical"}
 
 
-def vuln_where(*, cve: str = "", product: str = "", product_id: int | None = None, product_name: str | None = None, severity: int | None = None) -> tuple[str, dict]:
+def vuln_where(*, cve: str = "", product: str = "", product_id: int | None = None, product_name: str | None = None, severity: int | None = None, descr_id: int | None = None) -> tuple[str, dict]:
     where, params = [q.VULNS_WHERE], {}
     if mssql_like(cve):
         where.append(q.VULN_CVE_EXISTS)
         params["cve"] = mssql_like(cve)
+    if descr_id is not None:
+        where.append(q.VULN_DESCR_EQ)
+        params["descr_id"] = descr_id
     if mssql_like(product):
         where.append("(vp.wstrName LIKE %(prod)s OR p.wstrDisplayName LIKE %(prod)s)")
         params["prod"] = mssql_like(product)

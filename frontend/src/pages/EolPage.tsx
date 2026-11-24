@@ -180,7 +180,8 @@ function InfraView({ ctx, sum, zone, setZone, onRecalc }: { ctx: Ctx; sum: EolSu
           const r = await api.eol.hosts({ source_id: panel.source_id, kind: panel.kind, subject: panel.subject, version: panel.version, zone, all_hosts: all || undefined, q: qy.q, sort: qy.sort, desc: qy.desc || undefined, offset, limit });
           return { items: r.items.map((h) => ({ ...h, source_id: panel.source_id, source: panel.source, group: h.group ?? "", days_since_connection: undefined })), total: r.total } as unknown as Chunk<DrawerHost>;
         }}
-        report={canReport ? { onClick: () => setReport({ title: `EOL: ${panel.title}`, params: { finding: { source_id: panel.source_id, kind: panel.kind, subject: panel.subject, version: panel.version }, statuses: [panel.status], include_inactive: all || undefined } }) } : null}
+        report={canReport ? { onClick: ({ q, sort, desc }) => setReport({ title: `EOL: ${panel.title}`, params: { finding: { source_id: panel.source_id, kind: panel.kind, subject: panel.subject, version: panel.version },
+          statuses: [panel.status], include_inactive: all || undefined, zone, host_q: q, sort, desc } }) } : null}
         onClose={() => setPanel(null)} />}
       {report && <QuickReportPanel kind="quick_eol" title={report.title} lede="Программы и ОС с закончившейся или приближающейся датой окончания поддержки и устройства, на которых они найдены" options={{ scope: false, eol: true, zoneFilter: true }}
         params={report.params} sourceIds={ctx.all ? ctx.sources.map((s) => s.id) : []} activityDays={ctx.me.activity_days} canReport={canReport} onClose={() => setReport(null)} />}

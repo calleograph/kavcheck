@@ -334,6 +334,9 @@ async def test_overview_report_matches_page_and_respects_detail(client, app, mon
     vals = {m["key"]: m["value"] for m in full["doc"]["metrics"]}
     page = (await client.get("/api/v1/overview", params={"days": 30})).json()["totals"]
     assert vals["active"] == page["active"] and vals["servers"] == page["servers"] and vals["lic_limit"] == "нет данных"      # те же числа, что на странице; нет лицензий — «нет данных»
+    filtered = (await client.get("/api/v1/overview/hosts", params={"metric": "active", "days": 30, "q": "pc2"})).json()
+    matched = (await client.post("/api/v1/quick/preview", json={**body, "params": {"metric": "active", "days": 30, "q": "pc2"}})).json()
+    assert filtered["total"] == matched["total"] == 1 and matched["items"][0]["name"] == filtered["items"][0]["name"] == "pc2"
     assert [t["id"] for t in full["doc"]["tables"]] == ["hosts", "sources", "periods", "licenses"]
     short = (await client.post("/api/v1/quick/preview", json={**body, "params": {"days": 30, "detail": "summary"}})).json()
     assert "hosts" not in [t["id"] for t in short["doc"]["tables"]] and short["doc"]["tables"][-1]["id"] == "summary"
@@ -362,6 +365,9 @@ async def test_security_block_and_db_backed_panel(client, app, monkeypatch):
     assert (await client.get("/api/v1/overview/hosts", params={"metric": "crit_vuln", "days": 90})).json()["total"] == 3
     rep = (await client.post("/api/v1/quick/preview", json={"kind": "quick_overview", "params": {"days": 30, "metric": "crit_vuln"}, "source_ids": []})).json()
     assert rep["total"] == 2 and rep["items"][0]["name"] == "zc1"                              # отчёт по тому, что открыто в панели
+    filtered = (await client.get("/api/v1/overview/hosts", params={"metric": "crit_vuln", "days": 30, "q": "zc4"})).json()
+    rep = (await client.post("/api/v1/quick/preview", json={"kind": "quick_overview", "params": {"days": 30, "metric": "crit_vuln", "q": "zc4"}})).json()
+    assert filtered["total"] == rep["total"] == 1 and rep["items"][0]["name"] == filtered["items"][0]["name"] == "zc4"
 
 
 async def test_sources_outside_scope_use_daily_snapshot_and_payload_matches_summary(client, app, monkeypatch):

@@ -38,6 +38,9 @@ async def build_overview(client: SourceClient | None, p: dict, ctx: Ctx) -> dict
         raise KscError("params", "Сводка недоступна: нет доступа к данным источников")
     days = int(p.get("days") or 30)
     only = p.get("metric") or ""
+    query = p.get("q") or ""
+    full = p.get("detail") != "summary"
+    overflow = f"Устройств больше предела отчёта ({ctx.max_rows}): уточните поиск или повысьте предел в «Администрирование → Общие настройки»"
     if only and only not in C.METRICS and only not in DB_METRICS:
         raise KscError("params", "Неизвестный показатель главной")
     async with ctx.sm() as db:
@@ -46,6 +49,7 @@ async def build_overview(client: SourceClient | None, p: dict, ctx: Ctx) -> dict
         lic = await licenses_block(db, scope)
     tot = {k: 0 for k in C.METRICS}
     rows, hosts, errors = [], [], []
+    list_n = 0
     periods = {d: {"days": d, "connected": 0, "visible": 0, "servers": 0, "workstations": 0, "av_installed": 0, "av_running": 0} for d in C.PERIODS}
     for i, s in enumerate(scope):
         ctx.progress(f"источник {i + 1} из {len(scope)}: {s.name}")
@@ -65,26 +69,25 @@ async def build_overview(client: SourceClient | None, p: dict, ctx: Ctx) -> dict
         lb = lic["by_source"].get(str(s.id)) or {}
         rows.append({"name": s.name, **{k: sm[k] for k in ("total", "active", "servers", "workstations", "other_os", "protected", "no_av")},
                      "license": (f"{lb['used'] if lb.get('used') is not None else '—'} / {lb['limit']}" + (f" (свободно {lb['free']})" if lb.get("free") is not None else "") if lb.get("limit") is not None else "нет данных"), "synced": at})
-        if p.get("detail") != "summary":
-            for r in ([] if only in DB_METRICS else C.pick(recs, only or "active", days, ctx.now)):
+        selected = [] if only in DB_METRICS else C.pick(recs, only or "active", days, ctx.now, q=query)
+        list_n += len(selected)
+        if full:
+            for r in selected:
                 av = r.get("av") or {}
                 hosts.append({"source": s.name, "name": r["name"], "ip": r["ip"], "os": r["os"], "kind_ru": KIND_RU[C.kind_of(r)], "group": r["group"], "last_connected": r["last_connected"],
                               "days": r["days_since_connection"], "av_ru": av.get("product") or "нет", "rtp_ru": r.get("rtp_label") or "", "bases": av.get("bases"), "info": r.get("last_info_update")})
         if len(hosts) > ctx.max_rows:
-            raise KscError("too_many_rows", f"Устройств больше предела отчёта ({ctx.max_rows}): сузьте условия или повысьте предел в «Администрирование → Общие настройки»")
-    list_n = tot[only] if only in C.METRICS else tot["active"]
+            raise KscError("too_many_rows", overflow)
     if only in DB_METRICS:                                              # устройства из подготовленных данных зон и результатов EOL (не из записей защиты)
         async with ctx.sm() as db:
-            list_n = int((await _db_hosts(db, scope, only, days, "", "name", False, 0, 1))["total"])
-            offset = 0
-            while p.get("detail") != "summary":
-                page = await _db_hosts(db, scope, only, days, "", "name", False, offset, 500)
+            list_n = int((await _db_hosts(db, scope, only, days, query, "name", False, 0, 1))["total"])
+            if full and list_n > ctx.max_rows:
+                raise KscError("too_many_rows", overflow)
+            for offset in range(0, list_n if full else 0, 500):
+                page = await _db_hosts(db, scope, only, days, query, "name", False, offset, 500)
                 for h in page["items"]:
                     hosts.append({"source": h["source"], "name": h["name"], "ip": h["ip"], "os": h["os"], "kind_ru": "", "group": h["group"], "last_connected": h["last_connected"], "days": h["days_since_connection"],
                                   "av_ru": "", "rtp_ru": "", "bases": None, "info": None})
-                offset += 500
-                if offset >= page["total"] or len(hosts) > ctx.max_rows:
-                    break
     lt = lic["totals"]
     metrics = [metric("hosts", (C.METRICS.get(only) or (DB_METRICS.get(only, ""),))[0] if only else f"Активные компьютеры за {days} сут", list_n, "в списке отчёта" if only else "Агент подключался к Серверу администрирования; основной показатель", "ok" if not only else ""),
                metric("active", f"Активные компьютеры за {days} сут", tot["active"], "Агент подключался к Серверу администрирования; основной показатель", "ok"),
@@ -105,6 +108,8 @@ async def build_overview(client: SourceClient | None, p: dict, ctx: Ctx) -> dict
     cond = [{"label": "Источники", "text": ", ".join(s.name for s in scope) or "—"}, {"label": "Период активности", "text": f"{days} сут (Агент подключался к KSC)"}]
     if only:
         cond.append({"label": "Показатель", "text": (C.METRICS.get(only) or (DB_METRICS[only],))[0]})
+    if query:
+        cond.append({"label": "Поиск по компьютеру", "text": query})
     notes = ["Активный компьютер — Агент подключался к Серверу администрирования за выбранный период (tmLastNagentConnected). «Виден в сети», «Агент установлен», «защита работает» и «лицензия» считаются отдельно и активность не заменяют.",
              "Linux в KSC приходит как «Linux» без редакции, поэтому такие компьютеры показаны отдельно («тип не определён»), а не причислены к серверам или станциям."]
     notes += [f"Источник «{n}» — повторное подключение «{o}», в итоги не входит." for n, o in [(s.name, skipped[str(s.id)]) for s in srcs if str(s.id) in skipped]]

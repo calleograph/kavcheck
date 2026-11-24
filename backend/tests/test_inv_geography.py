@@ -1,12 +1,14 @@
 """Сетевые наблюдения инвентаризации: правила, область доступа и сохранность учётных полей."""
 from datetime import timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from openpyxl import load_workbook
 from sqlalchemy import select
 
 from app.inventory import geo_service as S, geography as G
-from app.models import InvAsset, InvGeo, InvRef, KscSource, User, utcnow
+from app.models import InvAsset, InvGeo, InvRef, KscSource, ReportJob, User, utcnow
+from app.reports import quick, quick_export
 from tests.conftest import login
 from tests.test_inventory import API, setup
 
@@ -59,6 +61,68 @@ def test_geoip_is_only_an_approximate_egress_observation(monkeypatch):
     result = G.locate(evidence, src, None, [], lookup)
     assert result["status"] == "approx" and result["confidence"] == "low" and result["radius_km"] == 40 and result["asn"] == 64501
     assert "site_id" not in result and result["proposals"] == {}
+
+
+async def test_dbip_attribution_follows_geographic_results_into_reports(client, app, tmp_path):
+    config = await setup(client, app)
+    now, sid = utcnow(), uuid4()
+    async with app.state.session_maker() as db:
+        db.add(KscSource(id=sid, name="Тестовый источник", host="ksc.example.local", port=1433, database="KAV", username="ro", password_enc="x"))
+        asset = InvAsset(inv_no="ПР-ГЕО", cls="workstation", type_id=config["t"]["workstation"], ksc_link="confirmed", ksc_source_id=sid, ksc_host_id=1)
+        db.add(asset)
+        await db.flush()
+        db.add(InvGeo(asset_id=asset.id, host_id=1, source_id=sid, checked_at=now, observed_at=now,
+                      evidence={}, result={"status": "approx", "city": "Пример", "provider": G.DBIP_LABEL}))
+        await db.commit()
+
+    assert (await client.get(GEO)).json()["dbip_attribution"]
+    assert not (await client.get(GEO, params={"q": "отсутствует"})).json()["dbip_attribution"]
+    report = await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": "geography"}})
+    assert report.json()["doc"]["dbip_attribution"]
+    ctx = quick.Ctx(source_name="Инвентаризация", activity_days=0, sm=app.state.session_maker)
+    doc = await quick.build("quick_inv", None, {"view": "geography"}, ctx)
+    assert '<a href="https://db-ip.com/">IP Geolocation by DB-IP</a>' in quick_export.render_html(doc)
+    out = tmp_path / "geography.csv"
+    quick_export.write_csv_main(out, doc)
+    assert G.DBIP_CREDIT in out.read_text(encoding="utf-8-sig")
+
+
+async def test_geography_rule_report_uses_unsaved_draft_and_full_matches(client, app, tmp_path):
+    config = await setup(client, app)
+    now, sid = utcnow(), uuid4()
+    async with app.state.session_maker() as db:
+        db.add(KscSource(id=sid, name="Тестовый источник", host="ksc.example.local", port=1433, database="KAV", username="ro", password_enc="x"))
+        assets = [InvAsset(inv_no=f"ПР-{i:03d}", cls="workstation", type_id=config["t"]["workstation"], ksc_link="confirmed", ksc_source_id=sid, ksc_host_id=i)
+                  for i in range(1, 26)]
+        db.add_all(assets)
+        await db.flush()
+        db.add_all([InvGeo(asset_id=a.id, host_id=a.ksc_host_id, source_id=sid, checked_at=now, observed_at=now,
+                           evidence={"addresses": [{"kind": "device", "ip": "192.0.2.19"}]}, result={"status": "unknown"}) for a in assets])
+        await db.commit()
+
+    draft = {"rule": {"name": "Черновик", "networks": ["192.0.2.0/24"], "vpn": True}}
+    preview = await client.post(f"{GEO}/rules/preview", json=draft)
+    assert preview.status_code == 200 and preview.json()["matched"] == 25 and len(preview.json()["items"]) == 20
+    params = {"view": "geography_preview", "geo_rule_preview": draft}
+    form = {"kind": "quick_inv", "params": params}
+    answer = await client.post("/api/v1/quick/preview", json=form)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["total"] == 25 and len(answer.json()["items"]) == 20
+    ctx = quick.Ctx(source_name="Инвентаризация", activity_days=0, sm=app.state.session_maker)
+    doc = await quick.build("quick_inv", None, params, ctx)
+    path = tmp_path / "preview.xlsx"
+    quick_export.write_xlsx(path, doc)
+    workbook = load_workbook(path, read_only=True)
+    try:
+        assert [r[0] for r in workbook["Совпадения"].iter_rows(min_row=2, values_only=True)] == [f"ПР-{i:03d}" for i in range(1, 26)]
+    finally:
+        workbook.close()
+    assert doc["tables"][1]["rows"][0]["name"] == "Черновик"
+    assert (await client.get(f"{GEO}/rules")).json()["items"] == []
+    template = await client.post("/api/v1/report-templates", json={**form, "name": "Тестовый шаблон", "shared": False})
+    assert template.status_code == 201 and "geo_rule_preview" not in template.json()["params"]
+    invalid = {**params, "geo_rule_preview": {"rule": {**draft["rule"], "site_id": 9000}}}
+    assert (await client.post("/api/v1/quick/preview", json={**form, "params": invalid})).status_code == 422
 
 
 async def test_geography_from_collection_to_rule_preview_and_scoped_apply(client, app, monkeypatch):
@@ -138,6 +202,22 @@ async def test_geography_from_collection_to_rule_preview_and_scoped_apply(client
     assert observation["status"] == "site" and observation["source"] == "Первый" and observation["fresh"]
     assert observation["connection_ip"] == {"scope": "missing"}
     assert observation["evidence"]["addresses"][0]["scope"] == "special"
+    async def report_for(view, **params):
+        return await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": view, **params}})
+
+    rules_report = await report_for("geography_rules")
+    assert rules_report.status_code == 200, rules_report.text
+    [rule_row] = rules_report.json()["items"]
+    assert (rule_row["name"], rule_row["networks"], rule_row["source_id"], rule_row["site_id"]) == (
+        "Участок тестовой сети", "192.0.2.0/24", "Первый", "Площадка С")
+    rules_job = await client.post("/api/v1/reports", json={"kind": "quick_inv", "params": {"view": "geography_rules"}})
+    assert rules_job.status_code == 201, rules_job.text
+    job_id = rules_job.json()["id"]
+    async with app.state.session_maker() as db:
+        analyst = await db.scalar(select(User).where(User.username == "analyst1"))
+        job = await db.get(ReportJob, UUID(job_id))
+        job.created_by_id = analyst.id
+        await db.commit()
     check = {"checked_at": observation["checked_at"]}
     await login(client, "viewer", "Viewer-Passw0rd-123")
     assert (await client.post(f"{url}/{aid}/apply", json=check)).status_code == 403
@@ -152,6 +232,19 @@ async def test_geography_from_collection_to_rule_preview_and_scoped_apply(client
     report = await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": params})
     assert report.status_code == 200, report.text
     assert [(row["inv_no"], row["source"], row["site"]) for row in report.json()["items"]] == [("ТС-002", "Первый", "Площадка С")]
+    card_report = (await report_for("geography_card", asset_id=aid)).json()
+    assert [(r["inv_no"], r["source"], r["connection_scope"]) for r in card_report["items"]] == [("ТС-001", "Первый", "Адрес отсутствует")]
+    assert {t["id"]: t["n"] for t in card_report["doc"]["tables"]} == {"rows": 1, "network_details": 1, "addresses": 1, "proposals": 4}
+    hidden_report = (await report_for("geography_card", asset_id=restricted_id, geo_source_ids=[str(other_sid)])).json()
+    assert [(r["inv_no"], r["source"]) for r in hidden_report["items"]] == [("ТС-003", "")]
+    assert [t["id"] for t in hidden_report["doc"]["tables"]] == ["rows"]
+    assert (await report_for("geography_card", asset_id=unobserved_id)).status_code == 409
+    assert (await report_for("geography_card")).status_code == 422
+    assert (await report_for("geography_rules")).status_code == 403
+    assert (await client.post("/api/v1/reports", json={"kind": "quick_inv", "params": {"view": "geography_rules"}})).status_code == 403
+    assert (await client.get(f"/api/v1/reports/{job_id}")).status_code == 404
+    assert (await client.get(f"/api/v1/reports/{job_id}/download/xlsx")).status_code == 404
+    assert (await report_for("geography_preview", geo_rule_preview={"rule": body})).status_code == 403
 
     await login(client, "admin", "Admin-Passw0rd-123")
     old = (await client.get(f"{url}/{stale_id}")).json()

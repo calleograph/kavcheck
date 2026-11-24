@@ -16,7 +16,9 @@ from ..inventory import model as M
 from ..inventory.query import Filters, where_of
 from ..ksc.driver import KscError
 from ..models import InvAsset, InvDoc, InvDocItem, InvGeo, InvHistory, InvLicAssign, InvLicense, InvLocation, InvPerson, InvProp, InvRef, KscSource
+from ..services.resources import RES
 from .quick import Ctx, col, metric
+from .quick_inventory_geo import ADDRESS_SCOPE, observation_tables, rules_table, table
 
 TITLE = {"registry": "Реестр ИТ-оборудования", "computers": "Реестр компьютеров и серверов", "card": "Карточка учётной единицы", "by_person": "Оборудование по сотрудникам",
          "by_resp": "Оборудование по ответственным", "by_location": "Оборудование по местоположениям", "stock": "Оборудование на складе", "repair": "Оборудование в ремонте",
@@ -27,7 +29,8 @@ TITLE = {"registry": "Реестр ИТ-оборудования", "computers": 
          "infra_registry": "Реестр серверной инфраструктуры", "infra_hypervisors": "Гипервизоры и кластеры", "infra_ips": "IP-адреса, подсети и VLAN", "infra_racks": "Состав оборудования по стойкам",
          "infra_findings": "Расхождения между источниками", "infra_changes": "Изменения конфигурации", "infra_new_gone": "Новые и исчезнувшие объекты", "infra_sync": "Синхронизация источников",
          "infra_decom": "Вывод серверов из эксплуатации", "infra_asof": "Состояние инфраструктуры на дату", "infra_review": "Периодическая проверка инфраструктуры",
-         "infra_netscan": "Сетевое обнаружение", "geography": "Сетевые местоположения оборудования"}
+         "infra_netscan": "Сетевое обнаружение", "geography": "Сетевые местоположения оборудования",
+         "geography_card": "Сетевое местоположение оборудования", "geography_rules": "Правила принадлежности", "geography_preview": "Проверка правила принадлежности"}
 BASE_COLS = [col("inv_no", "Инв. номер"), col("name", "Наименование"), col("type", "Тип"), col("model", "Производитель и модель"), col("serial", "Серийный номер"), col("status", "Статус"),
              col("location", "Местоположение"), col("user", "Пользователь"), col("resp", "Ответственный"), col("zone", "Зона ответственности"), col("tags", "Теги")]
 MONEY = "num"
@@ -44,9 +47,16 @@ def _row(a: InvAsset, n: C.Names) -> dict:
             "note": (a.note or "")[:500], "updated_at": C._iso(a.updated_at), **{f"p.{k}": v for k, v in r["props_text"].items()}}
 
 
-async def _assets(db, p: dict, ctx: Ctx, acc: C.Access, cfg, extra: list | None = None, order=None) -> list[InvAsset]:
+async def _asset_where(db, p: dict, acc: C.Access, cfg) -> list:
     f = Filters(**{k: v for k, v in p.items() if k in Filters.model_fields and v not in (None, "", [])})
-    w = await where_of(db, f, acc, cfg) + (extra or [])
+    w = await where_of(db, f, acc, cfg)
+    if ids := p.get("exclude_ids"):
+        w.append(InvAsset.id.not_in(ids))
+    return w
+
+
+async def _assets(db, p: dict, ctx: Ctx, acc: C.Access, cfg, extra: list | None = None, order=None) -> list[InvAsset]:
+    w = await _asset_where(db, p, acc, cfg) + (extra or [])
     rows = (await db.execute(select(InvAsset).where(*w).order_by(*(order or [InvAsset.inv_no])).limit(ctx.max_rows))).scalars().all()
     return list(rows)
 
@@ -64,6 +74,8 @@ def _cond(p: dict) -> list[dict]:
             out.append({"label": lb, "text": str(v)})
     if p.get("ids"):
         out.append({"label": "Выбрано вручную", "text": f"{len(p['ids'])} карточек"})
+    if p.get("exclude_ids"):
+        out.append({"label": "Сняты отметки", "text": f"{len(set(p['exclude_ids']))} карточек"})
     if p.get("scope_ids"):
         out.append({"label": "Область учёта", "text": "ограничена местоположениями пользователя"})
     return out
@@ -81,7 +93,7 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
         acc = C.Access(frozenset({"view"}), scopes or (("/-/",) if p.get("scope_ids") else ()))
         notes = ["Данные — учётные сведения раздела «Инвентаризация» на момент формирования. Время — UTC. Отчёт может содержать персональные данные (ФИО сотрудников)."]
         tables, metrics, tabs = [], [], None
-        sub = ""
+        sub, selection_total, dbip_attribution = "", None, False
         today = date.today()
         props = list((await db.execute(select(InvProp).where(InvProp.active.is_(True), InvProp.in_list.is_(True)).order_by(InvProp.sort))).scalars())
         pcols = [col(f"p.{x.code}", x.name) for x in props]
@@ -168,12 +180,22 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             tabs = [{"id": "rows", "title": "Оборудование"}, {"id": "sum", "title": "Итого по сотрудникам"}]
             metrics = [metric("people", "Сотрудников", len(cnt)), metric("rows", "Единиц", len(data))]
 
-        elif view == "geography":
-            f = Filters(**{k: v for k, v in p.items() if k in Filters.model_fields and v not in (None, "", [])})
+        elif view in ("geography", "geography_card"):
+            card = view == "geography_card"
             source_ids = [UUID(s) for s in p["geo_source_ids"]] if p.get("geo_source_ids") is not None else None
-            w = await where_of(db, f, acc, cfg) + G.geo_where(G.GeoFilters.model_validate(p.get("geography") or {}), ctx.now)
+            if card:
+                if not p.get("asset_id"):
+                    raise KscError("params", "Выберите карточку оборудования")
+                w = [InvAsset.id == p["asset_id"]]
+                if (scope := acc.asset_filter()) is not None:
+                    w.append(scope)
+            else:
+                f = Filters(**{k: v for k, v in p.items() if k in Filters.model_fields and v not in (None, "", [])})
+                w = await where_of(db, f, acc, cfg) + G.geo_where(G.GeoFilters.model_validate(p.get("geography") or {}), ctx.now)
             pairs = (await db.execute(select(InvAsset, InvGeo).outerjoin(InvGeo, G.selection(source_ids)).where(*w)
                                       .order_by(InvAsset.inv_no, InvAsset.id).limit(ctx.max_rows))).all()
+            if card and not pairs:
+                raise KscError("no_data", "Карточка не найдена или вне вашей области учёта")
             names = await C.names_for(db, [a for a, _ in pairs], props=False)
             locations = {i: value for i, value in (await db.execute(select(InvLocation.id, InvLocation.path).where(
                 InvLocation.id.in_({g.result["site_id"] for _, g in pairs if g and g.result.get("site_id")})))).all()}
@@ -186,14 +208,64 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
                              "site": locations.get(r.get("site_id"), ""), "country": r.get("country"), "region": r.get("region"), "city": r.get("city"),
                              "status": G.LABELS[r.get("status", "unknown")], "network": r.get("network"), "source": sources.get(g.source_id, "") if g else "",
                              "observed_at": g.observed_at if g else None, "fresh": "да" if g and G.fresh(g.observed_at, ctx.now) else "нет",
-                             "lat": r.get("lat"), "lon": r.get("lon"), "radius_km": r.get("radius_km"), "operator": r.get("operator"), "asn": r.get("asn")})
+                             "lat": r.get("lat"), "lon": r.get("lon"), "radius_km": r.get("radius_km"), "operator": r.get("operator"), "asn": r.get("asn"),
+                             "provider": r.get("provider"), "database_at": r.get("database_at")})
             columns = [col(k, label) for k, label in (("inv_no", "Инв. номер"), ("name", "Наименование"), ("account_location", "Учётное местоположение"),
                        ("site", "Сетевая площадка"), ("country", "Страна"), ("region", "Регион"), ("city", "Город"), ("status", "Оценка"), ("network", "Сеть"),
-                       ("source", "Источник"), ("fresh", "Актуально"), ("lat", "Широта"), ("lon", "Долгота"), ("radius_km", "Погрешность, км"), ("operator", "Организация ASN"), ("asn", "ASN"))]
+                       ("source", "Источник"), ("fresh", "Актуально"), ("lat", "Широта"), ("lon", "Долгота"), ("radius_km", "Погрешность, км"), ("operator", "Организация ASN"), ("asn", "ASN"),
+                       ("provider", "Источник геолокации"), ("database_at", "Срез базы"))]
             columns.append(col("observed_at", "Наблюдение (UTC)", "date"))
+            if card:
+                asset, observation = pairs[0]
+                sub = f"{asset.inv_no} · {asset.name or asset.hostname}" if asset.name or asset.hostname else asset.inv_no
+                if observation:
+                    connection = G.connection_observation(observation.evidence)
+                    result = observation.result
+                    rows[0].update(checked_at=observation.checked_at, connection_ip=connection.get("ip"), connection_scope=ADDRESS_SCOPE[connection["scope"]],
+                                   connection_source=connection.get("source"), connection_at=connection.get("observed_at"),
+                                   rules=", ".join(r["name"] for r in result.get("rules", [])))
+                columns += [col("checked_at", "Обработка (UTC)", "date"), col("connection_ip", "IP подключения"), col("connection_scope", "Область IP подключения"),
+                            col("connection_source", "Источник IP подключения"), col("connection_at", "Время подключения (UTC)", "date"), col("rules", "Правила")]
             tables.append({"id": "rows", "title": TITLE[view], "columns": columns, "rows": rows})
+            if card and observation:
+                tables.extend(await observation_tables(db, asset, observation))
+                tabs = [{"id": t["id"], "title": t["title"]} for t in tables]
             metrics = [metric("rows", "Устройств", len(rows)), metric("known", "С координатами", sum(r["lat"] is not None for r in rows))]
             notes.append("География публичного адреса описывает выход в сеть. Известные площадки привязаны вручную через правила и справочник.")
+            dbip_attribution = any(row["provider"] == G.DBIP_LABEL for row in rows)
+            if dbip_attribution:
+                notes.append(G.DBIP_CREDIT)
+
+        elif view == "geography_rules":
+            rules = await rules_table(db)
+            tables.append(rules)
+            metrics = [metric("rows", "Правил", len(rules["rows"]))]
+
+        elif view == "geography_preview":
+            payload = G.RulePreview.model_validate(p.get("geo_rule_preview"))
+            proposed = G.Compiled(payload.id or -1, payload.rule)
+            summary = p.get("detail") == "summary"
+            limit = 20 if ctx.light else ctx.max_rows
+
+            async def checkpoint():
+                if ctx.cancelled():
+                    raise RuntimeError("cancelled")
+                await RES.breathe("Отчёт по правилу принадлежности")
+
+            plan = await G.preview_rule(db, proposed, None, acc.asset_filter(), ctx.now, 0 if summary else limit, checkpoint=None if ctx.light else checkpoint)
+            if ctx.light and not summary:
+                selection_total = plan["matched"]
+            elif not summary and plan["matched"] > ctx.max_rows:
+                raise KscError("params", f"Совпадений {plan['matched']}. Уточните правило до {ctx.max_rows} строк или выберите краткий отчёт")
+            sub = payload.rule.name
+            rows = [{**row, "status": G.LABELS[row["status"]], "effective": "Да" if row["effective"] else "Нет",
+                     "fresh": "Да" if row["fresh"] else "Нет", "would_fill": "Да" if row["would_fill"] else "Нет"} for row in plan["items"]]
+            tables.append(table("rows", "Совпадения", [("inv_no", "Инв. номер"), ("name", "Наименование"), ("status", "Оценка"),
+                                ("effective", "Правило выбрано"), ("fresh", "Актуально"), ("would_fill", "Можно заполнить поля")], rows))
+            tables.append({**await rules_table(db, [proposed]), "id": "rule", "title": "Условия проверяемого правила"})
+            metrics = [metric(key, label, plan[key]) for key, label in (("matched", "Совпадений"), ("effective", "Сработает"),
+                       ("conflicts", "Противоречия"), ("would_fill", "Можно заполнить поля"), ("stale", "Устаревшие наблюдения"))]
+            notes.append("Совпадения рассчитаны по указанному правилу и сетевым наблюдениям на момент формирования.")
 
         elif view in ("by_location", "cost"):
             rows = await _assets(db, {**p, "st": p.get("st") or "active"}, ctx, acc, cfg, order=[InvAsset.location_id, InvAsset.inv_no])
@@ -263,10 +335,7 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             d_from = _date(p.get("date_from")) or (today - timedelta(days=365))
             d_to = _date(p.get("date_to")) or today
             w = [InvHistory.at >= datetime(d_from.year, d_from.month, d_from.day, tzinfo=timezone.utc), InvHistory.at < datetime(d_to.year, d_to.month, d_to.day, tzinfo=timezone.utc) + timedelta(days=1)]
-            if (af := acc.asset_filter()) is not None:
-                w.append(InvHistory.asset_id.in_(select(InvAsset.id).where(af)))
-            if p.get("ids"):
-                w.append(InvHistory.asset_id.in_(p["ids"]))
+            w += await _asset_where(db, p, acc, cfg)
             fields = set(M.PEOPLE_FIELDS) if view == "owner_history" else {"location_id", "loc_detail"}
             hq = select(InvHistory, InvAsset.inv_no, InvAsset.name, InvAsset.serial).join(InvAsset, InvAsset.id == InvHistory.asset_id).where(*w).order_by(InvHistory.at.desc()).limit(ctx.max_rows * 2)
             data = []
@@ -446,7 +515,9 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             tables.append({"id": "rows", "title": TITLE[view], "columns": [col("match", "Совпадение"), col("value", "Значение"), *BASE_COLS[:7], col("ksc", "Компьютер KSC")], "rows": data})
             metrics = [metric("groups", "Групп совпадений", len({(r["match"], r["value"]) for r in data}), "", "warn"), metric("rows", "Карточек", len(data))]
             notes.append("Совпадение серийного номера или имени — повод проверить карточки; автоматически они не объединяются.")
-    return {"title": TITLE[view], "subtitle": sub, "conditions": _cond(p), "severity": None, "notes": notes, "metrics": metrics, "tables": tables, **({"tabs": tabs} if tabs and len(tabs) > 1 else {})}
+    return {"title": TITLE[view], "subtitle": sub, "conditions": _cond(p), "severity": None, "notes": notes, "metrics": metrics, "tables": tables,
+            **({"dbip_attribution": True} if dbip_attribution else {}),
+            **({"tabs": tabs} if tabs and len(tabs) > 1 else {}), **({"selection_total": selection_total} if selection_total is not None else {})}
 
 
 def _date(v) -> date | None:

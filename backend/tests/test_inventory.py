@@ -260,6 +260,31 @@ async def test_rerun_of_inventory_report_applies_current_scope(client, app):
     again = await client.post(f"/api/v1/reports/{job['id']}/rerun")
     assert again.status_code == 201 and again.json()["params"]["scope_ids"] == [s["region"]["id"]]      # повтор не расширяет область прежними параметрами
 
+
+async def test_inventory_report_respects_property_filters_and_unmarked_assets(client, app):
+    s = await setup(client, app)
+    prop = await client.post(f"{API}/props", json={"name": "Проверка", "type": "select", "options": ["A", "B"]})
+    code = prop.json()["code"]
+    assets = []
+    for name, value in (("Первый", "A"), ("Второй", "A"), ("Третий", "B")):
+        created = await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["laptop"], "name": name, "props": {code: value}}})
+        assert created.status_code == 201, created.text
+        a = created.json()
+        assigned = await client.put(f"{API}/assets/{a['id']}", json={"data": {"user_id": s["p1"]["id"]}, "version": a["version"]})
+        assert assigned.status_code == 200, assigned.text
+        assets.append(a)
+
+    async def report(view, exclude_ids):
+        response = await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": view, "props": {code: "A"}, "exclude_ids": exclude_ids}})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    excluded = [assets[0]["id"]]
+    for view in ("registry", "owner_history"):
+        assert {item["inv_no"] for item in (await report(view, excluded))["items"]} == {assets[1]["inv_no"]}
+        assert (await report(view, [*excluded, assets[1]["id"]]))["total"] == 0
+
+
 async def test_import_csv_preview_check_and_upsert(client, app):
     s = await setup(client, app)
     csv_text = ("Инв. номер;Наименование;Серийный номер;Тип;Производитель;Модель;Местоположение;Пользователь;Стоимость;Гарантия до\n"

@@ -13,13 +13,15 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import and_, func, select
 
-from ..models import InvAsset, InvGeo, InvGeoRule, InvLocation
+from ..models import InfraSource, InvAsset, InvGeo, InvGeoRule, InvLocation, InvPerson, InvRef, KscSource, Zone
 from ..search import matcher
 from ..zones.match import ip_int, normalize_rule, parse_net
 
 FRESH = timedelta(days=7)
 LABELS = {"unknown": "Недостаточно данных", "site": "Площадка по правилу", "approx": "Примерно по IP подключения",
           "vpn": "VPN или прокси по правилу", "conflict": "Противоречивые правила"}
+RULE_REFS = {"source_id": KscSource, "infra_source_id": InfraSource, "site_id": InvLocation, "location_id": InvLocation,
+             "branch_id": InvRef, "dept_id": InvRef, "type_id": InvRef, "resp_id": InvPerson, "zone_id": Zone}
 
 
 class Rule(BaseModel):
@@ -74,6 +76,11 @@ class Rule(BaseModel):
 MASKS = {"host": "name", "group": "group", "domain": "domain", "network_location": "network_location", "network_id": "network_id"}
 
 
+class RulePreview(BaseModel):
+    id: int | None = Field(default=None, gt=0)
+    rule: Rule
+
+
 @dataclass
 class Compiled:
     id: int
@@ -106,6 +113,26 @@ class Compiled:
 
 async def rules_for(db) -> list[Compiled]:
     return [Compiled(row.id, Rule.model_validate(row.data)) for row in (await db.scalars(select(InvGeoRule).order_by(InvGeoRule.id))).all()]
+
+
+async def invalid_rule_ref(db, rule: Rule) -> str | None:
+    for key, model in RULE_REFS.items():
+        if (value := getattr(rule, key)) is None:
+            continue
+        row = await db.get(model, value)
+        if row is None or (model is InvRef and row.kind != key.removesuffix("_id")) or (model is InvLocation and not row.active):
+            return key
+    return None
+
+
+async def proposal_fields(db, asset: InvAsset, values: dict) -> dict:
+    from .model import FIELD_RU  # noqa: PLC0415
+
+    out = {}
+    for field in ("location_id", "dept_id", "branch_id", "resp_id", "zone_id"):
+        if values.get(field) and (row := await db.get(RULE_REFS[field], UUID(values[field]) if field == "zone_id" else values[field])):
+            out[field] = {"label": FIELD_RU[field], "value": row.path if field == "location_id" else row.name, "empty": not getattr(asset, field)}
+    return out
 
 
 AddressScope = Literal["public", "private", "shared", "special"]
@@ -219,6 +246,36 @@ def selection(source_ids: list[UUID] | None):
     return and_(InvAsset.id == InvGeo.asset_id, link_filter(), source_filter(source_ids))
 
 
+async def preview_rule(db, proposed: Compiled, source_ids, scope, now: datetime, limit: int, *, checkpoint=None) -> dict:
+    rules = [rule for rule in await rules_for(db) if rule.id != proposed.id] + [proposed]
+    q = select(InvAsset, InvGeo).join(InvGeo, selection(source_ids)).order_by(InvAsset.id)
+    if scope is not None:
+        q = q.where(scope)
+    counts = dict(matched=0, effective=0, conflicts=0, would_fill=0, stale=0)
+    items = []
+    result_set = await db.stream(q.execution_options(yield_per=500))
+    async for batch in result_set.partitions(500):
+        if checkpoint:
+            await checkpoint()
+        for asset, obs in batch:
+            addresses = [(ip, row["kind"]) for row in obs.evidence.get("addresses", []) if (ip := ip_int(row["ip"])) is not None]
+            if proposed.match(obs.evidence, obs.source_id, asset.type_id, addresses) is None:
+                continue
+            result = locate(obs.evidence, obs.source_id, asset.type_id, rules, lambda _ip: {})
+            effective = proposed.id in {rule["id"] for rule in result["rules"]}
+            current = fresh(obs.observed_at, now)
+            would_fill = bool(effective and current and any(getattr(asset, field) is None for field in result["proposals"]))
+            counts["matched"] += 1
+            counts["effective"] += effective and result["status"] != "conflict"
+            counts["conflicts"] += effective and result["status"] == "conflict"
+            counts["stale"] += not current
+            counts["would_fill"] += would_fill
+            if len(items) < limit:
+                items.append({"id": asset.id, "inv_no": asset.inv_no, "name": asset.name or asset.hostname, "status": result["status"],
+                              "effective": effective, "fresh": current, "would_fill": would_fill})
+    return {**counts, "items": items}
+
+
 async def site_fields(db, rules: list[Compiled]) -> dict:
     ids = {r.rule.site_id for r in rules if r.rule.site_id}
     if not ids:
@@ -265,15 +322,23 @@ class GeoFilters(BaseModel):
     freshness: Literal["", "fresh", "stale", "unknown"] = ""
 
 
+DBIP_LABEL = "DB-IP Lite"
+DBIP_CREDIT = "IP Geolocation by DB-IP — https://db-ip.com/ · CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/"
+GEOIP_LABELS = {"dbip": DBIP_LABEL, "maxmind": "GeoLite2"}
+
+
 class GeoIP(ExitStack):
-    """Чтение локальных MMDB и кэш публичных адресов на расчёт. Каталог обновляется на хосте."""
-    def __init__(self, directory: Path):
+    """Чтение локальных MMDB и кэш публичных адресов на один расчёт."""
+    def __init__(self, directory: Path, provider: str = "maxmind"):
         super().__init__()
         import maxminddb
+        from .geo_download import DBIP_EDITIONS, EDITIONS
 
         self.city, self.asn = None, None
+        self.provider = GEOIP_LABELS[provider]
         self.errors = []
-        for key, filename in (("city", "GeoLite2-City.mmdb"), ("asn", "GeoLite2-ASN.mmdb")):
+        for key, edition in zip(("city", "asn"), DBIP_EDITIONS if provider == "dbip" else EDITIONS, strict=True):
+            filename = f"{edition}.mmdb"
             try:
                 setattr(self, key, self.enter_context(maxminddb.open_database(str(directory / filename))))
             except FileNotFoundError:
@@ -296,5 +361,5 @@ class GeoIP(ExitStack):
         return {"country": name(city.get("country")), "region": name(subdivisions[0]), "city": name(city.get("city")),
                 "country_code": (city.get("country") or {}).get("iso_code"), "lat": location.get("latitude"), "lon": location.get("longitude"),
                 "radius_km": location.get("accuracy_radius"), "asn": asn.get("autonomous_system_number"),
-                "operator": str(asn.get("autonomous_system_organization") or "")[:300], "provider": "GeoLite2",
-                "database_at": datetime.fromtimestamp(self.city.metadata().build_epoch if self.city else self.asn.metadata().build_epoch, timezone.utc).date().isoformat()}
+                "operator": str(asn.get("autonomous_system_organization") or "")[:300], "provider": self.provider,
+                "database_at": datetime.fromtimestamp((self.city if city else self.asn).metadata().build_epoch, timezone.utc).date().isoformat()}

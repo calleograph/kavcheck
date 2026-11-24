@@ -24,7 +24,6 @@ from ..licensing import pools as LP
 from ..models import (EolFinding, EolState, KscSource, LicenseOverride, LicenseRecord, LicenseState, OverviewDaily, ZcDetection, ZcHost, ZcSource, utcnow)
 from ..overview import calc as C
 from ..overview import snapshots as SN
-from ..search import any_field
 from ..services.audit import write_audit
 from ..services.sources import find_overlaps
 from ..overview.service import DB_METRICS, _db_hosts, _scope, licenses_block
@@ -204,11 +203,8 @@ async def overview_hosts(request: Request, metric: str = Query(..., max_length=2
     results = await asyncio.gather(*[_records(request, db, s) for s in scope])
     items = []
     for s, (recs, _at, _err) in zip(scope, results):
-        for r in C.pick(recs or [], metric, days, now):
+        for r in C.pick(recs or [], metric, days, now, q=q):
             items.append({**r, "source_id": str(s.id), "source": s.name})
-    f = any_field(q)
-    if f:
-        items = [r for r in items if f(r["name"], r["fqdn"], r["ip"])]
     items.sort(key=C.sort_key(sort), reverse=desc)
     page = [{"host_id": r["host_id"], "name": r["name"], "ip": r["ip"], "os": r["os"], "group": r["group"], "last_connected": r["last_connected"], "days_since_connection": r["days_since_connection"],
              "online": r.get("online"), "source_id": r["source_id"], "source": r["source"]} for r in items[offset:offset + limit]]

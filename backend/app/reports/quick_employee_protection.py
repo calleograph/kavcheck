@@ -75,6 +75,7 @@ async def build_employee_protection(_client, p: dict, ctx: Ctx) -> dict:
     os_cols = [col("label", "ОС"), col("total", "Устройства", "num"), col("protected", "Защищены", "num"),
                col("problems", "Проблемы", "num"), col("no_av", "Подтверждено отсутствие", "num")]
     tables = [_table("rows", "Устройства сотрудников" if view == "devices" else "Сотрудники", DEVICES if view == "devices" else PEOPLE, rows),
+              _table("statuses", "По состоянию защиты", [col("label", "Состояние"), col("count", "Сотрудники", "num")], summary["statuses"]),
               _table("departments", "По департаментам", group_cols, summary["by_department"]),
               _table("systems", "По операционным системам", os_cols, summary["by_os"])]
     return {"title": TITLE, "subtitle": "Подготовленные данные KAV Checker", "conditions": conditions, "metrics": metrics,

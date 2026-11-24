@@ -54,6 +54,11 @@ async def test_snapshot_deduplicates_devices_and_reuses_report_selection(client,
     preview = await client.post("/api/v1/quick/preview", json=body, headers=header)
     assert preview.status_code == 200, preview.text
     assert preview.json()["total"] == 1 and preview.json()["items"][0]["users"] == "Alpha"
+    summary_report = await client.post("/api/v1/quick/preview", json={"kind": KIND, "params": {"view": "employees", "detail": "summary", "department": "Dev"}})
+    assert summary_report.status_code == 200, summary_report.text
+    doc = summary_report.json()
+    assert [table["id"] for table in doc["doc"]["tables"]] == ["statuses", "departments", "systems", "summary"]
+    assert {row["id"]: row["count"] for row in doc["items"] if row["count"]} == {"protected": 1, "partial": 1}
     job = await client.post("/api/v1/reports", json=body, headers=header)
     assert job.status_code == 201, job.text
     async with app.state.session_maker() as db:

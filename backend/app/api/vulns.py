@@ -41,6 +41,7 @@ async def groups_cached(request: Request, src: KscSource) -> dict[int, dict]:
 @router.get("/hosts")
 async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200), group: str = Query("", max_length=200), product: str = Query("", max_length=200),
                 product_id: int | None = Query(None, ge=1), product_name: str | None = Query(None, max_length=300), cve: str = Query("", max_length=100),
+                descr_id: int | None = Query(None, ge=1, le=2**31 - 1),
                 severity: str = Query("", pattern=r"^(|critical|high|warning)$"), patchable: bool = False,
                 sort: str = Query("risk", pattern=r"^(risk|total|critical|high|name|last_connected|patchable)$"), desc: bool = True, all_hosts: bool = False, zone: str = Query("", max_length=40),
                 offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), refresh: bool = False,
@@ -52,8 +53,8 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
     general = await request.app.state.settings_svc.get(db, "general")
     rcfg = await request.app.state.settings_svc.get(db, "reports")
     client = request.app.state.sources.client(src)
-    filters = {"cve": cve, "product": product, "product_id": product_id, "product_name": product_name}
-    key = (str(src.id), "vuln_hosts", cve, product, product_id, product_name, rcfg.exclude_slave_servers)
+    filters = {"cve": cve, "product": product, "product_id": product_id, "product_name": product_name, "descr_id": descr_id}
+    key = (str(src.id), "vuln_hosts", *filters.values(), rcfg.exclude_slave_servers)
 
     async def make() -> list[dict]:
         """Агрегат по компьютерам один раз на срок кэша; страницы, фильтры и сортировка — по готовому списку."""

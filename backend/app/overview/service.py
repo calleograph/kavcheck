@@ -80,7 +80,7 @@ async def _db_hosts(db: AsyncSession, srcs: list[KscSource], metric: str, days: 
     cnt = select(func.count()).select_from(base.where(*cond_all).order_by(None).subquery())
     total = int((await db.execute(cnt)).scalar_one())
     order = {"name": func.lower(H.name), "ip": H.ip_num, "os": func.lower(H.os), "last_connected": H.last_connected, "group": func.lower(H.name)}[sort]
-    rows = (await db.execute(base.where(*cond_all).order_by(order.desc() if desc else order.asc(), H.host_id).offset(offset).limit(limit))).all()
+    rows = (await db.execute(base.where(*cond_all).order_by(order.desc() if desc else order.asc(), H.host_id, H.source_id).offset(offset).limit(limit))).all()
     items = [{"host_id": r.host_id, "name": r.name, "ip": ip_str(r.ip_num), "os": r.os, "group": (r.data or {}).get("group", ""), "last_connected": r.last_connected, "days_since_connection": r.days_since,
               "online": r.online, "source_id": str(r.source_id), "source": names.get(r.source_id, "")} for r in rows]
     return {"items": items, "total": total, "offset": offset, "limit": limit, "title": DB_METRICS[metric]}

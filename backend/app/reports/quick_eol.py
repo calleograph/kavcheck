@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 
 from ..eol import read as R
 from ..ksc.driver import KscError, SourceClient
@@ -26,6 +26,7 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
     if ctx.sm is None or not (ctx.source_ids or ctx.source_id):
         raise KscError("params", "Отчёт EOL недоступен: нет доступа к локальной базе")
     sids = list(ctx.source_ids or [ctx.source_id])
+    host_q = p.get("host_q") or ""
     statuses = [s for s in (p.get("statuses") or ["eol", "extended", "upcoming"]) if s in (*R.PROBLEM_STATUSES, R.UNDETERMINED)]
     kinds = p.get("kinds") or ["app", "os"]
     async with ctx.sm() as db:
@@ -44,16 +45,29 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
             except (KeyError, ValueError):
                 raise KscError("params", "Неверно указана находка EOL") from None
         zone = p.get("zone") or ""
+        # Устройство и его поиск берутся из тех же подготовленных данных, что и боковая панель EOL.
+        J = (EolHost.__table__.join(EolFinding.__table__, and_(EolFinding.source_id == EolHost.source_id, EolFinding.kind == EolHost.kind, EolFinding.subject == EolHost.subject, EolFinding.version == EolHost.version))
+             .outerjoin(ZcSource.__table__, and_(ZcSource.source_id == EolHost.source_id, ZcSource.gen > 0))
+             .outerjoin(ZcHost.__table__, and_(ZcHost.source_id == EolHost.source_id, ZcHost.host_id == EolHost.host_id, ZcHost.gen == ZcSource.gen)))
+        dcond = list(cond)
+        if zone:
+            J = J.join(ZcHostZone.__table__, and_(ZcHostZone.source_id == EolHost.source_id, ZcHostZone.host_id == EolHost.host_id, ZcHostZone.gen == ZcSource.gen, ZcHostZone.zone_id == zone))
+        if host_q:
+            dcond.append(any_of(host_q, ZcHost.name, ZcHost.search))
         counts: dict[tuple, tuple[int, int]] = {}
-        if zone:                                        # отчёт по зоне: считаются только устройства зоны (по подготовленным данным зон)
+        if fnd:
+            n, active = (await db.execute(select(func.count(), func.coalesce(func.sum(case((EolHost.active.is_(True), 1), else_=0)), 0)).select_from(J).where(*dcond))).one()
+            findings = (await db.scalars(select(EolFinding).where(*cond))).all()
+            counts = {(f.source_id, f.kind, f.subject, f.version): (int(n), int(active)) for f in findings}
+        elif zone:                                        # отчёт по зоне: считаются только устройства зоны (по подготовленным данным зон)
             agg = await R.zone_agg(db, zone, sids)
             findings = [f for f in (await db.execute(select(EolFinding).where(*cond).order_by(R.SEV_ORDER.desc(), EolFinding.title))).scalars() if (f.source_id, f.kind, f.subject, f.version) in agg]
             counts = {(f.source_id, f.kind, f.subject, f.version): agg[(f.source_id, f.kind, f.subject, f.version)] for f in findings}
         else:
             findings = (await db.execute(select(EolFinding).where(*cond).order_by(R.SEV_ORDER.desc(), EolFinding.title))).scalars().all()
         n_of = lambda f: counts.get((f.source_id, f.kind, f.subject, f.version), (f.hosts_all, f.hosts_active))  # noqa: E731
-        if not p.get("include_inactive"):
-            findings = [f for f in findings if n_of(f)[1] > 0]
+        if fnd or not p.get("include_inactive"):
+            findings = [f for f in findings if n_of(f)[0 if p.get("include_inactive") else 1] > 0]
         labels = await R.labels_for(db, {f.eol_product for f in findings if f.eol_product})
         rows = []
         for f in findings:
@@ -64,15 +78,8 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
         est = sum(r["hosts"] if p.get("include_inactive") else r["hosts_active"] for r in rows)         # строк в таблице устройств (устройство × проблема)
         if p.get("devices", True) and est > ctx.max_rows:
             raise KscError("too_many_rows", f"Строк в таблице устройств около {est}, предел отчёта — {ctx.max_rows}: отключите таблицу устройств, выберите зону, состояние или критичность либо повысьте предел в «Администрирование → Общие настройки»")
-        # устройства находок + данные подготовленных зон (только нужные поля, без загрузки всех компьютеров источника)
-        J = (EolHost.__table__.join(EolFinding.__table__, and_(EolFinding.source_id == EolHost.source_id, EolFinding.kind == EolHost.kind, EolFinding.subject == EolHost.subject, EolFinding.version == EolHost.version))
-             .outerjoin(ZcSource.__table__, and_(ZcSource.source_id == EolHost.source_id, ZcSource.gen > 0))
-             .outerjoin(ZcHost.__table__, and_(ZcHost.source_id == EolHost.source_id, ZcHost.host_id == EolHost.host_id, ZcHost.gen == ZcSource.gen)))
-        dcond = list(cond)
-        if zone:
-            J = J.join(ZcHostZone.__table__, and_(ZcHostZone.source_id == EolHost.source_id, ZcHostZone.host_id == EolHost.host_id, ZcHostZone.gen == ZcSource.gen, ZcHostZone.zone_id == zone))
         if not p.get("include_inactive"):
-            dcond.append(or_(ZcHost.active.is_(True), ZcHost.host_id.is_(None)))
+            dcond.append(EolHost.active.is_(True) if fnd else or_(ZcHost.active.is_(True), ZcHost.host_id.is_(None)))
         agg_hosts: tuple[int, dict[int, int]] | None = None
         if p.get("devices", True):
             # одним потоковым запросом
@@ -108,9 +115,16 @@ async def build_eol(client: SourceClient, p: dict, ctx: Ctx) -> dict:
              "(платная или по договору) показывается отдельно и не считается подтверждённой. Продукты без дат в базе в отчёт не попадают."]
     if p.get("devices", True) and not devices and rows:
         notes.append("Список устройств пуст: подготовленные данные источника ещё не рассчитаны или устройства неактивны за период.")
-    return {"title": "EOL в инфраструктуре", "subtitle": "Программы и операционные системы с закончившейся или приближающейся датой окончания поддержки", "conditions": [
-        {"label": "Источники", "text": ", ".join(names.get(s, "?") for s in sids)}, {"label": "Состояние", "text": ", ".join(R.STATUS_RU.get(s, s) for s in statuses)}],
+    conditions = [{"label": "Источники", "text": ", ".join(names.get(s, "?") for s in sids)}, {"label": "Состояние", "text": ", ".join(R.STATUS_RU.get(s, s) for s in statuses)}]
+    if zone:
+        conditions.append({"label": "Зона ответственности", "text": zone})
+    if host_q:
+        conditions.append({"label": "Поиск по устройствам", "text": host_q})
+    tables = [{"id": "rows", "title": "Программы и ОС с EOL", "columns": FINDING_COLS, "rows": rows,
+               "note": "Одна строка — программа (версия каталога) или ОС источника. «Устройств» — все, «Из них активных» — со связью за период."},
+              {"id": "devices", "title": "Устройства", "columns": DEVICE_COLS, "rows": devices, "note": "Одна строка — устройство × программа или ОС. Список полный."}]
+    if fnd and p.get("devices", True):
+        tables.reverse()
+    return {"title": "EOL в инфраструктуре", "subtitle": "Программы и операционные системы с закончившейся или приближающейся датой окончания поддержки", "conditions": conditions,
         "metrics": metrics, "severity": {"title": "Устройства по наивысшей критичности", "levels": [{"key": k, "label": SEV_LABEL[k], "value": level[k], "hint": ""} for k in ("critical", "high", "warning")]},
-        "notes": notes, "tables": [{"id": "rows", "title": "Программы и ОС с EOL", "columns": FINDING_COLS, "rows": rows,
-                                    "note": "Одна строка — программа (версия каталога) или ОС источника. «Устройств» — все, «Из них активных» — со связью за период."},
-                                   {"id": "devices", "title": "Устройства", "columns": DEVICE_COLS, "rows": devices, "note": "Одна строка — устройство × программа или ОС. Список полный."}]}
+        "notes": notes, "tables": tables}

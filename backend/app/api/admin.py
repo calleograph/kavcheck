@@ -197,6 +197,10 @@ async def put_settings(group: str, request: Request, body: dict[str, Any] = Body
         changed = await svc.update(db, group, body, actor=su.display_name)
     except SettingsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    if group == "geoip" and {"provider", "enabled"}.intersection(changed):
+        from ..inventory.geo_service import request_refresh
+
+        await request_refresh(db)
     write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action=f"settings.{group}.update", target_type="settings", target_id=group, details={"changed": changed})
     await db.commit()
     return await svc.public(db, group)

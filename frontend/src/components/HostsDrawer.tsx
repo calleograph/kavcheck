@@ -24,7 +24,7 @@ export function HostsDrawer({ title, lede, listKey, deps, fetchPage, onClose, ac
   activityDays: number; foot?: ReactNode;
   search?: string;                                              // подсказка поля поиска; без неё поиска в панели нет (сервер списка его не поддерживает)
   sortKeys?: Partial<Record<"name" | "ip" | "os" | "group" | "last_connected", string>>;   // какие столбцы сортируются на сервере и под каким ключом
-  report?: { onClick: () => void; disabled?: boolean; title?: string } | null;
+  report?: { onClick: (query: PanelQuery) => void; disabled?: boolean; title?: string } | null;
   versions?: boolean;                                           // столбец «Установленная версия» (списки по программам)
   multiSource?: boolean;                                        // столбец «Источник KSC» и ссылки в карточку «Устройств» (режим «Все источники»)
   defaultSort?: string;
@@ -32,8 +32,9 @@ export function HostsDrawer({ title, lede, listKey, deps, fetchPage, onClose, ac
   const scroll = useRef<HTMLDivElement>(null);
   const [q, setQ] = useState(""); const [applied, setApplied] = useState("");
   const [sort, setSort] = useState(defaultSort); const [desc, setDesc] = useState(false);
-  useEffect(() => { const t = window.setTimeout(() => setApplied(q), 300); return () => window.clearTimeout(t); }, [q]);
-  const list = useInfinite<DrawerHost>(listKey, [...deps, applied, sort, desc], (offset, limit) => fetchPage(offset, limit, { q: applied, sort, desc }), 100);
+  useEffect(() => { const t = window.setTimeout(() => setApplied(q.trim()), 300); return () => window.clearTimeout(t); }, [q]);
+  const query = { q: applied, sort, desc };
+  const list = useInfinite<DrawerHost>(listKey, [...deps, applied, sort, desc], (offset, limit) => fetchPage(offset, limit, query), 100);
   useEffect(() => { scroll.current?.focus(); }, []);
   const vers = (h: DrawerHost) => (h.versions ?? (h.app_name ? [{ app_name: h.app_name, app_version: h.app_version ?? "" }] : []));
   const withVersions = showVersions ?? list.items.some((h) => vers(h).length > 0);
@@ -47,7 +48,8 @@ export function HostsDrawer({ title, lede, listKey, deps, fetchPage, onClose, ac
       <div className="dp-bar">
         {search !== undefined && <div className="input-icon dp-search"><Icon name="search" size={16} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={search || "Имя компьютера или адрес"} aria-label="Поиск по списку устройств" /><MaskHint /></div>}
         <span className="dp-count" role="status" aria-live="polite">{list.initial ? "…" : <><b>{num(list.total)}</b> <span className="muted">{plural(list.total, "устройство", "устройства", "устройств")}</span></>}</span>
-        {report && <ReportButton {...report} title={report.title ?? "Сформировать отчёт по устройствам этого списка"} />}
+        {report && <ReportButton onClick={() => report.onClick(query)} disabled={report.disabled || applied !== q.trim()}
+          title={report.title ?? "Сформировать отчёт по устройствам этого списка"} />}
       </div>
       {list.error && list.initial && <div className="alert error" role="alert"><div className="alert-body">{list.error}</div></div>}
       {list.initial ? <SkelRows rows={8} cols={5} /> : !list.items.length ? <Empty icon="monitor" title="Устройств нет">{applied ? "По этому запросу в списке ничего не найдено." : "По этим условиям устройств не найдено."}</Empty> : (

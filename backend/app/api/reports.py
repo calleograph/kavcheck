@@ -51,7 +51,9 @@ def can_see(su: SessionUser, j: ReportJob, hier=None, employee=False) -> bool:
         if not (su.is_admin or j.created_by_id == su.user_id):
             return False
         p = j.params or {}
-        if p.get("view") == "geography" and not (su.is_admin or su.all_sources):
+        if p.get("view") in ("geography_rules", "geography_preview"):
+            return su.is_admin
+        if p.get("view") in ("geography", "geography_card") and not (su.is_admin or su.all_sources):
             ids = p.get("geo_source_ids")
             return ids is not None and set(ids) <= su.source_ids
         return True
@@ -382,7 +384,7 @@ async def list_templates(request: Request, su: SessionUser = Depends(require_use
 
 
 # Выбор строк и фильтры страницы шаблон не хранит: они берутся с той страницы, откуда открыт конструктор. В шаблоне — настройки отчёта (подробность, столбцы, состояния, критичность…).
-CONTEXT_KEYS = {"host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "finding", "q", "zone", "group_contains", "threat", "product", "build", "problem"}
+CONTEXT_KEYS = {"host_ids", "descr_ids", "cves", "vp_ids", "product_names", "vuln_keys", "product_keys", "event_ids", "host_id", "ids", "exclude_ids", "geo_rule_preview", "finding", "q", "host_q", "zone", "group_contains", "threat", "product", "build", "problem"}
 
 
 def template_settings(params: dict) -> dict:
