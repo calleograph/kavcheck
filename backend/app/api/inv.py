@@ -6,13 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from typing import Annotated
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +22,7 @@ from ..auth.deps import SessionUser, get_db, require_user
 from ..inventory import core as C
 from ..inventory import model as M
 from ..inventory.query import Filters, where_of
-from ..models import (InvAsset, InvDoc, InvDocItem, InvFile, InvHistory, InvLicense, InvLocation, InvPerson, InvProp, InvRef, InvView, KscSource, ZcHost, ZcSource, utcnow)
+from ..models import (InvAsset, InvDoc, InvDocItem, InvFile, InvHistory, InvLicense, InvLocation, InvPerson, InvProp, InvRef, InvView, KscSource, ZcHost, ZcSource, Zone, utcnow)
 from ..search import column_like
 from ..services.audit import write_audit
 from ..services.settings import InventorySettings
@@ -90,8 +92,9 @@ async def meta(ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
     """Справочники, свойства, словари и права текущего пользователя — одним запросом при входе в раздел."""
     refs = (await db.execute(select(InvRef).order_by(InvRef.kind, InvRef.sort, InvRef.name))).scalars().all()
     props = (await db.execute(select(InvProp).order_by(InvProp.sort, InvProp.id))).scalars().all()
+    zones = (await db.execute(select(Zone.id, Zone.name).order_by(Zone.name))).all()
     return {"refs": [{"id": r.id, "kind": r.kind, "name": r.name, "code": r.code, "parent_id": r.parent_id, "data": r.data or {}, "active": r.active} for r in refs],
-            "props": [prop_out(p) for p in props], "perms": sorted(ix.acc.perms), "scoped": bool(ix.acc.scopes), "scope_ids": list(ix.acc.scope_ids),
+            "props": [prop_out(p) for p in props], "zones": [{"id": i, "name": name} for i, name in zones], "perms": sorted(ix.acc.perms), "scoped": bool(ix.acc.scopes), "scope_ids": list(ix.acc.scope_ids),
             "cls": M.CLS_RU, "st": M.ST_RU, "loc_kinds": M.LOC_RU, "ref_kinds": M.REF_RU, "prop_types": M.PROP_TYPES, "roles": M.ROLES_RU, "rels": M.REL_RU, "metrics": M.METRIC_RU,
             "doc_kinds": M.DOC_RU, "doc_short": M.DOC_SHORT, "doc_status": M.DOC_STATUS_RU, "work_kinds": M.WORK_KINDS, "doc_columns": M.DOC_COLUMNS,
             "settings": {k: getattr(ix.cfg, k) for k in ("inv_prefix", "inv_digits", "warranty_days", "license_days", "transit_days", "repair_days", "stale_days", "label_code", "label_sheet")}}
@@ -183,7 +186,7 @@ async def assets(request: Request, sort: str = Query("inv_no", max_length=20), d
 
 
 GROUP = {"cls": (InvAsset.cls, None), "type": (InvAsset.type_id, "ref"), "manufacturer": (InvAsset.manufacturer_id, "ref"), "model": (InvAsset.model_id, "ref"),
-         "status": (InvAsset.status_id, "ref"), "dept": (InvAsset.dept_id, "ref"), "branch": (InvAsset.branch_id, "ref"), "location": (InvAsset.location_id, "loc"),
+         "status": (InvAsset.status_id, "ref"), "dept": (InvAsset.dept_id, "ref"), "branch": (InvAsset.branch_id, "ref"), "zone": (InvAsset.zone_id, "zone"), "location": (InvAsset.location_id, "loc"),
          "user": (InvAsset.user_id, "person"), "owner": (InvAsset.owner_id, "person"), "resp": (InvAsset.resp_id, "person"), "mol": (InvAsset.mol_id, "person"), "supplier": (InvAsset.supplier_id, "ref")}
 
 
@@ -201,6 +204,8 @@ async def groups(request: Request, by: str = Query("type", pattern=r"^(" + "|".j
         names = dict((await db.execute(select(InvLocation.id, InvLocation.path).where(InvLocation.id.in_(ids)))).all())
     elif kind == "person" and ids:
         names = dict((await db.execute(select(InvPerson.id, InvPerson.name).where(InvPerson.id.in_(ids)))).all())
+    elif kind == "zone" and ids:
+        names = dict((await db.execute(select(Zone.id, Zone.name).where(Zone.id.in_(ids)))).all())
     elif kind is None:
         names = M.CLS_RU
     return {"by": by, "items": [{"id": k, "name": names.get(k, k) if k is not None else "Не указано", "n": n, "cost": int(c or 0), "cost_text": C.money_str(int(c or 0))} for k, n, c in rows]}
@@ -296,56 +301,128 @@ async def update(aid: int, body: AssetBody, ix: Ix = Depends(inv_ctx), db: Async
     return await card(a.id, ix, db)
 
 
-class BulkBody(BaseModel):
-    ids: list[int] = Field(min_length=1, max_length=5000)
+class BulkFilters(Filters, extra="forbid"):
+    pass
+
+
+AssetId = Annotated[int, Field(ge=1, le=2**63 - 1)]
+
+
+class BulkBody(BaseModel, extra="forbid"):
+    ids: list[AssetId] = Field(default_factory=list, max_length=5000)
+    filters: BulkFilters | None = None
+    exclude_ids: list[AssetId] = Field(default_factory=list, max_length=5000)
     data: dict = Field(default_factory=dict)
     comment: str = Field(default="", max_length=2000)
     basis: str = Field(default="", max_length=500)
     dry_run: bool = False
+    only_empty: bool = False
+    preview_token: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def selection(self):
+        if bool(self.ids) == (self.filters is not None):
+            raise ValueError("Укажите либо идентификаторы карточек, либо отбор")
+        if self.exclude_ids and self.filters is None:
+            raise ValueError("Исключения применяются к выборке по отбору")
+        self.ids = sorted(set(self.ids))
+        self.exclude_ids = sorted(set(self.exclude_ids))
+        return self
 
 
-BULK_FIELDS = {"no_count", "status_id", "location_id", "loc_detail", "dept_id", "branch_id", "supplier_id", "warranty_until", "purchase_date", "received_date", "commissioned_date", "props", "type_id", "model_id",
-               *M.PEOPLE_FIELDS}
+BULK_FIELDS = (set(M.TEXT_FIELDS) - {"inv_no", "serial", "hostname"}) | {
+    *M.REF_FIELDS, *M.PEOPLE_FIELDS, *M.DATE_FIELDS, "location_id", "props", "no_count", "note", "cost", "rack_unit", "rack_units", "zone_id", "tags",
+}
+
+
+def bulk_patch(data: dict, a: InvAsset) -> dict:
+    patch = {k: v for k, v in data.items() if k != "props" and getattr(a, k) in (None, "", [])}
+    if props := {k: v for k, v in (data.get("props") or {}).items() if (a.props or {}).get(k) in (None, "", [])}:
+        patch["props"] = props
+    return patch
 
 
 @router.post("/assets/bulk")
 async def bulk(body: BulkBody, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
-    """Массовое изменение выбранных карточек: статус, местоположение, ответственные, подразделение, даты, свойства. dry_run — сколько карточек изменится, без записи.
-    Каждая карточка получает своё событие истории; списание и выдачу оформляйте документом (так получится печатный акт)."""
+    """Изменения выбранных карточек по ID или общему отбору реестра. Предпросмотр проверяет те же строки и поля без записи."""
     bad_f = set(body.data) - BULK_FIELDS
     if bad_f:
         raise HTTPException(status_code=422, detail=f"Массово эти поля не меняются: {', '.join(sorted(bad_f))}")
     if not body.data:
         raise HTTPException(status_code=422, detail="Не выбрано, что изменить")
-    if "status_id" in body.data and body.data["status_id"]:
-        st = await db.get(InvRef, int(body.data["status_id"]))
-        if st is not None and (st.data or {}).get("cls") in ("writeoff",):
+    if body.filters is not None and not body.dry_run and not body.preview_token:
+        raise HTTPException(status_code=422, detail="Перед изменением выборки выполните предпросмотр")
+    C.need_changes(ix.acc, set(body.data))
+    data = dict(body.data)
+    for field in {*M.REF_FIELDS, *M.PEOPLE_FIELDS, "location_id"} & data.keys():
+        value = data[field]
+        if value in (None, ""):
+            data[field] = None
+        elif (type(value) is int or isinstance(value, str) and value.isascii() and value.isdecimal() and len(value) <= 19) and 1 <= int(value) <= 2**63 - 1:
+            data[field] = int(value)
+        else:
+            raise bad(C.Invalid({field: f"{M.FIELD_RU[field]}: неверный идентификатор"}))
+    if data.get("props") is not None and (not isinstance(data["props"], dict) or len(data["props"]) > 100):
+        raise bad(C.Invalid({"props": "Дополнительные свойства: ожидается объект с не более чем 100 полями"}))
+    if sid := data.get("status_id"):
+        st = await db.get(InvRef, sid)
+        if st is not None and (st.data or {}).get("cls") == "writeoff":
             ix.acc.need("writeoff")
-    stmt = select(InvAsset).where(InvAsset.id.in_(body.ids))
-    if (af := ix.acc.asset_filter()) is not None:
-        stmt = stmt.where(af)
-    rows = (await db.execute(stmt.with_for_update())).scalars().all()
-    n = await C.names_for(db, list(rows))                          # имена всех карточек одной выборкой — дальше без запросов на каждую
-    changed, errors = 0, []
-    for a in rows:
-        data = dict(body.data)
-        if "props" in data:
-            data["props"] = {**(a.props or {}), **(data["props"] or {})}
-        try:
-            ch = await C.apply_changes(db, a, data, ix.acc, names=n)          # при ошибке карточка возвращается в прежнее состояние (частичные значения без истории не сохраняются)
-        except C.Invalid as exc:
-            errors.append({"id": a.id, "inv_no": a.inv_no, "error": str(exc)})
-            continue
-        if ch:
-            changed += 1
+    filters = body.filters if body.filters is not None else Filters(ids=body.ids)
+    w = await where_of(db, filters, ix.acc, ix.cfg)
+    if body.exclude_ids:
+        w.append(InvAsset.id.not_in(body.exclude_ids))
+    stmt = select(InvAsset).where(*w).order_by(InvAsset.id).limit(500)
+    if not body.dry_run:
+        stmt = stmt.with_for_update()
+    normalized = body.model_dump(mode="json", exclude={"dry_run", "preview_token", "comment", "basis"})
+    digest = hashlib.sha256(json.dumps([str(ix.su.user_id), normalized], sort_keys=True).encode())
+    defs = (await C.names_for(db, [])).props
+    labels = {p.code: p.name for p in defs}
+    fields = [{"key": k, "label": M.FIELD_RU[k]} for k in data if k != "props"]
+    fields += [{"key": f"props.{k}", "label": labels.get(k, k)} for k in data.get("props") or {}]
+    found = changed = error_count = last = 0
+    errors: list[dict] = []
+    selected: list[int] = []
+    with db.no_autoflush:
+        while rows := (await db.scalars(stmt.where(InvAsset.id > last))).all():
+            last = rows[-1].id
+            names = await C.names_for(db, list(rows), into=C.Names(props=defs, props_ok=True))
+            found += len(rows)
+            selected.extend(a.id for a in rows[:max(0, 100 - len(selected))])
+            for a in rows:
+                patch = bulk_patch(data, a) if body.only_empty else data
+                version = a.version
+                ch, error = [], ""
+                try:
+                    if patch:
+                        ch = await C.apply_changes(db, a, patch, ix.acc, names=names, infer_manufacturer=False)
+                except C.Invalid as exc:
+                    error = str(exc)
+                    error_count += 1
+                    if len(errors) < 50:
+                        errors.append({"id": a.id, "inv_no": a.inv_no, "error": error})
+                digest.update(json.dumps([a.id, version, ch, error], sort_keys=True).encode())
+                if ch:
+                    changed += 1
+                    if not body.dry_run:
+                        title = "Массовое изменение: " + ", ".join(dict.fromkeys(c["label"] for c in ch))
+                        await C.record(db, a, C.kind_of(ch), ch, ix.su.display_name, comment=body.comment, basis=body.basis, title=title, names=names)
             if not body.dry_run:
-                await C.record(db, a, C.kind_of(ch), ch, ix.su.display_name, comment=body.comment, basis=body.basis, title="Массовое изменение: " + ", ".join(dict.fromkeys(c["label"] for c in ch)), names=n)
+                await db.flush()
+            for a in rows:
+                db.expunge(a)
+    token = digest.hexdigest()
+    result = {"found": found, "fields": fields, "errors": errors, "error_count": error_count, "missing": len(body.ids) - found if body.ids else 0}
     if body.dry_run:
         await db.rollback()
-        return {"found": len(rows), "would_change": changed, "errors": errors[:50]}
-    audit(db, ix, "asset.bulk", f"{changed} карточек", {"ids": body.ids[:100], "n": len(body.ids), "fields": sorted(body.data)})
+        return {**result, "would_change": changed, "preview_token": token}
+    if body.preview_token and body.preview_token != token:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Выборка или карточки изменились. Повторите предпросмотр.")
+    audit(db, ix, "asset.bulk", f"{changed} карточек", {"ids": selected, "n": found, "fields": [f["key"] for f in fields], "only_empty": body.only_empty})
     await db.commit()
-    return {"found": len(rows), "changed": changed, "errors": errors[:50], "missing": len(body.ids) - len(rows)}
+    return {**result, "changed": changed}
 
 
 @router.get("/assets/{aid}/history")

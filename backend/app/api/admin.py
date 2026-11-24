@@ -13,6 +13,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, get_db, require_admin
+from ..db import xact_lock
 from ..ksc import schema as ksc_schema
 from ..ksc.grouping import BUILTIN_RULES, validate_rule
 from ..search import any_of
@@ -190,6 +191,8 @@ async def put_settings(group: str, request: Request, body: dict[str, Any] = Body
     if group not in GROUPS:
         raise HTTPException(status_code=404, detail="Неизвестная группа настроек")
     svc = request.app.state.settings_svc
+    if group == "geoip":
+        await xact_lock(db, group)
     try:
         changed = await svc.update(db, group, body, actor=su.display_name)
     except SettingsError as exc:

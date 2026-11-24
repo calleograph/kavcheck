@@ -45,11 +45,21 @@ def can_see(su: SessionUser, j: ReportJob, hier=None) -> bool:
     if j.kind == "quick_adaudit":                         # аудит домена: специалист по ИБ и администратор
         return su.is_security
     if j.kind == "quick_inv":                             # инвентаризация: отчёт строится по области учёта автора — виден автору и администратору
-        return su.is_admin or j.created_by_id == su.user_id
+        if not (su.is_admin or j.created_by_id == su.user_id):
+            return False
+        p = j.params or {}
+        if p.get("view") == "geography" and not (su.is_admin or su.all_sources):
+            ids = p.get("geo_source_ids")
+            return ids is not None and set(ids) <= su.source_ids
+        return True
     if j.kind == "quick_admin":                           # таблицы администрирования: журналы, пользователи, лицензии — только администратор
         return su.is_admin
     if j.kind == "quick_devices" and (j.params or {}).get("view") == "users" and (j.params or {}).get("pd", True) and su.role == "viewer":
         return False                                       # в отчёте — сотрудники по BI: роли «Просмотр» они не показываются и на странице
+    if j.kind == "quick_protection" and not su.is_analyst and (j.params or {}).get("detail") != "summary":
+        # Строки сохраняются со всеми полями, даже когда столбец владельца скрыт в конструкторе.
+        if any(c["key"] == "owner" for c in (j.summary or {}).get("columns_all", [])):
+            return False
     if j.kind == "quick_bi":                              # сведения о сотрудниках BI: аналитик и администратор с доступом ко всем источникам
         return su.is_analyst and (su.is_admin or su.all_sources)
     if j.kind in ("quick_hier", "quick_ad"):              # структура организации, учётные записи и группы AD: роли раздела из настроек — и при просмотре, не только при создании

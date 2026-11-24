@@ -22,6 +22,8 @@ Backend локально: `DATABASE_URL=postgresql+asyncpg://… APP_MASTER_KEY=
 
 Синтетическая база «как KSC» для проверки SQL-шаблонов (SQL Server 2022 в Docker, вымышленные данные): `tests/ksc_synthetic/run.sh up`, затем `KSC_TEST_HOST=127.0.0.1 backend/.venv/bin/python -m pytest -q backend/tests/test_ksc_live.py`. Схема — `tests/ksc_synthetic/schema.sql` (с индексами как в KSC 15.1); при добавлении шаблонов, использующих новые объекты, дополните её. Крупная база для проверки производительности: `tests/ksc_synthetic/run.sh bulk [число компьютеров]` создаёт KAVBIG (`gen_bulk.py`: 20 тыс. компьютеров, 600 тыс. установок, уязвимости, состояние защиты, 300 тыс. событий за 90 суток; адреса из 198.18.0.0/15).
 
+Для полного прогона backend с `KSC_TEST_HOST` подготовьте и вторую базу командой `tests/ksc_synthetic/run.sh bulk 120`. Тест изоляции проверяет `KAVTEST` и `KAVBIG` на одном SQL Server. Отдельный тест двух экземпляров использует `KSC_TEST_HOST2` и `KSC_TEST_PORT2` для второго SQL Server с базой `KAVTEST`.
+
 Тестовый каталог для LDAP: `tests/ldap_test/run.sh up [сеть docker]` — OpenLDAP с LDAPS (ldap.example.local:636 в сети compose, 127.0.0.1:10636 снаружи), сгенерированная цепочка корневой → промежуточный CA → сервер (`run.sh ca` печатает корневой сертификат), пользователи `ivanov` (группа KAV-Analysts) и `petrova`. Пароли тестовых записей — в `seed.ldif`, только для стенда.
 
 ## Архитектура SQL-запросов

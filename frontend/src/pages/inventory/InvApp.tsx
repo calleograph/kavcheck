@@ -18,6 +18,7 @@ const Docs = lazy(() => import("./InvDocs"));
 const DocPage = lazy(() => import("./InvDocs").then((m) => ({ default: m.DocPage })));
 const DocNew = lazy(() => import("./InvDocs").then((m) => ({ default: m.DocNew })));
 const DocPrint = lazy(() => import("./InvDocs").then((m) => ({ default: m.DocPrint })));
+const Geography = lazy(() => import("./InvGeography"));
 const Locations = lazy(() => import("./InvLocations"));
 const People = lazy(() => import("./InvPeople"));
 const PersonPage = lazy(() => import("./InvPeople").then((m) => ({ default: m.PersonPage })));
@@ -80,6 +81,7 @@ export default function InvApp({ ctx }: { ctx: Ctx }) {
             <Route path="docs/new" element={<DocNew />} />
             <Route path="docs/:id" element={<DocPage />} />
             <Route path="docs/:id/print" element={<DocPrint />} />
+            <Route path="geography" element={<Geography />} />
             <Route path="locations" element={<Locations ctx={ctx} />} />
             <Route path="people" element={<People ctx={ctx} />} />
             <Route path="people/:id" element={<PersonPage ctx={ctx} />} />

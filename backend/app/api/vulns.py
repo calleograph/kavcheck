@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, current_source, get_db, require_user
+from ..bi.read import attach_owners
 from ..ksc import hosts as H
 from ..ksc import queries as q
 from ..ksc import vulns as V
@@ -108,6 +109,7 @@ async def hosts(request: Request, q_: str = Query("", alias="q", max_length=200)
     from .zones import zone_labels  # noqa: PLC0415
 
     await zone_labels(db, src, page)
+    await attach_owners(db, page, source_id=src.id, pd=su.is_analyst)
     return {"items": page, "total": len(items), "offset": offset, "limit": limit, "summary": summary}
 
 

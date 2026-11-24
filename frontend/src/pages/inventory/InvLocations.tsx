@@ -13,7 +13,7 @@ import { LocationPicker, useInv } from "./InvBits";
 import { useInvReport } from "./InvReport";
 import { inv, type Loc } from "./invApi";
 
-const CHILD_KIND: Record<string, string> = { region: "city", city: "address", address: "building", building: "floor", floor: "room", room: "workplace", site: "server_room", server_room: "rack", storage: "room" };
+const CHILD_KIND: Record<string, string> = { country: "region", region: "city", city: "address", address: "building", building: "floor", floor: "room", room: "workplace", site: "server_room", server_room: "rack", storage: "room" };
 
 export default function InvLocations({ ctx }: { ctx: Ctx }) {
   void ctx;
@@ -83,6 +83,7 @@ function LocForm({ init, onClose, onSaved }: { init: Partial<Loc>; onClose: () =
   const { meta } = useInv();
   const [f, setF] = useState<Partial<Loc>>(init); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const units = (f.data?.units as number | undefined) ?? "";
+  const setCoord = (key: "lat" | "lon", value: string) => setF((prev) => ({ ...prev, data: { ...prev.data, [key]: value === "" ? null : Number(value) } }));
   const save = async () => {
     setBusy(true); setErr("");
     const body = { parent_id: f.parent_id ?? null, kind: f.kind, name: f.name, code: f.code ?? "", note: f.note ?? "", data: f.data ?? {}, active: f.active ?? true, sort: f.sort ?? 0 };
@@ -97,6 +98,10 @@ function LocForm({ init, onClose, onSaved }: { init: Partial<Loc>; onClose: () =
           <label className="field grow">Название<input autoFocus value={f.name ?? ""} onChange={(e) => setF({ ...f, name: e.target.value })} maxLength={200} /></label></div>
         <div className="row wrap"><label className="field">Код<input value={f.code ?? ""} onChange={(e) => setF({ ...f, code: e.target.value })} maxLength={60} placeholder="номер кабинета, шифр" /></label>
           {f.kind === "rack" && <label className="field">Юнитов в стойке<input type="number" min={1} max={60} value={units} onChange={(e) => setF({ ...f, data: { ...(f.data ?? {}), units: Number(e.target.value) || undefined } })} /></label>}</div>
+        <div className="row wrap">
+          <label className="field">Широта<input type="number" step="any" min={-90} max={90} value={Number.isFinite(f.data?.lat) ? Number(f.data?.lat) : ""} onChange={(e) => setCoord("lat", e.target.value)} /></label>
+          <label className="field">Долгота<input type="number" step="any" min={-180} max={180} value={Number.isFinite(f.data?.lon) ? Number(f.data?.lon) : ""} onChange={(e) => setCoord("lon", e.target.value)} /></label>
+        </div>
         <label className="field">Описание<textarea rows={2} value={f.note ?? ""} onChange={(e) => setF({ ...f, note: e.target.value })} maxLength={1000} /></label>
         {init.id && <label className="check-row"><input type="checkbox" checked={f.active ?? true} onChange={(e) => setF({ ...f, active: e.target.checked })} />Используется (скрытое не предлагается при выборе)</label>}
         {err && <p className="field-err">{err}</p>}

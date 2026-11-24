@@ -11,6 +11,7 @@ from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, get_db, is_all, require_analyst, require_user, source_scope
+from ..bi.read import attach_owners
 from ..eol import compute as C
 from ..eol import read as R
 from ..eol.classify import STATUS_RU, classify
@@ -211,7 +212,9 @@ async def infra_hosts(source_id: str = Query(..., max_length=40), kind: str = Qu
                       su: SessionUser = Depends(require_user), srcs: list[KscSource] = Depends(source_scope), db: AsyncSession = Depends(get_db)):
     """Устройства, на которых найдена программа или ОС с EOL (из подготовленных данных; переход в карточку — по source_id и host_id)."""
     sid = _opt_source(srcs, source_id)[0]
-    return await R.finding_hosts(db, sid, kind, subject, version, q=q, zone=zone, active_only=not all_hosts, offset=offset, limit=limit, sort=sort, desc=desc)
+    out = await R.finding_hosts(db, sid, kind, subject, version, q=q, zone=zone, active_only=not all_hosts, offset=offset, limit=limit, sort=sort, desc=desc)
+    await attach_owners(db, out["items"], source_id=sid, pd=su.is_analyst)
+    return out
 
 
 @router.get("/hosts/{source_id}/{host_id}")

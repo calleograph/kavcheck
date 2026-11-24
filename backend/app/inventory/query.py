@@ -1,6 +1,7 @@
 """Отбор реестра учётных единиц — общий для списка, группировки, массовых операций и отчётов (тот же набор параметров передаётся в конструктор отчёта)."""
 from __future__ import annotations
 
+import uuid
 from datetime import date, timedelta
 
 from pydantic import BaseModel, Field
@@ -29,6 +30,7 @@ class Filters(BaseModel):
     role: str = Field(default="", pattern=r"^(|user|owner|resp|mol|it)$")
     dept_id: int | None = None
     branch_id: int | None = None
+    zone_id: uuid.UUID | None = None
     supplier_id: int | None = None
     ksc: str = Field(default="", pattern=r"^(|linked|unlinked|lost|auto)$")
     warranty: str = Field(default="", pattern=r"^(|soon|expired|none|valid)$")
@@ -53,7 +55,7 @@ async def where_of(db: AsyncSession, f: Filters, acc: C.Access, cfg: InventorySe
     if f.cls:
         w.append(InvAsset.cls.in_([x for x in f.cls.split(",") if x in M.CLS_RU]))
     for col, v in ((InvAsset.type_id, f.type_id), (InvAsset.model_id, f.model_id), (InvAsset.manufacturer_id, f.manufacturer_id), (InvAsset.status_id, f.status_id),
-                   (InvAsset.dept_id, f.dept_id), (InvAsset.branch_id, f.branch_id), (InvAsset.supplier_id, f.supplier_id), (InvAsset.parent_id, f.parent)):
+                   (InvAsset.dept_id, f.dept_id), (InvAsset.branch_id, f.branch_id), (InvAsset.zone_id, f.zone_id), (InvAsset.supplier_id, f.supplier_id), (InvAsset.parent_id, f.parent)):
         if v is not None:
             w.append(col == v)
     if f.st == "active":

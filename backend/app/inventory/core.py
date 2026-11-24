@@ -3,7 +3,9 @@
 Все изменения карточек идут через `apply_changes` + `record`: так в истории всегда есть кто, когда, было/стало, основание и документ, а в журнале действий — запись об операции."""
 from __future__ import annotations
 
+import math
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -13,7 +15,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import xact_lock
-from ..models import InvAsset, InvHistory, InvLocation, InvPerson, InvProp, InvRef, utcnow
+from ..models import InvAsset, InvHistory, InvLocation, InvPerson, InvProp, InvRef, Zone, utcnow
 from ..roles import ROLE_RANK
 from ..services.settings import INV_PERMS, InventorySettings
 from . import model as M
@@ -129,13 +131,11 @@ def parse_money(v) -> int | None:
     """«12 345,67» / 12345.67 → копейки; пусто → None."""
     if v is None or v == "":
         return None
-    if isinstance(v, int):
-        return v * 100
     try:
         d = Decimal(re.sub(r"[\s ₽]|руб\.?", "", str(v)).replace(",", "."))
     except InvalidOperation:
         raise ValueError("сумма: ожидается число, например 12345,67") from None
-    if d < 0 or d > Decimal("1e12"):
+    if not d.is_finite() or d < 0 or d > Decimal("1e12"):
         raise ValueError("сумма вне допустимого диапазона")
     return int((d * 100).to_integral_value())
 
@@ -178,6 +178,8 @@ def prop_value(p: InvProp, v):
     if t == "number":
         try:
             f = float(str(v).replace(",", ".").replace(" ", ""))
+            if not math.isfinite(f):
+                raise ValueError
         except ValueError:
             raise ValueError(f"{p.name}: ожидается число") from None
         return int(f) if f.is_integer() else f
@@ -233,6 +235,7 @@ class Names:
     people: dict[int, InvPerson] = field(default_factory=dict)
     locs: dict[int, InvLocation] = field(default_factory=dict)
     parents: dict[int, InvAsset] = field(default_factory=dict)
+    zones: dict[uuid.UUID, Zone] = field(default_factory=dict)
     props: list[InvProp] = field(default_factory=list)
     props_ok: bool = False                       # определения свойств уже загружены (пустой список — тоже ответ)
 
@@ -244,6 +247,9 @@ class Names:
 
     def loc(self, i) -> str:
         return self.locs[i].path if i in self.locs else ""
+
+    def zone(self, i) -> str:
+        return self.zones[i].name if i in self.zones else ""
 
 
 async def _fill(db: AsyncSession, have: dict, model, ids: set) -> None:
@@ -258,6 +264,7 @@ async def names_for(db: AsyncSession, assets: list[InvAsset], *, props: bool = T
     await _fill(db, n.people, InvPerson, {getattr(a, f) for a in assets for f in M.PEOPLE_FIELDS})
     await _fill(db, n.locs, InvLocation, {a.location_id for a in assets})
     await _fill(db, n.parents, InvAsset, {a.parent_id for a in assets})
+    await _fill(db, n.zones, Zone, {a.zone_id for a in assets})
     if props and not n.props_ok:
         n.props, n.props_ok = list((await db.execute(select(InvProp).order_by(InvProp.sort, InvProp.id))).scalars()), True
     return n
@@ -272,12 +279,13 @@ def label(a: InvAsset, n: Names | None = None) -> str:
 def state_of(a: InvAsset, n: Names) -> dict:
     """Учётное состояние после события: для ленты истории и просмотра на дату (имена сохраняются — переименование справочника историю не меняет)."""
     return {"status": n.ref(a.status_id), "st_cls": a.st_cls, "location_id": a.location_id, "location": n.loc(a.location_id), "loc_detail": a.loc_detail,
-            **{f[:-3]: n.person(getattr(a, f)) for f in M.PEOPLE_FIELDS}, "dept": n.ref(a.dept_id), "branch": n.ref(a.branch_id), "hostname": a.hostname, "name": a.name, "serial": a.serial}
+            **{f[:-3]: n.person(getattr(a, f)) for f in M.PEOPLE_FIELDS}, "dept": n.ref(a.dept_id), "branch": n.ref(a.branch_id), "hostname": a.hostname, "name": a.name, "serial": a.serial,
+            "zone_id": str(a.zone_id) if a.zone_id else None, "zone": n.zone(a.zone_id), "tags": a.tags or []}
 
 
 def search_text(a: InvAsset, n: Names) -> str:
     parts = [a.inv_no, a.acc_no, a.serial, a.name, a.hostname, a.ksc_name, n.ref(a.type_id), n.ref(a.manufacturer_id), n.ref(a.model_id), n.ref(a.status_id), n.ref(a.dept_id),
-             n.ref(a.branch_id), n.loc(a.location_id), a.loc_detail, a.purpose, a.service, *[n.person(getattr(a, f)) for f in M.PEOPLE_FIELDS],
+             n.ref(a.branch_id), n.zone(a.zone_id), n.loc(a.location_id), a.loc_detail, a.purpose, a.service, *(a.tags or []), *[n.person(getattr(a, f)) for f in M.PEOPLE_FIELDS],
              *[(n.people[getattr(a, f)].login if getattr(a, f) in n.people else "") for f in M.PEOPLE_FIELDS], a.purchase_doc]
     pdefs = {p.code: p for p in n.props}
     parts += [prop_text(pdefs.get(k), v) for k, v in (a.props or {}).items()]
@@ -294,6 +302,7 @@ def asset_row(a: InvAsset, n: Names) -> dict:
             "st_ru": M.ST_RU.get(a.st_cls, ""), "location_id": a.location_id, "location": n.loc(a.location_id), "loc_detail": a.loc_detail,
             **{f: getattr(a, f) for f in M.PEOPLE_FIELDS}, **{f[:-3]: n.person(getattr(a, f)) for f in M.PEOPLE_FIELDS},
             "dept_id": a.dept_id, "dept": n.ref(a.dept_id), "branch_id": a.branch_id, "branch": n.ref(a.branch_id),
+            "zone_id": str(a.zone_id) if a.zone_id else None, "zone": n.zone(a.zone_id), "tags": a.tags or [],
             "purchase_date": _d(a.purchase_date), "received_date": _d(a.received_date), "commissioned_date": _d(a.commissioned_date), "warranty_until": _d(a.warranty_until),
             "cost": a.cost, "cost_text": money_str(a.cost), "supplier_id": a.supplier_id, "supplier": n.ref(a.supplier_id), "purchase_doc": a.purchase_doc,
             "parent_id": a.parent_id, "parent": label(n.parents[a.parent_id], n) if a.parent_id in n.parents else "", "rel": a.rel, "rel_ru": M.REL_RU.get(a.rel, ""),
@@ -318,34 +327,37 @@ class Invalid(Exception):
         self.errors = errors
 
 
-async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, *, creating: bool = False, names: Names | None = None) -> list[dict]:
+def need_changes(acc: Access, keys: set[str]) -> None:
+    if keys & {"location_id", "loc_detail"}:
+        acc.need("location")
+    if keys & set(M.PEOPLE_FIELDS):
+        acc.need("people")
+    if keys - {"location_id", "loc_detail", *M.PEOPLE_FIELDS}:
+        acc.need("edit")
+
+
+async def apply_changes(db: AsyncSession, a: InvAsset, data: dict, acc: Access, *, creating: bool = False, names: Names | None = None, infer_manufacturer: bool = True) -> list[dict]:
     """Проверяет и применяет изменения учётных полей. Возвращает список изменений [{f, label, old, new}] (имена — читаемые). Поля, на которые нет права, — 403.
     Ошибки значений собираются все сразу (Invalid) — форма подсвечивает каждое поле; при ошибке карточка возвращается в прежнее состояние (без точки сохранения на карточку).
     `names` — общий кэш имён на пакет карточек (тот же передаётся в `record`)."""
     orig: dict = {}
     try:
         with db.no_autoflush:                                        # частичные значения не уходят в базу посреди проверки
-            return await _apply(db, a, data, acc, creating, names, orig)
+            return await _apply(db, a, data, acc, creating, names, orig, infer_manufacturer)
     except Invalid:
         for f, v in orig.items():
             setattr(a, f, v)
         raise
 
 
-async def _apply(db: AsyncSession, a: InvAsset, data: dict, acc: Access, creating: bool, names: Names | None, orig: dict) -> list[dict]:
+async def _apply(db: AsyncSession, a: InvAsset, data: dict, acc: Access, creating: bool, names: Names | None, orig: dict, infer_manufacturer: bool) -> list[dict]:
     def keep(f: str) -> None:
         orig.setdefault(f, getattr(a, f))
 
     errors: dict[str, str] = {}
     changes: list[dict] = []
-    keys = set(data)
     if not creating:
-        if keys & {"location_id", "loc_detail"}:
-            acc.need("location")
-        if keys & set(M.PEOPLE_FIELDS):
-            acc.need("people")
-        if keys - {"location_id", "loc_detail", *M.PEOPLE_FIELDS}:
-            acc.need("edit")
+        need_changes(acc, set(data))
     old_names = names if names is not None else Names()
     await _fill(db, old_names.refs, InvRef, {data[f] for f in M.REF_FIELDS if data.get(f)})
     await _fill(db, old_names.people, InvPerson, {data[f] for f in M.PEOPLE_FIELDS if data.get(f)})
@@ -405,11 +417,11 @@ async def _apply(db: AsyncSession, a: InvAsset, data: dict, acc: Access, creatin
         if t is not None:
             keep("cls")
             a.cls = (t.data or {}).get("cls") or "other"
-    if "model_id" in data and a.model_id and refs.get(a.model_id) is not None and refs[a.model_id].parent_id and "manufacturer_id" not in data:
+    if infer_manufacturer and "model_id" in data and a.model_id and refs.get(a.model_id) is not None and refs[a.model_id].parent_id and "manufacturer_id" not in data:
         mid = refs[a.model_id].parent_id
         if a.manufacturer_id != mid:
-            m = await db.get(InvRef, mid)
-            put("manufacturer_id", mid, old_names.ref(a.manufacturer_id), m.name if m else "")
+            await _fill(db, refs, InvRef, {mid})
+            put("manufacturer_id", mid, old_names.ref(a.manufacturer_id), old_names.ref(mid))
     if "status_id" in data and a.status_id:
         keep("st_cls")
         a.st_cls = (refs[a.status_id].data or {}).get("cls") or "use"
@@ -423,7 +435,8 @@ async def _apply(db: AsyncSession, a: InvAsset, data: dict, acc: Access, creatin
         put(f, v, old_names.person(getattr(a, f)), ppl[v].name if v else "")
     if "location_id" in data:
         v = data["location_id"] or None
-        loc = await db.get(InvLocation, v) if v else None
+        await _fill(db, old_names.locs, InvLocation, {v})
+        loc = old_names.locs.get(v)
         if v and loc is None:
             errors["location_id"] = "Местоположение не найдено"
         elif v and not acc.loc_ok(loc):
@@ -432,6 +445,27 @@ async def _apply(db: AsyncSession, a: InvAsset, data: dict, acc: Access, creatin
             errors["location_id"] = "Укажите местоположение в пределах вашей области учёта"
         else:
             put("location_id", v, old_names.loc(a.location_id), loc.path if loc else "")
+    if "zone_id" in data:
+        try:
+            zone_id = uuid.UUID(str(data["zone_id"])) if data["zone_id"] not in (None, "") else None
+            await _fill(db, old_names.zones, Zone, {zone_id})
+            if zone_id is not None and zone_id not in old_names.zones:
+                raise ValueError
+        except ValueError:
+            errors["zone_id"] = "Зона ответственности не найдена"
+        else:
+            put("zone_id", zone_id, old_names.zone(a.zone_id), old_names.zone(zone_id))
+    if "tags" in data:
+        tags = data["tags"] if data["tags"] is not None else []
+        if not isinstance(tags, list) or len(tags) > 30 or any(not isinstance(t, str) or len(t.strip()) > 60 for t in tags):
+            errors["tags"] = "Укажите до 30 тегов по 60 символов"
+        else:
+            distinct: dict[str, str] = {}
+            for tag in tags:
+                if value := tag.strip():
+                    distinct.setdefault(value.casefold(), value)
+            values = list(distinct.values())
+            put("tags", values, ", ".join(a.tags or []), ", ".join(values))
     for f in M.DATE_FIELDS:
         if f in data:
             try:

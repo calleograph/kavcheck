@@ -567,8 +567,15 @@ class InventorySettings(_Group):
         return out
 
 
+class GeoIPSettings(_Group):
+    SECRETS: ClassVar[tuple[str, ...]] = ("license_key",)
+    enabled: bool = False
+    account_id: str = Field(default="", pattern=r"^(|[1-9][0-9]{0,17})$")
+    license_key: str = ""
+
+
 GROUPS: dict[str, type[_Group]] = {"hier": HierSettings, "tech": TechSettings, "appearance": AppearanceSettings, "bi": BiSettings, "pentest": PentestSettings, "general": GeneralSettings, "ldap": LdapSettings, "reports": ReportsSettings, "auth_security": AuthSecuritySettings, "smtp": SmtpSettings,
-                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings, "adaudit": AdAuditSettings, "inventory": InventorySettings}
+                                   "organization": OrganizationSettings, "zonecache": ZonecacheSettings, "eol": EolSettings, "devices": DevicesSettings, "hardware": HardwareSettings, "logs": LogsSettings, "adaudit": AdAuditSettings, "inventory": InventorySettings, "geoip": GeoIPSettings}
 
 
 class SettingsService:
@@ -620,6 +627,12 @@ class SettingsService:
             validated = model(**{**{s: "" for s in model.SECRETS}, **merged})
         except ValidationError as exc:
             raise SettingsError("; ".join(f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors())) from None
+        if isinstance(validated, GeoIPSettings):
+            key = patch.get("license_key")
+            if key is not None and (not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{0,128}", key)):
+                raise SettingsError("Лицензионный ключ MaxMind содержит недопустимые символы или слишком длинный")
+            if validated.enabled and not (validated.account_id and (key if key is not None else self.decrypt(cur.get("license_key_enc"), "geoip.license_key"))):
+                raise SettingsError("Для автоматического обновления укажите номер учётной записи и ключ MaxMind")
         data = validated.model_dump()
         for s in model.SECRETS:
             data.pop(s, None)

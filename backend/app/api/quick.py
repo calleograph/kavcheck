@@ -320,8 +320,10 @@ async def inv_params(request: Request, db: AsyncSession, su: SessionUser, raw: d
     acc = await IC.access_for(db, su, cfg)
     acc.need("view")
     try:
-        params = QUICK_PARAMS["quick_inv"].model_validate({**raw, "scope_ids": []}).model_dump()
+        params = QUICK_PARAMS["quick_inv"].model_validate({**raw, "scope_ids": [], "geo_source_ids": None}).model_dump(mode="json")
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
     params["scope_ids"] = list(acc.scope_ids)
+    if params["view"] == "geography" and not (su.is_admin or su.all_sources):
+        params["geo_source_ids"] = sorted(su.source_ids)
     return params

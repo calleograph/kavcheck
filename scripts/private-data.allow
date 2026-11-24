@@ -24,6 +24,13 @@ debian.org
 ubuntu.com
 gitverse.ru
 w3.org
+# Публичная документация локальной геолокации и подложки карты
+dev.maxmind.com
+download.maxmind.com
+mm-prod-geoip-databases.a2649acb697e2c09b632799562c076f2.r2.cloudflarestorage.com
+www.naturalearthdata.com
+# Стандарт общего адресного пространства для CGNAT
+www.rfc-editor.org
 # IP-адреса: loopback, документационные (RFC 5737), маски и примеры версий
 ip:127\.0\.0\.\d+
 ip:0\.0\.0\.0

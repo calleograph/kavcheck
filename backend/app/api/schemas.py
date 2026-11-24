@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
 
+from ..inventory.geography import GeoFilters
 from ..roles import ROLE_PATTERN
 
 from ..search import clean
@@ -377,7 +378,7 @@ class QuickAdAudit(Params):
 
 class QuickInv(Params):
     """Инвентаризация: вид отчёта и отбор страницы (те же параметры, что у списка оборудования); scope_ids проставляет сервер (область учёта пользователя)."""
-    view: str = Field(default="registry", pattern=r"^(registry|computers|card|by_person|by_resp|by_location|stock|repair|warranty|writtenoff|cost|owner_history|moves|hardware|software|licenses|license_usage|components|docs|duplicates|count|count_diff|infra_registry|infra_hypervisors|infra_ips|infra_racks|infra_findings|infra_changes|infra_new_gone|infra_sync|infra_decom|infra_asof|infra_review|infra_netscan)$")
+    view: str = Field(default="registry", pattern=r"^(registry|computers|card|by_person|by_resp|by_location|geography|stock|repair|warranty|writtenoff|cost|owner_history|moves|hardware|software|licenses|license_usage|components|docs|duplicates|count|count_diff|infra_registry|infra_hypervisors|infra_ips|infra_racks|infra_findings|infra_changes|infra_new_gone|infra_sync|infra_decom|infra_asof|infra_review|infra_netscan)$")
     q: str = Field(default="", max_length=300)
     cls: str = Field(default="", max_length=200)
     type_id: int | None = None
@@ -391,6 +392,7 @@ class QuickInv(Params):
     role: str = Field(default="", pattern=r"^(|user|owner|resp|mol|it)$")
     dept_id: int | None = None
     branch_id: int | None = None
+    zone_id: str = Field(default="", pattern=r"^(|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")
     supplier_id: int | None = None
     ksc: str = Field(default="", pattern=r"^(|linked|unlinked|lost|auto)$")
     warranty: str = Field(default="", pattern=r"^(|soon|expired|none|valid)$")
@@ -411,6 +413,8 @@ class QuickInv(Params):
     status: str = Field(default="", max_length=80)
     on: str = Field(default="", max_length=10)
     scope_ids: list[int] = Field(default_factory=list, max_length=200)
+    geography: GeoFilters | None = None
+    geo_source_ids: list[str] | None = None  # доступ к KSC проставляет сервер
 
 
 class QuickAd(Params):

@@ -1907,6 +1907,8 @@ class InvAsset(Base):
     it_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_people.id", ondelete="RESTRICT"))
     dept_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
     branch_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("inv_refs.id", ondelete="RESTRICT"))
+    zone_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("zones.id", ondelete="SET NULL"), index=True)
+    tags: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
     purchase_date: Mapped[date | None] = mapped_column(Date)
     received_date: Mapped[date | None] = mapped_column(Date)
     commissioned_date: Mapped[date | None] = mapped_column(Date)
@@ -1937,6 +1939,24 @@ class InvAsset(Base):
     __table_args__ = (Index("ux_inv_assets_ksc", "ksc_source_id", "ksc_host_id", unique=True), Index("ix_inv_assets_serial", "serial"), Index("ix_inv_assets_host", "hostname"),
                       Index("ix_inv_assets_loc", "location_id"), Index("ix_inv_assets_status", "st_cls", "cls"), Index("ix_inv_assets_user", "user_id"), Index("ix_inv_assets_owner", "owner_id"),
                       Index("ix_inv_assets_resp", "resp_id"), Index("ix_inv_assets_parent", "parent_id"), Index("ix_inv_assets_warranty", "warranty_until"))
+
+
+class InvGeo(Base):
+    """Последнее сетевое наблюдение связанного компьютера. Учётные поля хранятся в InvAsset."""
+    __tablename__ = "inv_geo"
+    asset_id: Mapped[int] = mapped_column("id", BigIntPK, ForeignKey("inv_assets.id", ondelete="CASCADE"), primary_key=True, autoincrement=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    host_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONType, nullable=False)
+    result: Mapped[dict] = mapped_column(JSONType, nullable=False)
+
+
+class InvGeoRule(Base):
+    __tablename__ = "inv_geo_rules"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    data: Mapped[dict] = mapped_column(JSONType, nullable=False)
 
 
 class InvHistory(Base):

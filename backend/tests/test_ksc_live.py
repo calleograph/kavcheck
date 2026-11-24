@@ -194,7 +194,8 @@ def test_protection_and_events():
         return protection.problems(recs[h], now, bases_days=3, scan_days=30)
     assert recs[6]["av"]["build"] == "12.6.0.438" and recs[6]["agent_build"] == "15.1.0.22239"
     assert "no_av" in pr(1) and "no_av" in pr(8)                 # сервер без антивируса; статус KSC «антивирус не установлен»
-    assert {"rtp_off", "bases_old"} <= set(pr(7)) and "bases_old" not in pr(2)
+    assert "bases_old" in pr(7) and "rtp_off" not in pr(7) and protection.state_unknown(recs[7], now)
+    assert "bases_old" not in pr(2)
     # «в сети» — флаг KSC «видимо» (бит 0 nStatus), а не давность подключения: в синтетике nStatus 5 и 29 — в сети, 4, 0, 64 — нет
     assert {h for h, r in recs.items() if r["online"]} and all(r["online"] in (True, False) for r in recs.values())
     assert all(r["online"] == bool(int(r.get("status_bits") or 0) & 1) for r in recs.values() if "status_bits" in r)
@@ -338,6 +339,28 @@ def test_hardware_queries():
     h = HW.finish(HW.summarize(asyncio.run(client.run(q.HW_HOST, {"id": 3}, max_rows=500))))
     assert h["known"] and h["cores"] == 1 and h["ram_mb"] == 1024 and h["disk_total_gb"] == 50 and h["logical"] and "CPU: 1 ядро" in h["line"]
     assert HW.summarize(asyncio.run(client.run(q.HW_HOST, {"id": 5}, max_rows=500)))["known"] is False
+
+
+async def test_inventory_network_separates_hosts_and_observed_addresses():
+    from app.ksc import hosts as H, network
+
+    client = SourceClient(params(), name="test")
+    try:
+        caps = await network.capabilities(client)
+        assert caps >= {"groups", "nic_public", "public_connection", "peer_ip", "device_ip", "discovered_ip"}
+        hosts = await network.read(client, [6, 7, 8, 999], caps, await H.groups_map(client))
+        assert set(hosts) == {6, 7, 8}
+        assert hosts[6]["group"].endswith(" / Рабочие станции") and hosts[6]["domain"] == "example.local"
+        assert hosts[6]["addresses"][0] == {"kind": "connection", "ip": "192.0.2.101", "source": "v_akpub_host.nConnectionIp", "observed_at": hosts[6]["last_connected"]}
+        assert {a["kind"]: a["ip"] for a in hosts[6]["addresses"]} == {"connection": "192.0.2.101", "device": "192.0.2.117", "discovered": "192.0.2.118", "reported": "192.0.2.101"}
+        assert hosts[7]["addresses"][0]["source"] == "Hosts.nIpPeer"
+        assert {a["kind"] for a in hosts[8]["addresses"]} == {"reported"} and hosts[8]["last_connected"] is None
+        assert hosts[6]["interfaces"] == [{"name": "WireGuard Tunnel", "mac": "02:00:00:00:00:06", "type": "vpn"}]
+        assert (await network.read(client, [6], frozenset({"nic_internal"})))[6]["interfaces"] == hosts[6]["interfaces"]
+        public = (await network.read(client, [6], frozenset()))[6]
+        assert not public["interfaces"] and {a["kind"] for a in public["addresses"]} == {"reported"}
+    finally:
+        client.close()
 
 
 def test_vuln_descr_list_single_pass_matches_totals():

@@ -124,6 +124,8 @@ services:
     volumes:
       - ${DATA_ROOT}/reports:/data/reports
       - ${DATA_ROOT}/bi:/data/bi
+      - ${DATA_ROOT}/geoip:/data/geoip:ro
+      - geoip_data:/data/geoip-managed
     healthcheck:                                  # пульс пишется раз в 15 секунд (app/services/system.py): нет пульса больше трёх минут — служба зависла
       test: ["CMD-SHELL", "test -n \"$$(find /tmp/worker.alive -mmin -3 2>/dev/null)\""]
       interval: 30s
@@ -190,3 +192,4 @@ services:
 
 volumes:
   pentest_data: {}
+  geoip_data: {}

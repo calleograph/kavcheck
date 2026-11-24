@@ -36,7 +36,7 @@ export const NAV_HIDDEN: Record<string, string> = {
 export interface InvNavItem { to: string; label: string; icon: IconName; end?: boolean; perm?: "import" | "refs"; admin?: boolean }
 export const INV_NAV: InvNavItem[] = [
   { to: "/inventory", label: "Обзор", icon: "home", end: true }, { to: "/inventory/assets", label: "Оборудование", icon: "monitor" }, { to: "/inventory/docs", label: "Документы", icon: "file" }, { to: "/inventory/stock", label: "Склад", icon: "package" }, { to: "/inventory/infra", label: "Инфраструктура", icon: "server" },
-  { to: "/inventory/locations", label: "Местоположения", icon: "sitemap" }, { to: "/inventory/people", label: "Сотрудники", icon: "users" }, { to: "/inventory/licenses", label: "Лицензии", icon: "key" },
+  { to: "/inventory/geography", label: "Карта оборудования", icon: "target" }, { to: "/inventory/locations", label: "Местоположения", icon: "sitemap" }, { to: "/inventory/people", label: "Сотрудники", icon: "users" }, { to: "/inventory/licenses", label: "Лицензии", icon: "key" },
   { to: "/inventory/counts", label: "Инвентаризации", icon: "checkCircle" }, { to: "/inventory/reports", label: "Отчёты", icon: "download" }, { to: "/inventory/scan", label: "Сканирование", icon: "target" }, { to: "/inventory/refs", label: "Справочники", icon: "layers" },
   { to: "/inventory/import", label: "Импорт", icon: "upload", perm: "import" }, { to: "/inventory/settings", label: "Настройки", icon: "sliders", admin: true },
 ];

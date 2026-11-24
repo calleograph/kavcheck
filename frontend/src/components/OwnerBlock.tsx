@@ -117,10 +117,12 @@ export function OwnerBlock({ sid, hid, activityDays }: { sid: string; hid: numbe
 export function OwnerSub({ o, compact = false }: { o?: BiOwnerBrief | null; compact?: boolean }) {
   if (!o) return <span className="owner-sub muted" title="Нет сопоставления с выгрузкой BI и карточки учёта с владельцем">владелец не определён</span>;
   const inv = o.level === "inv";
+  const title = [!o.multi && o.name, o.state_ru, o.department, o.email, o.level === "auto" && "сопоставление предполагаемое",
+    o.old_record && "владелец по актуальной записи KSC этого устройства"].filter(Boolean).join(" · ");
   if (compact)                                   // строка списка: только кто; состояние и основание — в подсказке
-    return <span className="owner-sub" title={[o.state_ru, o.department, o.email, o.level === "auto" ? "сопоставление предполагаемое" : "", o.old_record ? "владелец по актуальной записи KSC этого устройства" : ""].filter(Boolean).join(" · ")}>
+    return <span className="owner-sub" title={title}>
       <span className="muted">владелец: </span>{o.multi ? "несколько" : o.name}{o.state !== "current" && <span className="muted"> (прежний)</span>}{inv && <span className="muted"> · по учёту</span>}</span>;
-  return <span className="owner-sub" title={[o.state_ru, o.level === "auto" ? "сопоставление предполагаемое" : "", o.department, o.email].filter(Boolean).join(" · ")}>{o.multi ? "владельцы: несколько" : o.name}{o.department && <span className="muted"> · {o.department}</span>}
+  return <span className="owner-sub" title={title}>{o.multi ? "владельцы: несколько" : o.name}{o.department && <span className="muted"> · {o.department}</span>}
     {o.email && <> · <a href={`mailto:${o.email}`}>{o.email}</a></>}{o.state !== "current" && <span className="muted"> ({o.state_ru.toLowerCase()})</span>}
     {o.old_record && <span className="muted"> · по актуальной записи KSC</span>}{inv && <span className="muted"> · по учёту</span>}</span>;
 }

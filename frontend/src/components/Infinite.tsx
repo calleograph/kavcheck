@@ -25,7 +25,8 @@ export interface Infinite<T> {
 }
 
 /** Бесконечный список с сервера: фильтры и сортировка — на сервере (deps), порции по pageSize, устаревшие ответы отбрасываются. */
-export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset: number, limit: number) => Promise<Chunk<T>>, pageSize = 100): Infinite<T> {
+export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset: number, limit: number) => Promise<Chunk<T>>, pageSize = 100,
+  { retainExtraOnAppend = false }: { retainExtraOnAppend?: boolean } = {}): Infinite<T> {
   const depsKey = JSON.stringify(deps);
   const saved = memory.get(key);
   const hit = saved && saved.deps === depsKey ? saved : null;
@@ -60,10 +61,12 @@ export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset:
         return [...cur, ...got.filter((x) => { const k = rowKey(x); return k === undefined || !seen.has(k); })];
       });
       // пустая порция при «всего» больше загруженного (число устарело) — список закончен: не грузить бесконечно
-      setTotal(!reset && !got.length ? offset : t); setExtra(rest); setInitial(false);
+      setTotal(!reset && !got.length ? offset : t);
+      setExtra((old) => reset || !retainExtraOnAppend ? rest : { ...old, ...rest });
+      setInitial(false);
     }).catch((e) => { if (id === req.current) { setError((e as ApiError).message); setInitial(false); } })
       .finally(() => { if (id === req.current) { setLoading(false); setRefreshing(false); inflight.current = null; } });
-  }, [pageSize]);
+  }, [pageSize, retainExtraOnAppend]);
 
   // для каких фильтров строки уже есть: при возврате к списку — из памяти; повторный вызов эффекта (StrictMode) не перезагружает
   const loadedFor = useRef<string | null>(hit ? depsKey : null);
@@ -98,8 +101,9 @@ export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset:
 
 /** Строки таблицы с виртуализацией: в DOM только видимые строки; при подходе к концу — следующая порция.
  *  scrollEl — контейнер со своей прокруткой (боковая панель, окно); без него — прокрутка страницы. */
-export function VirtualRows<T>({ list, colSpan, row, estimate = 44, scrollEl, group }: {
+export function VirtualRows<T>({ list, colSpan, row, estimate = 44, scrollEl, group, onVisibleStart }: {
   list: Infinite<T>; colSpan: number; row: (item: T, index: number) => ReactElement; estimate?: number; scrollEl?: RefObject<HTMLElement | null>;
+  onVisibleStart?: (index: number) => void;
   /** каждая запись — свой `<tbody>` (строка записи и раскрывающаяся строка подробностей измеряются вместе); таблица не должна иметь внешнего `<tbody>` */
   group?: boolean;
 }) {
@@ -136,6 +140,8 @@ export function VirtualRows<T>({ list, colSpan, row, estimate = 44, scrollEl, gr
     return () => el.removeEventListener("scroll", on);
   }, [scrollEl, list.key]);
   const vis: VirtualItem[] = v.getVirtualItems();
+  const first = v.range?.startIndex;
+  useEffect(() => { if (first !== undefined) onVisibleStart?.(first); }, [first, onVisibleStart]);
   const last = vis.length ? vis[vis.length - 1].index : -1;
   useEffect(() => { if (last >= list.items.length - 25) list.loadMore(); }, [last, list.items.length]); // eslint-disable-line react-hooks/exhaustive-deps
   // возврат к списку: та же позиция прокрутки (один раз, после первой отрисовки строк)

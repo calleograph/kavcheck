@@ -1,5 +1,7 @@
 """Каталог, сохранённые проверки и отчёты проверки версий через API (SQLite; данные каталога — без KSC)."""
-from app.models import CatalogProduct, CatalogState, KscSource, utcnow
+import uuid
+
+from app.models import CatalogProduct, CatalogState, InvAsset, InvPerson, KscSource, utcnow
 from tests.conftest import login
 
 
@@ -8,8 +10,6 @@ async def _source(client) -> dict:
 
 
 async def _seed_catalog(app, source_id: str) -> None:
-    import uuid
-
     sid = uuid.UUID(source_id)
     async with app.state.session_maker() as db:
         db.add(CatalogState(source_id=sid, status="ready", built_at=utcnow(), activity_days=30))
@@ -43,6 +43,40 @@ async def test_catalog_query_and_overrides(client, app):
     assert (await client.post("/api/v1/catalog/overrides", json={"kind": "merge", "from_key": "a", "to_key": "a"})).status_code == 422
     assert len((await client.get("/api/v1/catalog/overrides")).json()["items"]) == 1
     assert (await client.post("/api/v1/catalog/rebuild")).json()["requested_at"]
+
+
+async def test_catalog_hosts_show_owners_outside_the_shared_cache(client, app, monkeypatch):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = (await _source(client))["id"]
+    await _seed_catalog(app, sid)
+    async with app.state.session_maker() as db:
+        owner = InvPerson(name="Владелец", email="owner@example.local")
+        db.add(owner)
+        await db.flush()
+        db.add(InvAsset(inv_no="T-001", name="WS-001", created_by="test", updated_by="test", owner_id=owner.id,
+                        ksc_source_id=uuid.UUID(sid), ksc_host_id=1, ksc_link="confirmed"))
+        await db.commit()
+
+    calls = 0
+
+    async def installed(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return [{"host_id": hid, "name": name, "app_name": "Google Chrome", "app_version": "120.0", "compared_version": "120.0", "branch": "120"}
+                for hid, name in [(1, "WS-001"), (2, "WS-002")]], {"hidden_inactive_hosts": 0, "fetched_at": utcnow()}
+
+    monkeypatch.setattr("app.api.catalog.run_one", installed)
+    path = "/api/v1/catalog/products/google-chrome/hosts"
+    headers = {"X-Source-Id": sid}
+    admin = (await client.get(path, headers=headers, params={"limit": 1})).json()
+    assert admin["total"] == 2 and admin["items"][0]["owner"]["email"] == "owner@example.local"
+
+    await login(client, "viewer", "Viewer-Passw0rd-123")
+    viewer = (await client.get(path, headers=headers, params={"limit": 1})).json()["items"][0]
+    assert viewer["owner"]["name"] == "Владелец" and viewer["owner"]["email"] == ""
+    assert "source_id" not in viewer
+    page = (await client.get(path, headers=headers, params={"offset": 1, "limit": 1})).json()["items"]
+    assert page[0]["host_id"] == 2 and page[0]["owner"] is None and calls == 1
 
 
 async def test_saved_checks_and_audit_reports(client, app):

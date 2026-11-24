@@ -6,7 +6,7 @@ export type Perm = "view" | "create" | "edit" | "location" | "people" | "docs" |
 export interface Ref { id: number; kind: string; name: string; code: string; parent_id: number | null; data: Record<string, unknown>; active: boolean }
 export interface Prop { id: number; code: string; name: string; descr: string; type: string; options: string[]; default: unknown; required: boolean; type_ids: number[]; in_list: boolean; sort: number; active: boolean }
 export interface Meta {
-  refs: Ref[]; props: Prop[]; perms: Perm[]; scoped: boolean; scope_ids: number[]; cls: Record<string, string>; st: Record<string, string>; loc_kinds: Record<string, string>; ref_kinds: Record<string, string>;
+  refs: Ref[]; props: Prop[]; zones: { id: string; name: string }[]; perms: Perm[]; scoped: boolean; scope_ids: number[]; cls: Record<string, string>; st: Record<string, string>; loc_kinds: Record<string, string>; ref_kinds: Record<string, string>;
   prop_types: Record<string, string>; roles: Record<string, string>; rels: Record<string, string>; metrics: Record<string, string>; doc_kinds: Record<string, string>; doc_short: Record<string, string>;
   doc_status: Record<string, string>; work_kinds: Record<string, string>; doc_columns: Record<string, string>;
   settings: { inv_prefix: string; inv_digits: number; warranty_days: number; license_days: number; transit_days: number; repair_days: number; stale_days: number; label_code: string; label_sheet: string };
@@ -16,11 +16,16 @@ export interface Asset {
   id: number; uid: string; inv_no: string; acc_no: string; serial: string; name: string; hostname: string; label: string; type_id: number | null; type: string; cls: string; cls_ru: string;
   model_id: number | null; model: string; manufacturer_id: number | null; manufacturer: string; status_id: number | null; status: string; st_cls: string; st_ru: string;
   location_id: number | null; location: string; loc_detail: string; user_id: number | null; owner_id: number | null; resp_id: number | null; mol_id: number | null; it_id: number | null;
-  user: string; owner: string; resp: string; mol: string; it: string; dept_id: number | null; dept: string; branch_id: number | null; branch: string;
+  user: string; owner: string; resp: string; mol: string; it: string; dept_id: number | null; dept: string; branch_id: number | null; branch: string; zone_id: string | null; zone: string; tags: string[];
   purchase_date: string | null; received_date: string | null; commissioned_date: string | null; warranty_until: string | null; cost: number | null; cost_text: string; supplier_id: number | null; supplier: string;
   purchase_doc: string; parent_id: number | null; parent: string; rel: string; rel_ru: string; props: Record<string, unknown>; props_text: Record<string, string>; note: string;
   ksc_source_id: string | null; ksc_host_id: number | null; ksc_link: "" | "confirmed" | "auto" | "lost"; ksc_name: string; ext_ids: Record<string, unknown>; no_count: boolean; purpose: string; service: string; rack_unit: number | null; rack_units: number | null; in_transit: boolean; transit_doc_id: number | null;
   created_at: string; created_by: string; updated_at: string; updated_by: string; version: number;
+}
+export type BulkSelection = { ids: number[] } | { filters: Record<string, string | Record<string, string>>; exclude_ids: number[] };
+export interface BulkResult {
+  found: number; changed?: number; would_change?: number; missing: number; error_count: number; preview_token?: string;
+  fields: { key: string; label: string }[]; errors: { id: number; inv_no: string; error: string }[];
 }
 export interface DocBrief { id: number; no: string; kind: string; kind_ru: string; status: string; status_ru: string; date: string }
 export interface FileRow { id: number; name: string; size: number; at: string; by: string }
@@ -119,7 +124,8 @@ export const inv = {
   asset: (id: number) => req<AssetCard>("GET", `/inv/assets/${id}`),
   create: (data: Record<string, unknown>, comment = "", force = false) => call<AssetCard>("POST", "/inv/assets", { data, comment, force }),
   update: (id: number, data: Record<string, unknown>, version: number, comment = "", basis = "") => call<AssetCard>("PUT", `/inv/assets/${id}`, { data, version, comment, basis }),
-  bulk: (ids: number[], data: Record<string, unknown>, comment: string, dry_run = false) => call<{ found: number; changed?: number; would_change?: number; errors: { id: number; inv_no: string; error: string }[] }>("POST", "/inv/assets/bulk", { ids, data, comment, dry_run }),
+  bulk: (selection: number[] | BulkSelection, data: Record<string, unknown>, comment: string, dry_run = false, options?: { only_empty: boolean; preview_token?: string }) =>
+    call<BulkResult>("POST", "/inv/assets/bulk", { ...(Array.isArray(selection) ? { ids: selection } : selection), data, comment, dry_run, ...options }),
   history: (id: number) => req<{ items: Hist[] }>("GET", `/inv/assets/${id}/history`),
   asof: (id: number, on: string) => req<{ on: string; exists: boolean; state: Record<string, string> | null; note?: string; event?: Hist }>("GET", `/inv/assets/${id}/asof${qs({ on })}`),
   tech: (id: number) => req<Tech>("GET", `/inv/assets/${id}/tech`),
@@ -208,7 +214,7 @@ export const inv = {
 };
 
 /** Параметры отбора списка оборудования: адресная строка ↔ запрос (один набор для списка, группировки, массовых операций и отчёта). */
-export const FILTER_KEYS = ["q", "cls", "type_id", "model_id", "manufacturer_id", "status_id", "st", "location", "no_location", "person", "role", "dept_id", "branch_id", "supplier_id", "ksc", "warranty", "transit", "no_owner", "no_resp", "stale", "parent"] as const;
+export const FILTER_KEYS = ["q", "cls", "type_id", "model_id", "manufacturer_id", "status_id", "st", "location", "no_location", "person", "role", "dept_id", "branch_id", "zone_id", "supplier_id", "ksc", "warranty", "transit", "no_owner", "no_resp", "stale", "parent"] as const;
 export const money = (k: number | null | undefined) => (k === null || k === undefined ? "" : `${(k / 100).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`);
 
 export interface NetscanJob { id: string; title: string; targets: string; targets_n: number; status: string; stage_ru: string; pct: number; hosts_up: number; created_by: string; created_at: string; finished_at: string | null; ingested: boolean; stats: Record<string, number> }

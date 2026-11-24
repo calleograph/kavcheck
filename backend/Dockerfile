@@ -32,7 +32,7 @@ ARG APP_GIT_COMMIT=unknown
 ARG APP_BUILT_AT=unknown
 ENV APP_VERSION=${APP_VERSION} APP_GIT_COMMIT=${APP_GIT_COMMIT} APP_BUILT_AT=${APP_BUILT_AT}
 
-RUN useradd --system --uid 10001 --no-create-home appuser && mkdir -p /data /data/pentest && chown appuser /data /data/pentest
+RUN useradd --system --uid 10001 --no-create-home appuser && mkdir -p /data/pentest /data/geoip-managed && chown appuser /data /data/pentest /data/geoip-managed
 USER appuser
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app_factory", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

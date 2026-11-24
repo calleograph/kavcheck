@@ -189,18 +189,20 @@ async def owners_for(db: AsyncSession, ksc_sid: uuid.UUID, host_ids: list[int], 
     return out
 
 
-async def attach_owners(db: AsyncSession, items: list[dict], *, pd: bool) -> list[dict]:
-    """Поле owner (владелец по BI) для строк списков компьютеров KSC разных источников (source_id в строке)."""
-    by: dict = defaultdict(list)
-    for it in items:
-        if it.get("source_id"):
-            by[uuid.UUID(str(it["source_id"]))].append(int(it["host_id"]))
-    found = {}
-    for sid, hids in by.items():
-        for hid, o in (await owners_for(db, sid, hids, pd=pd)).items():
-            found[(str(sid), hid)] = o
-    for it in items:
-        it["owner"] = found.get((str(it.get("source_id")), int(it["host_id"])))
+async def attach_owners(db: AsyncSession, items: list[dict], *, pd: bool, source_id: uuid.UUID | None = None) -> list[dict]:
+    """Владелец компьютера по BI или учёту. Источник KSC один на список или указан в каждой строке."""
+    by: dict[uuid.UUID, list[dict]] = defaultdict(list)
+    for item in items:
+        sid = source_id or item.get("source_id")
+        if sid:
+            by[uuid.UUID(str(sid))].append(item)
+        else:
+            item["owner"] = None
+    for sid, hosts in by.items():
+        host_ids = list(dict.fromkeys(int(item["host_id"]) for item in hosts))
+        owners = await owners_for(db, sid, host_ids, pd=pd)
+        for item in hosts:
+            item["owner"] = owners.get(int(item["host_id"]))
     return items
 
 

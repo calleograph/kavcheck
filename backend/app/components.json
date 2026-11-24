@@ -1,6 +1,6 @@
 {
- "reviewed_for": "0.38.1",
- "reviewed_at": "2026-10-30",
+ "reviewed_for": "0.39.0",
+ "reviewed_at": "2026-11-24",
  "note": "Реестр проверяется при подготовке каждого выпуска (docs/RELEASE.md): verified — версия, проверенная в выпуске; decision — решение разработчика.",
  "components": [
   {
@@ -443,6 +443,23 @@
    "release_notes": "https://pypi.org/project/reportlab/#history",
    "compat": "Диапазон версий — backend/requirements.txt",
    "limits": "",
+   "decision": {
+    "status": "ok",
+    "reason": "",
+    "note": ""
+   }
+  },
+  {
+   "key": "py_maxminddb",
+   "title": "MaxMind DB Reader",
+   "group": "Backend (Python)",
+   "purpose": "Чтение локальных баз GeoLite2 для карты оборудования",
+   "installed": "py:maxminddb",
+   "source": "pypi:maxminddb",
+   "verified": "3.3.0",
+   "release_notes": "https://github.com/maxmind/MaxMind-DB-Reader-python/releases",
+   "compat": "Диапазон версий — backend/requirements.txt",
+   "limits": "GeoLite2 требует учётную запись MaxMind для загрузки. Доступно ручное подключение MMDB.",
    "decision": {
     "status": "ok",
     "reason": "",

@@ -6,14 +6,16 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
+from uuid import UUID
 
 from sqlalchemy import func, or_, select
 
 from ..inventory import core as C
+from ..inventory import geography as G
 from ..inventory import model as M
 from ..inventory.query import Filters, where_of
 from ..ksc.driver import KscError
-from ..models import InvAsset, InvDoc, InvDocItem, InvHistory, InvLicAssign, InvLicense, InvLocation, InvPerson, InvProp, InvRef, KscSource
+from ..models import InvAsset, InvDoc, InvDocItem, InvGeo, InvHistory, InvLicAssign, InvLicense, InvLocation, InvPerson, InvProp, InvRef, KscSource
 from .quick import Ctx, col, metric
 
 TITLE = {"registry": "Реестр ИТ-оборудования", "computers": "Реестр компьютеров и серверов", "card": "Карточка учётной единицы", "by_person": "Оборудование по сотрудникам",
@@ -25,9 +27,9 @@ TITLE = {"registry": "Реестр ИТ-оборудования", "computers": 
          "infra_registry": "Реестр серверной инфраструктуры", "infra_hypervisors": "Гипервизоры и кластеры", "infra_ips": "IP-адреса, подсети и VLAN", "infra_racks": "Состав оборудования по стойкам",
          "infra_findings": "Расхождения между источниками", "infra_changes": "Изменения конфигурации", "infra_new_gone": "Новые и исчезнувшие объекты", "infra_sync": "Синхронизация источников",
          "infra_decom": "Вывод серверов из эксплуатации", "infra_asof": "Состояние инфраструктуры на дату", "infra_review": "Периодическая проверка инфраструктуры",
-         "infra_netscan": "Сетевое обнаружение"}
+         "infra_netscan": "Сетевое обнаружение", "geography": "Сетевые местоположения оборудования"}
 BASE_COLS = [col("inv_no", "Инв. номер"), col("name", "Наименование"), col("type", "Тип"), col("model", "Производитель и модель"), col("serial", "Серийный номер"), col("status", "Статус"),
-             col("location", "Местоположение"), col("user", "Пользователь"), col("resp", "Ответственный")]
+             col("location", "Местоположение"), col("user", "Пользователь"), col("resp", "Ответственный"), col("zone", "Зона ответственности"), col("tags", "Теги")]
 MONEY = "num"
 
 
@@ -35,7 +37,8 @@ def _row(a: InvAsset, n: C.Names) -> dict:
     r = C.asset_row(a, n)
     return {"inv_no": a.inv_no, "acc_no": a.acc_no, "name": r["label"].rsplit(" (", 1)[0], "type": r["type"] or r["cls_ru"], "cls": r["cls_ru"], "model": " ".join(x for x in (r["manufacturer"], r["model"]) if x),
             "serial": a.serial, "hostname": a.hostname, "status": r["status"], "st": r["st_ru"], "location": " · ".join(x for x in (r["location"], r["loc_detail"]) if x),
-            "user": r["user"], "owner": r["owner"], "resp": r["resp"], "mol": r["mol"], "it": r["it"], "dept": r["dept"], "branch": r["branch"], "purchase_date": r["purchase_date"],
+            "user": r["user"], "owner": r["owner"], "resp": r["resp"], "mol": r["mol"], "it": r["it"], "dept": r["dept"], "branch": r["branch"], "zone": r["zone"],
+            "tags": ", ".join(r["tags"]), "purchase_date": r["purchase_date"],
             "commissioned_date": r["commissioned_date"], "warranty_until": r["warranty_until"], "cost": round(a.cost / 100, 2) if a.cost is not None else None, "supplier": r["supplier"],
             "purchase_doc": a.purchase_doc, "parent": r["parent"], "rel": r["rel_ru"], "ksc": f"{a.ksc_name} ({'подтверждено' if a.ksc_link == 'confirmed' else 'предполагается' if a.ksc_link == 'auto' else 'нет в KSC'})" if a.ksc_host_id else "",
             "note": (a.note or "")[:500], "updated_at": C._iso(a.updated_at), **{f"p.{k}": v for k, v in r["props_text"].items()}}
@@ -164,6 +167,33 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             tables.append({"id": "sum", "title": "Итого по сотрудникам", "columns": [col("k", "Сотрудник"), col("v", "Единиц", "num")], "rows": [{"k": k, "v": v} for k, v in cnt.most_common()]})
             tabs = [{"id": "rows", "title": "Оборудование"}, {"id": "sum", "title": "Итого по сотрудникам"}]
             metrics = [metric("people", "Сотрудников", len(cnt)), metric("rows", "Единиц", len(data))]
+
+        elif view == "geography":
+            f = Filters(**{k: v for k, v in p.items() if k in Filters.model_fields and v not in (None, "", [])})
+            source_ids = [UUID(s) for s in p["geo_source_ids"]] if p.get("geo_source_ids") is not None else None
+            w = await where_of(db, f, acc, cfg) + G.geo_where(G.GeoFilters.model_validate(p.get("geography") or {}), ctx.now)
+            pairs = (await db.execute(select(InvAsset, InvGeo).outerjoin(InvGeo, G.selection(source_ids)).where(*w)
+                                      .order_by(InvAsset.inv_no, InvAsset.id).limit(ctx.max_rows))).all()
+            names = await C.names_for(db, [a for a, _ in pairs], props=False)
+            locations = {i: value for i, value in (await db.execute(select(InvLocation.id, InvLocation.path).where(
+                InvLocation.id.in_({g.result["site_id"] for _, g in pairs if g and g.result.get("site_id")})))).all()}
+            sources = {i: value for i, value in (await db.execute(select(KscSource.id, KscSource.name).where(
+                KscSource.id.in_({g.source_id for _, g in pairs if g})))).all()}
+            rows = []
+            for a, g in pairs:
+                r = g.result if g else {}
+                rows.append({"inv_no": a.inv_no, "name": a.name or a.hostname, "account_location": names.loc(a.location_id),
+                             "site": locations.get(r.get("site_id"), ""), "country": r.get("country"), "region": r.get("region"), "city": r.get("city"),
+                             "status": G.LABELS[r.get("status", "unknown")], "network": r.get("network"), "source": sources.get(g.source_id, "") if g else "",
+                             "observed_at": g.observed_at if g else None, "fresh": "да" if g and G.fresh(g.observed_at, ctx.now) else "нет",
+                             "lat": r.get("lat"), "lon": r.get("lon"), "radius_km": r.get("radius_km"), "operator": r.get("operator"), "asn": r.get("asn")})
+            columns = [col(k, label) for k, label in (("inv_no", "Инв. номер"), ("name", "Наименование"), ("account_location", "Учётное местоположение"),
+                       ("site", "Сетевая площадка"), ("country", "Страна"), ("region", "Регион"), ("city", "Город"), ("status", "Оценка"), ("network", "Сеть"),
+                       ("source", "Источник"), ("fresh", "Актуально"), ("lat", "Широта"), ("lon", "Долгота"), ("radius_km", "Погрешность, км"), ("operator", "Организация ASN"), ("asn", "ASN"))]
+            columns.append(col("observed_at", "Наблюдение (UTC)", "date"))
+            tables.append({"id": "rows", "title": TITLE[view], "columns": columns, "rows": rows})
+            metrics = [metric("rows", "Устройств", len(rows)), metric("known", "С координатами", sum(r["lat"] is not None for r in rows))]
+            notes.append("География публичного адреса описывает выход в сеть. Известные площадки привязаны вручную через правила и справочник.")
 
         elif view in ("by_location", "cost"):
             rows = await _assets(db, {**p, "st": p.get("st") or "active"}, ctx, acc, cfg, order=[InvAsset.location_id, InvAsset.inv_no])

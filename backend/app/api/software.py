@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, current_source, get_db, require_user
+from ..bi.read import attach_owners
 from ..ksc import hosts as H
 from ..ksc import queries as q
 from ..ksc import software as S
@@ -99,7 +100,8 @@ async def hosts_for_selection(request: Request, body: ReportParams, offset: int 
         (rows, summary), _at = await request.app.state.cache.get(key, settings.cache_ttl_seconds, make)
     except KscError as exc:
         raise _ksc(exc) from None
-    page = rows[offset:offset + limit]
+    page = [dict(r) for r in rows[offset:offset + limit]]
+    await attach_owners(db, page, source_id=src.id, pd=su.is_analyst)
     return {"items": page, "total": len(rows), "offset": offset, "limit": limit, "summary": {k: v for k, v in summary.items() if k != "branches"}, "branches": summary["branches"],
             "fetched_at": summary["fetched_at"]}
 
@@ -133,6 +135,7 @@ async def product_hosts(product_id: int, request: Request, zone: str = Query("",
         items = [r for r in items if r["host_id"] in zids]
     items.sort(key=lambda r: r["name"].lower())
     active = sum(1 for r in items if r["days_since_connection"] is not None and r["days_since_connection"] <= general.activity_days)
+    await attach_owners(db, items, source_id=src.id, pd=su.is_analyst)
     return {"items": items, "total": len(items), "active": active, "inactive": len(items) - active, "activity_days": general.activity_days, "fetched_at": now}
 
 

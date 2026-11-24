@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, current_source, get_db, require_analyst, require_user
+from ..bi.read import attach_owners
 from ..ksc import catalog as C
 from ..ksc.driver import KscError, Session
 from ..ksc.grouping import Rule
@@ -118,7 +119,9 @@ async def product_hosts(key: str, request: Request, version: str = Query("", max
 
         zids = await zone_host_ids(request, db, src, zone)
         items = [h for h in items if h["host_id"] in zids]
-    return {"items": items[offset:offset + limit], "total": len(items), "offset": offset, "limit": limit, "hidden_hosts": summ["hidden_inactive_hosts"],
+    page = [dict(h) for h in items[offset:offset + limit]]
+    await attach_owners(db, page, source_id=src.id, pd=su.is_analyst)
+    return {"items": page, "total": len(items), "offset": offset, "limit": limit, "hidden_hosts": summ["hidden_inactive_hosts"],
             "fetched_at": summ["fetched_at"]}
 
 

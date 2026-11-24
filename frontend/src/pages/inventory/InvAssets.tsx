@@ -1,5 +1,5 @@
 /** Реестр оборудования: отбор в адресной строке (возврат из карточки сохраняет фильтры и место), сохранённые фильтры, группировка, массовые операции, создание карточек из KSC, отчёт по выборке. */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ApiError } from "../../api";
 import type { Ctx } from "../../App";
@@ -7,18 +7,21 @@ import { ConfirmDialog, Modal } from "../../components/Dialogs";
 import { FilterBar } from "../../components/FilterBar";
 import { Icon } from "../../components/Icons";
 import { ListFoot, VirtualRows, useInfinite, type Chunk } from "../../components/Infinite";
-import { CheckAll, useRowSel } from "../../components/QuickReport";
+import { CheckAll } from "../../components/QuickReport";
 import { useToast } from "../../components/Toast";
-import { Dock, Empty, Segmented, SkelRows, SortTh } from "../../components/ui";
+import { Dock, Empty, SkelRows, SortTh } from "../../components/ui";
 import { fmtDate, num, plural } from "../../util";
-import { KscBadge, LocCell, LocationPicker, PersonPicker, RefSelect, StBadge, refsOf, shortLabel, useInv } from "./InvBits";
+import { InvZoneSelect, KscBadge, LocCell, LocationPicker, PersonPicker, RefSelect, StBadge, refsOf, shortLabel, useInv } from "./InvBits";
+import { InvBulkEdit, filtersForBulk, toggleAssetMarks } from "./InvBulkEdit";
 import { useInvReport } from "./InvReport";
-import { FILTER_KEYS, inv, type Asset, type Group, type KscHost, type View } from "./invApi";
+import { FILTER_KEYS, inv, type Asset, type BulkSelection, type Group, type KscHost, type View } from "./invApi";
 
 const GROUP_BY: [string, string][] = [["", "Без группировки"], ["type", "Тип"], ["cls", "Класс"], ["manufacturer", "Производитель"], ["model", "Модель"], ["status", "Статус"], ["location", "Местоположение"],
-  ["dept", "Подразделение"], ["branch", "Филиал"], ["user", "Пользователь"], ["resp", "Ответственный"], ["mol", "МОЛ"], ["supplier", "Поставщик"]];
+  ["dept", "Подразделение"], ["branch", "Филиал"], ["zone", "Зона ответственности"], ["user", "Пользователь"], ["resp", "Ответственный"], ["mol", "МОЛ"], ["supplier", "Поставщик"]];
 const GROUP_PARAM: Record<string, string> = { type: "type_id", cls: "cls", manufacturer: "manufacturer_id", model: "model_id", status: "status_id", location: "location", dept: "dept_id", branch: "branch_id",
-  user: "person", resp: "person", mol: "person", supplier: "supplier_id" };
+  zone: "zone_id", user: "person", resp: "person", mol: "person", supplier: "supplier_id" };
+const PAGE_SIZE = 100;
+const EMPTY_MARKS: ReadonlySet<number> = new Set();
 
 export default function InvAssets({ ctx }: { ctx: Ctx }) {
   const { meta, can, locs } = useInv();
@@ -31,17 +34,43 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
   const set = (kv: Record<string, string | null>) => setSp((p) => { for (const [k, v] of Object.entries(kv)) { if (v) p.set(k, v); else p.delete(k); } return p; }, { replace: true });
   const sort = sp.get("sort") ?? "inv_no", desc = sp.get("desc") === "1", groupBy = sp.get("group") ?? "";
   const params = useMemo(() => Object.fromEntries(Object.entries(f).filter(([, v]) => v)), [f]);
-  const list = useInfinite<Asset>("inv-assets", [params, sort, desc], (offset, limit) => inv.assets({ ...params, sort, desc, offset, limit }) as unknown as Promise<Chunk<Asset>>);
-  const sel = useRowSel<number>();
+  const list = useInfinite<Asset>("inv-assets", [params, sort, desc], (offset, limit) => inv.assets({ ...params, sort, desc, offset, limit }) as unknown as Promise<Chunk<Asset>>, PAGE_SIZE);
+  const filterKey = JSON.stringify(params);
+  const [selection, setSelection] = useState<{ filterKey?: string; marks: ReadonlySet<number> }>({ marks: EMPTY_MARKS });
+  useEffect(() => setSelection((s) => s.filterKey !== undefined && s.filterKey !== filterKey ? { marks: EMPTY_MARKS } : s), [filterKey]);
+  const whole = selection.filterKey === filterKey;
+  const marks = selection.filterKey !== undefined && !whole ? EMPTY_MARKS : selection.marks;
+  const count = whole ? Math.max(0, list.total - marks.size) : marks.size;
+  const [page, setPage] = useState(0);
+  const onVisibleStart = useCallback((index: number) => setPage(Math.floor(index / PAGE_SIZE)), []);
+  const pageStart = Math.min(page, Math.max(0, Math.ceil(list.items.length / PAGE_SIZE) - 1)) * PAGE_SIZE;
+  const pageIds = list.items.slice(pageStart, pageStart + PAGE_SIZE).map((a) => a.id);
+  const isSelected = (id: number) => marks.has(id) !== whole;
+  const selectable = !list.initial && !list.refreshing && !list.error && q === f.q;
+  const toggle = (ids: number[]) => setSelection((s) => {
+    if (!selectable) return s;
+    const active = s.filterKey === undefined || s.filterKey === filterKey;
+    const fromFilters = s.filterKey === filterKey;
+    return { filterKey: fromFilters ? filterKey : undefined, marks: toggleAssetMarks(active ? s.marks : EMPTY_MARKS, ids, fromFilters) };
+  });
+  const selectAll = () => setSelection({ filterKey, marks: EMPTY_MARKS });
+  const clear = () => setSelection({ marks: EMPTY_MARKS });
   const [groups, setGroups] = useState<Group[] | null>(null);
-  useEffect(() => { if (!groupBy) { setGroups(null); return; } inv.groups(groupBy, params).then((r) => setGroups(r.items)).catch(() => setGroups([])); }, [groupBy, params]);
+  const loadGroups = useCallback(() => {
+    if (!groupBy) { setGroups(null); return; }
+    void inv.groups(groupBy, params).then((r) => setGroups(r.items)).catch(() => setGroups([]));
+  }, [groupBy, params]);
+  useEffect(loadGroups, [loadGroups]);
   const [views, setViews] = useState<View[]>([]);
   const loadViews = () => inv.views("assets").then((r) => setViews(r.items)).catch(() => setViews([]));
   useEffect(() => { void loadViews(); }, []);
-  const [bulk, setBulk] = useState(false); const [kscOpen, setKscOpen] = useState(sp.get("ksc_import") === "1");
+  const [bulk, setBulk] = useState<{ selection: BulkSelection; count: number } | null>(null);
+  const closeBulk = useCallback(() => setBulk(null), []);
+  const [kscOpen, setKscOpen] = useState(sp.get("ksc_import") === "1");
   const rep = useInvReport();
   const [toast, show] = useToast();
   const listProps = meta.props.filter((p) => p.active && p.in_list);
+  const canBulk = can("edit") || can("location") || can("people");
   const onSort = (k: string) => set(sort === k ? { desc: desc ? null : "1" } : { sort: k, desc: null });
   const reset = () => setSp(new URLSearchParams(), { replace: true });
   const refN = (kind: string, id: string) => meta.refs.find((r) => r.kind === kind && String(r.id) === id)?.name ?? id;
@@ -50,6 +79,7 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
     ...(f.cls ? [{ id: "cls", label: `Класс: ${f.cls.split(",").map((c) => meta.cls[c] ?? c).join(", ")}`, onRemove: () => set({ cls: null }) }] : []),
     ...(f.st ? [{ id: "st", label: `Состояние: ${f.st === "active" ? "действующее" : f.st.split(",").map((c) => meta.st[c] ?? c).join(", ")}`, onRemove: () => set({ st: null }) }] : []),
     ...(["type_id", "manufacturer_id", "model_id", "status_id", "dept_id", "branch_id", "supplier_id"] as const).filter((k) => f[k]).map((k) => ({ id: k, label: refN(k.replace("_id", ""), f[k]), onRemove: () => set({ [k]: null }) })),
+    ...(f.zone_id ? [{ id: "zone", label: (meta.zones ?? []).find((z) => z.id === f.zone_id)?.name ?? f.zone_id, onRemove: () => set({ zone_id: null }) }] : []),
     ...(f.location ? [{ id: "loc", label: `Местоположение: ${locs?.find((l) => String(l.id) === f.location)?.path ?? f.location}`, onRemove: () => set({ location: null }) }] : []),
     ...(f.person ? [{ id: "person", label: `Сотрудник${f.role ? ` (${meta.roles[f.role]})` : ""}`, onRemove: () => set({ person: null, role: null }) }] : []),
     ...(f.ksc ? [{ id: "ksc", label: { linked: "Связаны с KSC", unlinked: "Без связи с KSC", lost: "Пропали из KSC", auto: "Связь предполагается" }[f.ksc] ?? f.ksc, onRemove: () => set({ ksc: null }) }] : []),
@@ -63,7 +93,7 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
     if (!name) return;
     try { await inv.addView("assets", name, Object.fromEntries([...sp.entries()]), false); show("Фильтр сохранён"); void loadViews(); } catch (e) { show((e as ApiError).message, "error"); }
   };
-  const ids = sel.ids;
+  const ids = whole ? [] : [...marks];
   const reportParams = ids.length ? { ids } : params;
   return (
     <div className="inv-page">
@@ -76,7 +106,7 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
           {can("create") && <Link className="btn primary" to="/inventory/assets/new"><Icon name="plus" size={16} />Добавить</Link>}
         </div>
       </div>
-      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Номер, серийный, имя, модель, сотрудник, помещение, свойство…", label: "Поиск оборудования" }}
+      <FilterBar search={{ value: q, onChange: setQ, placeholder: "Номер, имя, модель, сотрудник, помещение, тег…", label: "Поиск оборудования" }}
         primary={<>
           <label className="field inline"><span className="sr-only">Класс</span><select value={f.cls} onChange={(e) => set({ cls: e.target.value })}><option value="">Все классы</option>{Object.entries(meta.cls).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
           <label className="field inline"><span className="sr-only">Состояние</span><select value={f.st} onChange={(e) => set({ st: e.target.value })}><option value="">Любое состояние</option><option value="active">Действующее</option>{Object.entries(meta.st).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
@@ -89,6 +119,7 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
           <LocationPicker label="Местоположение (с вложенными)" value={f.location ? Number(f.location) : null} onChange={(v) => set({ location: v ? String(v) : null })} placeholder="любое" />
           <RefSelect kind="dept" label="Подразделение" value={f.dept_id ? Number(f.dept_id) : null} onChange={(v) => set({ dept_id: v ? String(v) : null })} empty="Любое" />
           <RefSelect kind="branch" label="Филиал" value={f.branch_id ? Number(f.branch_id) : null} onChange={(v) => set({ branch_id: v ? String(v) : null })} empty="Любой" />
+          <InvZoneSelect value={f.zone_id} onChange={(v) => set({ zone_id: v })} empty="Любая" />
           <PersonPicker label="Сотрудник" value={f.person ? Number(f.person) : null} name={sp.get("person_name") ?? ""} onChange={(id, nm) => set({ person: id ? String(id) : null, person_name: nm || null })} />
           <label className="field">Роль сотрудника<select value={f.role} onChange={(e) => set({ role: e.target.value })}><option value="">Любая</option>{Object.entries(meta.roles).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
           <label className="field">Связь с KSC<select value={f.ksc} onChange={(e) => set({ ksc: e.target.value })}><option value="">Любая</option><option value="linked">Связаны</option><option value="unlinked">Без связи (компьютеры)</option><option value="auto">Предполагается</option><option value="lost">Пропали из KSC</option></select></label>
@@ -116,19 +147,19 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
         {list.initial ? <SkelRows cols={7} /> : (
           <table className="table virt inv-table">
-            <thead><tr><CheckAll all={sel.allOf(list.items.map((a) => a.id))} some={sel.someOf(list.items.map((a) => a.id))} onToggle={() => sel.toggleMany(list.items.map((a) => a.id))} />
+            <thead><tr><CheckAll all={pageIds.length > 0 && pageIds.every(isSelected)} some={pageIds.some(isSelected)} onToggle={() => toggle(pageIds)} label="Отметить текущую страницу" disabled={!selectable || !pageIds.length} />
               <SortTh k="inv_no" label="Инв. номер" sort={sort} desc={desc} onSort={onSort} /><SortTh k="name" label="Наименование" sort={sort} desc={desc} onSort={onSort} />
               <SortTh k="status" label="Статус" sort={sort} desc={desc} onSort={onSort} /><th className="hide-sm">Местоположение</th><th className="hide-sm">Пользователь · ответственный</th>
               <SortTh k="serial" label="Серийный номер" sort={sort} desc={desc} onSort={onSort} className="hide-md" /><SortTh k="warranty" label="Гарантия" sort={sort} desc={desc} onSort={onSort} className="hide-md" />
               {listProps.map((p) => <th key={p.code} className="hide-md">{p.name}</th>)}</tr></thead>
             <tbody>
-              <VirtualRows list={list} colSpan={8 + listProps.length} estimate={52} row={(a) => (
-                <tr className={sel.has(a.id) ? "sel" : ""}>
-                  <td className="check"><input type="checkbox" aria-label={`Выбрать ${a.inv_no}`} checked={sel.has(a.id)} onChange={() => sel.toggle(a.id)} /></td>
+              <VirtualRows list={list} colSpan={8 + listProps.length} estimate={52} onVisibleStart={onVisibleStart} row={(a) => (
+                <tr className={isSelected(a.id) ? "sel" : ""}>
+                  <td className="check"><input type="checkbox" aria-label={`Выбрать ${a.inv_no}`} checked={isSelected(a.id)} disabled={!selectable} onChange={() => toggle([a.id])} /></td>
                   <td className="nowrap"><Link to={`/inventory/assets/${a.id}`} className="mono">{a.inv_no}</Link>{a.acc_no && <span className="sub">бух. {a.acc_no}</span>}</td>
                   <td><Link to={`/inventory/assets/${a.id}`}>{shortLabel(a)}</Link><span className="sub">{[a.type, a.hostname].filter(Boolean).join(" · ")}</span><span className="row tight wrap"><KscBadge a={a} />{a.in_transit && <span className="badge accent">в пути</span>}</span></td>
                   <td><StBadge st={a.st_cls} label={a.status} /></td>
-                  <td className="hide-sm small"><LocCell path={a.location} detail={a.loc_detail} /></td>
+                  <td className="hide-sm small"><LocCell path={a.location} detail={a.loc_detail} />{a.zone && <span className="sub">{a.zone}</span>}</td>
                   <td className="hide-sm small">{a.user || <span className="muted">—</span>}{a.resp && <span className="sub">отв.: {a.resp}</span>}</td>
                   <td className="hide-md mono small">{a.serial || "—"}</td>
                   <td className={`hide-md nowrap small ${a.warranty_until && a.warranty_until < new Date().toISOString().slice(0, 10) ? "muted" : ""}`}>{a.warranty_until ? fmtDate(a.warranty_until) : "—"}</td>
@@ -141,53 +172,22 @@ export default function InvAssets({ ctx }: { ctx: Ctx }) {
           </table>)}
       </div>
       <ListFoot list={list} />
-      {sel.count > 0 && <Dock label="Выбранное оборудование">
-        <span><b>{num(sel.count)}</b> <span className="muted">{plural(sel.count, "единица выбрана", "единицы выбрано", "единиц выбрано")}</span></span>
-        {(can("edit") || can("location") || can("people")) && <button className="btn mini" onClick={() => setBulk(true)}><Icon name="edit" size={15} />Изменить</button>}
-        {can("docs") && <select className="mini" value="" aria-label="Оформить документ" onChange={(e) => e.target.value && nav(`/inventory/docs/new?kind=${e.target.value}&ids=${ids.join(",")}`)}>
+      {(count > 0 || whole) && <Dock label="Выбранное оборудование">
+        <span aria-live="polite"><b>{num(count)}</b> <span className="muted">{plural(count, "единица выбрана", "единицы выбрано", "единиц выбрано")}{whole ? " по фильтрам" : ""}</span></span>
+        {canBulk && !whole && <button className="btn mini" disabled={!selectable || !list.total} onClick={selectAll}>Вся выборка ({num(list.total)})</button>}
+        <button className="btn mini" disabled={!selectable || !pageIds.length} onClick={() => toggle(pageIds)}>{pageIds.every(isSelected) ? "Снять отметки страницы" : "Отметить страницу"}</button>
+        {canBulk && <button className="btn mini" disabled={!selectable || !count} onClick={() => setBulk({ count, selection: whole ? { filters: filtersForBulk(params), exclude_ids: [...marks] } : { ids } })}><Icon name="edit" size={15} />Изменить</button>}
+        {!whole && can("docs") && <select className="mini" value="" aria-label="Оформить документ" onChange={(e) => e.target.value && nav(`/inventory/docs/new?kind=${e.target.value}&ids=${ids.join(",")}`)}>
           <option value="">Оформить документ…</option>{["issue", "return", "move", "accept", "handover", "defect", ...(can("repair") ? ["repair"] : []), ...(can("writeoff") ? ["writeoff"] : []), "work"].map((k) => <option key={k} value={k}>{meta.doc_short[k]}</option>)}</select>}
-        <a className="btn mini" href={inv.labelsUrl(ids)} target="_blank" rel="noopener"><Icon name="file" size={15} />Этикетки</a>
-        <button className="btn mini primary" onClick={() => rep.open(["registry", "computers", "by_person", "by_location", "hardware", "software", "owner_history", "moves"], { ids }, `Выбрано: ${ids.length}`)}><Icon name="download" size={15} />Отчёт</button>
-        <button className="btn mini icon" onClick={sel.clear} aria-label="Снять выбор"><Icon name="close" size={15} /></button>
+        {!whole && <a className="btn mini" href={inv.labelsUrl(ids)} target="_blank" rel="noopener"><Icon name="file" size={15} />Этикетки</a>}
+        {(!whole || !marks.size) && <button className="btn mini primary" onClick={() => rep.open(["registry", "computers", "by_person", "by_location", "hardware", "software", "owner_history", "moves"], reportParams, `Выбрано: ${count}`)}><Icon name="download" size={15} />Отчёт</button>}
+        <button className="btn mini icon" onClick={clear} aria-label="Снять выбор"><Icon name="close" size={15} /></button>
       </Dock>}
-      {bulk && <BulkEdit ids={ids} onClose={() => setBulk(false)} onDone={(n) => { setBulk(false); sel.clear(); list.reload(); show(`Изменено карточек: ${n}`); }} />}
+      {bulk && <InvBulkEdit {...bulk} onClose={closeBulk} onDone={(n) => { closeBulk(); clear(); list.reload(); loadGroups(); show(`Изменено карточек: ${num(n)}`); }} />}
       {kscOpen && <KscImport ctx={ctx} onClose={() => { setKscOpen(false); set({ ksc_import: null }); }} onDone={(n) => { list.reload(); show(`Создано карточек: ${n}`); }} />}
       {rep.node}
       {toast}
     </div>
-  );
-}
-
-function BulkEdit({ ids, onClose, onDone }: { ids: number[]; onClose: () => void; onDone: (n: number) => void }) {
-  const { meta, can } = useInv();
-  const [field, setField] = useState("status_id");
-  const [val, setVal] = useState<number | string | null>(null); const [valName, setValName] = useState("");
-  const [comment, setComment] = useState(""); const [plan, setPlan] = useState<{ found: number; would_change?: number; errors: { inv_no: string; error: string }[] } | null>(null);
-  const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
-  const FIELDS: [string, string, boolean][] = [["status_id", "Статус", can("edit")], ["location_id", "Местоположение", can("location")], ["user_id", "Пользователь", can("people")], ["owner_id", "Владелец", can("people")],
-    ["resp_id", "Ответственный", can("people")], ["mol_id", "МОЛ", can("people")], ["it_id", "ИТ-специалист", can("people")], ["dept_id", "Подразделение", can("edit")], ["branch_id", "Филиал", can("edit")],
-    ["warranty_until", "Гарантия до", can("edit")], ["supplier_id", "Поставщик", can("edit")]];
-  useEffect(() => { setVal(null); setValName(""); setPlan(null); }, [field]);
-  const data = { [field]: val === "" ? null : val };
-  const check = async () => { setBusy(true); setErr(""); try { setPlan(await inv.bulk(ids, data, comment, true)); } catch (e) { setErr((e as ApiError).message); } finally { setBusy(false); } };
-  const apply = async () => { setBusy(true); try { const r = await inv.bulk(ids, data, comment); onDone(r.changed ?? 0); } catch (e) { setErr((e as ApiError).message); setBusy(false); } };
-  const refKind = { status_id: "status", dept_id: "dept", branch_id: "branch", supplier_id: "supplier" }[field];
-  return (
-    <Modal title="Изменить выбранное" lede={`Единиц: ${ids.length}. Каждая карточка получит запись в истории.`} onClose={onClose}
-      footer={<><button className="btn" onClick={onClose}>Отмена</button><div className="spacer" /><button className="btn" disabled={busy} onClick={() => void check()}>Проверить</button>
-        <button className="btn primary" disabled={busy || !plan || !plan.would_change} onClick={() => void apply()}>Применить{plan?.would_change ? ` к ${plan.would_change}` : ""}</button></>}>
-      <div className="form-stack">
-        <Segmented label="Что изменить" value={field} onChange={setField} options={FIELDS.filter((x) => x[2]).map(([k, v]) => [k, v] as [string, string])} />
-        {refKind && <RefSelect kind={refKind} label={FIELDS.find((x) => x[0] === field)![1]} value={typeof val === "number" ? val : null} onChange={(v) => setVal(v)} empty="очистить значение" />}
-        {field === "location_id" && <LocationPicker label="Новое местоположение" value={typeof val === "number" ? val : null} onChange={(v) => setVal(v)} />}
-        {["user_id", "owner_id", "resp_id", "mol_id", "it_id"].includes(field) && <PersonPicker label={FIELDS.find((x) => x[0] === field)![1]} value={typeof val === "number" ? val : null} name={valName} onChange={(id, n) => { setVal(id); setValName(n); }} />}
-        {field === "warranty_until" && <label className="field">Гарантия до<input type="date" value={String(val ?? "")} onChange={(e) => setVal(e.target.value)} /></label>}
-        <label className="field">Основание или комментарий<input value={comment} onChange={(e) => setComment(e.target.value)} maxLength={2000} placeholder="например, служебная записка" /></label>
-        {plan && <div className="alert flat"><Icon name="info" /><div className="alert-body">Изменится {plan.would_change} из {plan.found}.{plan.errors.length > 0 && <ul>{plan.errors.slice(0, 8).map((e) => <li key={e.inv_no}>{e.inv_no}: {e.error}</li>)}</ul>}</div></div>}
-        {err && <p className="field-err">{err}</p>}
-        <p className="muted small">Выдачу, возврат, перемещение и списание лучше оформлять документом: так появится печатный акт. {meta.doc_short.issue}, {meta.doc_short.move.toLowerCase()} — в меню «Оформить документ».</p>
-      </div>
-    </Modal>
   );
 }
 

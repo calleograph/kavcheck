@@ -38,8 +38,8 @@ export function ReportDock({ label, count, noun, canReport, onReport, onClear }:
 }
 
 /** Флажок «выбрать все загруженные» для заголовка таблицы. */
-export function CheckAll({ all, some, onToggle, label = "Выбрать все загруженные" }: { all: boolean; some: boolean; onToggle: () => void; label?: string }) {
-  return <th className="check"><input type="checkbox" aria-label={label} checked={all} ref={(el) => { if (el) el.indeterminate = !all && some; }} onChange={onToggle} /></th>;
+export function CheckAll({ all, some, onToggle, label = "Выбрать все загруженные", disabled }: { all: boolean; some: boolean; onToggle: () => void; label?: string; disabled?: boolean }) {
+  return <th className="check"><input type="checkbox" aria-label={label} checked={all} disabled={disabled} ref={(el) => { if (el) el.indeterminate = !all && some; }} onChange={onToggle} /></th>;
 }
 
 const SEV_CLASS: Record<string, string> = { "Критическая": "crit", "Высокая": "high", "Предупреждение": "warn" };

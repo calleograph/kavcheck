@@ -5,9 +5,10 @@ import type { ApiError } from "../../api";
 import type { Ctx } from "../../App";
 import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
-import { BackLink, Empty, SkelRows, Tabs } from "../../components/ui";
+import { BackLink, Empty, SkelRows, Tabs, TagInput } from "../../components/ui";
 import { fmt, fmtDate, num } from "../../util";
-import { AssetSearch, KscBadge, Kv, LocationPicker, PersonPicker, PropField, RefSelect, StBadge, refsOf, shortLabel, useInv } from "./InvBits";
+import { AssetSearch, InvZoneSelect, KscBadge, Kv, LocationPicker, PersonPicker, PropField, RefSelect, StBadge, refsOf, shortLabel, useInv } from "./InvBits";
+import InvGeoCard from "./InvGeoCard";
 import { useInvReport } from "./InvReport";
 import { FieldError, inv, type Asset, type AssetCard, type AssetInfra, type Hist, type Tech } from "./invApi";
 
@@ -57,7 +58,7 @@ export default function InvAssetPage({ ctx }: { ctx: Ctx }) {
           { id: "tech", label: "Техника (KSC)" }, ...(["server", "vm", "network", "storage"].includes(a.cls) ? [{ id: "infra" as Tab, label: "Инфраструктура" }] : []), { id: "soft", label: "ПО и лицензии", count: a.licenses.length || undefined }, { id: "parts", label: "Состав и связи", count: a.children.length || undefined },
           { id: "docs", label: "Документы", count: a.docs.length || undefined }, { id: "history", label: "История" }, { id: "files", label: "Вложения", count: a.files.length || undefined }]} />
         {tab === "main" && <MainTab a={a} />}
-        {tab === "place" && <PlaceTab a={a} />}
+        {tab === "place" && <PlaceTab a={a} reload={load} />}
         {tab === "tech" && <TechTab a={a} tech={tech} err={techErr} reload={() => { loadTech(); void load(); }} ctx={ctx} show={show} />}
         {tab === "infra" && <InfraTab a={a} />}
         {tab === "soft" && <SoftTab a={a} tech={tech} err={techErr} />}
@@ -80,6 +81,7 @@ function MainTab({ a }: { a: AssetCard }) {
       <div className="card"><h2>Учётные сведения</h2>
         <Kv rows={[["Инвентарный номер", <span className="mono">{a.inv_no}</span>], ["Бухгалтерский номер", a.acc_no], ["Наименование", a.name], ["Назначение", a.purpose], ["Сервис", a.service], ["Тип", a.type], ["Производитель", a.manufacturer], ["Модель", a.model],
           ["Серийный номер", a.serial && <span className="mono">{a.serial}</span>], ["Имя компьютера", a.hostname && <span className="mono">{a.hostname}</span>], ["Статус", a.status],
+          ["Теги", (a.tags ?? []).join(", ")],
           ["Создана", `${fmt(a.created_at)}, ${a.created_by}`], ["Изменена", `${fmt(a.updated_at)}, ${a.updated_by}`]]} />
       </div>
       <div className="stack">
@@ -96,15 +98,16 @@ function MainTab({ a }: { a: AssetCard }) {
   );
 }
 
-function PlaceTab({ a }: { a: AssetCard }) {
+function PlaceTab({ a, reload }: { a: AssetCard; reload: () => void }) {
   const { can } = useInv(); const nav = useNavigate();
   return (
     <div className="split even">
-      <div className="card"><h2>Расположение</h2>
+      <div className="stack"><div className="card"><h2>Учётное местоположение</h2>
         <Kv rows={[["Местоположение", a.location ? <Link to={`/inventory/assets?location=${a.location_id}`}>{a.location}</Link> : <span className="muted">не указано</span>], ["Уточнение", a.loc_detail],
-          ["Юниты в стойке", a.rack_unit ? `${a.rack_unit}${a.rack_units && a.rack_units > 1 ? `–${a.rack_unit + a.rack_units - 1}` : ""}` : ""], ["Филиал", a.branch], ["Подразделение", a.dept]]} />
+          ["Юниты в стойке", a.rack_unit ? `${a.rack_unit}${a.rack_units && a.rack_units > 1 ? `–${a.rack_unit + a.rack_units - 1}` : ""}` : ""], ["Филиал", a.branch], ["Подразделение", a.dept],
+          ["Зона ответственности", a.zone_id && a.zone ? <Link to={`/inventory/assets?zone_id=${encodeURIComponent(a.zone_id)}`}>{a.zone}</Link> : ""]]} />
         {can("docs") && <div className="row wrap"><button className="btn mini" onClick={() => nav(`/inventory/docs/new?kind=move&ids=${a.id}`)}><Icon name="arrowR" size={14} />Переместить документом</button></div>}
-      </div>
+      </div><InvGeoCard id={a.id} onApplied={reload} /></div>
       <div className="card"><h2>Ответственные лица</h2>
         <Kv rows={PEOPLE.map(([f, lb]) => [lb, (a as unknown as Record<string, number | null>)[f] ? <Link to={`/inventory/people/${(a as unknown as Record<string, number>)[f]}`}>{(a as unknown as Record<string, string>)[f.replace("_id", "")]}</Link> : <span className="muted">не указан</span>] as [string, ReactNode])} />
         {can("docs") && <div className="row wrap">{a.user_id ? <button className="btn mini" onClick={() => nav(`/inventory/docs/new?kind=return&ids=${a.id}&from=${a.user_id}`)}>Оформить возврат</button>
@@ -256,7 +259,7 @@ function FilesTab({ a, reload, show }: { a: AssetCard; reload: () => void; show:
 // ------------------------------------------------------------------------------------------------ форма
 type Form = Record<string, unknown>;
 const toForm = (a: Partial<Asset>): Form => ({ ...a, cost: a.cost !== null && a.cost !== undefined ? (a.cost / 100).toFixed(2).replace(".", ",") : "", props: { ...(a.props ?? {}) } });
-const EDITABLE = ["purpose", "service", "rack_unit", "rack_units", "no_count", "inv_no", "acc_no", "serial", "name", "hostname", "type_id", "model_id", "manufacturer_id", "status_id", "location_id", "loc_detail", "user_id", "owner_id", "resp_id", "mol_id", "it_id", "dept_id", "branch_id",
+const EDITABLE = ["purpose", "service", "rack_unit", "rack_units", "no_count", "inv_no", "acc_no", "serial", "name", "hostname", "type_id", "model_id", "manufacturer_id", "status_id", "location_id", "loc_detail", "user_id", "owner_id", "resp_id", "mol_id", "it_id", "dept_id", "branch_id", "zone_id", "tags",
   "purchase_date", "received_date", "commissioned_date", "warranty_until", "cost", "supplier_id", "purchase_doc", "note", "props", "parent_id", "rel"];
 
 export function AssetForm({ initial, onCancel, onSaved }: { initial: Partial<AssetCard>; onCancel: () => void; onSaved: (a: AssetCard, more?: boolean) => void }) {
@@ -307,6 +310,9 @@ export function AssetForm({ initial, onCancel, onSaved }: { initial: Partial<Ass
         {["server", "vm", "network", "storage"].includes(cls) && <><label className="field wide">Назначение<input value={String(f.purpose ?? "")} onChange={(e) => set("purpose", e.target.value)} maxLength={500} disabled={!canF("purpose")} placeholder="для чего используется" /></label>
           <label className="field">Сервис или система<input value={String(f.service ?? "")} onChange={(e) => set("service", e.target.value)} maxLength={300} disabled={!canF("service")} /></label></>}
         <label className="check-row"><input type="checkbox" checked={!!f.no_count} onChange={(e) => set("no_count", e.target.checked)} disabled={!canF("no_count")} />Не подлежит инвентаризации</label>
+        <div className={`field ${E("tags") ? "invalid" : ""}`}><span className="field-label">Теги</span>
+          {canF("tags") ? <TagInput label="Теги" value={(f.tags as string[] | undefined) ?? []} onChange={(v) => set("tags", v)} mono={false} /> : <span>{((f.tags as string[] | undefined) ?? []).join(", ")}</span>}
+          {E("tags") && <span className="field-err">{E("tags")}</span>}</div>
       </div></fieldset>
       <fieldset className="inv-fs"><legend>Расположение</legend><div className="inv-grid">
         <LocationPicker label="Местоположение" value={f.location_id as number | null} onChange={(v) => set("location_id", v)} error={E("location_id")} disabled={!canF("location_id")} />
@@ -315,6 +321,7 @@ export function AssetForm({ initial, onCancel, onSaved }: { initial: Partial<Ass
         <label className="field">Уточнение<input value={String(f.loc_detail ?? "")} onChange={(e) => set("loc_detail", e.target.value)} maxLength={300} disabled={!canF("loc_detail")} placeholder="стол у окна, юнит 12…" /></label>
         <RefSelect kind="branch" label="Филиал" value={f.branch_id as number | null} onChange={(v) => set("branch_id", v)} disabled={!canF("branch_id")} />
         <RefSelect kind="dept" label="Подразделение" value={f.dept_id as number | null} onChange={(v) => set("dept_id", v)} disabled={!canF("dept_id")} />
+        <InvZoneSelect value={f.zone_id as string | null | undefined} onChange={(v) => set("zone_id", v)} disabled={!canF("zone_id")} error={E("zone_id")} />
       </div></fieldset>
       <fieldset className="inv-fs"><legend>Ответственные лица</legend><div className="inv-grid">{PEOPLE.map(([k, lb]) => person(k, lb))}</div></fieldset>
       <fieldset className="inv-fs"><legend>Приобретение и гарантия</legend><div className="inv-grid">

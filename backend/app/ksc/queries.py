@@ -50,6 +50,36 @@ _HW_AGG = ("SELECT d.nHostId AS host_id, SUM(CASE WHEN d.nDevType = 1 THEN 1 ELS
            "FROM dbo.hst_hwinv_dev d {join} WHERE d.bDeleted = 0 AND d.nDevType IN (1, 2) AND {where} GROUP BY d.nHostId")
 HW_AGG_LINUX = _HW_AGG.format(join="JOIN dbo.v_akpub_host h ON h.nId = d.nHostId", where="h.nPlatformType = 6")
 HW_AGG_FOR = _HW_AGG.format(join="", where="d.nHostId IN ({ids})")
+
+NETWORK_COLUMNS = ("SELECT c.TABLE_NAME AS tbl, c.COLUMN_NAME AS col, c.DATA_TYPE AS typ FROM INFORMATION_SCHEMA.COLUMNS c "
+                   "WHERE c.TABLE_SCHEMA = 'dbo' AND c.TABLE_NAME IN ('v_akpub_host', 'v_akpub_adm_group', 'Hosts', 'v_akpub_hwinv', 'hst_hwinv_dev', 'hwinv_dev_name', 'hwinv_dev_descr') "
+                   "AND HAS_PERMS_BY_NAME(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME), 'OBJECT', 'SELECT') = 1")
+_NETWORK_HOSTS = ("SELECT h.nId AS host_id, h.wstrDisplayName AS name, h.wstrDnsDomain AS dns_domain, h.nGroup AS group_id, h.nIp AS reported, "
+                  "h.tmLastNagentConnected AS last_connected, h.tmLastInfoUpdate AS last_info_update, h.tmLastVisible AS last_visible, "
+                  "{win_domain} AS win_domain, {connection} AS connection, {peer} AS peer, {device} AS device, {discovered} AS discovered "
+                  "FROM dbo.v_akpub_host h {join} WHERE h.nId IN ({ids}) ORDER BY h.nId")
+
+
+def network_hosts(ids, caps: frozenset[str]) -> str:
+    return _NETWORK_HOSTS.format(
+        win_domain="h.wstrWinDomain" if "windows_domain" in caps else "NULL",
+        connection="h.nConnectionIp" if "public_connection" in caps else "NULL",
+        peer="b.nIpPeer" if "peer_ip" in caps else "NULL",
+        device="b.nIpAddress" if "device_ip" in caps else "NULL",
+        discovered="b.nNsaIp" if "discovered_ip" in caps else "NULL",
+        join="LEFT JOIN dbo.Hosts b ON b.nId = h.nId" if caps & {"peer_ip", "device_ip", "discovered_ip"} else "", ids=ids_list(ids),
+    )
+
+
+_NETWORK_NICS = ("WITH adapters AS (SELECT {host} AS host_id, {cols}, ROW_NUMBER() OVER (PARTITION BY {host} ORDER BY d.nId) AS row_no "
+                  "FROM {tables} WHERE {where} AND {host} IN ({{ids}})) "
+                  "SELECT host_id, name, descr, mac FROM adapters WHERE row_no <= 64 ORDER BY host_id, row_no")
+NETWORK_NICS_PUBLIC = _NETWORK_NICS.format(host="d.nHost", cols="d.wstrName AS name, d.wstrDescription AS descr, d.strMAC AS mac",
+    tables="dbo.v_akpub_hwinv d", where="d.strMAC IS NOT NULL AND d.strMAC <> ''")
+NETWORK_NICS_INTERNAL = _NETWORK_NICS.format(host="d.nHostId", cols="n.wstrName AS name, ds.wstrDescr AS descr, d.XPar1 AS mac",
+    tables="dbo.hst_hwinv_dev d LEFT JOIN dbo.hwinv_dev_name n ON n.nId = d.nNameId LEFT JOIN dbo.hwinv_dev_descr ds ON ds.nId = d.nDescrId",
+    where="d.bDeleted = 0 AND d.nDevType = 6")
+
 COUNT_PRODUCTS = "SELECT COUNT(*) AS n FROM dbo.hst_inventory_products p WHERE EXISTS (SELECT 1 FROM dbo.hst_inventory_hstprds i WHERE i.nProduct = p.nId AND i.bDeleted = 0)"
 COUNT_INSTALLS = "SELECT COUNT(*) AS n FROM dbo.hst_inventory_hstprds i WHERE i.bDeleted = 0"
 
@@ -240,6 +270,7 @@ FEATURE_OBJECTS = {
     "events": ("v_akpub_ev_event", "v_akpub_host"),
     "users": ("hst_user_visited", "ak_users", "v_akpub_host"),
     "hardware": ("hst_hwinv_dev", "hwinv_dev_name", "hwinv_dev_descr", "hwinv_dev_manuf", "v_akpub_host"),
+    "inventory_network": ("v_akpub_host",),
 }
 
 

@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
 
-_SENSITIVE_KEYS = re.compile(r"(pass(word)?|secret|token|authorization|cookie|api[_-]?key|bind)", re.I)
-_SENSITIVE_IN_TEXT = re.compile(r"(?i)\b(password|passwd|pwd|secret|token|authorization)\b(\s*[=:]\s*)([^\s,;&\"']+)")
+_SENSITIVE_KEYS = re.compile(r"(pass(word)?|secret|token|authorization|cookie|api[_-]?key|license[_-]?key|bind)", re.I)
+_SENSITIVE_IN_TEXT = re.compile(r"(?i)\b(password|passwd|pwd|secret|token|authorization|license[_-]?key)\b(\s*[=:]\s*)([^\s,;&\"']+)")
 _STANDARD_ATTRS = set(logging.LogRecord("x", 0, "x", 0, "", (), None).__dict__) | {"message", "asctime", "taskName"}
 
 
@@ -61,7 +61,7 @@ def configure_logging(level: str = "INFO", fmt: str = "json") -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level.upper())
-    for noisy in ("uvicorn.access", "ldap3", "smbprotocol", "smbclient", "spnego"):        # SMB: каждое сообщение протокола — INFO; в журнал — только предупреждения и ошибки
+    for noisy in ("uvicorn.access", "ldap3", "smbprotocol", "smbclient", "spnego", "httpx", "httpcore"):  # журналы библиотек могут содержать подписанные ссылки и заголовки
         logging.getLogger(noisy).setLevel(logging.WARNING)
     for name in ("uvicorn", "uvicorn.error"):
         logging.getLogger(name).handlers.clear()

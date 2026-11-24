@@ -8,6 +8,7 @@ import { NoSource, type Ctx } from "../App";
 import { Fetched } from "../components/Common";
 import { CountButton, FilterBar } from "../components/FilterBar";
 import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
+import { OwnerSub } from "../components/OwnerBlock";
 import { CheckAll, QuickReportPanel, ReportDock, useRowSel, type QuickScopeOpts } from "../components/QuickReport";
 import { ExpandCell, ExpandTh, ExpandedRow, XGrid, XItem, useExpanded } from "../components/ExpandRow";
 import { ListFoot, VirtualRows, useInfinite, useKept, usePanel, useStaticList, type Chunk } from "../components/Infinite";
@@ -116,7 +117,7 @@ function HostsView({ ctx }: { ctx: Ctx }) {
               <VirtualRows list={list} colSpan={8} estimate={46} row={(h) => (
                 <tr className={`clickable ${sel.has(h.host_id) ? "sel" : ""}`} onClick={(e) => { if (!(e.target as HTMLElement).closest("a, input")) navigate(`/vulnerabilities/hosts/${h.host_id}`); }}>
                   <td className="check"><input type="checkbox" aria-label={`Выбрать ${h.name}`} checked={sel.has(h.host_id)} onChange={() => sel.toggle(h.host_id)} /></td>
-                  <td><Link to={`/vulnerabilities/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono nowrap">{h.ip}</span>{h.zone && <span className="sub zone-sub" title="Зона ответственности">{h.zone}</span>}</td>
+                  <td><Link to={`/vulnerabilities/hosts/${h.host_id}`} className="strong-link">{h.name}</Link><span className="sub mono nowrap">{h.ip}</span>{h.zone && <span className="sub zone-sub" title="Зона ответственности">{h.zone}</span>}<OwnerSub o={h.owner} compact /></td>
                   <td className="small hide-sm">{h.os}</td><td className="small hide-sm">{h.group}</td><td className="nowrap small hide-sm">{fmt(h.last_connected)}</td>
                   <td><SevCounts critical={h.critical} high={h.high} warning={h.warning} compact /></td>
                   <td className="num"><b>{num(h.total)}</b><span className="sub">{num(h.products)} прогр.</span></td><td className="num hide-sm">{num(h.patchable)}</td>

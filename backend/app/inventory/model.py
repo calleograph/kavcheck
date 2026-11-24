@@ -10,7 +10,7 @@ COMPUTERS = ("workstation", "laptop", "server", "vm")
 # состояние учёта: на складе, выдано (в эксплуатации), зарезервировано, в ремонте, списано, выведено из эксплуатации, утрачено
 ST_RU = {"stock": "На складе", "use": "В эксплуатации", "reserve": "Зарезервировано", "repair": "В ремонте", "writeoff": "Списано", "decom": "Выведено из эксплуатации", "lost": "Утрачено"}
 ST_ACTIVE = ("stock", "use", "reserve", "repair")
-LOC_RU = {"region": "Регион", "city": "Город", "address": "Адрес", "building": "Здание", "floor": "Этаж", "room": "Помещение", "workplace": "Рабочее место", "site": "Площадка",
+LOC_RU = {"country": "Страна", "region": "Регион", "city": "Город", "address": "Адрес", "building": "Здание", "floor": "Этаж", "room": "Помещение", "workplace": "Рабочее место", "site": "Площадка",
           "server_room": "Серверная", "rack": "Стойка", "storage": "Склад", "other": "Прочее"}
 REF_RU = {"type": "Типы оборудования", "manufacturer": "Производители", "model": "Модели", "status": "Статусы", "supplier": "Поставщики и сервисные организации", "dept": "Подразделения",
           "branch": "Филиалы", "license_type": "Типы лицензий", "sw_category": "Категории программ"}
@@ -24,7 +24,7 @@ METRIC_RU = {"device": "на устройство", "user": "на пользов
 FIELD_RU = {"inv_no": "Инвентарный номер", "acc_no": "Бухгалтерский номер", "serial": "Серийный номер", "name": "Наименование", "hostname": "Имя компьютера", "type_id": "Тип",
             "model_id": "Модель", "manufacturer_id": "Производитель", "status_id": "Статус", "location_id": "Местоположение", "loc_detail": "Уточнение местоположения", "parent_id": "Связь",
             "rel": "Вид связи", "user_id": "Пользователь", "owner_id": "Владелец", "resp_id": "Ответственный", "mol_id": "МОЛ", "it_id": "ИТ-специалист", "dept_id": "Подразделение",
-            "branch_id": "Филиал", "purchase_date": "Дата приобретения", "received_date": "Дата поступления", "commissioned_date": "Ввод в эксплуатацию", "warranty_until": "Гарантия до",
+            "branch_id": "Филиал", "zone_id": "Зона ответственности", "tags": "Теги", "purchase_date": "Дата приобретения", "received_date": "Дата поступления", "commissioned_date": "Ввод в эксплуатацию", "warranty_until": "Гарантия до",
             "cost": "Стоимость", "supplier_id": "Поставщик", "purchase_doc": "Документ приобретения", "note": "Примечание", "ksc": "Компьютер KSC",
             "no_count": "Не подлежит инвентаризации", "purpose": "Назначение", "service": "Сервис", "rack_unit": "Юнит в стойке", "rack_units": "Высота, юнитов"}
 PEOPLE_FIELDS = ("user_id", "owner_id", "resp_id", "mol_id", "it_id")

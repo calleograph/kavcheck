@@ -8,8 +8,9 @@ import zipfile
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import insert, select
 
-from app.models import InvAsset, KscSource, ZcHost, ZcSource
+from app.models import InvAsset, InvHistory, KscSource, ZcHost, ZcSource, Zone
 from app.services import local_admin as la
 from tests.conftest import login
 
@@ -416,6 +417,73 @@ async def test_bulk_edit_is_batched_and_rolls_back_invalid_card(client, app):
     assert after["st_cls"] == "stock" and after["version"] == lap["version"]                               # карточка с ошибкой не изменена частично
     assert [h["kind"] for h in (await client.get(f"{API}/assets/{lap['id']}/history")).json()["items"]] == ["create"]
     assert (await client.get(f"{API}/assets/{ids[0]}")).json()["st_cls"] == "repair"
+
+
+async def test_bulk_filtered_preview_and_empty_attributes_for_1600_assets(client, app):
+    s = await setup(client, app)
+    prop = (await client.post(f"{API}/props", json={"name": "Режим учёта", "type": "text"})).json()["code"]
+    async with app.state.session_maker() as db:
+        zone = Zone(name="Зона проверки")
+        db.add(zone)
+        await db.flush()
+        zone_id = str(zone.id)
+        await db.execute(insert(InvAsset), [
+            {"inv_no": f"TEST-{i:04d}", "name": "Тестовое оборудование", "search": "тестовое оборудование",
+             "location_id": s["room"]["id"] if i != 1602 else s["store"]["id"], "purpose": "Ручной ввод" if i == 0 else "",
+             "tags": ["Свой тег"] if i == 0 else [], "props": {prop: "Вручную"} if i == 0 else {}}
+            for i in range(1603)
+        ])
+        by_number = dict((await db.execute(select(InvAsset.inv_no, InvAsset.id))).all())
+        await db.commit()
+    path = f"{API}/assets/bulk"
+    body = {"filters": {"q": "тестовое", "location": s["room"]["id"]}, "exclude_ids": [by_number["TEST-1601"]], "only_empty": True,
+            "data": {"purpose": "Учёт", "zone_id": zone_id, "tags": [" Метка ", "метка", "Партия"], "props": {prop: "Пакет"}}}
+    assert (await client.post(path, json=body)).status_code == 422
+    assert (await client.post(path, json={**body, "filters": {"locaton": s["room"]["id"]}, "dry_run": True})).status_code == 422
+    plan = (await client.post(path, json={**body, "dry_run": True})).json()
+    assert plan["found"] == 1601 and plan["would_change"] == 1601 and not plan["errors"]
+    assert {f["key"] for f in plan["fields"]} == {"purpose", "zone_id", "tags", f"props.{prop}"}
+    first = by_number["TEST-0000"]
+    card = (await client.get(f"{API}/assets/{first}")).json()
+    assert card["zone_id"] is None and card["purpose"] == "Ручной ввод"
+    assert (await client.put(f"{API}/assets/{first}", json={"data": {"note": "Параллельное изменение"}})).status_code == 200
+    assert (await client.post(path, json={**body, "preview_token": plan["preview_token"]})).status_code == 409
+    plan = (await client.post(path, json={**body, "dry_run": True})).json()
+    assert (await client.get(f"{API}/assets", params={"zone_id": zone_id})).json()["total"] == 0
+    result = (await client.post(path, json={**body, "preview_token": plan["preview_token"]})).json()
+    assert result["found"] == result["changed"] == 1601 and result["error_count"] == 0
+    first_card = (await client.get(f"{API}/assets/{first}")).json()
+    assert first_card["purpose"] == "Ручной ввод" and first_card["note"] == "Параллельное изменение"
+    assert first_card["zone_id"] == zone_id and first_card["zone"] == "Зона проверки" and first_card["tags"] == ["Свой тег"]
+    assert first_card["props"] == {prop: "Вручную"}
+    selected = (await client.get(f"{API}/assets", params={"q": "партия", "zone_id": zone_id, "limit": 1})).json()
+    assert selected["total"] == 1600 and selected["items"][0]["tags"] == ["Метка", "Партия"]
+    assert selected["items"][0]["props"] == {prop: "Пакет"}
+    async with app.state.session_maker() as db:
+        rows = (await db.scalars(select(InvHistory).where(InvHistory.title.startswith("Массовое изменение")))).all()
+        assert len(rows) == 1601 and {h.state["zone_id"] for h in rows} == {zone_id}
+        for i in (1601, 1602):
+            assert (await db.get(InvAsset, by_number[f"TEST-{i}"])).zone_id is None
+
+
+async def test_bulk_filter_respects_scope_and_edit_permissions(client, app):
+    s = await setup(client, app)
+    inside = (await client.post(f"{API}/assets", json={"data": {"location_id": s["room"]["id"]}})).json()
+    outside = (await client.post(f"{API}/assets", json={"data": {"location_id": s["store"]["id"]}})).json()
+    await client.put("/api/v1/admin/settings/inventory", json={"grants": [{"login": "analyst1", "perms": [], "location_ids": [s["room"]["id"]]}]})
+    body = {"filters": {}, "data": {"location_id": s["store"]["id"]}, "dry_run": True}
+    await login(client, "viewer", "Viewer-Passw0rd-123")
+    assert (await client.post(f"{API}/assets/bulk", json=body)).status_code == 403
+    await login(client, "analyst1", "Analyst-Passw0rd-123")
+    plan = (await client.post(f"{API}/assets/bulk", json=body)).json()
+    assert plan["found"] == 1 and plan["would_change"] == 0 and plan["error_count"] == 1
+    assert [e["id"] for e in plan["errors"]] == [inside["id"]]
+    explicit = (await client.post(f"{API}/assets/bulk", json={"ids": [inside["id"], outside["id"]], "data": {"tags": ["Тест"]}})).json()
+    assert explicit["found"] == explicit["changed"] == explicit["missing"] == 1
+    invalid = (await client.post(f"{API}/assets/bulk", json={"ids": [inside["id"]], "data": {"cost": -1, "purpose": "Тест"}})).json()
+    assert invalid["changed"] == 0 and invalid["error_count"] == 1
+    card = (await client.get(f"{API}/assets/{inside['id']}")).json()
+    assert card["cost"] is None and card["purpose"] == ""
 
 
 async def test_document_stage_rechecks_transit_and_writeoff(client, app):

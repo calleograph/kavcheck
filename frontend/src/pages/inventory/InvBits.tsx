@@ -36,6 +36,13 @@ export function RefSelect({ kind, value, onChange, label, parent, empty = "—",
   );
 }
 
+export function InvZoneSelect({ value, onChange, empty = "Не указана", disabled, error }: { value?: string | null; onChange: (value: string | null) => void; empty?: string; disabled?: boolean; error?: string }) {
+  const { meta } = useInv();
+  return <label className={`field ${error ? "invalid" : ""}`}>Зона ответственности<select value={value ?? ""} onChange={(e) => onChange(e.target.value || null)} disabled={disabled} aria-invalid={!!error}>
+    <option value="">{empty}</option>{(meta.zones ?? []).map((z) => <option key={z.id} value={z.id}>{z.name}</option>)}
+    </select>{error && <span className="field-err">{error}</span>}</label>;
+}
+
 /** Выбор сотрудника: поиск по учёту и по BI (сотрудник BI переносится в учёт при выборе), быстрое добавление нового. */
 export function PersonPicker({ label, value, name, onChange, error, disabled, compact }: { label: string; value: number | null | undefined; name?: string; onChange: (id: number | null, name: string) => void;
   error?: string; disabled?: boolean; compact?: boolean }) {

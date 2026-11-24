@@ -11,7 +11,8 @@ CREATE TABLE dbo.v_akpub_host (
   wstrWinName nvarchar(256) NULL, wstrWinDomain nvarchar(256) NULL, nIp bigint NULL, wstrOSName nvarchar(256) NULL, nPlatformType int NULL, nVersionMajor int NULL, nVersionMinor int NULL,
   nOsBuildNumber int NULL, nGroup int NOT NULL, tmLastNagentConnected datetime NULL, tmLastVisible datetime NULL, tmLastInfoUpdate datetime NULL, tmLastUpdate datetime NULL,
   tmLastFullScan datetime NULL, tmSystemLastStarted datetime NULL, tmCreated datetime NULL, nStatus int NOT NULL DEFAULT 0, nLastRtpState int NULL, nLastRtpErrorCode int NULL,
-  bIsSlaveServer bit NOT NULL DEFAULT 0, nPkgMgrType int NULL, nComputerType int NULL, nProcType int NULL, nVirusCount int NULL, nUncured int NULL);
+  bIsSlaveServer bit NOT NULL DEFAULT 0, nPkgMgrType int NULL, nComputerType int NULL, nProcType int NULL, nVirusCount int NULL, nUncured int NULL, nConnectionIp bigint NULL);
+CREATE TABLE dbo.Hosts (nId bigint PRIMARY KEY, nIpPeer bigint NULL, nIpAddress bigint NULL, nNsaIp bigint NULL);
 CREATE TABLE dbo.hst_inventory_products (
   nId bigint PRIMARY KEY, strID char(32) NOT NULL, wstrDisplayName nvarchar(256) NOT NULL, wstrDisplayVersion nvarchar(256) NULL, wstrPublisher nvarchar(256) NULL,
   nPlatformTypeMask int NOT NULL DEFAULT 1, bIsMsi bit NOT NULL DEFAULT 0, tmFirstAppear datetime NULL, wstrARPRegKey nvarchar(256) NULL, wstrComments nvarchar(1024) NULL, bFakeApp bit NOT NULL DEFAULT 0);
@@ -59,6 +60,11 @@ CREATE TABLE dbo.hst_hwinv_dev (nId int IDENTITY PRIMARY KEY, nHostId bigint NOT
   nCpuSpeed int NULL, nCpuCores int NULL, nCpuThreads int NULL, bDeleted bit NOT NULL DEFAULT 0);
 CREATE INDEX IX_hst_hwinv_dev_host ON dbo.hst_hwinv_dev (nHostId, bDeleted);
 GO
+CREATE VIEW dbo.v_akpub_hwinv AS
+ SELECT d.nId, d.nHostId AS nHost, d.nDevType AS nType, n.wstrName, ds.wstrDescr AS wstrDescription,
+        CASE WHEN d.nDevType = 6 THEN CAST(d.XPar1 AS varchar(17)) END AS strMAC
+ FROM dbo.hst_hwinv_dev d JOIN dbo.hwinv_dev_name n ON n.nId = d.nNameId LEFT JOIN dbo.hwinv_dev_descr ds ON ds.nId = d.nDescrId WHERE d.bDeleted = 0;
+GO
 -- лицензии (структура условная: в реальных KSC названия столбцов отличаются, KAV Checker определяет их по смыслу — ksc/licenses.py); binKeyData — данные ключа, приложением не читаются
 CREATE TABLE dbo.keys (nId int PRIMARY KEY, wstrProductName nvarchar(256) NULL, nLicenseType int NULL, tmExpirationLimit datetime NULL, nLicenseCount int NULL, nUsed int NULL, wstrSerial nvarchar(64) NULL, binKeyData varbinary(max) NULL);
 CREATE TABLE dbo.keys_installed (nId int PRIMARY KEY, wstrComment nvarchar(100) NULL, nCode int NULL);
@@ -76,6 +82,8 @@ INSERT INTO dbo.v_akpub_host (nId, strName, wstrDisplayName, wstrDnsName, wstrDn
  (7,  'guid-0007', N'ws-002', N'ws-002', N'example.local', 3221225984+102, N'Microsoft Windows 10', 2, 10, 0, 19045, 12, DATEADD(day,-20,GETUTCDATE()), DATEADD(day,-20,GETUTCDATE()), DATEADD(day,-20,GETUTCDATE()), DATEADD(day,-21,GETUTCDATE()), DATEADD(day,-40,GETUTCDATE()), DATEADD(day,-100,GETUTCDATE()), 4, 1, 0, 0, 1, 2),
  (8,  'guid-0008', N'ws-003', N'ws-003', N'example.local', 3221225984+103, N'Microsoft Windows 11', 2, 10, 0, 22631, 12, NULL, NULL, DATEADD(day,-90,GETUTCDATE()), NULL, NULL, DATEADD(day,-90,GETUTCDATE()), 0, 0, 0, 0, 1, 2),
  (9,  'guid-0009', N'SQL-CL-01', N'SQL-CL-01', N'example.local', 3221225984+30, N'Microsoft Windows Server 2019', 2, 10, 0, 17763, 10, NULL, NULL, NULL, NULL, NULL, DATEADD(day,-300,GETUTCDATE()), 64, 0, 1, 0, 2, 2);
+UPDATE dbo.v_akpub_host SET nConnectionIp = nIp WHERE nId = 6;
+INSERT INTO dbo.Hosts (nId, nIpPeer, nIpAddress, nNsaIp) VALUES (6, 3221225984+101, 3221225984+117, 3221225984+118), (7, 3221225984+102, NULL, 0);
 -- Продукты: PHP-пакеты, ОС-пакеты, Windows-приложения, «ложные» PHP (PhpStorm, Composer)
 INSERT INTO dbo.hst_inventory_products (nId, strID, wstrDisplayName, wstrDisplayVersion, wstrPublisher, nPlatformTypeMask, bIsMsi, tmFirstAppear) VALUES
  (101, REPLICATE('a',31)+'1', N'php7.4-cli', N'7.4.33-1+0~20221121.75+debian11~1.gbp5ad3b6', N'Debian PHP Maintainers <team@example.org>', 2, 0, DATEADD(day,-200,GETUTCDATE())),
@@ -119,6 +127,8 @@ INSERT INTO dbo.v_akpub_hst_prdstate VALUES
 INSERT INTO dbo.v_akpub_host_status VALUES (1,0,0),(2,0,0),(3,0,0),(4,2,256),(5,1,256+128),(6,0,0),(7,1,2+128+16384),(8,1,32);
 -- Оборудование: web-01 (2 ядра, 4 ГБ), web-02 (1 ядро, 1 ГБ), app-01 (4 ядра, 8 ГБ), ws-001 (Windows, 1 ядро, 2 ГБ — правила к Windows не применяются), у old-srv (5) и остальных данных нет; у web-02 — ещё раздел и том LVM
 INSERT INTO dbo.hwinv_dev_name (wstrName) VALUES (N'Intel(R) Xeon(R) CPU'), (N'Physical Memory 0'), (N'Physical Memory 1'), (N'/dev/vda'), (N'/dev/vda1'), (N'/dev/mapper/vg0-root (LVM logical volume)'), (N'Virtual Machine');
+INSERT INTO dbo.hwinv_dev_name (wstrName) VALUES (N'WireGuard Tunnel');
+INSERT INTO dbo.hst_hwinv_dev (nHostId, wstrDevId, nDevType, nNameId, XPar1) VALUES (6, N'wireguard-test', 6, 8, N'02:00:00:00:00:06');
 INSERT INTO dbo.hwinv_dev_manuf (wstrManuf) VALUES (N'Intel'), (N'QEMU');
 INSERT INTO dbo.hst_hwinv_dev (nHostId, wstrDevId, nDevType, nNameId, nManufId, XPar1, XPar2, XPar3, strBiosManuf, strBiosVersion, nCpuSpeed, nCpuCores, nCpuThreads) VALUES
  (2, N'cpu0', 1, 1, 1, NULL, 0, 0, NULL, NULL, 2400, 2, 2), (2, N'm0', 2, 2, NULL, NULL, 0, 2147483648, NULL, NULL, NULL, NULL, NULL), (2, N'm1', 2, 3, NULL, NULL, 0, 2147483648, NULL, NULL, NULL, NULL, NULL),

@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +58,19 @@ class LocBody(BaseModel):
     data: dict = Field(default_factory=dict)
     active: bool = True
     sort: int = 0
+
+    @field_validator("data")
+    @classmethod
+    def coordinates(cls, data: dict) -> dict:
+        if data.get("lat") is None and data.get("lon") is None:
+            return {k: v for k, v in data.items() if k not in ("lat", "lon")}
+        try:
+            lat, lon = float(data["lat"]), float(data["lon"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("Укажите широту и долготу") from None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError("Широта от −90 до 90, долгота от −180 до 180")
+        return {**data, "lat": lat, "lon": lon}
 
 
 async def _repath(db: AsyncSession, x: InvLocation) -> None:

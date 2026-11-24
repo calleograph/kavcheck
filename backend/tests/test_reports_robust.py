@@ -2,7 +2,7 @@
 import uuid
 
 from app.models import ReportJob
-from app.reports.runner import Runner
+from app.reports.runner import Runner, job_dir
 from tests.conftest import login
 
 ITEMS = [{"kind": "pattern", "name_like": "Telegram*", "op": "lt", "value": "7.3.3"}]
@@ -41,6 +41,33 @@ async def test_double_submit_does_not_create_a_second_job(client):
     assert a.json()["id"] == b.json()["id"]
     other = await client.post("/api/v1/reports", json={**body, "params": {"items": [{**ITEMS[0], "value": "8"}]}})
     assert other.json()["id"] != a.json()["id"]                                          # другие условия — другой отчёт
+
+
+async def test_viewer_cannot_open_protection_report_with_owner_email(client, app):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sid = uuid.UUID(await _src(client))
+    full, legacy, summary = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    name = {"key": "name", "title": "Компьютер"}
+    owner = {"key": "owner", "title": "Владелец"}
+    async with app.state.session_maker() as db:
+        for job_id, detail, columns in ((full, "full", [name, owner]), (legacy, "full", [name]), (summary, "summary", [name, owner])):
+            db.add(ReportJob(id=job_id, source_id=sid, source_name="KSC", kind="quick_protection", title="Состояние защиты",
+                             params={"detail": detail, "columns": ["name"]}, status="done", summary={"columns_all": columns}))
+        await db.commit()
+    files = job_dir(app.state.settings, full)
+    files.mkdir(parents=True)
+    files.joinpath("rows.jsonl").write_text('{"name":"workstation","owner":"owner@example.local"}\n', encoding="utf-8")
+    files.joinpath("report.csv").write_text("name;owner\nworkstation;owner@example.local\n", encoding="utf-8")
+    path = f"/api/v1/reports/{full}"
+    assert "owner@example.local" in (await client.get(f"{path}/rows")).text
+    assert (await client.get(f"{path}/download/csv")).status_code == 200
+
+    await login(client, "viewer", "Viewer-Passw0rd-123")
+    visible = await client.get("/api/v1/reports", params={"source_only": False})
+    assert {j["id"] for j in visible.json()["items"]} == {str(legacy), str(summary)}
+    for suffix in ("", "/rows", "/download/csv"):
+        assert (await client.get(f"{path}{suffix}")).status_code == 404
+    assert (await client.post(f"{path}/mail", json={"formats": ["csv"]})).status_code == 404
 
 
 async def test_transient_source_failure_is_retried_then_succeeds(client, app, monkeypatch):

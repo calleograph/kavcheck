@@ -5,11 +5,12 @@ import { Icon } from "../../components/Icons";
 import { useToast } from "../../components/Toast";
 import { SkelRows, Tabs, TagInput } from "../../components/ui";
 import { inv } from "./invApi";
+import InvGeoSettings from "./InvGeoSettings";
 import { useInv } from "./InvBits";
 
 type S = Record<string, unknown> & { roles: Record<string, string>; grants: { login: string; perms: string[]; location_ids: number[] }[]; forms: Record<string, { title?: string; intro?: string; columns?: string[]; props?: string[]; signatures?: string[]; footer?: string }>;
   doc_prefix: Record<string, string>; label_fields: string[] };
-type T = "access" | "numbers" | "forms" | "labels" | "control" | "notify";
+type T = "access" | "numbers" | "forms" | "labels" | "control" | "notify" | "geoip";
 const PERM_RU: Record<string, string> = { view: "Просмотр оборудования", create: "Создание карточек", edit: "Изменение учётных свойств", location: "Изменение местоположения", people: "Изменение владельцев и ответственных",
   docs: "Оформление документов (выдача, возврат, перемещение)", repair: "Оформление ремонтов", writeoff: "Списание", count: "Проведение инвентаризации", import: "Импорт из Excel/CSV", refs: "Управление справочниками и местоположениями",
   keys: "Просмотр ключей лицензий, сохранённых прежними версиями", templates: "Печатные формы и этикетки" };
@@ -31,8 +32,8 @@ export default function InvSettings() {
   const num = (k: string, lb: string, min: number, max: number, hint = "") => <label className="field">{lb}<input type="number" min={min} max={max} value={Number(s[k] ?? 0)} onChange={(e) => set(k, Number(e.target.value))} />{hint && <span className="field-help">{hint}</span>}</label>;
   return (
     <div className="inv-page">
-      <div className="inv-head"><h1>Настройки инвентаризации</h1><button className="btn primary" disabled={busy} onClick={() => void save()}><Icon name="save" size={16} />Сохранить</button></div>
-      <Tabs<T> label="Настройки" value={tab} onChange={setTab} items={[{ id: "access", label: "Права доступа" }, { id: "numbers", label: "Нумерация" }, { id: "forms", label: "Печатные формы" }, { id: "labels", label: "Этикетки" }, { id: "control", label: "Сроки и KSC" }, { id: "notify", label: "Уведомления" }]} />
+      <div className="inv-head"><h1>Настройки инвентаризации</h1>{tab !== "geoip" && <button className="btn primary" disabled={busy} onClick={() => void save()}><Icon name="save" size={16} />Сохранить</button>}</div>
+      <Tabs<T> label="Настройки" value={tab} onChange={setTab} items={[{ id: "access", label: "Права доступа" }, { id: "numbers", label: "Нумерация" }, { id: "forms", label: "Печатные формы" }, { id: "labels", label: "Этикетки" }, { id: "control", label: "Сроки и KSC" }, { id: "notify", label: "Уведомления" }, { id: "geoip", label: "Географические базы" }]} />
       {tab === "access" && <div className="stack">
         <div className="card flush"><div className="card-head"><h2>Права по ролям</h2></div>
           <p className="muted small pad">Наименьшая роль KAV Checker, которой разрешено действие. Администратору разрешено всё.</p>
@@ -85,6 +86,7 @@ export default function InvSettings() {
         <label className="check-row wide"><input type="checkbox" checked={!!s.ksc_auto_link} onChange={(e) => set("ksc_auto_link", e.target.checked)} />Предлагать связь с компьютером KSC, если имя совпало ровно с одним компьютером (связь «предполагается», подтверждает пользователь)</label>
       </div></div>}
       {tab === "notify" && <Notify s={s} set={set} show={show} />}
+      {tab === "geoip" && <InvGeoSettings />}
       {toast}
     </div>
   );
