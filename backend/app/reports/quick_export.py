@@ -274,6 +274,13 @@ def _host_card(d: dict, esc=html.escape) -> str:
     return "".join(out)
 
 
+def _note_html(note: str) -> str:
+    if note == DBIP_CREDIT:
+        return ('<a href="https://db-ip.com/">IP Geolocation by DB-IP</a> · '
+                '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>')
+    return html.escape(note)
+
+
 def render_html(doc: dict) -> str:
     if doc.get("tabs"):                                      # отчёт по компьютерам: вкладки как в карточке (общие сведения, защита, ПО, уязвимости, EOL, события, аппаратная часть)
         from .tabs_html import render as render_tabs  # noqa: PLC0415
@@ -351,10 +358,8 @@ def render_html(doc: dict) -> str:
         for i, b in enumerate(detail):
             block(b, i)
         out.append("</section>")
-    credit = ('<a href="https://db-ip.com/">IP Geolocation by DB-IP</a> · '
-              '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>')
     out.append('<section id="method"><h2>Методика, источники и ограничения</h2><div class="panel"><ul class="notes">' +
-               "".join(f"<li>{credit if n == DBIP_CREDIT else esc(n)}</li>" for n in doc["notes"]) + "</ul></div></section>"
+               "".join(f"<li>{_note_html(n)}</li>" for n in doc["notes"]) + "</ul></div></section>"
                if doc["notes"] else '<section id="method"></section>')
     foot = [f"<p>KAV Checker · отчёт сформирован {gen} UTC · данные Kaspersky Security Center «{esc(doc.get('source') or '')}». Файл самодостаточен: открывается без подключения к приложению, для PDF используйте печать браузера.</p>"]
     if org["footnote"]:

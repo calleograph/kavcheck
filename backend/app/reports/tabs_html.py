@@ -8,7 +8,7 @@ from __future__ import annotations
 import html
 
 from .quick_export import CSS as BASE_CSS
-from .quick_export import _fmt, org_lines
+from .quick_export import _fmt, _note_html, org_lines
 
 esc = html.escape
 PAGE = 200                     # строк в порции; остальные — по «Показать ещё» или при печати
@@ -175,7 +175,7 @@ def render(doc: dict) -> str:
     parts.append('<nav class="kt-bar" role="tablist">' + "".join(
         f'<label class="kt-tab" for="kt-{i}" role="tab">{esc(title)}<span class="kt-n">{len(t["rows"]):,}</span></label>'.replace(",", " ") for i, (tid, title, t) in enumerate(tabs)) + "</nav>")
     parts.append('<div class="kt-panels">' + "".join(_panel(i, t) for i, (tid, title, t) in enumerate(tabs)) + "</div></div>")
-    parts.append('<h2>Методика, источники и ограничения</h2><div class="panel"><ul class="notes">' + "".join(f"<li>{esc(n)}</li>" for n in notes) + "</ul></div>")
+    parts.append('<h2>Методика, источники и ограничения</h2><div class="panel"><ul class="notes">' + "".join(f"<li>{_note_html(n)}</li>" for n in notes) + "</ul></div>")
     foot = [f"<p>KAV Checker · отчёт сформирован {gen} UTC · данные Kaspersky Security Center «{esc(doc.get('source') or '')}». Файл самодостаточен: открывается без подключения к приложению; для PDF используйте печать браузером.</p>"]
     who = " · ".join(x for x in (org["signature"], org["email"], org["contacts"]) if x)
     if who:

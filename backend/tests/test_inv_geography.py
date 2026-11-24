@@ -71,8 +71,10 @@ async def test_dbip_attribution_follows_geographic_results_into_reports(client, 
         asset = InvAsset(inv_no="ПР-ГЕО", cls="workstation", type_id=config["t"]["workstation"], ksc_link="confirmed", ksc_source_id=sid, ksc_host_id=1)
         db.add(asset)
         await db.flush()
-        db.add(InvGeo(asset_id=asset.id, host_id=1, source_id=sid, checked_at=now, observed_at=now,
-                      evidence={}, result={"status": "approx", "city": "Пример", "provider": G.DBIP_LABEL}))
+        aid = asset.id
+        db.add(InvGeo(asset_id=aid, host_id=1, source_id=sid, checked_at=now, observed_at=now,
+                      evidence={"addresses": [{"kind": "connection", "ip": "192.0.2.19"}]},
+                      result={"status": "approx", "city": "Пример", "provider": G.DBIP_LABEL}))
         await db.commit()
 
     assert (await client.get(GEO)).json()["dbip_attribution"]
@@ -81,7 +83,10 @@ async def test_dbip_attribution_follows_geographic_results_into_reports(client, 
     assert report.json()["doc"]["dbip_attribution"]
     ctx = quick.Ctx(source_name="Инвентаризация", activity_days=0, sm=app.state.session_maker)
     doc = await quick.build("quick_inv", None, {"view": "geography"}, ctx)
-    assert '<a href="https://db-ip.com/">IP Geolocation by DB-IP</a>' in quick_export.render_html(doc)
+    credit = '<a href="https://db-ip.com/">IP Geolocation by DB-IP</a>'
+    assert credit in quick_export.render_html(doc)
+    tabbed = await quick.build("quick_inv", None, {"view": "geography_card", "asset_id": aid}, ctx)
+    assert tabbed["tabs"] and credit in quick_export.render_html(tabbed)
     out = tmp_path / "geography.csv"
     quick_export.write_csv_main(out, doc)
     assert G.DBIP_CREDIT in out.read_text(encoding="utf-8-sig")
