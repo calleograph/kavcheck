@@ -3,6 +3,8 @@
 Классы и состояния — фиксированные (на них опираются правила, отчёты и сверка); типы, статусы, производители и прочее — справочники, их ведёт администратор."""
 from __future__ import annotations
 
+from typing import Literal, get_args
+
 # класс оборудования: определяет набор сведений карточки (технические — для компьютеров и серверов), правила сопоставления с KSC и группировку отчётов
 CLS_RU = {"workstation": "Рабочая станция", "laptop": "Ноутбук", "server": "Физический сервер", "vm": "Виртуальный сервер", "monitor": "Монитор", "printer": "Принтер и МФУ",
           "network": "Сетевое оборудование", "storage": "Система хранения данных", "peripheral": "Периферийное устройство", "component": "Комплектующее", "other": "Прочее ИТ-оборудование"}
@@ -10,6 +12,8 @@ COMPUTERS = ("workstation", "laptop", "server", "vm")
 # состояние учёта: на складе, выдано (в эксплуатации), зарезервировано, в ремонте, списано, выведено из эксплуатации, утрачено
 ST_RU = {"stock": "На складе", "use": "В эксплуатации", "reserve": "Зарезервировано", "repair": "В ремонте", "writeoff": "Списано", "decom": "Выведено из эксплуатации", "lost": "Утрачено"}
 ST_ACTIVE = ("stock", "use", "reserve", "repair")
+OWNERSHIP_RU = {"corporate": "Корпоративное", "personal": "Личное"}
+OWNERSHIP_AUTO = "По данным учёта и BI"
 LOC_RU = {"country": "Страна", "region": "Регион", "city": "Город", "address": "Адрес", "building": "Здание", "floor": "Этаж", "room": "Помещение", "workplace": "Рабочее место", "site": "Площадка",
           "server_room": "Серверная", "rack": "Стойка", "storage": "Склад", "other": "Прочее"}
 REF_RU = {"type": "Типы оборудования", "manufacturer": "Производители", "model": "Модели", "status": "Статусы", "supplier": "Поставщики и сервисные организации", "dept": "Подразделения",
@@ -25,9 +29,11 @@ FIELD_RU = {"inv_no": "Инвентарный номер", "acc_no": "Бухга
             "model_id": "Модель", "manufacturer_id": "Производитель", "status_id": "Статус", "location_id": "Местоположение", "loc_detail": "Уточнение местоположения", "parent_id": "Связь",
             "rel": "Вид связи", "user_id": "Пользователь", "owner_id": "Владелец", "resp_id": "Ответственный", "mol_id": "МОЛ", "it_id": "ИТ-специалист", "dept_id": "Подразделение",
             "branch_id": "Филиал", "zone_id": "Зона ответственности", "tags": "Теги", "purchase_date": "Дата приобретения", "received_date": "Дата поступления", "commissioned_date": "Ввод в эксплуатацию", "warranty_until": "Гарантия до",
-            "cost": "Стоимость", "supplier_id": "Поставщик", "purchase_doc": "Документ приобретения", "note": "Примечание", "ksc": "Компьютер KSC",
+            "cost": "Стоимость", "supplier_id": "Поставщик", "purchase_doc": "Документ приобретения", "note": "Примечание", "ksc": "Компьютер KSC", "ownership": "Тип собственности",
             "no_count": "Не подлежит инвентаризации", "purpose": "Назначение", "service": "Сервис", "rack_unit": "Юнит в стойке", "rack_units": "Высота, юнитов"}
 PEOPLE_FIELDS = ("user_id", "owner_id", "resp_id", "mol_id", "it_id")
+AutoFillField = Literal["user_id", "dept_id", "location_id", "resp_id", "branch_id", "zone_id"]
+AUTO_FILL_FIELDS = get_args(AutoFillField)
 REF_FIELDS = {"type_id": "type", "model_id": "model", "manufacturer_id": "manufacturer", "status_id": "status", "dept_id": "dept", "branch_id": "branch", "supplier_id": "supplier"}
 DATE_FIELDS = ("purchase_date", "received_date", "commissioned_date", "warranty_until")
 TEXT_FIELDS = {"inv_no": 60, "acc_no": 60, "serial": 120, "name": 300, "hostname": 255, "loc_detail": 300, "purchase_doc": 300, "purpose": 500, "service": 300}

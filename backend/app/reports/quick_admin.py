@@ -198,14 +198,14 @@ async def _geoip(db, _p: dict, ctx: Ctx) -> dict:
 
 async def _inv_auto_fill(db, _p: dict, _ctx: Ctx) -> dict:
     from ..inventory.autofill import info
-    from ..inventory.model import FIELD_RU
+    from ..inventory.model import AUTO_FILL_FIELDS, FIELD_RU
     from ..services.settings import SettingsService
 
     status = await info(db, SettingsService(None))
     fields = set(status["fields"])
     counts = status.get("by_field", {})
     rows = [{"field": FIELD_RU[key], "enabled": "Да" if key in fields else "Нет", "changed": counts.get(key, 0)}
-            for key in ("user_id", "dept_id", "location_id", "resp_id")]
+            for key in AUTO_FILL_FIELDS]
     conditions = [{"label": "Состояние", "text": "Выполняется" if status["running"] else "В очереди" if status["pending"] else
                    "Включено" if fields else "Выключено"}]
     if status.get("last_at"):

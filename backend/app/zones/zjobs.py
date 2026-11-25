@@ -262,6 +262,10 @@ class ZoneCache:
                 else:
                     job.requested_at = utcnow() + timedelta(seconds=delay)
                     job.progress = "ожидает повторного запуска"
+            if status == "done" and kind == "members":
+                from ..employee_protection.service import request_refresh
+
+                await request_refresh(db)
             await db.commit()
         await self.journal.emit("system", "zonecache_done" if status == "done" else "zonecache_" + status, level="info" if status == "done" else "warn",
                                 message=f"Расчёт зон ({KINDS.get(kind, kind)}): {'готово' if status == 'done' else status}" + (f" — {error}" if error else ""), duration_ms=int((time.monotonic() - t0) * 1000),

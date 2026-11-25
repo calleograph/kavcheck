@@ -17,7 +17,10 @@ const SETTINGS_TABS = [
   { id: "access", label: "Права доступа" }, { id: "numbers", label: "Нумерация" }, { id: "forms", label: "Печатные формы" }, { id: "labels", label: "Этикетки" },
   { id: "control", label: "Сроки и KSC" }, { id: "automation", label: "Автозаполнение" }, { id: "notify", label: "Уведомления" }, { id: "geoip", label: "Географические базы" },
 ] as const;
-const AUTO_FILL_FIELDS = { user_id: "Пользователь", dept_id: "Подразделение", location_id: "Местоположение", resp_id: "Ответственный" } as const;
+const AUTO_FILL_FIELDS = {
+  user_id: "Пользователь", dept_id: "Подразделение", branch_id: "Филиал",
+  location_id: "Местоположение", zone_id: "Зона ответственности", resp_id: "Ответственный",
+} as const;
 type AutoFillField = keyof typeof AUTO_FILL_FIELDS;
 type AutoFillStatus = {
   fields: AutoFillField[]; running: boolean; pending: boolean; last_at?: string; checked?: number; changed?: number; skipped?: number;
@@ -151,7 +154,7 @@ function AutoFill({ fields, onChange, savedVersion, saving }: {
   };
   return <section className="card stack">
     <div className="card-head"><h2>Автозаполнение карточек</h2></div>
-    <p className="small muted">Система заполняет выбранные пустые поля действующих карточек с подтверждённой связью с KSC. Основания берутся из подтверждённых рабочих мест и текущих правил принадлежности. Изменения видны в истории карточки.</p>
+    <p className="small muted">Система заполняет выбранные пустые поля действующих карточек с подтверждённой связью с KSC. Основания берутся из закреплённых рабочих мест и действующих правил принадлежности. Изменения видны в истории карточки.</p>
     <fieldset className="field"><legend>Поля для заполнения</legend><div className="row wrap">
       {(Object.keys(AUTO_FILL_FIELDS) as AutoFillField[]).map((field) => <label className="chip-check" key={field}>
         <input type="checkbox" checked={fields.includes(field)} disabled={saving} onChange={(e) =>

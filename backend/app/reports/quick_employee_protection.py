@@ -15,14 +15,15 @@ PEOPLE = [col("name", "Сотрудник"), col("login", "Доменная уч
           col("protected_devices", "Защищённые устройства", "num"), col("status", "Состояние защиты"),
           col("reason", "Основание"), col("freshness", "Актуальность"), col("last_seen", "Последнее подключение", "date")]
 DEVICES = [col("name", "Компьютер"), col("ip", "IP-адрес"), col("users", "Связанные сотрудники"), col("evidence", "Основания связи"),
-           col("kind", "Тип"), col("ownership", "Принадлежность"), col("zones_text", "Зоны ответственности"),
+           col("assigned_employee", "Закреплённый сотрудник"), col("assignment_basis", "Основание закрепления"),
+           col("kind", "Тип"), col("ownership", "Тип собственности"), col("ownership_basis", "Источник типа собственности"), col("zones_text", "Зоны ответственности"),
            col("os", "ОС"), col("os_version", "Версия ОС"), col("av_product", "Защитный продукт"), col("av_version", "Версия продукта"),
            col("installed", "Установка подтверждена"), col("status", "Состояние защиты"), col("reason", "Основание"),
            col("freshness", "Актуальность"), col("last_connected", "Последнее подключение", "date")]
 WORKPLACES = [col("employee", "Сотрудник"), col("login", "Учётная запись"), col("department", "Подразделение"),
               col("device", "Компьютер"), col("confidence", "Оценка связи"), col("evidence", "Основания"),
-              col("primary", "Основное рабочее место"),
-              col("observed_days", "Дни наблюдений", "num"), col("first_seen_at", "Первое наблюдение", "date"),
+              col("primary", "Основное рабочее место"), col("assignment_basis", "Закрепление сотрудника"),
+              col("observed_days", "Дни наблюдений", "num"), col("span_days", "Интервал наблюдений, дни", "num"), col("first_seen_at", "Первое наблюдение", "date"),
               col("last_seen_at", "Последнее наблюдение", "date"), col("decision", "Решение администратора"),
               col("decided_at", "Дата решения", "date"), col("proposals", "Предложения по учёту")]
 DIAGNOSTICS = [col("source_name", "Источник KSC"), col("polled_at", "Опрос пользователей (UTC)", "date"),
@@ -41,10 +42,14 @@ def _export(row, devices):
     if row["reason"] == "workplace_review":
         out["status"] = "Рабочее место требует проверки"
     if devices:
+        assignment = row.get("assignment") or {}
         out.update(users=", ".join(p["name"] for p in row["employees"]),
                    evidence=" / ".join(f"{p['name']}: {', '.join(p['evidence'])}" for p in row["employees"]),
+                   assigned_employee=assignment.get("employee_name", ""),
+                   assignment_basis=read.ASSIGNMENT.get(assignment.get("basis"), read.ASSIGNMENT["unassigned"]),
                    zones_text=", ".join(z["name"] for z in row["zones"]),
                    ownership=read.OWNERSHIP.get(row["ownership"], read.OWNERSHIP["unknown"]),
+                   ownership_basis=read.OWNERSHIP_BASIS.get(row.get("ownership_basis"), ""),
                    installed={True: "Да", False: "Нет", None: "Недостаточно данных"}[row["installed"]])
     return out
 
@@ -55,9 +60,11 @@ def _table(id, title, columns, rows):
 
 def _workplace_export(row):
     p, d = row["employee"], row["device"]
-    return {**{k: row.get(k) for k in ("observed_days", "first_seen_at", "last_seen_at", "decided_at")},
+    return {**{k: row.get(k) for k in ("observed_days", "span_days", "first_seen_at", "last_seen_at", "decided_at")},
             "employee": p["name"], "login": p.get("login"), "department": p.get("department"), "device": d["name"],
-            "confidence": read.CONFIDENCE[row["confidence"]], "decision": read.CONFIDENCE.get(row.get("decision"), ""),
+            "confidence": read.CONFIDENCE[row["confidence"]],
+            "decision": "Закреплён" if row.get("decision") == "assigned" else read.CONFIDENCE.get(row.get("decision"), ""),
+            "assignment_basis": read.ASSIGNMENT.get(row.get("assignment_basis"), ""),
             "primary": "Да" if row["primary"] else "",
             "evidence": " · ".join(row["evidence"]),
             "proposals": " · ".join(f"{f['label']} — {f['value']}" for f in row.get("proposals", {}).values())}
@@ -100,10 +107,10 @@ async def build_employee_protection(_client, p: dict, ctx: Ctx) -> dict:
                     await RES.breathe("отчёт защиты сотрудников")
     conditions = [{"label": "Срез аналитики", "text": meta["built_at"]}, {"label": "Список сотрудников по аудиту AD", "text": meta["census_at"]}]
     names = {"q": "Поиск", "organization": "Организация", "department": "Департамент", "division": "Подразделение",
-             "zone": "Зона", "kind": "Тип оборудования", "ownership": "Принадлежность", "os": "ОС", "status": "Состояние сотрудников",
+             "zone": "Зона", "kind": "Тип оборудования", "ownership": "Тип собственности", "assignment": "Закрепление сотрудника", "os": "ОС", "status": "Состояние сотрудников",
              "device_status": "Состояние устройств", "freshness": "Актуальность", "employee_id": "Сотрудник", "device_id": "Устройство", "metric": "Показатель",
              "confidence": "Оценка связи", "asset_id": "Карточка учёта"}
-    values = {"ownership": read.OWNERSHIP, "status": classify.EMPLOYEE_LABELS, "device_status": classify.DEVICE_LABELS,
+    values = {"ownership": read.OWNERSHIP, "assignment": read.ASSIGNMENT, "status": classify.EMPLOYEE_LABELS, "device_status": classify.DEVICE_LABELS,
               "freshness": read.FRESHNESS, "metric": METRICS, "confidence": read.CONFIDENCE}
     conditions += [{"label": label, "text": values.get(k, {}).get(p[k], "Не указано" if p[k] == read.EMPTY else str(p[k]))} for k, label in names.items() if p.get(k)]
     if workplaces:

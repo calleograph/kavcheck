@@ -1889,6 +1889,7 @@ class InvAsset(Base):
     uid: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True, default=uuid.uuid4)
     inv_no: Mapped[str] = mapped_column(String(60), nullable=False, unique=True)
     acc_no: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    ownership: Mapped[str | None] = mapped_column(String(10))
     serial: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     hostname: Mapped[str] = mapped_column(String(255), nullable=False, default="")

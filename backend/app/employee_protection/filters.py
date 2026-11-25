@@ -11,6 +11,7 @@ class Filters(BaseModel):
     zone: str = Field(default="", pattern=r"^(|none|[0-9a-fA-F-]{36})$")
     kind: str = Field(default="", max_length=300)
     ownership: Literal["", "corporate", "personal", "unknown"] = ""
+    assignment: Literal["", "unassigned", "manual", "inventory", "bi", "observed"] = ""
     os: str = Field(default="", max_length=500)
     status: Literal["", "protected", "partial", "problems", "no_av", "outside_ksc", "stale", "no_devices", "unknown"] = ""
     device_status: Literal["", "protected", "problems", "no_av", "outside_ksc", "stale", "unknown"] = ""

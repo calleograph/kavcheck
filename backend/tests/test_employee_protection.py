@@ -141,6 +141,9 @@ async def test_dashboard_and_reports_recheck_permissions(client, app):
     assert (await client.get(f"{URL}/summary")).status_code == 403
     assert (await client.get(f"{URL}/workplaces")).status_code == 403
     assert (await client.post(f"{URL}/refresh")).status_code == 403
+    assert (await client.post(f"{URL}/workplaces/decide", json={
+        "generation": str(uuid.uuid4()), "items": [{"employee_id": "employee", "device_id": "fixture", "decision": "assigned"}],
+    })).status_code == 403
     assert (await client.post("/api/v1/quick/preview", json={"kind": KIND, "params": {}})).status_code == 403
     async with app.state.session_maker() as db:
         user = await create_local(db, "security", "Security-Passw0rd-123", role="security", must_change=False)
@@ -158,6 +161,45 @@ async def test_dashboard_and_reports_recheck_permissions(client, app):
     assert (await client.get(f"{URL}/summary")).status_code == 403
     assert (await client.get(f"/api/v1/reports/{rid}")).status_code == 404
     assert (await client.get("/api/v1/reports")).json()["items"] == []
+
+
+async def test_manual_assignment_replaces_only_the_prior_assignment(client, app, monkeypatch):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sm, svc, journal = app.state.session_maker, app.state.settings_svc, app.state.journal
+    host = "fixture-host"
+
+    async def employees(_db, now):
+        return [{"id": key, "name": name} for key, name in (("first", "Первый"), ("second", "Второй"))], {
+            "ready": True, "census_at": now, "warnings": []}
+
+    async def devices(*_args, **_kwargs):
+        yield {"id": host, "name": "Общий компьютер", "ownership": "unknown"}, {
+            key: {"confidence": "possible", "evidence": ["Наблюдение"]} for key in ("first", "second")}
+
+    monkeypatch.setattr(sources, "employees", employees)
+    monkeypatch.setattr(sources, "devices", devices)
+    await client.post(f"{URL}/refresh")
+    await service.tick(sm, svc, journal)
+
+    def item(who):
+        return {"employee_id": who, "device_id": host, "decision": "assigned"}
+
+    generation = (await client.get(f"{URL}/workplaces")).json()["generation"]
+    invalid = await client.post(f"{URL}/workplaces/decide", json={"generation": generation, "items": [item("first"), item("second")]})
+    assert invalid.status_code == 422
+    assert (await client.post(f"{URL}/workplaces/decide", json={"generation": generation, "items": [item("first")]})).json() == {"changed": 1}
+    assert (await client.post(f"{URL}/workplaces/decide", json={"generation": generation, "items": [item("second")]})).json() == {"changed": 2}
+    await service.tick(sm, svc, journal)
+    assigned = (await client.get(f"{URL}/devices", params={"assignment": "manual"})).json()["items"][0]
+    assert {p["id"] for p in assigned["employees"]} == {"first", "second"}
+    assert assigned["assignment"] == {"employee_id": "second", "employee_name": "Второй", "basis": "manual", "observed_days": 0, "span_days": 0}
+    assert (await client.get(f"{URL}/devices", params={"assignment": "unassigned"})).json()["total"] == 0
+    report = await client.post("/api/v1/quick/preview", json={"kind": KIND, "params": {"view": "devices", "assignment": "manual"}})
+    assert report.json()["items"][0]["assigned_employee"] == "Второй"
+    async with sm() as db:
+        assert (await db.get(EmployeeWorkplaceDecision, ("first", host))).decision == "confirmed"
+        assert (await db.get(EmployeeWorkplaceDecision, ("second", host))).decision == "assigned"
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "employee_protection.workplace")) == 3
 
 
 async def test_workplace_report_groups_full_selection_only(client, app):

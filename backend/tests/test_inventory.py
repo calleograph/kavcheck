@@ -69,6 +69,44 @@ async def test_card_lifecycle_history_as_of_and_props(client, app):
     assert locs[s["region"]["id"]]["total"] == 1 and locs[s["room"]["id"]]["n"] == 1
 
 
+async def test_inventory_ownership_reaches_history_and_reports(client, app):
+    refs = await setup(client, app)
+    card = (await client.post(f"{API}/assets", json={"data": {"type_id": refs["t"]["laptop"]}})).json()
+    assert card["ownership"] is None
+    url = f"{API}/assets/{card['id']}"
+    invalid = await client.put(url, json={"data": {"ownership": []}, "version": card["version"]})
+    assert invalid.status_code == 422 and "ownership" in invalid.json()["detail"]["errors"]
+    changed = await client.put(url, json={"data": {"ownership": "personal"}, "version": card["version"]})
+    assert changed.status_code == 200 and changed.json()["ownership_ru"] == "Личное"
+    history = (await client.get(f"{url}/history")).json()["items"]
+    assert history[0]["state"]["ownership"] == "Личное"
+    assert history[0]["changes"][0] == {"f": "ownership", "label": "Тип собственности", "old": "По данным учёта и BI", "new": "Личное"}
+    report = await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": "card", "asset_id": card["id"]}})
+    assert report.status_code == 200
+    assert {"k": "Тип собственности", "v": "Личное"} in report.json()["items"]
+    assert (await client.get("/api/v1/admin/audit", params={"q": "inv.asset.update"})).json()["items"]
+    assert (await client.put(url, json={"data": {"ownership": None}, "version": card["version"]})).status_code == 409
+    await login(client, "viewer", "Viewer-Passw0rd-123")
+    assert (await client.put(url, json={"data": {"ownership": None}})).status_code == 403
+    await login(client, "admin", "Admin-Passw0rd-123")
+    reset = await client.put(url, json={"data": {"ownership": None}, "version": changed.json()["version"]})
+    assert reset.status_code == 200 and reset.json()["ownership"] is None
+
+
+def test_employee_device_ownership_uses_only_supported_evidence():
+    from app.employee_protection.sources import device_row
+
+    asset = InvAsset(id=1, cls="laptop", acc_no="FIXTURE-01", ownership="personal")
+    manual = device_row("inv:1", name="Тестовый ноутбук", asset=asset, personal=[False, True])
+    assert (manual["ownership"], manual["ownership_basis"], manual["ownership_asset_id"]) == ("personal", "inventory", 1)
+    asset.ownership = None
+    for evidence, owner, basis in (([True], "personal", "bi"), ([False, True], "unknown", "conflict"), ([], "corporate", "accounting")):
+        row = device_row("inv:1", name="Тестовый ноутбук", asset=asset, personal=evidence)
+        assert (row["ownership"], row["ownership_basis"]) == (owner, basis)
+    suggested = device_row("ksc:test:1", name="Тестовый компьютер", asset_id=1)
+    assert suggested["asset_id"] == 1 and suggested["ownership"] == "unknown" and suggested["ownership_asset_id"] is None
+
+
 async def test_permissions_and_location_scope(client, app):
     s = await setup(client, app)
     other = (await client.post(f"{API}/locations", json={"kind": "region", "name": "Северный регион"})).json()

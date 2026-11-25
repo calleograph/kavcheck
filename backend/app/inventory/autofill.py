@@ -11,7 +11,7 @@ from sqlalchemy import exists, or_, select
 from ..db import xact_lock
 from ..employee_protection import read, service
 from ..employee_protection.filters import Filters
-from ..models import AppSetting, InvAsset, InvDoc, InvDocItem, InvGeo, JobLease, KscSource, utcnow
+from ..models import AppSetting, InvAsset, InvDoc, InvDocItem, JobLease, KscSource, utcnow
 from ..services.audit import write_audit
 from ..services.jobs import JOBS
 from ..services.resources import RES
@@ -74,7 +74,7 @@ async def _workplaces(db, assets):
     if not generation or not built_at or not G.fresh(built_at, utcnow()):
         return {}
     ids = {a.id: (str(a.ksc_source_id), a.ksc_host_id) for a in assets}
-    selection = read.Selection(generation, Filters(confidence="confirmed"), workplaces=True, asset_ids=ids)
+    selection = read.Selection(generation, Filters(), workplaces=True, asset_ids=ids)
     out = {}
     for row in await read.workplace_rows(db, selection, 0, len(ids), include_network=False):
         d = row["device"]
@@ -106,24 +106,16 @@ async def fill(sm, svc, lease, fields, totals, by_field):
             if not assets:
                 return
             cursor = assets[-1].id
-            ids = [a.id for a in assets]
             now = utcnow()
             people = await _workplaces(db, assets) if allowed & {"user_id", "dept_id"} else {}
-            observations = {}
-            if allowed & {"dept_id", "location_id", "resp_id"}:
-                observations = {o.asset_id: o for o in await db.scalars(select(InvGeo).where(
-                    InvGeo.asset_id.in_(ids), InvGeo.observed_at >= now - G.FRESH, InvGeo.observed_at <= now))}
-            rules = await G.rules_for(db) if observations else []
+            placement = await G.placement_proposals(db, {a.id: a for a in assets}, now, allowed)
             names = await C.names_for(db, assets)
             for asset in assets:
                 batch_totals["checked"] += 1
                 data = dict(people.get(asset.id, {}))
                 if asset.st_cls != "use":
                     data.pop("user_id", None)
-                obs = observations.get(asset.id)
-                if rules and obs and (obs.source_id, obs.host_id) == (asset.ksc_source_id, asset.ksc_host_id):
-                    current = G.locate(obs.evidence, obs.source_id, asset.type_id, rules, lambda _ip: {})
-                    data.update(current["proposals"])
+                data.update({field: value for field, (value, _basis) in placement.get(asset.id, {}).items()})
                 patch = {k: v for k, v in data.items() if k in allowed and getattr(asset, k) is None}
                 if not patch:
                     continue
@@ -133,7 +125,7 @@ async def fill(sm, svc, lease, fields, totals, by_field):
                     batch_totals["invalid"] += 1
                     continue
                 if changes:
-                    await C.record(db, asset, C.kind_of(changes), changes, ACTOR, basis="Действующее правило или подтверждённое рабочее место", names=names)
+                    await C.record(db, asset, C.kind_of(changes), changes, ACTOR, basis="Действующее правило или закреплённое рабочее место", names=names)
                     write_audit(db, actor_user_id=None, actor=ACTOR, action="inv.auto_fill", target_type="inventory", target_id=str(asset.id),
                                 details={"fields": [c["f"] for c in changes]})
                     batch_totals["changed"] += 1

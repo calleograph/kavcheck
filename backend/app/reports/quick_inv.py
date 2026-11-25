@@ -33,7 +33,7 @@ TITLE = {"overview": "Обзор оборудования", "registry": "Рее�
          "infra_netscan": "Сетевое обнаружение", "geography": "Сетевые местоположения оборудования",
          "geography_card": "Сетевое местоположение оборудования", "geography_rules": "Правила принадлежности", "geography_preview": "Проверка правила принадлежности"}
 BASE_COLS = [col("inv_no", "Инв. номер"), col("name", "Наименование"), col("type", "Тип"), col("model", "Производитель и модель"), col("serial", "Серийный номер"), col("status", "Статус"),
-             col("location", "Местоположение"), col("user", "Пользователь"), col("resp", "Ответственный"), col("zone", "Зона ответственности"), col("tags", "Теги")]
+             col("location", "Местоположение"), col("user", "Пользователь"), col("resp", "Ответственный"), col("zone", "Зона ответственности"), col("tags", "Теги"), col("ownership", "Тип собственности")]
 MONEY = "num"
 
 
@@ -42,7 +42,7 @@ def _row(a: InvAsset, n: C.Names) -> dict:
     return {"inv_no": a.inv_no, "acc_no": a.acc_no, "name": r["label"].rsplit(" (", 1)[0], "type": r["type"] or r["cls_ru"], "cls": r["cls_ru"], "model": " ".join(x for x in (r["manufacturer"], r["model"]) if x),
             "serial": a.serial, "hostname": a.hostname, "status": r["status"], "st": r["st_ru"], "location": " · ".join(x for x in (r["location"], r["loc_detail"]) if x),
             "user": r["user"], "owner": r["owner"], "resp": r["resp"], "mol": r["mol"], "it": r["it"], "dept": r["dept"], "branch": r["branch"], "zone": r["zone"],
-            "tags": ", ".join(r["tags"]), "purchase_date": r["purchase_date"],
+            "tags": ", ".join(r["tags"]), "ownership": r["ownership_ru"], "purchase_date": r["purchase_date"],
             "commissioned_date": r["commissioned_date"], "warranty_until": r["warranty_until"], "cost": round(a.cost / 100, 2) if a.cost is not None else None, "supplier": r["supplier"],
             "purchase_doc": a.purchase_doc, "parent": r["parent"], "rel": r["rel_ru"], "ksc": f"{a.ksc_name} ({'подтверждено' if a.ksc_link == 'confirmed' else 'предполагается' if a.ksc_link == 'auto' else 'нет в KSC'})" if a.ksc_host_id else "",
             "note": (a.note or "")[:500], "updated_at": C._iso(a.updated_at), **{f"p.{k}": v for k, v in r["props_text"].items()}}
@@ -361,7 +361,7 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             n = await C.names_for(db, [a])
             r = C.asset_row(a, n)
             sub = r["label"]
-            kv = [("Инвентарный номер", a.inv_no), ("Бухгалтерский номер", a.acc_no), ("Наименование", r["name"]), ("Тип", r["type"]), ("Производитель", r["manufacturer"]), ("Модель", r["model"]),
+            kv = [("Инвентарный номер", a.inv_no), ("Бухгалтерский номер", a.acc_no), ("Тип собственности", r["ownership_ru"]), ("Наименование", r["name"]), ("Тип", r["type"]), ("Производитель", r["manufacturer"]), ("Модель", r["model"]),
                   ("Серийный номер", a.serial), ("Имя компьютера", a.hostname), ("Статус", r["status"]), ("Местоположение", r["location"]), ("Уточнение местоположения", a.loc_detail),
                   *[(M.ROLES_RU[k], r[k]) for k in ("user", "owner", "resp", "mol", "it")], ("Подразделение", r["dept"]), ("Филиал", r["branch"]), ("Дата приобретения", r["purchase_date"]),
                   ("Дата поступления", r["received_date"]), ("Ввод в эксплуатацию", r["commissioned_date"]), ("Гарантия до", r["warranty_until"]), ("Стоимость, ₽", r["cost_text"]),
@@ -392,7 +392,7 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             d_to = _date(p.get("date_to")) or today
             w = [InvHistory.at >= datetime(d_from.year, d_from.month, d_from.day, tzinfo=timezone.utc), InvHistory.at < datetime(d_to.year, d_to.month, d_to.day, tzinfo=timezone.utc) + timedelta(days=1)]
             w += await _asset_where(db, p, acc, cfg)
-            fields = set(M.PEOPLE_FIELDS) if view == "owner_history" else {"location_id", "loc_detail"}
+            fields = {*M.PEOPLE_FIELDS, "ownership"} if view == "owner_history" else {"location_id", "loc_detail"}
             hq = select(InvHistory, InvAsset.inv_no, InvAsset.name, InvAsset.serial).join(InvAsset, InvAsset.id == InvHistory.asset_id).where(*w).order_by(InvHistory.at.desc()).limit(ctx.max_rows * 2)
             data = []
             for h, no, nm, sn in (await db.execute(hq)).all():
@@ -403,7 +403,7 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
                 for h, no, nm, sn in (await db.execute(hq.where(InvHistory.kind == "doc", InvHistory.title.like("%отправлено%")))).all():
                     data.append({"at": C._iso(h.at), "inv_no": no, "name": nm, "serial": sn, "what": "Отправлено", "old": "", "new": h.title, "event": h.title, "by": h.by, "basis": h.basis})
                 data.sort(key=lambda r: r["at"], reverse=True)
-            cols = [col("at", "Когда (UTC)", "date"), col("inv_no", "Инв. номер"), col("name", "Наименование"), col("serial", "Серийный номер"), col("what", "Что" if view == "moves" else "Роль"),
+            cols = [col("at", "Когда (UTC)", "date"), col("inv_no", "Инв. номер"), col("name", "Наименование"), col("serial", "Серийный номер"), col("what", "Поле"),
                     col("old", "Было"), col("new", "Стало"), col("event", "Событие"), col("by", "Кто"), col("basis", "Основание")]
             tables.append({"id": "rows", "title": TITLE[view], "columns": cols, "rows": data[:ctx.max_rows]})
             sub = f"{d_from:%d.%m.%Y} — {d_to:%d.%m.%Y}"

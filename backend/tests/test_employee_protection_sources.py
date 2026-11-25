@@ -9,9 +9,10 @@ from app.bi.match import RULE
 from app.devices import users as ksc_users
 from app.employee_protection import service
 from app.employee_protection.sources import BI_ASSIGNMENT, INVENTORY_OWNER, INVENTORY_USER, devices, employees
-from app.employee_protection.workplace import CURRENT_SESSION, EXACT_ACCOUNT, HISTORY, REGULAR, SERVER, SESSION, SHARED, SHORT_ACCOUNT, UNVERIFIED_ACCOUNT
+from app.employee_protection.workplace import (CURRENT_SESSION, EXACT_ACCOUNT, HISTORY, OBSERVED_ASSIGNMENT, REGULAR, SERVER,
+                                               SESSION, SHARED, SHORT_ACCOUNT, UNVERIFIED_ACCOUNT)
 from app.models import (AdAuditAccount, AdAuditRun, BiDevice, BiMatch, BiOwner, BiPerson, BiSource, DevicesState, DeviceSession, DeviceUser, HierSnapshot,
-                        InvAsset, InvPerson, KscSource, LdapConnection, ZcHost, ZcHostZone, ZcSource, Zone, utcnow)
+                        EmployeeWorkplaceDecision, InvAsset, InvPerson, KscSource, LdapConnection, ZcHost, ZcHostZone, ZcSource, Zone, utcnow)
 from tests.conftest import login
 from tests.test_devices import FakeUsers, vrow
 
@@ -111,7 +112,84 @@ async def test_verified_session_counts_immediately_only_on_fresh_single_workstat
 
 
 @pytest.mark.asyncio
-async def test_duplicate_directory_mailbox_cannot_fill_inventory_assignee(client, app):
+async def test_assignment_uses_a_recent_span_of_over_three_weeks_and_preserves_explicit_choices(client, app):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sm = app.state.session_maker
+    now = utcnow() - timedelta(minutes=1)
+    async with sm() as db:
+        run = AdAuditRun(id=uuid4(), started_at=now, finished_at=now, status="ok")
+        source = KscSource(id=uuid4(), name="Example KSC", host="ksc.example.local", database="test", username="test")
+        degraded = KscSource(id=uuid4(), name="Example delayed KSC", host="waiting.example.local", database="test", username="test")
+        user = InvPerson(name="Bravo", login="bravo@example.local")
+        bi = BiSource(id=uuid4(), name="Example BI")
+        db.add_all([run, source, degraded, user, bi])
+        await db.flush()
+        sid = source.id
+        db.add_all([account(run.id, "alpha"), account(run.id, "bravo"),
+                    DevicesState(source_id=sid, polled_at=now),
+                    DevicesState(source_id=degraded.id, polled_at=now, error="No successful latest poll"),
+                    InvAsset(inv_no="EXAMPLE-ASSIGNMENT", cls="workstation", st_cls="use", user_id=user.id,
+                             ksc_source_id=sid, ksc_host_id=7, ksc_link="confirmed")])
+        for ksc, host_ids in ((source, [*range(1, 10), 11, 12]), (degraded, [10])):
+            db.add(ZcSource(source_id=ksc.id, gen=1, built_at=now))
+            for hid in host_ids:
+                os = "Windows Server 2025" if hid == 5 else "Microsoft Windows 11"
+                db.add(ZcHost(source_id=ksc.id, gen=1, host_id=hid, name=f"WS-{hid}", os=os,
+                              data={"os": os, "last_connected": now.isoformat(), "mask": 32}))
+
+        def observe(hid, dates, *, login="alpha", ksc=source, current=False, resolved=True):
+            stamps = [now - timedelta(days=offset) for offset in dates]
+            db.add(DeviceUser(source_id=ksc.id, host_id=hid, user_key=login, login=login if resolved else "",
+                              domain="example.local" if resolved else "", identity_verified=resolved, resolved=resolved,
+                              session_now=current, last_seen_at=stamps[-1], last_session_at=stamps[-1],
+                              verified_observations={"stamps": [stamp.isoformat() for stamp in stamps]} if resolved else None))
+
+        stable = 25, 18, 7, 1
+        observe(1, stable)
+        observe(1, [7], login="bravo")               # Один прошлый визит не делает станцию общей.
+        observe(2, [22, 15, 8, 1])                    # Ровно три недели.
+        observe(3, stable)
+        observe(3, stable, login="bravo")
+        observe(4, [28, 17, 8, 4])                    # Длительная, но устаревшая связь.
+        for hid in range(5, 9):
+            observe(hid, stable)
+        observe(6, [0], login="unresolved", current=True, resolved=False)
+        observe(8, stable, login="bravo")
+        observe(9, [25, 0], current=True)             # Недостаточно отдельных дат.
+        observe(10, stable, ksc=degraded)
+        observe(11, stable)
+        observe(12, stable)
+        bi_pc = BiDevice(source_id=bi.id, dkey="ws-11", name="WS-11", first_seen_at=now, last_seen_at=now)
+        bi_user = BiPerson(source_id=bi.id, pkey="bravo", email="bravo@example.local", first_seen_at=now, last_seen_at=now)
+        db.add_all([bi_pc, bi_user])
+        await db.flush()
+        db.add_all([BiOwner(source_id=bi.id, device_id=bi_pc.id, person_id=bi_user.id, first_seen_at=now, last_seen_at=now),
+                    BiMatch(bi_source_id=bi.id, device_id=bi_pc.id, ksc_source_id=sid, host_id=11, level="confirmed", decided_by="manual")])
+        key = f"ksc:{sid}:8"
+        db.add_all([EmployeeWorkplaceDecision(person_id="bravo", device_id=key, decision="assigned", decided_at=now),
+                    EmployeeWorkplaceDecision(person_id="alpha", device_id=key, decision="confirmed", decided_at=now),
+                    EmployeeWorkplaceDecision(person_id="alpha", device_id=f"ksc:{sid}:12", decision="rejected", decided_at=now)])
+        await db.commit()
+
+    await service.tick(sm, app.state.settings_svc, app.state.journal)
+    url = "/api/v1/employee-protection"
+    pairs = {(r["device"]["host_id"], r["employee"]["id"]): r for r in (await client.get(f"{url}/workplaces")).json()["items"]}
+    assigned = {pair: row["assignment_basis"] for pair, row in pairs.items() if row.get("assignment_basis")}
+    assert assigned == {(1, "alpha"): "observed", (7, "bravo"): "inventory", (8, "bravo"): "manual", (11, "bravo"): "bi"}
+    row = pairs[1, "alpha"]
+    assert row["device"]["assignment"] == {"employee_id": "alpha", "employee_name": "ALPHA", "basis": "observed",
+                                           "observed_days": 4, "span_days": 24}
+    assert OBSERVED_ASSIGNMENT in row["evidence"] and row["counted"] and row["primary"] and row["employee"]["login_verified"]
+    assert row["last_verified_at"] == (now - timedelta(days=1)).isoformat()
+    assert pairs[2, "alpha"]["span_days"] == 21 and pairs[2, "alpha"]["device"]["assignment"] is None
+    assert pairs[5, "alpha"]["counted"] is False and pairs[9, "alpha"]["counted"] is True
+    manual = pairs[8, "bravo"]
+    assert manual["decision"] == "assigned" and manual["confidence"] == "confirmed" and manual["primary"]
+    assert pairs[8, "alpha"]["counted"] and manual["device"]["shared_reason"] == SHARED
+
+
+@pytest.mark.asyncio
+async def test_duplicate_directory_mailbox_requires_an_exact_login_to_fill_inventory_assignee(client, app):
     await login(client, "admin", "Admin-Passw0rd-123")
     sm = app.state.session_maker
     observed_at = utcnow() - timedelta(minutes=1)
@@ -126,7 +204,7 @@ async def test_duplicate_directory_mailbox_cannot_fill_inventory_assignee(client
         asset = InvAsset(inv_no="MAILBOX-EXAMPLE", cls="workstation", st_cls="use", owner_id=known_owner.id)
         db.add(asset)
         await db.flush()
-        aid, other_id = asset.id, other.id
+        aid, owner_id, other_id = asset.id, known_owner.id, other.id
         await db.commit()
 
     await service.tick(sm, app.state.settings_svc, app.state.journal)
@@ -134,7 +212,8 @@ async def test_duplicate_directory_mailbox_cannot_fill_inventory_assignee(client
     result = (await client.get(url, params={"asset_id": aid})).json()
     row, = result["items"]
     assert row["employee"]["email"] == mail and row["employee"]["email_verified"] is False
-    assert "user_id" not in row["proposals"]
+    assert row["employee"]["login_verified"]
+    assert row["proposals"]["user_id"]["id"] == owner_id
     payload = {"generation": result["generation"], "items": [
         {"pair": row["id"], "version": row["asset_version"], "values": {"user_id": other_id}}]}
     assert (await client.post(f"{url}/apply", json=payload)).status_code == 409

@@ -3,16 +3,16 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, get_db, require_admin, require_user
 from ..db import xact_lock
-from ..inventory.model import COMPUTERS, ST_ACTIVE
+from ..inventory.model import AutoFillField, COMPUTERS, ST_ACTIVE
 from ..inventory import core as inventory, geography as geo
 from ..models import (EmployeeProtectionDevice as D, EmployeeProtectionPerson as P, EmployeeWorkplaceDecision,
-                      InvAsset, InvGeo, KscSource, ZcHost, ZcSource, utcnow)
+                      InvAsset, KscSource, ZcHost, ZcSource, utcnow)
 from ..search import any_of, column_like
 from ..services.settings import InventorySettings
 from ..employee_protection import read, service
@@ -141,7 +141,7 @@ async def workplace_targets(q: Annotated[str, Query(max_length=200)] = "", limit
 class Decision(BaseModel):
     employee_id: str = Field(min_length=1, max_length=120)
     device_id: str = Field(min_length=1, max_length=120)
-    decision: Literal["confirmed", "rejected", "reset"]
+    decision: Literal["assigned", "confirmed", "rejected", "reset"]
 
 
 class Decisions(BaseModel):
@@ -183,6 +183,10 @@ async def decide(body: Decisions, su: SessionUser = Depends(require_admin), db: 
     keys = [(item.employee_id, item.device_id) for item in body.items]
     if len(keys) != len(set(keys)):
         raise HTTPException(422, "Для каждой пары сотрудника и компьютера допустимо одно решение.")
+    selected = [item for item in body.items if item.decision == "assigned"]
+    assignments = {item.device_id: item.employee_id for item in selected}
+    if len(assignments) != len(selected):
+        raise HTTPException(422, "За компьютером можно закрепить одного сотрудника.")
     people = {pid for pid, _ in keys}
     known = set(await db.scalars(select(P.id).where(P.generation == generation, P.id.in_(people))))
     if known != people or not await _valid_targets(db, generation, {did for _, did in keys}):
@@ -192,8 +196,10 @@ async def decide(body: Decisions, su: SessionUser = Depends(require_admin), db: 
         raise HTTPException(409, "Связь учётной карточки с KSC обновилась. Обновите список.")
     old_ids = {canonical: previous for previous, canonical in aliases.items()}
     equivalent = [(pid, old_ids.get(did, did)) for pid, did in keys]
+    assignment_ids = list(assignments) + [old_ids[did] for did in assignments if did in old_ids]
     existing = {(row.person_id, row.device_id): row for row in await db.scalars(select(EmployeeWorkplaceDecision).where(
-        tuple_(EmployeeWorkplaceDecision.person_id, EmployeeWorkplaceDecision.device_id).in_([*keys, *equivalent])))}
+        or_(tuple_(EmployeeWorkplaceDecision.person_id, EmployeeWorkplaceDecision.device_id).in_([*keys, *equivalent]),
+            and_(EmployeeWorkplaceDecision.device_id.in_(assignment_ids), EmployeeWorkplaceDecision.decision == "assigned"))))}
     changed = 0
     for item in body.items:
         row = existing.get((item.employee_id, item.device_id))
@@ -216,6 +222,15 @@ async def decide(body: Decisions, su: SessionUser = Depends(require_admin), db: 
                     target_type="employee_protection", target_id=item.device_id,
                     details={"employee_id": item.employee_id, "before": before, "after": after, "comment": body.comment.strip()})
         changed += 1
+    requested = set(keys)
+    for (pid, did), row in existing.items():
+        device = aliases.get(did, did)
+        if device in assignments and assignments[device] != pid and (pid, device) not in requested and row.decision == "assigned":
+            row.decision, row.decided_at = "confirmed", utcnow()
+            write_audit(db, actor_user_id=su.user_id, actor=su.display_name, action="employee_protection.workplace",
+                        target_type="employee_protection", target_id=device,
+                        details={"employee_id": pid, "before": "assigned", "after": "confirmed", "comment": "Сменено закрепление"})
+            changed += 1
     if changed:
         await service.request_refresh(db)
         await db.commit()
@@ -225,7 +240,14 @@ async def decide(body: Decisions, su: SessionUser = Depends(require_admin), db: 
 class Proposal(BaseModel):
     pair: str = Field(pattern=r"^[^|]{1,120}\|[^|]{1,120}$")
     version: int = Field(ge=1)
-    values: dict[Literal["user_id", "dept_id", "location_id", "resp_id"], Annotated[int, Field(gt=0, le=2**63-1)]] = Field(min_length=1)
+    values: dict[AutoFillField, Annotated[int, Field(gt=0, le=2**63-1)] | UUID] = Field(min_length=1)
+
+    @field_validator("values")
+    @classmethod
+    def match_types(cls, values):
+        if any((key == "zone_id") != isinstance(value, UUID) for key, value in values.items()):
+            raise ValueError("Неверный идентификатор поля карточки")
+        return values
 
 
 class Proposals(BaseModel):
@@ -242,14 +264,13 @@ async def apply_proposals(body: Proposals, su: SessionUser = Depends(require_adm
         raise HTTPException(409, "Срез рабочих мест меняется. Дождитесь пересчёта и обновите список.")
     items = {item.pair: item for item in body.items}
     selection = read.Selection(generation, Filters(inventory=True), workplaces=True, pairs=items)
-    rows = await read.workplace_rows(db, selection, 0, len(items))
+    rows = await read.workplace_rows(db, selection, 0, len(items), include_network=False)
     ids = {row["device"]["asset_id"] for row in rows}
     if len(rows) != len(body.items) or len(ids) != len(rows):
         raise HTTPException(422, "Выберите по одной связи на каждую действующую карточку.")
     assets = {a.id: a for a in await db.scalars(_assets().where(InvAsset.id.in_(ids)).order_by(InvAsset.id)
               .with_for_update().execution_options(populate_existing=True))}
-    rules = None
-    now = utcnow()
+    placement = await geo.placement_proposals(db, assets, utcnow(), {key for item in items.values() for key in item.values})
     acc = await access_for(db, su, InventorySettings())
     for row in rows:
         item = items[row["id"]]
@@ -257,21 +278,13 @@ async def apply_proposals(body: Proposals, su: SessionUser = Depends(require_adm
         changed = "Карточка или предложение изменились. Обновите список."
         if not asset or asset.version != item.version:
             raise HTTPException(409, changed)
-        fields = row.get("proposals", {})
-        if any(getattr(asset, k) is not None or fields.get(k, {}).get("id") != v for k, v in item.values.items()):
+        fields = {k: v["id"] for k, v in row.get("proposals", {}).items()}
+        fields.update({key: value for key, (value, _basis) in placement.get(asset.id, {}).items()})
+        values = item.model_dump(mode="json")["values"]
+        if any(getattr(asset, k) is not None or fields.get(k) != v for k, v in values.items()):
             raise HTTPException(409, changed)
-        network = {k: v for k, v in item.values.items() if fields[k]["basis"] == "geo"}
-        if network:
-            obs = await db.get(InvGeo, asset.id)
-            if not obs or not geo.fresh(obs.observed_at, now):
-                raise HTTPException(409, changed)
-            if rules is None:
-                rules = await geo.rules_for(db)
-            fresh = geo.locate(obs.evidence, obs.source_id, asset.type_id, rules, lambda _ip: {})["proposals"]
-            if any(fresh.get(k) != v for k, v in network.items()):
-                raise HTTPException(409, changed)
         try:
-            changes = await inventory.apply_changes(db, asset, item.values, acc, infer_manufacturer=False)
+            changes = await inventory.apply_changes(db, asset, values, acc, infer_manufacturer=False)
         except inventory.Invalid as exc:
             raise HTTPException(409, changed) from exc
         await inventory.record(db, asset, inventory.kind_of(changes), changes, su.display_name, basis="Предложения по рабочему месту")

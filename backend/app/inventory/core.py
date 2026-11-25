@@ -296,7 +296,8 @@ def state_of(a: InvAsset, n: Names) -> dict:
     """Учётное состояние после события: для ленты истории и просмотра на дату (имена сохраняются — переименование справочника историю не меняет)."""
     return {"status": n.ref(a.status_id), "st_cls": a.st_cls, "location_id": a.location_id, "location": n.loc(a.location_id), "loc_detail": a.loc_detail,
             **{f[:-3]: n.person(getattr(a, f)) for f in M.PEOPLE_FIELDS}, "dept": n.ref(a.dept_id), "branch": n.ref(a.branch_id), "hostname": a.hostname, "name": a.name, "serial": a.serial,
-            "zone_id": str(a.zone_id) if a.zone_id else None, "zone": n.zone(a.zone_id), "tags": a.tags or []}
+            "zone_id": str(a.zone_id) if a.zone_id else None, "zone": n.zone(a.zone_id), "tags": a.tags or [],
+            "ownership": M.OWNERSHIP_RU.get(a.ownership, M.OWNERSHIP_AUTO)}
 
 
 def search_text(a: InvAsset, n: Names) -> str:
@@ -313,6 +314,7 @@ def asset_row(a: InvAsset, n: Names) -> dict:
     """Строка списка и основа карточки."""
     pdefs = {p.code: p for p in n.props}
     return {"id": a.id, "uid": str(a.uid), "inv_no": a.inv_no, "acc_no": a.acc_no, "serial": a.serial, "name": a.name, "hostname": a.hostname, "label": label(a, n),
+            "ownership": a.ownership, "ownership_ru": M.OWNERSHIP_RU.get(a.ownership, M.OWNERSHIP_AUTO),
             "type_id": a.type_id, "type": n.ref(a.type_id), "cls": a.cls, "cls_ru": M.CLS_RU.get(a.cls, a.cls), "model_id": a.model_id, "model": n.ref(a.model_id),
             "manufacturer_id": a.manufacturer_id, "manufacturer": n.ref(a.manufacturer_id), "status_id": a.status_id, "status": n.ref(a.status_id), "st_cls": a.st_cls,
             "st_ru": M.ST_RU.get(a.st_cls, ""), "location_id": a.location_id, "location": n.loc(a.location_id), "loc_detail": a.loc_detail,
@@ -411,6 +413,12 @@ async def _apply(db: AsyncSession, a: InvAsset, data: dict, acc: Access, creatin
                 errors[f] = f"{M.FIELD_RU[f]}: число от 1 до 60"
                 continue
             put(f, v, str(getattr(a, f) or ""), str(v or ""))
+    if "ownership" in data:
+        v = data["ownership"]
+        if v is not None and (not isinstance(v, str) or v not in M.OWNERSHIP_RU):
+            errors["ownership"] = "Выберите тип собственности"
+        else:
+            put("ownership", v, M.OWNERSHIP_RU.get(a.ownership, M.OWNERSHIP_AUTO), M.OWNERSHIP_RU.get(v, M.OWNERSHIP_AUTO))
     if "no_count" in data:
         v = bool(data["no_count"])
         put("no_count", v, "да" if a.no_count else "нет", "да" if v else "нет")

@@ -8,22 +8,22 @@ import { HostsDrawer, type DrawerHost } from "../components/HostsDrawer";
 import { ListFoot, VirtualRows, useInfinite, useKept, usePanel, type Chunk } from "../components/Infinite";
 import { QuickReportPanel } from "../components/QuickReport";
 import { BackLink, Empty, PageHead, SkelRows, Spectrum, Tabs } from "../components/ui";
-import { WorkplaceReview } from "../components/WorkplaceReview";
-import { fmt, fmtDate, num, plural } from "../util";
+import { ASSIGNMENT_BASIS, WorkplaceReview } from "../components/WorkplaceReview";
+import { fmt, fmtDate, num } from "../util";
 
 const PATH = "/employee-protection";
 const TITLE = "Антивирусная защита сотрудников";
 const DIAGNOSTICS = `${PATH}?view=diagnostics`;
 const FILTER_FIELDS = {
   organization: "Организация", department: "Департамент", division: "Подразделение (OU)", zone: "Зона ответственности",
-  kind: "Тип оборудования", ownership: "Принадлежность", os: "Операционная система",
+  kind: "Тип оборудования", ownership: "Тип собственности", assignment: "Закрепление за сотрудником", os: "Операционная система",
   status: "Состояние сотрудника", device_status: "Состояние устройства", freshness: "Актуальность устройства",
 } as const;
 type Field = keyof typeof FILTER_FIELDS;
 type View = "employees" | "devices";
 type Metric = "employees" | "uses_av" | "protected" | "partial" | "no_av" | "insufficient" | "devices" | "corporate" | "personal";
 type Filters = Partial<Record<Field | "q" | "metric" | "employee_id" | "device_id", string>>;
-const OPTIONAL: Field[] = ["organization", "division", "zone", "kind", "ownership", "os", "device_status", "freshness"];
+const OPTIONAL: Field[] = ["organization", "division", "zone", "kind", "ownership", "assignment", "os", "device_status", "freshness"];
 const FILTER_KEYS = [...Object.keys(FILTER_FIELDS), "metric", "employee_id", "device_id"] as (keyof Filters)[];
 const METRICS: Record<Metric, string> = {
   employees: "Действующие сотрудники", uses_av: "Есть антивирус Kaspersky", protected: "Полностью защищены",
@@ -35,7 +35,11 @@ const METRIC_GROUPS: { title: string; metrics: Metric[] }[] = [
   { title: "Требуется внимание", metrics: ["partial", "no_av", "insufficient"] },
   { title: "Оборудование", metrics: ["devices", "corporate", "personal"] },
 ];
-const OWNERSHIP: Record<string, string> = { corporate: "Корпоративное", personal: "Личное", unknown: "Не установлено" };
+const OWNERSHIP: Record<string, string> = { corporate: "Корпоративная", personal: "Личная", unknown: "Не установлена" };
+const OWNERSHIP_BASIS: Record<string, string> = {
+  inventory: "Карточка учёта", bi: "Выгрузка BI", accounting: "Бухгалтерский номер", conflict: "Противоречивые данные BI",
+};
+type Assignment = { employee_id: string; employee_name: string; basis: keyof typeof ASSIGNMENT_BASIS; observed_days: number; span_days: number };
 const TONE: Record<string, string> = { protected: "ok", partial: "warn", problems: "warn", no_av: "err", stale: "warn" };
 const percent = (n: number, all: number) => all > 0 ? Math.round(n / all * 1000) / 10 : 0;
 
@@ -60,6 +64,7 @@ interface Employee {
 interface Device {
   id: string; source_id: string | null; host_id: number | null; asset_id: number | null; name: string; ip: string;
   os: string; os_version: string; kind: string; ownership: string; zones: { id: string; name: string }[];
+  assignment?: Assignment | null; ownership_basis?: string; ownership_asset_id?: number | null; shared_reason?: string;
   av_product: string; av_version: string; last_connected: string | null; status: string; reason: string;
   installed: boolean | null; freshness: string; employees: { id: string; name: string; login: string; evidence: string[] }[]; shared_count: number;
 }
@@ -78,6 +83,31 @@ const DIAGNOSTIC_LABELS: Record<string, string> = {
 function deviceHref(d: Device) {
   if (d.asset_id != null) return `/inventory/assets/${d.asset_id}`;
   return d.source_id && d.host_id != null ? `/devices?card=${d.source_id}:${d.host_id}` : null;
+}
+
+function workplaceHref(id: string) {
+  return `${PATH}${qs({ view: "workplaces", device_id: id })}`;
+}
+
+function DeviceAssignment({ device: d, canAssign, onEmployee }: { device: Device; canAssign: boolean; onEmployee: (id: string) => void }) {
+  const assignment = d.assignment;
+  const ownership = `Собственность · ${OWNERSHIP[d.ownership] ?? OWNERSHIP.unknown}`;
+  const title = OWNERSHIP_BASIS[d.ownership_basis ?? ""];
+  const card = d.ownership_asset_id ? `/inventory/assets/${d.ownership_asset_id}` : null;
+  const zoneSettings = card ? `${card}?tab=place` : "/admin?tab=zones";
+  return <>
+    {assignment ? <>
+      <button type="button" className="link-btn" onClick={() => onEmployee(assignment.employee_id)}>{assignment.employee_name}</button>
+      <span className="sub">{ASSIGNMENT_BASIS[assignment.basis]}{assignment.basis === "observed" && ` · ${num(assignment.span_days)} сут.`}</span>
+    </> : <span>{d.shared_reason ? "Общее устройство" : "Сотрудник не закреплён"}</span>}
+    <span className="sub" title={title}>{card ? <Link to={card}>{ownership}</Link> : ownership}</span>
+    <span className="sub">{d.zones.length ? <CompactList items={d.zones} label="зоны ответственности"
+      render={(z) => <Link to={`/zones/${encodeURIComponent(z.id)}`}>{z.name}</Link>} /> : canAssign ?
+        <Link to={zoneSettings} title={card ? "Указать зону в карточке учёта" : "Настроить правила зон"}>Без зоны ответственности</Link> : "Без зоны ответственности"}</span>
+    <Link className="sub link-btn" to={workplaceHref(d.id)}>
+      {canAssign ? assignment ? "Изменить закрепление" : "Закрепить за сотрудником" : "Рабочие места"}
+    </Link>
+  </>;
 }
 
 function Status({ status, reason, labels, scope }: { status: string; reason: string; labels: Labels; scope: "employee_status" | "device_status" }) {
@@ -135,7 +165,9 @@ function EmployeeTable({ filters, userId, revision, labels, onDevices }: { filte
   </>;
 }
 
-function DeviceTable({ filters, userId, revision, labels, onEmployee }: { filters: Filters; userId: string; revision: string; labels: Labels; onEmployee: (id: string) => void }) {
+function DeviceTable({ filters, userId, revision, labels, canAssign, onEmployee }: {
+  filters: Filters; userId: string; revision: string; labels: Labels; canAssign: boolean; onEmployee: (id: string) => void;
+}) {
   const list = useInfinite<Device>(`employee-protection-devices:${userId}`, [filters, revision], (offset, limit) =>
     req<Chunk<Device>>("GET", `${PATH}/devices${qs({ ...filters, offset, limit })}`), 50);
   return <>
@@ -150,9 +182,8 @@ function DeviceTable({ filters, userId, revision, labels, onEmployee }: { filter
           <td><CompactList items={d.employees} sep="" label="сотрудники" render={(e) => <span className="ep-user">
             <button type="button" className="link-btn" onClick={() => onEmployee(e.id)}>{e.name || e.login}</button>
             <span className="sub">{e.evidence.join(" · ")}</span></span>} />
-            {d.shared_count > 1 && <span className="sub">Общее устройство · {num(d.shared_count)} {plural(d.shared_count, "сотрудник", "сотрудника", "сотрудников")}</span>}
-            <Link className="sub link-btn" to={`${PATH}${qs({ view: "workplaces", device_id: d.id })}`}>Рабочие места</Link></td>
-          <td>{OWNERSHIP[d.ownership] ?? "Не установлено"}<span className="sub"><CompactList items={d.zones.map((z) => z.name)} label="зоны ответственности" /></span></td>
+            {d.shared_count > 1 && <span className="sub">Связей с сотрудниками · {num(d.shared_count)}</span>}</td>
+          <td><DeviceAssignment device={d} canAssign={canAssign} onEmployee={onEmployee} /></td>
           <td>{d.os || "—"}{d.os_version && d.os_version !== d.os && <span className="sub">{d.os_version}</span>}</td>
           <td>{d.av_product || "—"}<span className="sub mono">{d.av_version}</span></td>
           <td><Status status={d.status} reason={d.reason} labels={labels} scope="device_status" /></td>
@@ -344,7 +375,8 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
           { id: "devices", label: "Устройства сотрудников", count: data.totals.devices }]}
           onChange={(v) => update({ view: v })} />
         {view === "employees" ? <EmployeeTable filters={filters} userId={userId} revision={revision} labels={data.labels} onDevices={setDrawer} /> :
-          <DeviceTable filters={filters} userId={userId} revision={revision} labels={data.labels} onEmployee={(employee_id) => update({ employee_id, view: "employees" }, true)} />}
+          <DeviceTable filters={filters} userId={userId} revision={revision} labels={data.labels} canAssign={canRefresh}
+            onEmployee={(employee_id) => update({ employee_id, view: "employees" }, true)} />}
       </div>
     </> : loading ? <SkelRows /> : !error && <Empty icon="users" title={data?.running ? "Идёт фоновый расчёт" : "Нет готового расчёта"}
       action={<Link to={DIAGNOSTICS} className="btn mini">Проверить источники</Link>}>Для расчёта нужны актуальный список сотрудников и наблюдения KSC.</Empty>}
@@ -357,7 +389,10 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
         const items: DrawerHost[] = page.items.map((d) => ({ host_id: d.host_id ?? 0, href: deviceHref(d), name: d.name, ip: d.ip, os: d.os,
           group: "", zones: d.zones.map((z) => z.name), last_connected: d.last_connected, source_id: d.source_id ?? undefined,
           source: ctx.sources.find((s) => s.id === d.source_id)?.name, app_name: d.av_product, app_version: d.av_version,
-          note: <span className="sub">{data.labels.device_status[d.status] || "Состояние неизвестно"}</span>, id: d.id }));
+          note: <>
+            <span className="sub">{data.labels.device_status[d.status] || "Состояние неизвестно"}</span>
+            <Link className="sub link-btn" to={workplaceHref(d.id)}>{d.assignment?.employee_name ?? "Рабочие места"}</Link>
+          </>, id: d.id }));
         return { ...page, items };
       }} />}
     {report && <QuickReportPanel kind="quick_employee_protection"
@@ -436,7 +471,7 @@ export default function EmployeeProtectionPage({ ctx }: { ctx: Ctx }) {
   }, [retry]);
   if (access?.allowed && params.get("view") === "diagnostics") return <Diagnostics ctx={ctx} />;
   if (access?.allowed && params.get("view") === "workplaces") return <section className="ep">
-    <PageHead title="Рабочие места сотрудников" back={<BackLink to={PATH} label={TITLE} />}>
+    <PageHead title="Рабочие места сотрудников" back={<BackLink to={params.has("device_id") ? `${PATH}?view=devices` : PATH} label={TITLE} />}>
       <Link to={DIAGNOSTICS} className="btn">Диагностика источников</Link>
     </PageHead>
     <WorkplaceReview employeeId={params.get("employee_id") ?? undefined} deviceId={params.get("device_id") ?? undefined} />

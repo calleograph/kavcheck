@@ -11,11 +11,12 @@ from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, tuple_
 
-from ..models import InfraSource, InvAsset, InvGeo, InvGeoRule, InvLocation, InvPerson, InvRef, KscSource, Zone
+from ..models import InfraSource, InvAsset, InvGeo, InvGeoRule, InvLocation, InvPerson, InvRef, KscSource, ZcHost, ZcSource, Zone, ZonePin
 from ..search import matcher
-from ..zones.match import ip_int, normalize_rule, parse_net
+from ..zones.match import ZoneIndex, annotate, ip_int, normalize_rule, parse_net
+from ..zones.service import load_defs
 from .model import FIELD_RU
 
 FRESH = timedelta(days=7)
@@ -288,6 +289,60 @@ def locate(evidence: dict, source_id: UUID, type_id: int | None, rules: list[Com
             if geo.get("country") or geo.get("lat") is not None:
                 result.update(status="approx", confidence="low")
     return result
+
+
+async def placement_proposals(db, assets: dict[int, InvAsset], now: datetime, fields) -> dict[int, dict]:
+    """Учётные предложения по актуальным правилам и локальным снимкам."""
+    fields = set(fields) & set(PROPOSAL_FIELDS)
+    assets = {aid: a for aid, a in assets.items() if a.ksc_link in ("auto", "confirmed") and a.ksc_source_id
+              and a.ksc_host_id is not None and any(getattr(a, f) is None for f in fields)}
+    if not assets:
+        return {}
+    enabled = set(await db.scalars(select(KscSource.id).where(KscSource.id.in_({a.ksc_source_id for a in assets.values()}),
+                                                               KscSource.is_active.is_(True))))
+    assets = {aid: a for aid, a in assets.items() if a.ksc_source_id in enabled}
+    if not assets:
+        return {}
+    out = {aid: {} for aid in assets}
+    observed = list(await db.scalars(select(InvGeo).where(InvGeo.asset_id.in_(assets),
+                                                          InvGeo.observed_at >= now - FRESH, InvGeo.observed_at <= now)))
+    rules = await rules_for(db) if observed else []
+    for obs in observed:
+        a = assets[obs.asset_id]
+        if (obs.source_id, obs.host_id) != (a.ksc_source_id, a.ksc_host_id):
+            continue
+        located = locate(obs.evidence, obs.source_id, a.type_id, rules, lambda _ip: {})
+        out[a.id].update({k: (v, "geo") for k, v in located["proposals"].items() if k in fields and getattr(a, k) is None})
+
+    if "zone_id" not in fields:
+        return out
+    by_host = {(a.ksc_source_id, a.ksc_host_id): aid for aid, a in assets.items()
+               if a.ksc_link == "confirmed" and a.zone_id is None}
+    if by_host:
+        hosts = (await db.execute(select(ZcHost.source_id, ZcHost.host_id, ZcHost.name, ZcHost.data)
+                                  .join(ZcSource, and_(ZcHost.source_id == ZcSource.source_id, ZcHost.gen == ZcSource.gen))
+                                  .where(tuple_(ZcHost.source_id, ZcHost.host_id).in_(by_host), ZcSource.gen > 0,
+                                         ZcSource.built_at >= now - FRESH, ZcSource.built_at <= now))).all()
+    else:
+        hosts = []
+    definitions = await load_defs(db)
+    available = {z.id for z in definitions if z.enabled}
+    for values in out.values():
+        if "zone_id" in values and values["zone_id"][0] not in available:
+            del values["zone_id"]
+    if hosts:
+        pins = {(str(sid), hid): str(zid) for sid, hid, zid in await db.execute(
+            select(ZonePin.source_id, ZonePin.host_id, ZonePin.zone_id).where(tuple_(ZonePin.source_id, ZonePin.host_id).in_(by_host)))}
+        index = ZoneIndex(definitions, pins)
+        for sid, hid, name, data in hosts:
+            current = annotate([{**data, "host_id": hid, "name": name}], index, str(sid))[0]
+            values = out[by_host[sid, hid]]
+            matched = current["zones"]
+            if current["zone_conflict"] or (matched and "zone_id" in values and values["zone_id"][0] != matched[0]):
+                values.pop("zone_id", None)
+            elif len(matched) == 1 and "zone_id" not in values:
+                values["zone_id"] = (matched[0], "zone")
+    return out
 
 
 def time_of(evidence: dict) -> datetime | None:

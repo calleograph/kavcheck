@@ -18,18 +18,19 @@ from ..models import (AdAuditRun, AppSetting, DevicesState, EmployeeProtectionDe
 from ..services.jobs import JOBS
 from ..services.resources import RES
 from . import classify, sources
-from .workplace import SERVER
+from .workplace import OBSERVED_ASSIGNMENT, SERVER, SHARED, assignment_for
 
 log = logging.getLogger(__name__)
 KIND = "employee_protection"
 STATE = "employee_protection_state"
 REQUEST = "employee_protection_request"
-POLICY_VERSION = 3
+POLICY_VERSION = 4
 BATCH = 500
 INTERVAL = timedelta(hours=6)
 CENSUS_MAX_AGE = timedelta(days=45)
 PERSON_FIELDS = ("id", "name", "login", "email", "organization", "department", "division", "title", "account_created")
-DEVICE_FIELDS = ("id", "source_id", "host_id", "asset_id", "name", "ip", "os", "os_version", "kind", "ownership", "zones", "av_product", "av_version", "last_connected", "snapshot_at", "shared_reason")
+DEVICE_FIELDS = ("id", "source_id", "host_id", "asset_id", "name", "ip", "os", "os_version", "kind", "ownership", "ownership_basis", "ownership_asset_id",
+                 "zones", "av_product", "av_version", "last_connected", "snapshot_at", "shared_reason")
 
 
 def stamp(value):
@@ -170,7 +171,7 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
             meta["warnings"].append(f"Актуальные подготовленные сведения о защите есть по {prepared} из {len(ids)} источников KSC.")
         await lease.stage("сопоставление оборудования и состояния защиты", str(len(people)))
         seen = set()
-        known = {p["id"] for p in people}
+        known = {p["id"]: p["name"] for p in people}
         decisions = defaultdict(dict)
         stored = [row async for row in await source.stream_scalars(select(EmployeeWorkplaceDecision).order_by(
             EmployeeWorkplaceDecision.decided_at, EmployeeWorkplaceDecision.device_id)) if row.person_id in known]
@@ -187,8 +188,10 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
             pairs = {pid: dict(info) for pid, info in evidence.items() if pid in known and info}
             for pid, decision in decisions.get(key, {}).items():
                 info = pairs.setdefault(pid, {"evidence": []})
-                info.update(confidence=decision.decision, decision=decision.decision, decided_at=decision.decided_at)
-                message = "Подтверждено администратором" if decision.decision == "confirmed" else "Отклонено администратором"
+                confidence = "confirmed" if decision.decision == "assigned" else decision.decision
+                info.update(confidence=confidence, decision=decision.decision, decided_at=decision.decided_at)
+                message = {"assigned": "Закреплено администратором", "confirmed": "Подтверждено администратором",
+                           "rejected": "Отклонено администратором"}[decision.decision]
                 info["evidence"] = [message, *info["evidence"]]
             if not pairs:
                 continue
@@ -199,7 +202,19 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
                                             matched_ksc=device.get("host_id") is not None and bool(device.get("source_id")),
                                             snapshot_at=stamp(device.get("snapshot_at")))
             zones = device.get("zones") or []
-            row = _row(DEVICE_FIELDS, device, **status, zones=zones,
+            shared = device.get("shared_reason") or ""
+            if not shared and sum(info["confidence"] == "confirmed" for info in pairs.values()) > 1:
+                shared = SHARED
+            assignment = None
+            if chosen := assignment_for(pairs, shared):
+                pid, basis = chosen
+                chosen_pair = pairs[pid]
+                chosen_pair["assignment_basis"] = basis
+                if basis == "observed":
+                    chosen_pair["evidence"] = [OBSERVED_ASSIGNMENT, *chosen_pair["evidence"]]
+                assignment = {"employee_id": pid, "employee_name": known[pid], "basis": basis,
+                              "observed_days": chosen_pair.get("observed_days", 0), "span_days": chosen_pair.get("span_days", 0)}
+            row = _row(DEVICE_FIELDS, device, **status, zones=zones, assignment=assignment, shared_reason=shared,
                        shared_count=sum(info["confidence"] != "rejected" for info in pairs.values()))
             zone_keys = "|" + "|".join(sorted({z["id"] for z in zones} or {"none"})) + "|"
             devices.append({"generation": generation, "id": key, "search": _search(row, ("name", "ip", "os", "av_product")), "zone_keys": zone_keys, "data": row})
@@ -207,15 +222,16 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
             counted_host, review_host = False, False
             for pid, info in pairs.items():
                 evidence = list(dict.fromkeys(info.pop("evidence")))
-                counted = info["confidence"] == "confirmed" or (info["confidence"] == "likely" and device.get("shared_reason") != SERVER)
+                info.pop("_stable_assignment", None)
+                counted = info["confidence"] == "confirmed" or (info["confidence"] == "likely" and shared != SERVER)
                 if counted:
                     counted_host = True
                     per_person[pid].append(summary)
-                    if not info.get("shared") and not device.get("shared_reason") and row["shared_count"] == 1:
-                        if info.get("decision") == "confirmed":
-                            primary[pid].append(((1, 0), key))
-                        elif info.get("regular"):
-                            primary[pid].append(((0, info["observed_days"]), key))
+                    if (basis := info.get("assignment_basis")) and shared != SERVER:
+                        rank = {"manual": 3, "inventory": 2, "bi": 2, "observed": 1}[basis]
+                        primary[pid].append(((rank, info["observed_days"] if basis == "observed" else 0), key))
+                    elif info.get("regular") and not info.get("shared") and not shared and row["shared_count"] == 1:
+                        primary[pid].append(((0, info["observed_days"]), key))
                 elif info["confidence"] != "rejected":
                     review_host = True
                     pending[pid] += 1
@@ -245,7 +261,8 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
                 ranked = sorted(primary.pop(person["id"], []), reverse=True)
                 main_device = ranked[0][1] if ranked and (len(ranked) == 1 or ranked[0][0] > ranked[1][0]) else None
                 row = _row(PERSON_FIELDS, person, **status, last_seen=last_seen, pending_device_count=candidates,
-                           primary_device_id=main_device, email_verified=person.get("email") in person.get("_emails", ()))
+                           primary_device_id=main_device, email_verified=person.get("email") in person.get("_emails", ()),
+                           login_verified=sources.key(person.get("login")) in person.get("_logins", ()))
                 rows.append({"generation": generation, "id": person["id"], "search": _search(row, ("name", "login", "email", "department", "title")), "data": row})
             await target.execute(insert(EmployeeProtectionPerson), rows)
             await RES.breathe("защита сотрудников")

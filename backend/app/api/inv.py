@@ -19,6 +19,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, get_db, require_user
+from ..employee_protection import service as employee_protection
 from ..inventory import core as C
 from ..inventory import autofill
 from ..inventory import model as M
@@ -30,6 +31,7 @@ from ..services.audit import write_audit
 from ..services.settings import InventorySettings
 
 router = APIRouter(prefix="/inv", tags=["inventory"])
+EMPLOYEE_FIELDS = frozenset({"ownership", "acc_no", "user_id", "owner_id", "zone_id", "status_id"})
 
 
 @dataclass
@@ -231,6 +233,8 @@ async def create(body: AssetBody, ix: Ix = Depends(inv_ctx), db: AsyncSession = 
     await db.flush()
     await C.record(db, a, "create", ch, ix.su.display_name, comment=body.comment, basis=body.basis, title="Создание карточки")
     audit(db, ix, "asset.create", a.inv_no, {"id": a.id})
+    if a.cls in M.COMPUTERS and (a.ownership or a.acc_no or a.user_id or a.owner_id or a.zone_id):
+        await employee_protection.request_refresh(db)
     await db.commit()
     return await card(a.id, ix, db)
 
@@ -279,6 +283,9 @@ async def update(aid: int, body: AssetBody, ix: Ix = Depends(inv_ctx), db: Async
     if ch:
         await C.record(db, a, C.kind_of(ch), ch, ix.su.display_name, comment=body.comment, basis=body.basis)
         audit(db, ix, "asset.update", a.inv_no, {"id": a.id, "fields": [c["f"] for c in ch][:40]})
+        edited = {c["f"] for c in ch}
+        if "type_id" in edited or (a.cls in M.COMPUTERS and edited & EMPLOYEE_FIELDS):
+            await employee_protection.request_refresh(db)
         await db.commit()
     return await card(a.id, ix, db)
 
@@ -364,6 +371,7 @@ async def bulk(body: BulkBody, ix: Ix = Depends(inv_ctx), db: AsyncSession = Dep
     fields = [{"key": k, "label": M.FIELD_RU[k]} for k in data if k != "props"]
     fields += [{"key": f"props.{k}", "label": labels.get(k, k)} for k in data.get("props") or {}]
     found = changed = error_count = last = 0
+    refresh_employees = False
     errors: list[dict] = []
     selected: list[int] = []
     with db.no_autoflush:
@@ -388,6 +396,9 @@ async def bulk(body: BulkBody, ix: Ix = Depends(inv_ctx), db: AsyncSession = Dep
                 if ch:
                     changed += 1
                     if not body.dry_run:
+                        edited = {c["f"] for c in ch}
+                        if "type_id" in edited or (a.cls in M.COMPUTERS and edited & EMPLOYEE_FIELDS):
+                            refresh_employees = True
                         title = "Массовое изменение: " + ", ".join(dict.fromkeys(c["label"] for c in ch))
                         await C.record(db, a, C.kind_of(ch), ch, ix.su.display_name, comment=body.comment, basis=body.basis, title=title, names=names)
             if not body.dry_run:
@@ -403,6 +414,8 @@ async def bulk(body: BulkBody, ix: Ix = Depends(inv_ctx), db: AsyncSession = Dep
         await db.rollback()
         raise HTTPException(status_code=409, detail="Выборка или карточки изменились. Повторите предпросмотр.")
     audit(db, ix, "asset.bulk", f"{changed} карточек", {"ids": selected, "n": found, "fields": [f["key"] for f in fields], "only_empty": body.only_empty})
+    if refresh_employees:
+        await employee_protection.request_refresh(db)
     await db.commit()
     return {**result, "changed": changed}
 

@@ -8,20 +8,23 @@ from sqlalchemy import BigInteger, and_, cast, func, or_, select, tuple_
 from ..models import EmployeeProtectionDevice as D
 from ..models import EmployeeProtectionLink as L
 from ..models import EmployeeProtectionPerson as P
-from ..models import InvAsset, InvGeo, InvPerson, InvRef, KscSource, utcnow
+from ..models import InvAsset, InvPerson, InvRef, KscSource, utcnow
 from ..inventory import geography as geo
-from ..inventory.model import FIELD_RU, ST_ACTIVE
+from ..inventory.model import AUTO_FILL_FIELDS, FIELD_RU, OWNERSHIP_RU, ST_ACTIVE
 from ..search import any_field, column_like
 from . import classify, service
 from .filters import Filters
+from .workplace import CURRENT_AGE, SERVER
 
 INSUFFICIENT = frozenset({"stale", "outside_ksc", "no_devices", "unknown"})
 FRESHNESS = {"fresh": "Актуальные", "stale": "Устарели", "unknown": "Недостаточно данных"}
-OWNERSHIP = {"corporate": "Корпоративное", "personal": "Личное", "unknown": "Не определено"}
+OWNERSHIP = {**OWNERSHIP_RU, "unknown": "Не определено"}
+OWNERSHIP_BASIS = {"inventory": "Карточка учёта", "bi": "Выгрузка BI", "accounting": "Бухгалтерский номер", "conflict": "Противоречивые данные BI"}
 EMPTY = "_none"
 CONFIDENCE = {"confirmed": "Подтверждённая", "likely": "Высокая вероятность",
               "possible": "Предполагаемая", "rejected": "Отклонена"}
-ACCOUNT_FIELDS = frozenset({"user_id", "dept_id", "location_id", "resp_id"})
+ASSIGNMENT = {"manual": "Назначен вручную", "inventory": "По инвентаризации", "bi": "По выгрузке BI",
+              "observed": "По доменным сеансам", "unassigned": "Сотрудник не закреплён"}
 
 
 def _val(table, key):
@@ -42,6 +45,9 @@ class Selection:
         for key in ("kind", "ownership", "os", "freshness"):
             if value := getattr(f, key):
                 d.append(_match(_val(D, key), value))
+        if f.assignment:
+            basis = D.data["assignment"]["basis"].as_string()
+            d.append(func.coalesce(basis, "unassigned") == f.assignment)
         if f.zone:
             d.append(column_like(D.zone_keys, f"|{f.zone.lower()}|"))
         if f.device_status:
@@ -68,7 +74,9 @@ class Selection:
                 match_search.append(tuple_(L.person_id, L.device_id).in_([tuple(key.split("|", 1)) for key in pairs]))
             if asset_ids is not None:
                 d.append(cast(D.data["asset_id"].as_string(), BigInteger).in_(asset_ids))
-                d.append(D.data["shared_count"].as_integer() == 1)
+                match_search.append(or_(L.assessment["assignment_basis"].as_string().is_not(None),
+                                        and_(D.data["assignment"]["basis"].as_string().is_(None),
+                                             D.data["shared_count"].as_integer() == 1, self.confidence == "confirmed")))
             if f.asset_id or f.inventory:
                 asset = cast(D.data["asset_id"].as_string(), BigInteger)
                 active = select(InvAsset.id).where(InvAsset.st_cls.in_(ST_ACTIVE))
@@ -129,7 +137,8 @@ def _option(value, label=None):
 
 
 async def _options(db, generation):
-    out = {"ownership": [_option(k, v) for k, v in OWNERSHIP.items()]}
+    out = {"ownership": [_option(k, v) for k, v in OWNERSHIP.items()],
+           "assignment": [_option(k, v) for k, v in ASSIGNMENT.items()]}
     for table, keys in ((P, ("organization", "department", "division")), (D, ("kind", "os"))):
         for key in keys:
             value = _val(table, key)
@@ -239,45 +248,65 @@ async def _proposals(db, rows, *, include_network=True):
     ids = {r["device"]["asset_id"] for r in rows if r["device"].get("asset_id")}
     if not ids:
         return
+    now = utcnow()
     assets = {a.id: a for a in await db.scalars(select(InvAsset).where(InvAsset.id.in_(ids)))}
-    observations = {}
-    if include_network:
-        observations = {obs.asset_id: obs for obs in await db.scalars(select(InvGeo).where(
-            InvGeo.asset_id.in_(ids), InvGeo.observed_at >= utcnow() - geo.FRESH))}
     emails = {r["employee"]["email"] for r in rows if r["employee"].get("email_verified") and r["employee"].get("email")}
+    logins = {}
+    for row in rows:
+        p = row["employee"]
+        if p.get("login_verified") and "@" in p["login"]:
+            username, domain = p["login"].lower().rsplit("@", 1)
+            logins[p["id"]] = (p["login"].lower(), f"{domain}\\{username}")
     people = defaultdict(list)
-    if emails:
-        for pid, name, email in await db.execute(select(InvPerson.id, InvPerson.name, func.lower(InvPerson.email)).where(
-                InvPerson.active.is_(True), func.lower(InvPerson.email).in_(emails))):
+    for_login = defaultdict(list)
+    if emails or logins:
+        mail, login = func.lower(func.trim(InvPerson.email)), func.lower(func.trim(InvPerson.login))
+        expr = or_(mail.in_(emails), login.in_({v for pair in logins.values() for v in pair}))
+        for pid, name, email, account in await db.execute(select(InvPerson.id, InvPerson.name, mail, login)
+                                                          .where(InvPerson.active.is_(True), expr)):
             people[email].append((pid, name))
+            for_login[account].append((pid, name))
     names = {r["employee"]["department"].casefold() for r in rows if r["employee"].get("department")}
     departments = defaultdict(list)
     if names:
         for did, name in await db.execute(select(InvRef.id, func.lower(InvRef.name)).where(
                 InvRef.kind == "dept", InvRef.active.is_(True), func.lower(InvRef.name).in_(names))):
             departments[name].append(did)
-    network = {}
-    for aid, obs in observations.items():
-        a = assets.get(aid)
-        if a and a.ksc_link in ("auto", "confirmed") and (obs.source_id, obs.host_id) == (a.ksc_source_id, a.ksc_host_id):
-            network[aid] = (a, {k: v for k, v in (obs.result.get("proposals") or {}).items() if k in ACCOUNT_FIELDS})
+    placement = await geo.placement_proposals(db, assets, now, AUTO_FILL_FIELDS) if include_network else {}
+    network = {aid: (assets[aid], {key: val for key, (val, _) in group.items()}) for aid, group in placement.items()}
     groups = await geo.proposal_fields_for(db, network)
-    proposals = {aid: {k: {**v, "id": network[aid][1][k], "basis": "geo"} for k, v in data.items() if v["empty"]}
+    proposals = {aid: {k: {**v, "id": placement[aid][k][0], "basis": placement[aid][k][1]} for k, v in data.items() if v["empty"]}
                  for aid, data in groups.items()}
     for item in rows:
         device, employee = item["device"], item["employee"]
         asset = assets.get(device.get("asset_id"))
         if not asset:
             continue
+        if device["id"].startswith("ksc:"):
+            if asset.ksc_link not in ("auto", "confirmed") or (device.get("source_id"), device.get("host_id")) != (str(asset.ksc_source_id), asset.ksc_host_id):
+                continue
+        if device["id"].startswith("inv:") and asset.ksc_link == "confirmed" and asset.ksc_source_id and asset.ksc_host_id is not None:
+            continue
         item["asset_version"] = asset.version
         fields = dict(proposals.get(asset.id, {}))
-        if item["confidence"] in ("confirmed", "likely") and device.get("shared_count") == 1 and not item.get("shared"):
-            matches = people.get(employee.get("email"), []) if employee.get("email_verified") else ()
-            if asset.user_id is None and len(matches) == 1:
-                pid, name = matches[0]
+        basis = item.get("assignment_basis")
+        assigned = bool(basis and device.get("shared_reason") != SERVER)
+        if basis == "observed":
+            stamps = (item.get("last_verified_at"), device.get("snapshot_at"), device.get("last_connected"))
+            assigned = assigned and all(value and now - CURRENT_AGE <= service.stamp(value) <= now for value in stamps)
+        candidate = (not basis and item["confidence"] in ("confirmed", "likely")
+                     and device.get("shared_count") == 1 and not item.get("shared"))
+        if assigned or candidate:
+            mail_matches = set(people[employee["email"]]) if employee.get("email_verified") and employee.get("email") else set()
+            login_matches = {p for login in logins.get(employee["id"], ()) for p in for_login[login]}
+            matches = (login_matches & mail_matches) if login_matches and mail_matches else (login_matches or mail_matches)
+            matched = next(iter(matches)) if len(matches) == 1 else None
+            if asset.user_id is None and matched:
+                pid, name = matched
                 fields["user_id"] = {"label": FIELD_RU["user_id"], "value": name, "id": pid, "basis": "workplace"}
             dept = employee.get("department", "")
             matching_depts = departments[dept.casefold()]
-            if asset.dept_id is None and "dept_id" not in fields and len(matching_depts) == 1:
+            current_user_matches = asset.user_id is None or (matched and asset.user_id == matched[0])
+            if current_user_matches and asset.dept_id is None and "dept_id" not in fields and len(matching_depts) == 1:
                 fields["dept_id"] = {"label": FIELD_RU["dept_id"], "value": dept, "id": matching_depts[0], "basis": "workplace"}
         item["proposals"] = fields

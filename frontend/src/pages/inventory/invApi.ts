@@ -14,6 +14,7 @@ export interface Meta {
 export type Role = "user" | "owner" | "resp" | "mol" | "it";
 export interface Asset {
   id: number; uid: string; inv_no: string; acc_no: string; serial: string; name: string; hostname: string; label: string; type_id: number | null; type: string; cls: string; cls_ru: string;
+  ownership: "corporate" | "personal" | null; ownership_ru: string;
   model_id: number | null; model: string; manufacturer_id: number | null; manufacturer: string; status_id: number | null; status: string; st_cls: string; st_ru: string;
   location_id: number | null; location: string; loc_detail: string; user_id: number | null; owner_id: number | null; resp_id: number | null; mol_id: number | null; it_id: number | null;
   user: string; owner: string; resp: string; mol: string; it: string; dept_id: number | null; dept: string; branch_id: number | null; branch: string; zone_id: string | null; zone: string; tags: string[];

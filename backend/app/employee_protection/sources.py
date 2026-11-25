@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -21,16 +21,13 @@ from ..overview.calc import kind_of
 from ..services.resources import RES
 from ..services.settings import SettingsService
 from ..zones.snapshot import UNASSIGNED, unpack_record
-from .workplace import (CURRENT_AGE, EXACT_ACCOUNT, HISTORY_AGE, SESSION_AGE, SHORT_ACCOUNT, UNVERIFIED_ACCOUNT, Usage,
-                        assess, shared_reason)
+from .workplace import (BI_ASSIGNMENT, CURRENT_AGE, EXACT_ACCOUNT, HISTORY_AGE, INVENTORY_OWNER, INVENTORY_USER, SESSION_AGE,
+                        SHORT_ACCOUNT, UNVERIFIED_ACCOUNT, Usage, assess, shared_reason)
 
 BATCH = 500
 CENSUS_AGE = timedelta(days=45)
 BI_AGE = timedelta(days=45)
 ROSTER_NOTE = "Список основан на включённых пользовательских записях проверенного каталога AD. Полнота зависит от охвата и правил «Аудита домена»."
-BI_ASSIGNMENT = "Закрепление по выгрузке BI"
-INVENTORY_USER = "Назначенный пользователь по учёту"
-INVENTORY_OWNER = "Владелец по учёту"
 
 
 def key(value):
@@ -195,12 +192,21 @@ def inv_links(user, owner, by_mail, by_login):
 def device_row(id_, *, name, source_id=None, host_id=None, asset=None, asset_id=None, kind=None, raw=None, personal=None,
                stamp=None, os="", zones=(), shared=""):
     values = {p for p in personal or () if p is not None}
-    if not values and asset and asset.acc_no:
-        values.add(False)
+    if asset and asset.ownership:
+        owner, ownership_basis = asset.ownership, "inventory"
+    elif len(values) == 1:
+        owner, ownership_basis = ownership(next(iter(values))), "bi"
+    elif values:
+        owner, ownership_basis = "unknown", "conflict"
+    elif asset and asset.acc_no:
+        owner, ownership_basis = "corporate", "accounting"
+    else:
+        owner, ownership_basis = "unknown", ""
     av = (raw or {}).get("av") or {}
     return {"id": id_, "source_id": str(source_id) if source_id else None, "host_id": host_id, "asset_id": asset.id if asset else asset_id,
             "name": name, "ip": (raw or {}).get("ip", ""), "os": (raw or {}).get("os") or os, "os_version": (raw or {}).get("os_version", ""),
-            "kind": kind or (CLS_RU[asset.cls] if asset else "Компьютер"), "ownership": ownership(next(iter(values), None) if len(values) == 1 else None),
+            "kind": kind or (CLS_RU[asset.cls] if asset else "Компьютер"), "ownership": owner, "ownership_basis": ownership_basis,
+            "ownership_asset_id": asset.id if asset else None,
             "zones": list(zones), "av_product": av.get("product", ""), "av_version": av.get("build", ""),
             "last_connected": iso((raw or {}).get("last_connected")), "snapshot_at": iso(stamp), "protection": raw,
             "shared": bool(shared), "shared_reason": shared}
@@ -211,17 +217,25 @@ async def observed_users(db, ids, predicates, poll, now, by_login, by_short, hos
     upper = min(now, poll)
     cut = now - HISTORY_AGE
     recent_cut = now - SESSION_AGE
-    fields = (DeviceUser.host_id, DeviceUser.login, DeviceUser.domain, DeviceUser.identity_verified,
+    fresh_poll = now - CURRENT_AGE <= poll <= now
+    fields = (DeviceUser.host_id, DeviceUser.login, DeviceUser.domain, DeviceUser.identity_verified, DeviceUser.resolved,
               DeviceUser.session_now, DeviceUser.last_session_at, DeviceUser.last_seen_at, DeviceUser.verified_observations)
     observed_hosts = set()
-    q = select(*fields).where(DeviceUser.host_id.in_(ids), *predicates)
+    unexplained_current = Counter()
+    at_poll = and_(DeviceUser.session_now.is_(True), DeviceUser.last_session_at == poll)
+    q = select(*fields).where(DeviceUser.host_id.in_(ids), *predicates, or_(DeviceUser.resolved.is_(True), at_poll))
     async for part in (await db.stream(q.execution_options(yield_per=BATCH))).partitions(BATCH):
-        for hid, login, stored_domain, verified, session_now, last_active, last_seen, recorded in part:
+        for hid, login, stored_domain, verified, resolved, session_now, last_active, last_seen, recorded in part:
+            partial = last_seen > upper
+            current_poll = fresh_poll and session_now and not partial and last_active == poll
+            if current_poll:
+                unexplained_current[hid] += 1
+            if not resolved:
+                continue
             login, login_domain = split_login(login, "")
             short, domain = key(login), key(stored_domain or login_domain)
-            partial = last_seen > upper
-            proven = tuple(t for t in map(datetime.fromisoformat, (recorded or {}).get("stamps", ()))
-                           if recent_cut <= t <= upper) if verified or partial else ()
+            proven = tuple(sorted(t for t in map(datetime.fromisoformat, (recorded or {}).get("stamps", ()))
+                                  if recent_cut <= t <= upper)) if verified or partial else ()
             if partial and not proven:
                 continue
             observed_hosts.add(hid)
@@ -244,14 +258,15 @@ async def observed_users(db, ids, predicates, poll, now, by_login, by_short, hos
             observed = set(proven)
             if last_active and cut <= last_active <= upper:
                 observed.add(last_active)
-            current = (account == EXACT_ACCOUNT and verified and session_now and not partial and last_active == poll
-                       and now - CURRENT_AGE <= poll <= now)
+            current = bool(current_poll and account == EXACT_ACCOUNT and verified)
+            if current:
+                unexplained_current[hid] -= 1
             item = Usage(account, tuple(sorted(observed)), proven, current)
             previous = usage[hid].get(pid)
             if previous is None or (item.regular, item.current, item.account == EXACT_ACCOUNT, item.days, item.observed) > (
                     previous.regular, previous.current, previous.account == EXACT_ACCOUNT, previous.days, previous.observed):
                 usage[hid][pid] = item
-    return usage, observed_hosts
+    return usage, observed_hosts, {hid for hid, count in unexplained_current.items() if count}
 
 
 def source_diagnostic(source, poll, gen, stamp, error, now, activity_days):
@@ -301,11 +316,14 @@ async def devices(db, source_ids, people, now, manual=None, *, diagnostics=None,
     for source, gen, stamp, poll, error in sources:
         sid = source.id
         fresh_snapshot = stamp is not None and now - CURRENT_AGE <= stamp <= now
+        users_feature = ((source.last_check or {}).get("features") or {}).get("users")
+        reliable_poll = (not error and (users_feature is None or users_feature.get("ok"))
+                         and poll is not None and now - CURRENT_AGE <= poll <= now)
         diagnostic = None
         if diagnostics is not None:
             diagnostic = source_diagnostic(source, poll, gen, stamp, error, now, activity_days)
             diagnostics[str(sid)] = diagnostic
-        observations = (DeviceUser.source_id == sid, DeviceUser.kind == "user", DeviceUser.resolved.is_(True),
+        observations = (DeviceUser.source_id == sid, DeviceUser.kind == "user",
                         DeviceUser.last_seen_at >= now - HISTORY_AGE,
                         or_(DeviceUser.last_seen_at <= min(now, poll),
                             DeviceUser.verified_observations["day"].as_string().is_not(None))) if poll else (False,)
@@ -313,7 +331,7 @@ async def devices(db, source_ids, people, now, manual=None, *, diagnostics=None,
         cutoff = 0
         while True:
             candidates = union(
-                select(DeviceUser.host_id.label("hid")).where(DeviceUser.host_id > cutoff, *observations),
+                select(DeviceUser.host_id.label("hid")).where(DeviceUser.host_id > cutoff, DeviceUser.resolved.is_(True), *observations),
                 select(BiMatch.host_id.label("hid")).where(BiMatch.host_id > cutoff, BiMatch.ksc_source_id == sid, known_binding(BiMatch)),
                 select(InvAsset.ksc_host_id.label("hid")).where(InvAsset.ksc_host_id > cutoff, InvAsset.ksc_source_id == sid, InvAsset.ksc_link == "confirmed",
                                                                InvAsset.cls.in_(COMPUTERS), InvAsset.st_cls.in_(ST_ACTIVE),
@@ -344,7 +362,8 @@ async def devices(db, source_ids, people, now, manual=None, *, diagnostics=None,
                     host_names[hid].update((key(hostname), key(hostname).split(".", 1)[0]))
             for hid, (asset, *_rest) in refs.items():
                 host_names[hid].update((key(asset.hostname), key(asset.hostname).split(".", 1)[0]))
-            usage, observed_hosts = await observed_users(db, ids, observations, poll, now, by_login, by_short, host_names) if poll else ({}, set())
+            usage, observed_hosts, unexplained = await observed_users(
+                db, ids, observations, poll, now, by_login, by_short, host_names) if poll else ({}, set(), set())
             if diagnostic is not None:
                 diagnostic["observed"] += len(hosts.keys() & observed_hosts)
                 diagnostic["current"] += sum(any(entry.current for entry in usage[hid].values()) for hid in hosts.keys() & usage.keys())
@@ -375,12 +394,19 @@ async def devices(db, source_ids, people, now, manual=None, *, diagnostics=None,
                     {"os": os, "platform": (raw or {}).get("platform")}) == "workstation"
                 fresh_workstation = bool(is_workstation and fresh_snapshot and connected is not None
                                          and now - CURRENT_AGE <= connected <= now)
+                can_assign = (reliable_poll and fresh_workstation and not shared and hid not in unexplained and not infos
+                              and not (asset and (asset.user_id or asset.owner_id)))
+                pairs = {}
+                for pid in sorted(assigned.keys() | observed.keys()):
+                    seen = observed.get(pid)
+                    info = assess(assigned.get(pid, ()), seen, shared, fresh_workstation=fresh_workstation)
+                    if can_assign and seen and seen.assignment_eligible(now):
+                        info["_stable_assignment"] = True
+                    pairs[pid] = info
                 yield device_row(f"ksc:{sid}:{hid}", name=name, source_id=sid, host_id=hid, asset=asset, asset_id=ref.id if ref else None,
                                  kind=typ if asset else None, raw=raw,
                                  stamp=stamp if raw else None, os=os, personal=(i[2] for i in infos),
-                                 zones=({"id": z, "name": names[z]} for z in sorted(zones)), shared=shared), {
-                    pid: assess(assigned.get(pid, ()), observed.get(pid), shared, fresh_workstation=fresh_workstation)
-                    for pid in sorted(assigned.keys() | observed.keys())}
+                                 zones=({"id": z, "name": names[z]} for z in sorted(zones)), shared=shared), pairs
             await RES.breathe("сопоставление устройств сотрудников")
 
     q = assets().where(or_(InvAsset.ksc_source_id.is_(None), InvAsset.ksc_host_id.is_(None),

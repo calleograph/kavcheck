@@ -79,7 +79,7 @@ function MainTab({ a }: { a: AssetCard }) {
   return (
     <div className="split even">
       <div className="card"><h2>Учётные сведения</h2>
-        <Kv rows={[["Инвентарный номер", <span className="mono">{a.inv_no}</span>], ["Бухгалтерский номер", a.acc_no], ["Наименование", a.name], ["Назначение", a.purpose], ["Сервис", a.service], ["Тип", a.type], ["Производитель", a.manufacturer], ["Модель", a.model],
+        <Kv rows={[["Инвентарный номер", <span className="mono">{a.inv_no}</span>], ["Бухгалтерский номер", a.acc_no], ["Тип собственности", a.ownership_ru], ["Наименование", a.name], ["Назначение", a.purpose], ["Сервис", a.service], ["Тип", a.type], ["Производитель", a.manufacturer], ["Модель", a.model],
           ["Серийный номер", a.serial && <span className="mono">{a.serial}</span>], ["Имя компьютера", a.hostname && <span className="mono">{a.hostname}</span>], ["Статус", a.status],
           ["Теги", (a.tags ?? []).join(", ")],
           ["Создана", `${fmt(a.created_at)}, ${a.created_by}`], ["Изменена", `${fmt(a.updated_at)}, ${a.updated_by}`]]} />
@@ -220,12 +220,12 @@ function HistoryTab({ a }: { a: AssetCard }) {
   const [kind, setKind] = useState("");
   useEffect(() => { inv.history(a.id).then((r) => setItems(r.items)).catch((e) => setErr((e as ApiError).message)); }, [a.id, a.version]);
   useEffect(() => { if (!on) { setAsof(null); return; } inv.asof(a.id, on).then(setAsof).catch(() => setAsof(null)); }, [a.id, on]);
-  const shown = (items ?? []).filter((h) => !kind || (kind === "people" ? h.changes.some((c) => c.f.endsWith("_id") && ["user_id", "owner_id", "resp_id", "mol_id", "it_id"].includes(c.f)) : kind === "move" ? h.changes.some((c) => c.f === "location_id") || h.kind === "move" : h.kind === kind));
+  const shown = (items ?? []).filter((h) => !kind || (kind === "people" ? h.changes.some((c) => c.f === "ownership" || PEOPLE.some(([field]) => field === c.f)) : kind === "move" ? h.changes.some((c) => c.f === "location_id") || h.kind === "move" : h.kind === kind));
   return (
     <div className="stack">
       <div className="card inv-asof">
         <div className="row wrap"><label className="field">Состояние на дату<input type="date" value={on} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setOn(e.target.value)} /></label>
-          {asof && (asof.exists && asof.state ? <Kv rows={[["Статус", asof.state.status], ["Местоположение", asof.state.location], ["Пользователь", asof.state.user], ["Владелец", asof.state.owner], ["Ответственный", asof.state.resp], ["МОЛ", asof.state.mol]]} />
+          {asof && (asof.exists && asof.state ? <Kv rows={[["Статус", asof.state.status], ["Тип собственности", asof.state.ownership], ["Местоположение", asof.state.location], ["Пользователь", asof.state.user], ["Владелец", asof.state.owner], ["Ответственный", asof.state.resp], ["МОЛ", asof.state.mol]]} />
             : <p className="muted">{asof.note}</p>)}</div>
       </div>
       <div className="row wrap tight">{([["", "Все события"], ["people", "Принадлежность"], ["move", "Перемещения"], ["doc", "Документы"], ["repair", "Ремонты"], ["link", "Связь с KSC"]] as [string, string][]).map(([k, v]) =>
@@ -260,7 +260,7 @@ function FilesTab({ a, reload, show }: { a: AssetCard; reload: () => void; show:
 // ------------------------------------------------------------------------------------------------ форма
 type Form = Record<string, unknown>;
 const toForm = (a: Partial<Asset>): Form => ({ ...a, cost: a.cost !== null && a.cost !== undefined ? (a.cost / 100).toFixed(2).replace(".", ",") : "", props: { ...(a.props ?? {}) } });
-const EDITABLE = ["purpose", "service", "rack_unit", "rack_units", "no_count", "inv_no", "acc_no", "serial", "name", "hostname", "type_id", "model_id", "manufacturer_id", "status_id", "location_id", "loc_detail", "user_id", "owner_id", "resp_id", "mol_id", "it_id", "dept_id", "branch_id", "zone_id", "tags",
+const EDITABLE = ["purpose", "service", "rack_unit", "rack_units", "no_count", "inv_no", "acc_no", "ownership", "serial", "name", "hostname", "type_id", "model_id", "manufacturer_id", "status_id", "location_id", "loc_detail", "user_id", "owner_id", "resp_id", "mol_id", "it_id", "dept_id", "branch_id", "zone_id", "tags",
   "purchase_date", "received_date", "commissioned_date", "warranty_until", "cost", "supplier_id", "purchase_doc", "note", "props", "parent_id", "rel"];
 
 export function AssetForm({ initial, onCancel, onSaved }: { initial: Partial<AssetCard>; onCancel: () => void; onSaved: (a: AssetCard, more?: boolean) => void }) {
@@ -305,6 +305,12 @@ export function AssetForm({ initial, onCancel, onSaved }: { initial: Partial<Ass
         <label className={`field ${E("name") ? "invalid" : ""}`}>Наименование<input value={String(f.name ?? "")} onChange={(e) => set("name", e.target.value)} maxLength={300} disabled={!canF("name")} placeholder="например, «Ноутбук бухгалтера»" /></label>
         <label className={`field ${E("inv_no") ? "invalid" : ""}`}>Инвентарный номер<input className="mono" value={String(f.inv_no ?? "")} onChange={(e) => set("inv_no", e.target.value)} maxLength={60} disabled={!canF("inv_no")} placeholder={creating ? `автоматически (${meta.settings.inv_prefix}…)` : ""} />{E("inv_no") && <span className="field-err">{E("inv_no")}</span>}</label>
         <label className="field">Бухгалтерский номер<input className="mono" value={String(f.acc_no ?? "")} onChange={(e) => set("acc_no", e.target.value)} maxLength={60} disabled={!canF("acc_no")} /></label>
+        <label className={`field ${E("ownership") ? "invalid" : ""}`}>Тип собственности
+          <select aria-label="Тип собственности" value={String(f.ownership ?? "")} onChange={(e) => set("ownership", e.target.value || null)} disabled={!canF("ownership")}>
+            <option value="">По данным учёта и BI</option><option value="corporate">Корпоративное</option><option value="personal">Личное</option>
+          </select>
+          {E("ownership") && <span className="field-err">{E("ownership")}</span>}
+        </label>
         <label className={`field ${E("serial") ? "invalid" : ""}`}>Серийный номер<input className="mono" value={String(f.serial ?? "")} onChange={(e) => set("serial", e.target.value)} maxLength={120} disabled={!canF("serial")} /></label>
         {["workstation", "laptop", "server", "vm"].includes(cls) && <label className="field">Имя компьютера<input className="mono" value={String(f.hostname ?? "")} onChange={(e) => set("hostname", e.target.value)} maxLength={255} disabled={!canF("hostname")} placeholder="как в KSC, без домена" /></label>}
         <RefSelect kind="status" label="Статус" value={f.status_id as number | null} onChange={(v) => set("status_id", v)} disabled={!canF("status_id")} empty={creating ? "«На складе»" : "—"} error={E("status_id")} />
