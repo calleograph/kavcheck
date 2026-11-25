@@ -546,6 +546,7 @@ class InventorySettings(_Group):
     repair_days: int = Field(default=30, ge=1, le=730)                                         # в ремонте дольше — долго
     stale_days: int = Field(default=365, ge=30, le=3650)                                       # учётные сведения не обновлялись дольше — нужна актуализация
     ksc_auto_link: bool = True                                                                 # однозначное совпадение имени или серийного номера — предполагаемая связь с компьютером KSC
+    auto_fill_fields: list[Literal["user_id", "dept_id", "location_id", "resp_id"]] = Field(default_factory=list, max_length=4)
     notify_enabled: bool = False                                                               # ежедневная сводка сроков на почту (SMTP — «Рассылки отчётов»)
     notify_emails: list[str] = Field(default_factory=list, max_length=50)
     notify_time: str = Field(default="08:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")

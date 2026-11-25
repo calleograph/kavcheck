@@ -14,7 +14,7 @@ from ..inventory import core as C
 from ..inventory import geography as G
 from ..inventory import model as M
 from ..inventory.overview import read_overview
-from ..inventory.query import Filters, where_of
+from ..inventory.query import Filters, document_where, license_assignments, license_state, license_where, where_of
 from ..ksc.driver import KscError
 from ..models import InvAsset, InvDoc, InvDocItem, InvGeo, InvHistory, InvLicAssign, InvLicense, InvLocation, InvPerson, InvProp, InvRef, KscSource
 from ..services.resources import RES
@@ -79,6 +79,17 @@ def _cond(p: dict) -> list[dict]:
         out.append({"label": "Сняты отметки", "text": f"{len(set(p['exclude_ids']))} карточек"})
     if p.get("scope_ids"):
         out.append({"label": "Область учёта", "text": "ограничена местоположениями пользователя"})
+    if reason := (p.get("geography") or {}).get("reason"):
+        out.append({"label": "Координаты и причины", "text": G.GEO_REASONS[reason]})
+    if p.get("view") == "docs":
+        for key, label, names in (("doc_kind", "Вид документа", M.DOC_SHORT), ("status", "Этап", M.DOC_STATUS_RU)):
+            if p.get(key):
+                out.append({"label": label, "text": ", ".join(names.get(x, x) for x in p[key].split(","))})
+        if p.get("doc_open_only"):
+            out.append({"label": "Документы", "text": "только незавершённые"})
+    elif p.get("view") in ("licenses", "license_usage") and p.get("license_state"):
+        labels = {"soon": "Истекают", "expired": "Истекли", "issues": "С расхождениями", "inactive": "Архив"}
+        out.append({"label": "Состояние лицензии", "text": labels[p["license_state"]]})
     return out
 
 
@@ -92,6 +103,7 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
         cfg = await _cfg(db)
         scopes = tuple(x for (x,) in (await db.execute(select(InvLocation.ids_path).where(InvLocation.id.in_(p.get("scope_ids") or [])))).all()) if p.get("scope_ids") else ()
         acc = C.Access(frozenset({"view"}), scopes or (("/-/",) if p.get("scope_ids") else ()))
+        actor = p.get("scope_actor") or p.get("overview_actor") or ""
         notes = ["Данные — учётные сведения раздела «Инвентаризация» на момент формирования. Время — UTC. Отчёт может содержать персональные данные (ФИО сотрудников)."]
         tables, metrics, tabs = [], [], None
         sub, selection_total, dbip_attribution = "", None, False
@@ -100,7 +112,7 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
         pcols = [col(f"p.{x.code}", x.name) for x in props]
 
         if view == "overview":
-            data = await read_overview(db, acc, cfg, actor=p.get("overview_actor", ""))
+            data = await read_overview(db, acc, cfg, actor=actor)
             stats = data["stats"]
             values = [
                 ("Всего карточек", stats["total"]), ("Действующее оборудование", stats["active"]),
@@ -175,7 +187,7 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
                            {"id": "by_st", "title": "По статусам", "columns": [col("k", "Статус"), col("v", "Единиц", "num")], "rows": [{"k": k, "v": v} for k, v in by_st.most_common()]}]
                 tabs = [{"id": t["id"], "title": t["title"]} for t in tables]
             if view == "repair":
-                rep = (await db.execute(select(InvDoc).where(InvDoc.kind == "repair", InvDoc.status == "sent").order_by(InvDoc.doc_date))).scalars().all()
+                rep = (await db.execute(select(InvDoc).where(*document_where(acc, actor, kind="repair", status="sent")).order_by(InvDoc.doc_date))).scalars().all()
                 its = defaultdict(list)
                 for d0, inv_no in (await db.execute(select(InvDocItem.doc_id, InvAsset.inv_no).join(InvAsset, InvAsset.id == InvDocItem.asset_id).where(InvDocItem.doc_id.in_([d.id for d in rep])))).all() if rep else []:
                     its[d0].append(inv_no)
@@ -219,7 +231,8 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
                     w.append(scope)
             else:
                 f = Filters(**{k: v for k, v in p.items() if k in Filters.model_fields and v not in (None, "", [])})
-                w = await where_of(db, f, acc, cfg) + G.geo_where(G.GeoFilters.model_validate(p.get("geography") or {}), ctx.now)
+                geo_filters = G.GeoFilters.model_validate(p.get("geography") or {})
+                w = await where_of(db, f, acc, cfg) + G.geo_where(geo_filters, ctx.now)
             pairs = (await db.execute(select(InvAsset, InvGeo).outerjoin(InvGeo, G.selection(source_ids)).where(*w)
                                       .order_by(InvAsset.inv_no, InvAsset.id).limit(ctx.max_rows))).all()
             if card and not pairs:
@@ -230,17 +243,27 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             sources = {i: value for i, value in (await db.execute(select(KscSource.id, KscSource.name).where(
                 KscSource.id.in_({g.source_id for _, g in pairs if g})))).all()}
             rows = []
+            reasons = Counter()
             for a, g in pairs:
-                r = g.result if g else {}
+                r = G.visible_result(g.result, ctx.now) if g else None
+                reason = G.location_reason(r)
+                reasons[reason] += 1
+                r = r or {}
+                connection = G.connection_observation(g.evidence) if g else None
                 rows.append({"inv_no": a.inv_no, "name": a.name or a.hostname, "account_location": names.loc(a.location_id),
                              "proposal_fields": ", ".join(G.empty_proposal_labels(a, g, ctx.now)),
                              "site": locations.get(r.get("site_id"), ""), "country": r.get("country"), "region": r.get("region"), "city": r.get("city"),
                              "status": G.LABELS[r.get("status", "unknown")], "network": r.get("network"), "source": sources.get(g.source_id, "") if g else "",
+                             "reason": G.GEO_REASONS[reason], "connection_ip": connection.get("ip") if connection else None,
+                             "connection_scope": ADDRESS_SCOPE[connection["scope"]] if connection else "",
+                             "connection_source": connection.get("source") if connection else None,
                              "observed_at": g.observed_at if g else None, "fresh": "да" if g and G.fresh(g.observed_at, ctx.now) else "нет",
                              "lat": r.get("lat"), "lon": r.get("lon"), "radius_km": r.get("radius_km"), "operator": r.get("operator"), "asn": r.get("asn"),
                              "provider": r.get("provider"), "database_at": r.get("database_at")})
             columns = [col(k, label) for k, label in (("inv_no", "Инв. номер"), ("name", "Наименование"), ("account_location", "Учётное местоположение"), ("proposal_fields", "Пустые поля с предложениями"),
-                       ("site", "Сетевая площадка"), ("country", "Страна"), ("region", "Регион"), ("city", "Город"), ("status", "Оценка"), ("network", "Сеть"),
+                       ("site", "Сетевая площадка"), ("country", "Страна"), ("region", "Регион"), ("city", "Город"), ("status", "Оценка"),
+                       ("reason", "Координаты и причины"), ("network", "Сеть"), ("connection_ip", "IP подключения"), ("connection_scope", "Область IP подключения"),
+                       ("connection_source", "Источник IP подключения"),
                        ("source", "Источник"), ("fresh", "Актуально"), ("lat", "Широта"), ("lon", "Долгота"), ("radius_km", "Погрешность, км"), ("operator", "Организация ASN"), ("asn", "ASN"),
                        ("provider", "Источник геолокации"), ("database_at", "Срез базы"))]
             columns.append(col("observed_at", "Наблюдение (UTC)", "date"))
@@ -250,16 +273,17 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
                 if observation:
                     connection = G.connection_observation(observation.evidence)
                     result = observation.result
-                    rows[0].update(checked_at=observation.checked_at, connection_ip=connection.get("ip"), connection_scope=ADDRESS_SCOPE[connection["scope"]],
-                                   connection_source=connection.get("source"), connection_at=connection.get("observed_at"),
+                    rows[0].update(checked_at=observation.checked_at, connection_at=connection.get("observed_at"),
                                    rules=", ".join(r["name"] for r in result.get("rules", [])))
-                columns += [col("checked_at", "Обработка (UTC)", "date"), col("connection_ip", "IP подключения"), col("connection_scope", "Область IP подключения"),
-                            col("connection_source", "Источник IP подключения"), col("connection_at", "Время подключения (UTC)", "date"), col("rules", "Правила")]
+                columns += [col("checked_at", "Обработка (UTC)", "date"), col("connection_at", "Время подключения (UTC)", "date"), col("rules", "Правила")]
             tables.append({"id": "rows", "title": TITLE[view], "columns": columns, "rows": rows})
             if card and observation:
                 tables.extend(await observation_tables(db, asset, observation))
                 tabs = [{"id": t["id"], "title": t["title"]} for t in tables]
-            metrics = [metric("rows", "Устройств", len(rows)), metric("known", "С координатами", sum(r["lat"] is not None for r in rows))]
+            if not card:
+                tables.append(table("reasons", "Координаты и причины", [("reason", "Причина"), ("count", "Устройства", "num")],
+                                    [{"reason": label, "count": reasons[code]} for code, label in G.GEO_REASONS.items() if reasons[code]]))
+            metrics = [metric("rows", "Устройств", len(rows)), metric("known", "С координатами", sum(reasons[code] for code in G.POINT_REASONS))]
             notes.append("География публичного адреса описывает выход в сеть. Известные площадки привязаны вручную через правила и справочник.")
             providers = {row["provider"] for row in rows}
             dbip_attribution = G.DBIP_LABEL in providers
@@ -345,10 +369,13 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             tables.append({"id": "card", "title": "Учётные сведения", "columns": [col("k", "Поле"), col("v", "Значение")], "rows": [{"k": k, "v": v} for k, v in kv if v]})
             tables.append({"id": "props", "title": "Дополнительные свойства", "columns": [col("k", "Свойство"), col("v", "Значение")],
                            "rows": [{"k": x.name, "v": r["props_text"].get(x.code, "")} for x in n.props if x.code in r["props_text"]]})
-            kids = (await db.execute(select(InvAsset).where(InvAsset.parent_id == a.id).order_by(InvAsset.inv_no))).scalars().all()
+            kids_q = select(InvAsset).where(InvAsset.parent_id == a.id)
+            if (scope := acc.asset_filter()) is not None:
+                kids_q = kids_q.where(scope)
+            kids = (await db.execute(kids_q.order_by(InvAsset.inv_no))).scalars().all()
             kn = await C.names_for(db, list(kids))
             tables.append({"id": "parts", "title": "Состав и связанные единицы", "columns": BASE_COLS[:6], "rows": [_row(k, kn) for k in kids]})
-            docs = (await db.execute(select(InvDoc).join(InvDocItem, InvDocItem.doc_id == InvDoc.id).where(InvDocItem.asset_id == a.id).order_by(InvDoc.doc_date.desc()))).scalars().all()
+            docs = (await db.execute(select(InvDoc).where(*document_where(acc, actor, asset=a.id)).order_by(InvDoc.doc_date.desc()))).scalars().all()
             tables.append({"id": "docs", "title": "Документы", "columns": [col("no", "Номер"), col("kind", "Вид"), col("date", "Дата", "date"), col("status", "Этап"), col("basis", "Основание")],
                            "rows": [{"no": d.no, "kind": M.DOC_SHORT.get(d.kind, d.kind), "date": d.doc_date.isoformat(), "status": M.DOC_STATUS_RU.get(d.status, d.status), "basis": d.basis} for d in docs]})
             hist = (await db.execute(select(InvHistory).where(InvHistory.asset_id == a.id).order_by(InvHistory.at.desc()).limit(ctx.max_rows))).scalars().all()
@@ -441,28 +468,22 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             notes += [f"Не получено: {e}" for e in errors[:10]]
 
         elif view in ("licenses", "license_usage"):
-            lics = (await db.execute(select(InvLicense).where(InvLicense.active.is_(True)).order_by(InvLicense.name))).scalars().all()
+            state_filter = p.get("license_state", "")
+            w = license_where(p.get("q", ""), state_filter, today, cfg.license_days)
+            lics = (await db.execute(select(InvLicense).where(*w).order_by(InvLicense.name, InvLicense.id).limit(ctx.max_rows))).scalars().all()
             rid = {x for lc in lics for x in (lc.type_id, lc.supplier_id)} - {None}
             refs = dict((await db.execute(select(InvRef.id, InvRef.name).where(InvRef.id.in_(rid)))).all()) if rid else {}
             resp = dict((await db.execute(select(InvPerson.id, InvPerson.name).where(InvPerson.id.in_({lc.resp_id for lc in lics} - {None})))).all()) if lics else {}
-            asg = dict((await db.execute(select(InvLicAssign.license_id, func.count()).group_by(InvLicAssign.license_id))).all())
+            asg = await license_assignments(db, [lc.id for lc in lics])
             data = []
             for lc in lics:
-                u = lc.usage or {}
-                a = asg.get(lc.id, 0)
-                issues = []
-                if lc.valid_until and lc.valid_until < today:
-                    issues.append("срок истёк")
-                elif lc.valid_until and lc.valid_until <= today + timedelta(days=cfg.license_days):
-                    issues.append("срок истекает")
-                if lc.qty is not None and u.get("installs") is not None and u["installs"] > lc.qty and lc.metric == "device":
-                    issues.append("установок больше, чем лицензий")
-                if lc.qty is not None and a > lc.qty:
-                    issues.append("назначений больше, чем лицензий")
+                state = license_state(lc, asg.get(lc.id, 0), today, cfg.license_days)
+                if state_filter == "issues" and not state["issues"]:
+                    continue
                 data.append({"name": lc.name, "vendor": lc.vendor, "version": " ".join(x for x in (lc.version, lc.edition) if x), "type": refs.get(lc.type_id, ""), "metric": M.METRIC_RU.get(lc.metric, ""),
-                             "qty": lc.qty, "assigned": a, "installs": u.get("installs"), "free": (lc.qty - a) if lc.qty is not None else None, "valid_until": C._d(lc.valid_until),
-                             "supplier": refs.get(lc.supplier_id, ""), "cost": round(lc.cost / 100, 2) if lc.cost is not None else None, "resp": resp.get(lc.resp_id, ""), "issues": "; ".join(issues),
-                             "usage_at": u.get("at")})
+                             "qty": lc.qty, **{k: state[k] for k in ("assigned", "installs", "free", "usage_at")}, "valid_until": C._d(lc.valid_until),
+                             "supplier": refs.get(lc.supplier_id, ""), "cost": round(lc.cost / 100, 2) if lc.cost is not None else None, "resp": resp.get(lc.resp_id, ""),
+                             "issues": "; ".join(state["issues"])})
             if view == "licenses":
                 cols = [col("name", "Продукт"), col("vendor", "Производитель"), col("version", "Версия, редакция"), col("type", "Тип лицензии"), col("metric", "Учёт"), col("qty", "Куплено", "num"),
                         col("valid_until", "Действует до", "date"), col("supplier", "Поставщик"), col("cost", "Стоимость, ₽", MONEY), col("resp", "Ответственный")]
@@ -474,9 +495,7 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             metrics = [metric("rows", "Лицензий", len(data)), metric("issues", "С расхождениями", sum(1 for r in data if r["issues"]), "", "warn")]
 
         elif view == "docs":
-            w = []
-            if p.get("doc_kind"):
-                w.append(InvDoc.kind.in_(str(p["doc_kind"]).split(",")))
+            w = document_where(acc, actor, kind=p.get("doc_kind", ""), status=p.get("status", ""), q=p.get("q", ""), open_only=p.get("doc_open_only", False))
             if p.get("date_from"):
                 w.append(InvDoc.doc_date >= _date(p["date_from"]))
             if p.get("date_to"):
@@ -495,9 +514,16 @@ async def build_inv(_client, p: dict, ctx: Ctx) -> dict:
             from ..inventory import counting as K  # noqa: PLC0415
             from ..models import InvCount, InvCountItem  # noqa: PLC0415
 
-            cnt = await db.get(InvCount, int(p.get("count_id") or 0)) if p.get("count_id") else (await db.execute(select(InvCount).where(InvCount.status != "cancelled").order_by(InvCount.created_at.desc()).limit(1))).scalar_one_or_none()
+            q = select(InvCount)
+            if (scope := acc.count_filter()) is not None:
+                q = q.where(scope)
+            if p.get("count_id"):
+                q = q.where(InvCount.id == p["count_id"])
+            else:
+                q = q.where(InvCount.status != "cancelled").order_by(InvCount.created_at.desc(), InvCount.id.desc())
+            cnt = await db.scalar(q.limit(1))
             if cnt is None:
-                raise KscError("no_data", "Инвентаризаций ещё не было")
+                raise KscError("no_data", "Инвентаризация не найдена или вне вашей области учёта")
             sub = f"{cnt.no} · {cnt.title}"
             items = list((await db.execute(select(InvCountItem).where(InvCountItem.count_id == cnt.id).order_by(InvCountItem.id))).scalars())
             locs, people = await K.names(db, items)

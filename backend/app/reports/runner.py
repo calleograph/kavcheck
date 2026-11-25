@@ -214,7 +214,7 @@ class Runner:
             await self._set(job.id, status="failed", finished_at=utcnow(), error="Источник удалён")
             return
         if src is None:
-            src = KscSource(id=uuid.uuid4(), name={"quick_bi": "BI", "quick_hier": "Иерархия", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "KAV Checker", "quick_inv": "Инвентаризация", "quick_employee_protection": "Защита сотрудников"}.get(job.kind, "Pentest"))                  # только имя для шапки отчёта; в базу не записывается
+            src = KscSource(id=uuid.uuid4(), name=quick.LOCAL_SOURCE_NAMES.get(job.kind, "Pentest"))  # только имя для шапки отчёта
             client = None
         else:
             client = self.sources.client(src)

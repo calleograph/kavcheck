@@ -7,47 +7,26 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import get_db
 from ..inventory import core as C
 from ..inventory import model as M
 from ..inventory import service as S
+from ..inventory.query import license_assignments, license_state, license_where
 from ..models import InvAsset, InvFile, InvLicAssign, InvLicense, InvPerson, InvRef, KscSource
-from ..search import column_like, mssql_like
+from ..search import mssql_like
 from .inv import Ix, audit, inv_ctx
 
 router = APIRouter(prefix="/inv", tags=["inventory"])
-
-
-
-def _n(v: int) -> str:
-    return f"{v:,}".replace(",", "\u00a0")
-
-def lic_state(lc: InvLicense, assigned: int, today: date, soon_days: int) -> dict:
-    u = lc.usage or {}
-    inst = u.get("installs")
-    issues = []
-    if lc.valid_until and lc.valid_until < today:
-        issues.append("срок действия истёк")
-    elif lc.valid_until and lc.valid_until <= today + timedelta(days=soon_days):
-        issues.append(f"срок истекает {lc.valid_until:%d.%m.%Y}")
-    if lc.qty is not None and assigned > lc.qty:
-        issues.append(f"назначено больше, чем куплено ({_n(assigned)} из {_n(lc.qty)})")
-    if lc.qty is not None and inst is not None and inst > lc.qty and lc.metric == "device":
-        issues.append(f"установлено больше, чем куплено ({_n(inst)} из {_n(lc.qty)})")
-    if inst is not None and lc.metric == "device" and inst > assigned and assigned:
-        issues.append(f"установлено без назначения: {inst - assigned}")
-    return {"installs": inst, "assigned": assigned, "free": (lc.qty - assigned) if lc.qty is not None else None, "issues": issues, "usage_at": u.get("at"), "usage_errors": u.get("errors") or []}
-
 
 def lic_out(lc: InvLicense, refs: dict, people: dict, assigned: int, cfg) -> dict:
     return {"id": lc.id, "name": lc.name, "vendor": lc.vendor, "version": lc.version, "edition": lc.edition, "type_id": lc.type_id, "type": refs.get(lc.type_id, ""), "category_id": lc.category_id,
             "category": refs.get(lc.category_id, ""), "metric": lc.metric, "metric_ru": M.METRIC_RU.get(lc.metric, lc.metric), "qty": lc.qty, "match": lc.match or [],
             "purchase_date": C._d(lc.purchase_date), "valid_until": C._d(lc.valid_until), "supplier_id": lc.supplier_id, "supplier": refs.get(lc.supplier_id, ""), "cost": lc.cost,
             "cost_text": C.money_str(lc.cost), "purchase_doc": lc.purchase_doc, "resp_id": lc.resp_id, "resp": people.get(lc.resp_id, ""), "note": lc.note, "key_set": bool(lc.key_enc), "key_ref": lc.key_ref,
-            "active": lc.active, "updated_at": C._iso(lc.updated_at), "updated_by": lc.updated_by, **lic_state(lc, assigned, date.today(), cfg.license_days)}
+            "active": lc.active, "updated_at": C._iso(lc.updated_at), "updated_by": lc.updated_by, **license_state(lc, assigned, date.today(), cfg.license_days)}
 
 
 async def _ctx(db: AsyncSession, lics: list[InvLicense]) -> tuple[dict, dict, dict]:
@@ -55,25 +34,14 @@ async def _ctx(db: AsyncSession, lics: list[InvLicense]) -> tuple[dict, dict, di
     pids = {lc.resp_id for lc in lics} - {None}
     refs = dict((await db.execute(select(InvRef.id, InvRef.name).where(InvRef.id.in_(rids)))).all()) if rids else {}
     people = dict((await db.execute(select(InvPerson.id, InvPerson.name).where(InvPerson.id.in_(pids)))).all()) if pids else {}
-    assigned = dict((await db.execute(select(InvLicAssign.license_id, func.count()).where(InvLicAssign.license_id.in_([lc.id for lc in lics])).group_by(InvLicAssign.license_id))).all()) if lics else {}
+    assigned = await license_assignments(db, [lc.id for lc in lics])
     return refs, people, assigned
 
 
 @router.get("/licenses")
 async def licenses(request: Request, q: str = Query("", max_length=200), state: str = Query("", pattern=r"^(|soon|expired|issues|inactive)$"), ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
-    w = [InvLicense.active.is_(state != "inactive")]
-    for word in q.split()[:5]:
-        conds = [c for c in (column_like(InvLicense.name, word), column_like(InvLicense.vendor, word)) if c is not None]
-        if conds:
-            from sqlalchemy import or_  # noqa: PLC0415
-
-            w.append(or_(*conds))
-    today = date.today()
-    if state == "soon":
-        w += [InvLicense.valid_until.is_not(None), InvLicense.valid_until >= today, InvLicense.valid_until <= today + timedelta(days=ix.cfg.license_days)]
-    elif state == "expired":
-        w += [InvLicense.valid_until < today]
-    rows = (await db.execute(select(InvLicense).where(*w).order_by(InvLicense.name).limit(2000))).scalars().all()
+    w = license_where(q, state, date.today(), ix.cfg.license_days)
+    rows = (await db.execute(select(InvLicense).where(*w).order_by(InvLicense.name, InvLicense.id).limit(2000))).scalars().all()
     refs, people, assigned = await _ctx(db, list(rows))
     items = [lic_out(lc, refs, people, assigned.get(lc.id, 0), ix.cfg) for lc in rows]
     if state == "issues":

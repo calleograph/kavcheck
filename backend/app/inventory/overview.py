@@ -44,8 +44,8 @@ async def read_overview(db: AsyncSession, acc: C.Access, cfg: InventorySettings,
     recent = [{"at": C._iso(h.at), "by": h.by, "kind": h.kind, "title": h.title, "asset_id": h.asset_id, "inv_no": no, "name": nm, "doc_id": h.doc_id} for h, no, nm in (await db.execute(hq)).all()]
     sources = (await db.execute(select(func.count()).select_from(KscSource))).scalar_one()
     counts = [InvCount.status == "active"]
-    if acc.scopes:
-        counts.append(InvCount.location_id.in_(acc.loc_ids()))
+    if (scope := acc.count_filter()) is not None:
+        counts.append(scope)
     counts_open = (await db.execute(select(func.count()).select_from(InvCount).where(*counts))).scalar_one()
     return {"stats": stats, "by_cls": [{"cls": k, "name": M.CLS_RU.get(k, k), "n": v} for k, v in sorted(by_cls.items(), key=lambda x: -x[1])],
             "by_st": [{"st": k, "name": M.ST_RU.get(k, k), "n": by_st.get(k, 0)} for k in M.ST_RU if by_st.get(k)], "licenses_soon": lic_soon,

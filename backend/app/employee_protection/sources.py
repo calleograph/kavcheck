@@ -4,7 +4,6 @@ from __future__ import annotations
 import re
 from bisect import bisect_right
 from collections import defaultdict
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -12,16 +11,18 @@ from sqlalchemy import and_, exists, or_, select, union
 from sqlalchemy.orm import aliased
 
 from ..bi.match import RULE
-from ..devices.users import classify as user_kind, split_login
+from ..devices.users import classify as user_kind, qualified_address as address, split_login
 from ..hier.process import COMPANY, DEPT, EMAIL, TITLE
 from ..hier.service import latest_ok, records_of
 from ..inventory.model import CLS_RU, COMPUTERS, ST_ACTIVE
-from ..models import (AdAuditAccount, AdAuditRun, BiDevice, BiMatch, BiOwner, BiPerson, BiSource, DevicesState, DeviceSession, DeviceUser,
+from ..models import (AdAuditAccount, AdAuditRun, BiDevice, BiMatch, BiOwner, BiPerson, BiSource, DevicesState, DeviceUser,
                       InvAsset, InvPerson, InvRef, KscSource, LdapConnection, ZcHost, ZcHostZone, ZcSource, Zone)
+from ..overview.calc import kind_of
 from ..services.resources import RES
 from ..services.settings import SettingsService
 from ..zones.snapshot import UNASSIGNED, unpack_record
-from .workplace import (EXACT_ACCOUNT, HISTORY_AGE, SESSION_AGE, SHORT_ACCOUNT, UNVERIFIED_ACCOUNT, Usage, assess, shared_reason)
+from .workplace import (CURRENT_AGE, EXACT_ACCOUNT, HISTORY_AGE, SESSION_AGE, SHORT_ACCOUNT, UNVERIFIED_ACCOUNT, Usage,
+                        assess, shared_reason)
 
 BATCH = 500
 CENSUS_AGE = timedelta(days=45)
@@ -38,11 +39,6 @@ def key(value):
 
 def qualified(login, domain):
     return f"{key(login)}@{key(domain)}" if login and domain else ""
-
-
-def address(value):
-    value = key(value)
-    return value if re.fullmatch(r"[^@\s]+@[^@\s]+", value) else ""
 
 
 def iso(value):
@@ -128,7 +124,7 @@ async def employees(db, now):
         meta["warnings"].append("Для части подключений KSC ещё нет подготовленных данных зон. Защита связанных устройств требует проверки.")
     missing_users = await db.scalar(select(KscSource.id).outerjoin(DevicesState, DevicesState.source_id == KscSource.id)
                                      .where(KscSource.is_active.is_(True),
-                                            or_(DevicesState.polled_at.is_(None), DevicesState.polled_at < now - timedelta(days=3))).limit(1))
+                                            or_(DevicesState.polled_at.is_(None), DevicesState.polled_at < now - CURRENT_AGE)).limit(1))
     if missing_users:
         meta["warnings"].append("Для части подключений KSC нет свежих наблюдений пользователей. Проверьте опрос в разделе «Устройства / Пользователи».")
     if not devices_settings.enabled:
@@ -210,64 +206,75 @@ def device_row(id_, *, name, source_id=None, host_id=None, asset=None, asset_id=
             "shared": bool(shared), "shared_reason": shared}
 
 
-@dataclass
-class AccountObservation:
-    employee_id: str
-    account: str
-    last_active: datetime | None
-    history_safe: bool
-    times: set[datetime] = field(default_factory=set)
-
-
-async def observed_users(db, sid, ids, predicates, poll, now, by_login, by_short, host_names):
-    observations = {}
+async def observed_users(db, ids, predicates, poll, now, by_login, by_short, host_names):
+    usage = defaultdict(dict)
     upper = min(now, poll)
     cut = now - HISTORY_AGE
     recent_cut = now - SESSION_AGE
-    fields = (DeviceUser.host_id, DeviceUser.user_key, DeviceUser.login, DeviceUser.domain, DeviceUser.identity_verified, DeviceUser.last_session_at)
+    fields = (DeviceUser.host_id, DeviceUser.login, DeviceUser.domain, DeviceUser.identity_verified,
+              DeviceUser.session_now, DeviceUser.last_session_at, DeviceUser.last_seen_at, DeviceUser.verified_observations)
+    observed_hosts = set()
     q = select(*fields).where(DeviceUser.host_id.in_(ids), *predicates)
     async for part in (await db.stream(q.execution_options(yield_per=BATCH))).partitions(BATCH):
-        for hid, user_key, login, stored_domain, verified, last_active in part:
+        for hid, login, stored_domain, verified, session_now, last_active, last_seen, recorded in part:
             login, login_domain = split_login(login, "")
             short, domain = key(login), key(stored_domain or login_domain)
+            partial = last_seen > upper
+            proven = tuple(t for t in map(datetime.fromisoformat, (recorded or {}).get("stamps", ()))
+                           if recent_cut <= t <= upper) if verified or partial else ()
+            if partial and not proven:
+                continue
+            observed_hosts.add(hid)
             if login_domain and stored_domain and key(login_domain) != key(stored_domain):
                 continue
             if domain:
                 if domain in host_names[hid] or domain in {".", "localhost", "workgroup", "локальная"}:
                     continue
-                pid = by_login.get(qualified(short, domain))
-                account = EXACT_ACCOUNT if verified else UNVERIFIED_ACCOUNT
+                login_pid = by_login.get(qualified(short, domain))
+                upn_pid = by_login.get(address((recorded or {}).get("upn")))
+                if login_pid and upn_pid and login_pid != upn_pid:
+                    continue
+                pid = upn_pid or login_pid
+                account = EXACT_ACCOUNT if verified or proven else UNVERIFIED_ACCOUNT
             else:
                 pid = by_short.get(short)
                 account = SHORT_ACCOUNT
-            if pid:
-                item = AccountObservation(pid, account, last_active, by_short.get(short) == pid)
-                if last_active and cut <= last_active <= upper:
-                    item.times.add(last_active)
-                observations[(hid, user_key)] = item
-
-    # Исторические сеансы содержат только короткий ключ. При коллизии в AD их нельзя приписывать доменной записи.
-    if observations:
-        q = select(DeviceSession.host_id, DeviceSession.user_key, DeviceSession.started_at, DeviceSession.last_active_at).where(
-            DeviceSession.source_id == sid, DeviceSession.host_id.in_(ids), DeviceSession.started_at <= upper, DeviceSession.last_active_at >= cut)
-        async for part in (await db.stream(q.execution_options(yield_per=BATCH))).partitions(BATCH):
-            for hid, user_key, started, last in part:
-                item = observations.get((hid, user_key))
-                if item and item.last_active and item.history_safe:
-                    item.times.update(t for t in (started, last) if cut <= t <= min(upper, item.last_active))
-
-    usage = defaultdict(dict)
-    for (hid, _), info in observations.items():
-        observed = tuple(sorted(info.times))
-        item = Usage(info.account, observed, tuple(t for t in observed if t >= recent_cut))
-        previous = usage[hid].get(info.employee_id)
-        if previous is None or (item.regular, item.account == EXACT_ACCOUNT, item.days, item.observed) > (
-                previous.regular, previous.account == EXACT_ACCOUNT, previous.days, previous.observed):
-            usage[hid][info.employee_id] = item
-    return usage
+            if not pid:
+                continue
+            observed = set(proven)
+            if last_active and cut <= last_active <= upper:
+                observed.add(last_active)
+            current = (account == EXACT_ACCOUNT and verified and session_now and not partial and last_active == poll
+                       and now - CURRENT_AGE <= poll <= now)
+            item = Usage(account, tuple(sorted(observed)), proven, current)
+            previous = usage[hid].get(pid)
+            if previous is None or (item.regular, item.current, item.account == EXACT_ACCOUNT, item.days, item.observed) > (
+                    previous.regular, previous.current, previous.account == EXACT_ACCOUNT, previous.days, previous.observed):
+                usage[hid][pid] = item
+    return usage, observed_hosts
 
 
-async def devices(db, source_ids, people, now, manual=None):
+def source_diagnostic(source, poll, gen, stamp, error, now, activity_days):
+    status, reason = "ready", "Данные для сопоставления доступны."
+    feature = ((source.last_check or {}).get("features") or {}).get("users")
+    if feature is not None and not feature.get("ok"):
+        status, reason = "unsupported", "KSC не предоставляет поддерживаемые таблицы пользователей."
+    elif error:
+        status, reason = "poll_error", "Последняя попытка опроса пользователей завершилась ошибкой."
+    elif not poll:
+        status, reason = "poll_missing", "Опрос пользователей ещё не завершался успешно."
+    elif poll < now - CURRENT_AGE or poll > now:
+        status, reason = "poll_stale", "Дата последнего успешного опроса выходит за пределы трёх суток."
+    elif not gen or not stamp:
+        status, reason = "snapshot_missing", "Нет подготовленного снимка компьютеров KSC."
+    elif stamp < now - timedelta(days=activity_days) or stamp > now:
+        status, reason = "snapshot_stale", "Подготовленный снимок компьютеров KSC устарел или имеет некорректную дату."
+    return {"source_id": str(source.id), "source_name": source.name, "polled_at": iso(poll), "snapshot_at": iso(stamp),
+            "status": status, "reason": reason, "observed": 0, "current": 0, "matched": 0, "eligible": 0, "possible": 0,
+            "av_known": 0}
+
+
+async def devices(db, source_ids, people, now, manual=None, *, diagnostics=None, activity_days=30):
     by_mail = {e: p["id"] for p in people for e in p["_emails"]}
     by_login = {a: p["id"] for p in people for a in p["_logins"]}
     by_short = {a: p["id"] for p in people for a in p.get("_short_logins", ())}
@@ -287,12 +294,21 @@ async def devices(db, source_ids, people, now, manual=None):
                 manual_bi.add(int(keys[0]))
         except ValueError:
             continue
-    sources = (await db.execute(select(KscSource.id, ZcSource.gen, ZcSource.built_at, DevicesState.polled_at)
+    sources = (await db.execute(select(KscSource, ZcSource.gen, ZcSource.built_at, DevicesState.polled_at, DevicesState.error)
                                 .outerjoin(ZcSource, ZcSource.source_id == KscSource.id).outerjoin(DevicesState, DevicesState.source_id == KscSource.id)
-                                .where(KscSource.id.in_(source_ids), KscSource.is_active.is_(True)))).all()
-    for sid, gen, stamp, poll in sources:
+                                .where(KscSource.id.in_(source_ids), KscSource.is_active.is_(True))
+                                .order_by(KscSource.name, KscSource.id))).all()
+    for source, gen, stamp, poll, error in sources:
+        sid = source.id
+        fresh_snapshot = stamp is not None and now - CURRENT_AGE <= stamp <= now
+        diagnostic = None
+        if diagnostics is not None:
+            diagnostic = source_diagnostic(source, poll, gen, stamp, error, now, activity_days)
+            diagnostics[str(sid)] = diagnostic
         observations = (DeviceUser.source_id == sid, DeviceUser.kind == "user", DeviceUser.resolved.is_(True),
-                        DeviceUser.last_seen_at >= now - HISTORY_AGE, DeviceUser.last_seen_at <= min(now, poll)) if poll else (False,)
+                        DeviceUser.last_seen_at >= now - HISTORY_AGE,
+                        or_(DeviceUser.last_seen_at <= min(now, poll),
+                            DeviceUser.verified_observations["day"].as_string().is_not(None))) if poll else (False,)
         manual_for_source = sorted(manual_hosts[str(sid)])
         cutoff = 0
         while True:
@@ -328,7 +344,10 @@ async def devices(db, source_ids, people, now, manual=None):
                     host_names[hid].update((key(hostname), key(hostname).split(".", 1)[0]))
             for hid, (asset, *_rest) in refs.items():
                 host_names[hid].update((key(asset.hostname), key(asset.hostname).split(".", 1)[0]))
-            usage = await observed_users(db, sid, ids, observations, poll, now, by_login, by_short, host_names) if poll else {}
+            usage, observed_hosts = await observed_users(db, ids, observations, poll, now, by_login, by_short, host_names) if poll else ({}, set())
+            if diagnostic is not None:
+                diagnostic["observed"] += len(hosts.keys() & observed_hosts)
+                diagnostic["current"] += sum(any(entry.current for entry in usage[hid].values()) for hid in hosts.keys() & usage.keys())
             active = ({hid for hid, pairs in links.items() if pairs} | set(usage) | (selected & set(ids)))
             if not active:
                 await RES.breathe("сопоставление устройств сотрудников")
@@ -349,12 +368,19 @@ async def devices(db, source_ids, people, now, manual=None):
                     zone_ids[hid].add(str(asset.zone_id))
                 zones = zone_ids[hid] - {UNASSIGNED} or {UNASSIGNED}
                 assigned, observed = links.get(hid, {}), usage.get(hid, {})
-                shared = shared_reason(asset, os, observed.values())
+                participants = set(assigned) | {pid for pid, item in observed.items() if item.regular or item.current}
+                shared = shared_reason(ref, os, participants)
+                connected = (raw or {}).get("last_connected")
+                is_workstation = (asset and asset.cls in ("laptop", "workstation")) or kind_of(
+                    {"os": os, "platform": (raw or {}).get("platform")}) == "workstation"
+                fresh_workstation = bool(is_workstation and fresh_snapshot and connected is not None
+                                         and now - CURRENT_AGE <= connected <= now)
                 yield device_row(f"ksc:{sid}:{hid}", name=name, source_id=sid, host_id=hid, asset=asset, asset_id=ref.id if ref else None,
                                  kind=typ if asset else None, raw=raw,
                                  stamp=stamp if raw else None, os=os, personal=(i[2] for i in infos),
                                  zones=({"id": z, "name": names[z]} for z in sorted(zones)), shared=shared), {
-                    pid: assess(assigned.get(pid, ()), observed.get(pid), shared) for pid in sorted(assigned.keys() | observed.keys())}
+                    pid: assess(assigned.get(pid, ()), observed.get(pid), shared, fresh_workstation=fresh_workstation)
+                    for pid in sorted(assigned.keys() | observed.keys())}
             await RES.breathe("сопоставление устройств сотрудников")
 
     q = assets().where(or_(InvAsset.ksc_source_id.is_(None), InvAsset.ksc_host_id.is_(None),

@@ -20,6 +20,7 @@ from .geo_download import (
     CHUNK, COUNTRY_EDITION, CURRENT, EDITIONS, GENERATION, MANIFEST, MAX_MMDB,
     READER_GRACE, DownloadError, _epoch, _metadata, _prune, _publish, _validators, database_directory,
 )
+from .geography import GEOLITE_MAX_AGE
 
 REPOSITORY = "P3TERX/GeoLite.mmdb"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
@@ -27,11 +28,10 @@ RELEASE_ASSETS = "release-assets.githubusercontent.com"
 MIRROR_EDITIONS = (*EDITIONS, COUNTRY_EDITION)
 DIGEST = re.compile(r"[0-9a-f]{64}")
 MANIFEST_LIMIT = 64 * 1024
-MAX_AGE = timedelta(days=30)
 
 
 def current_release(databases: dict, now: datetime) -> bool:
-    lower, upper = (now - MAX_AGE).timestamp(), (now + timedelta(days=1)).timestamp()
+    lower, upper = (now - GEOLITE_MAX_AGE).timestamp(), (now + timedelta(days=1)).timestamp()
     for edition in MIRROR_EDITIONS:
         tag = databases.get(edition)
         epoch = tag.get("build_epoch") if isinstance(tag, dict) else None
@@ -42,6 +42,12 @@ def current_release(databases: dict, now: datetime) -> bool:
 
 def fresh_directory(directory: Path, now: datetime) -> bool:
     return current_release(_metadata(directory), now)
+
+
+def mirror_expiry(directory: Path) -> datetime:
+    databases = _metadata(directory)
+    oldest = min(databases[edition]["build_epoch"] for edition in MIRROR_EDITIONS)
+    return datetime.fromtimestamp(oldest, timezone.utc) + GEOLITE_MAX_AGE
 
 
 def needs_cleanup(directory: Path, now: datetime) -> bool:
@@ -75,7 +81,7 @@ def source_url(value: str) -> httpx.URL:
     if (url.scheme != "https" or not url.host or url.port not in (None, 443)
             or url.userinfo or url.query or url.fragment or "?" in value or "#" in value):
         raise ValueError("Укажите HTTPS-адрес каталога без учётных данных, параметров и фрагмента")
-    return url.copy_with(path=url.path.rstrip("/") + "/")
+    return url.copy_with(raw_path=url.raw_path.rstrip(b"/") + b"/")
 
 
 async def _public_endpoint(url: httpx.URL) -> tuple[httpx.URL, dict]:

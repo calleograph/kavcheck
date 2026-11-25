@@ -9,7 +9,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import get_db
@@ -18,9 +18,9 @@ from ..inventory import docs as D
 from ..inventory import labels as L
 from ..inventory import model as M
 from ..inventory import printing as P
+from ..inventory.query import document_where
 from ..models import InvAsset, InvDoc, InvDocItem, InvFile, InvLocation, InvPerson
-from ..search import column_like
-from .inv import Ix, audit, doc_filter, get_doc_row, inv_ctx
+from .inv import Ix, audit, get_doc_row, inv_ctx
 
 router = APIRouter(prefix="/inv", tags=["inventory"])
 
@@ -45,23 +45,7 @@ def doc_out(d: InvDoc, people: dict, locs: dict, n_items: int | None = None) -> 
 @router.get("/docs")
 async def docs(kind: str = Query("", max_length=60), status: str = Query("", max_length=60), q: str = Query("", max_length=200), asset: int | None = None, person: int | None = None,
                open_only: bool = False, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
-    w = []
-    if kind:
-        w.append(InvDoc.kind.in_(kind.split(",")))
-    if status:
-        w.append(InvDoc.status.in_(status.split(",")))
-    if open_only:
-        w.append(InvDoc.status.not_in(("done", "cancelled")))
-    if q.strip():
-        conds = [c for c in (column_like(InvDoc.no, q.strip()), column_like(InvDoc.basis, q.strip()), column_like(InvDoc.comment, q.strip())) if c is not None]
-        conds.append(InvDoc.id.in_(select(InvDocItem.doc_id).join(InvAsset, InvAsset.id == InvDocItem.asset_id).where(column_like(InvAsset.search, q.strip()))))
-        w.append(or_(*conds))
-    if asset:
-        w.append(InvDoc.id.in_(select(InvDocItem.doc_id).where(InvDocItem.asset_id == asset)))
-    if person:
-        w.append(or_(InvDoc.from_person_id == person, InvDoc.to_person_id == person, InvDoc.resp_id == person))
-    if (f := doc_filter(ix)) is not None:
-        w.append(f)
+    w = document_where(ix.acc, ix.su.display_name, kind=kind, status=status, q=q, open_only=open_only, asset=asset, person=person)
     total = (await db.execute(select(func.count()).select_from(InvDoc).where(*w))).scalar_one()
     rows = (await db.execute(select(InvDoc).where(*w).order_by(InvDoc.doc_date.desc(), InvDoc.id.desc()).offset(offset).limit(limit))).scalars().all()
     counts = dict((await db.execute(select(InvDocItem.doc_id, func.count()).where(InvDocItem.doc_id.in_([d.id for d in rows])).group_by(InvDocItem.doc_id))).all()) if rows else {}

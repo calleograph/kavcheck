@@ -6,10 +6,14 @@ import pytest
 from sqlalchemy import insert
 
 from app.bi.match import RULE
+from app.devices import users as ksc_users
+from app.employee_protection import service
 from app.employee_protection.sources import BI_ASSIGNMENT, INVENTORY_OWNER, INVENTORY_USER, devices, employees
-from app.employee_protection.workplace import EXACT_ACCOUNT, HISTORY, REGULAR, SERVER, SESSION, SHARED, SHORT_ACCOUNT, UNVERIFIED_ACCOUNT
+from app.employee_protection.workplace import CURRENT_SESSION, EXACT_ACCOUNT, HISTORY, REGULAR, SERVER, SESSION, SHARED, SHORT_ACCOUNT, UNVERIFIED_ACCOUNT
 from app.models import (AdAuditAccount, AdAuditRun, BiDevice, BiMatch, BiOwner, BiPerson, BiSource, DevicesState, DeviceSession, DeviceUser, HierSnapshot,
-                        InvAsset, InvPerson, KscSource, LdapConnection, ZcHost, ZcHostZone, ZcSource, Zone)
+                        InvAsset, InvPerson, KscSource, LdapConnection, ZcHost, ZcHostZone, ZcSource, Zone, utcnow)
+from tests.conftest import login
+from tests.test_devices import FakeUsers, vrow
 
 NOW = datetime(2026, 11, 24, tzinfo=timezone.utc)
 
@@ -47,6 +51,93 @@ async def test_employee_roster_excludes_non_staff_and_does_not_guess_people(app)
         assert people[1]["organization"] == "" and people[1]["_emails"] == []
         _, stale = await employees(db, NOW + timedelta(days=46))
         assert not stale["ready"]
+
+
+@pytest.mark.asyncio
+async def test_verified_session_counts_immediately_only_on_fresh_single_workstation(client, app, monkeypatch):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sm = app.state.session_maker
+    now = utcnow() - timedelta(minutes=2)
+    ids = ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel")
+    async with sm() as db:
+        run = AdAuditRun(id=uuid4(), started_at=now, finished_at=now, status="ok")
+        source = KscSource(id=uuid4(), name="Example KSC", host="ksc.example.local", database="test", username="test")
+        no_poll = KscSource(id=uuid4(), name="Waiting KSC", host="waiting.example.local", database="test", username="test")
+        db.add_all([run, source, no_poll, LdapConnection(name="Directory", host="dc.example.local",
+                                                       base_dn="DC=example,DC=local", netbios="example")])
+        await db.flush()
+        sid = source.id
+        db.add_all([account(run.id, key) for key in ids[1:]] + [account(run.id, "alpha", upn="a.person@staff.example.local")])
+        db.add(ZcSource(source_id=sid, gen=1, built_at=now))
+        for hid in range(1, 10):
+            os = "Windows Server 2025" if hid == 3 else "Microsoft Windows 11"
+            last_connected = now - timedelta(days=4) if hid == 8 else now
+            av = None if hid == 7 else {"product": "Kaspersky", "has_rtp": True, "state": 3, "bases": now.isoformat()}
+            db.add(ZcHost(source_id=sid, gen=1, host_id=hid, name=f"WS-{hid}", os=os,
+                          data={"os": os, "last_connected": last_connected.isoformat(), "av": av, "rtp_state": 4}))
+        await db.commit()
+
+    upn_only = {**vrow(1, 1, "", True, "a.person@staff.example.local"), "user_id": 1}
+    windows_local = {**vrow(7, 6, "foxtrot", True, "foxtrot@example.local"), "local_host": 6}
+    observed = FakeUsers([upn_only, vrow(2, 2, "EXAMPLE\\bravo", True), vrow(3, 2, "alpha", True, "a.person@staff.example.local"),
+                          vrow(4, 3, "charlie", True, "charlie@example.local"), vrow(5, 4, "delta", False, "delta@example.local"),
+                          vrow(6, 5, "FOREIGN\\echo", True), windows_local, vrow(8, 7, "UNCONFIGURED\\golf", True, "golf@example.local"),
+                          vrow(9, 8, "hotel", True, "hotel@example.local"), vrow(10, 9, "EXAMPLE\\echo", True, "foxtrot@example.local")])
+    monkeypatch.setattr(ksc_users, "utcnow", lambda: now)
+    await ksc_users.poll_source(sm, observed, source, [])
+    await service.tick(sm, app.state.settings_svc, app.state.journal)
+
+    summary = (await client.get("/api/v1/employee-protection/summary")).json()
+    assert summary["ready"] and summary["totals"]["devices"] == 2 and summary["totals"]["protected"] == 1
+    assert summary["totals"]["uses_av"] == 1 and summary["totals"]["no_av"] == 0
+    rows = (await client.get("/api/v1/employee-protection/workplaces")).json()["items"]
+    by_pair = {(r["employee"]["id"], r["device"]["host_id"]): r for r in rows}
+    row = by_pair["alpha", 1]
+    assert row["confidence"] == "likely" and row["current_session"] and not row["regular"] and row["counted"] and not row["primary"]
+    assert CURRENT_SESSION in row["evidence"]
+    for pair in (("alpha", 2), ("bravo", 2), ("charlie", 3), ("delta", 4), ("hotel", 8)):
+        row = by_pair[pair]
+        assert row["confidence"] == "possible" and not row["counted"] and not row["primary"]
+    assert SHARED in by_pair["bravo", 2]["evidence"] and SERVER in by_pair["charlie", 3]["evidence"]
+    assert not {pid for pid, _ in by_pair} & {"echo", "foxtrot"}
+    assert by_pair["golf", 7]["device"]["status"] == "unknown"
+    async with sm() as db:
+        diagnostics = {row["source_name"]: row for row in (await service.state(db))["source_diagnostics"]}
+    assert diagnostics["Waiting KSC"]["status"] == "poll_missing"
+    ready = diagnostics["Example KSC"]
+    assert ready["status"] == "ready"
+    assert {key: ready[key] for key in ("observed", "current", "matched", "eligible", "possible", "av_known")} == {
+        "observed": 9, "current": 5, "matched": 6, "eligible": 2, "possible": 4, "av_known": 1}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_directory_mailbox_cannot_fill_inventory_assignee(client, app):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    sm = app.state.session_maker
+    observed_at = utcnow() - timedelta(minutes=1)
+    mail = "team@example.local"
+    async with sm() as db:
+        run = AdAuditRun(id=uuid4(), started_at=observed_at, finished_at=observed_at, status="ok")
+        known_owner = InvPerson(name="Alpha", login="alpha@example.local")
+        other = InvPerson(name="Bravo", email=mail)
+        db.add_all([run, known_owner, other])
+        await db.flush()
+        db.add_all([account(run.id, "alpha", mail=mail), account(run.id, "bravo", mail=mail)])
+        asset = InvAsset(inv_no="MAILBOX-EXAMPLE", cls="workstation", st_cls="use", owner_id=known_owner.id)
+        db.add(asset)
+        await db.flush()
+        aid, other_id = asset.id, other.id
+        await db.commit()
+
+    await service.tick(sm, app.state.settings_svc, app.state.journal)
+    url = "/api/v1/employee-protection/workplaces"
+    result = (await client.get(url, params={"asset_id": aid})).json()
+    row, = result["items"]
+    assert row["employee"]["email"] == mail and row["employee"]["email_verified"] is False
+    assert "user_id" not in row["proposals"]
+    payload = {"generation": result["generation"], "items": [
+        {"pair": row["id"], "version": row["asset_version"], "values": {"user_id": other_id}}]}
+    assert (await client.post(f"{url}/apply", json=payload)).status_code == 409
 
 
 @pytest.mark.asyncio
@@ -92,8 +183,8 @@ async def test_devices_dedup_sources_and_require_strong_links(app):
         assert same_host["zones"] == [{"id": str(zone.id), "name": zone.name}]
         assert same_host["ownership"] == "corporate"
         assert links["alpha"]["confidence"] == links["bravo"]["confidence"] == "confirmed"
-        assert links["alpha"]["evidence"] == sorted([INVENTORY_OWNER, BI_ASSIGNMENT])
-        assert links["bravo"]["evidence"] == [INVENTORY_USER]
+        assert links["alpha"]["evidence"] == sorted([INVENTORY_OWNER, BI_ASSIGNMENT, SHARED])
+        assert links["bravo"]["evidence"] == sorted([INVENTORY_USER, SHARED])
         assert rows[f"ksc:{one.id}:2"][0]["protection"] is None
         assert rows[f"ksc:{two.id}:1"][0]["ownership"] == "personal"
         mixed = rows[f"ksc:{two.id}:1"][1]
@@ -133,16 +224,17 @@ async def test_usage_without_inventory_distinguishes_regular_shared_and_incomple
         await db.flush()
         sid = source.id
         db.add_all([ZcSource(source_id=sid, gen=1, built_at=NOW), DevicesState(source_id=sid, polled_at=NOW - timedelta(hours=1))])
-        for hid in range(1, 12):
+        for hid in range(1, 13):
             os = "Windows Server 2025" if hid == 3 else "Windows 11"
             name = "workgroup" if hid == 8 else f"WS-{hid}"
             db.add(ZcHost(source_id=sid, gen=1, host_id=hid, name=name, data={"os": os}))
 
-        def observe(hid, login="alpha", domain="example.local", *, verified=True, history=False, repeat=True, future=False):
+        def observe(hid, login="alpha", domain="example.local", *, verified=True, history=False, repeat=True, future=False, legacy=False):
             last = NOW if future else NOW - timedelta(days=1)
+            stamps = [(NOW - timedelta(days=offset)).isoformat() for offset in (21, 14, 7, 1)] if repeat else [last.isoformat()]
             db.add(DeviceUser(source_id=sid, host_id=hid, user_key=login, login=login, domain=domain, identity_verified=verified,
                               last_session_at=None if history else last, last_seen_at=last, first_seen_at=NOW - timedelta(days=21),
-                              seen_n=500))
+                              seen_n=500, verified_observations={"stamps": stamps} if not (legacy or history) else None))
             if repeat:
                 for offset in (21, 14, 7):
                     first = NOW - timedelta(days=offset)
@@ -158,15 +250,16 @@ async def test_usage_without_inventory_distinguishes_regular_shared_and_incomple
         observe(6, history=True, repeat=False)
         observe(7, verified=False)
         observe(8, domain="workgroup", verified=False)
-        observe(9, "charlie", repeat=True)
+        observe(9, "charlie")
         observe(10, future=True)
         observe(11, "charlie", domain="", verified=False)
+        observe(12, legacy=True)
         await db.commit()
         people = [{"id": key, "_emails": [], "_logins": [f"{key}@example.local", f"{key}@workgroup"],
                    "_short_logins": [key] if key != "charlie" else []} for key in ("alpha", "bravo", "charlie")]
         rows = {row["host_id"]: (row, links) async for row, links in devices(db, [sid], people, NOW)}
 
-    assert set(rows) == {1, 2, 3, 4, 6, 7, 9}
+    assert set(rows) == {1, 2, 3, 4, 6, 7, 9, 12}
     everyday = rows[1][1]["alpha"]
     assert everyday["confidence"] == "likely" and everyday["observed_days"] == 4
     assert REGULAR in everyday["evidence"] and not everyday["shared"]
@@ -177,7 +270,9 @@ async def test_usage_without_inventory_distinguishes_regular_shared_and_incomple
     assert rows[6][1]["alpha"]["confidence"] == "possible" and rows[6][1]["alpha"]["observed_days"] == 0
     assert HISTORY in rows[6][1]["alpha"]["evidence"] and rows[6][1]["alpha"]["first_seen_at"] is None
     assert rows[7][1]["alpha"]["confidence"] == "possible" and UNVERIFIED_ACCOUNT in rows[7][1]["alpha"]["evidence"]
-    assert rows[9][1]["charlie"]["observed_days"] == 1
+    assert rows[9][1]["charlie"]["observed_days"] == 4
+    assert rows[12][1]["alpha"]["confidence"] == "possible"
+    assert rows[12][1]["alpha"]["observed_days"] == 0
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,7 @@
 | | Программы | `/software`, `/software/p/:key` | все | реестр, продукты, версии, где установлено | `software_hosts` (раздел «Отчёты») |
 | | Устройства и пользователи | `/devices` (вкладки: устройства, пользователи KSC, BI, сопоставление) | все; BI — аналитик и администратор | устройства и владельцы, история, сопоставление BI и KSC | `quick_devices`, `quick_bi` |
 | Защита и уязвимости | Состояние защиты | `/protection` | все | проблемы Kaspersky по компьютерам | `quick_protection` |
-| | Антивирусная защита сотрудников | `/employee-protection` | администратор, специалист по ИБ с полным доступом | охват Kaspersky по сотрудникам и устройствам, диаграммы, причины и Excel ([EMPLOYEE_PROTECTION.md](EMPLOYEE_PROTECTION.md)) | `quick_employee_protection` |
+| | Антивирусная защита сотрудников | `/employee-protection`, диагностика источников `/employee-protection?view=diagnostics` | администратор, специалист по ИБ с полным доступом | охват Kaspersky по сотрудникам и устройствам, диаграммы, диагностика опросов KSC и Excel ([EMPLOYEE_PROTECTION.md](EMPLOYEE_PROTECTION.md)) | `quick_employee_protection` |
 | | Уязвимости | `/vulnerabilities`, `/vulnerabilities/hosts/:id` | все | обнаружения KSC | `quick_vulns` |
 | | База уязвимостей | `/vdb` | все | внешние базы, поиск, план устранения | `quick_extvulns` |
 | | EOL | `/eol` | все | ПО и ОС без поддержки | `quick_eol` |

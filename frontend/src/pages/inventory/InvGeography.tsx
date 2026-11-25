@@ -14,8 +14,9 @@ import InvGeoRules from "./InvGeoRules";
 import { useInvReport } from "./InvReport";
 
 type GeoRow = GeoObservation & { id: number; inv_no: string; name: string; account_location: string; proposal_fields: string[] };
-type Source = { id: string; name: string; count?: number; finished_at?: string; geoip?: boolean; asn?: boolean; geo_provider?: string; error?: string; geo_errors?: string[] };
-type OverviewSummary = { groups?: GeoGroup[]; groups_limited?: boolean; sources?: Source[]; dbip_attribution?: boolean; geo_attributions?: string[] };
+type Source = { id: string; name: string; count?: number; finished_at?: string; geoip?: boolean; asn?: boolean; geo_provider?: string; error?: string; geo_errors?: string[]; capabilities?: string[] };
+type OverviewSummary = { groups?: GeoGroup[]; groups_limited?: boolean; sources?: Source[]; dbip_attribution?: boolean; geo_attributions?: string[];
+  with_coordinates?: number; diagnostics?: { code: string; label: string; count: number }[] };
 type Overview = { items: GeoRow[]; total: number } & OverviewSummary;
 type Filters = Record<string, string | number>;
 type Level = "country" | "region" | "city" | "site";
@@ -23,12 +24,13 @@ const LEVELS: Record<Level, string> = { country: "Страны", region: "Рег
 const LABELS: Record<string, string> = {
   q: "Поиск", dept_id: "Подразделение", zone_id: "Зона", type_id: "Тип", country: "Страна", region: "Регион", city: "Город", site_id: "Площадка",
   freshness: "Актуальность", network: "Сеть", observation_source: "Источник", status: "Состояние наблюдения", fill_available: "Предложения для пустых полей",
+  reason: "Координаты и причины",
 };
 const FRESH: Record<string, string> = { fresh: "Актуально", stale: "Старше 7 дней", unknown: "Время неизвестно" };
 const ACCOUNT = new Set(["q", "dept_id", "zone_id", "type_id"]);
 
 function pickGroup(g: GeoGroup, level?: Level): Filters {
-  if (level === "site" || (!level && g.site_id)) return g.site_id ? { site_id: g.site_id } : {};
+  if (level === "site" || (!level && g.site_id)) return g.site_id ? { site_id: g.site_id, ...(!level && g.reason ? { reason: g.reason } : {}) } : {};
   if (level && !g[level]) return {};
   const result: Filters = {};
   for (const k of ["country", "region", "city"] as const) {
@@ -36,6 +38,7 @@ function pickGroup(g: GeoGroup, level?: Level): Filters {
     if (k === level) break;
   }
   if (!level && g.status) result.status = g.status;
+  if (!level && g.reason) result.reason = g.reason;
   return result;
 }
 
@@ -61,7 +64,9 @@ export default function InvGeography() {
     return { ...result, filterKey };
   }, 100, { retainExtraOnAppend: true });
   const data = list.extra as (OverviewSummary & { filterKey: string }) | null;
-  const groups = data?.filterKey === filterKey ? data.groups ?? [] : [];
+  const current = data?.filterKey === filterKey ? data : null;
+  const groups = current?.groups ?? [];
+  const diagnostics = current?.diagnostics ?? [];
   const source = data?.sources ?? [];
   const credits = [DB_IP_LITE, GEOLITE].filter((provider) =>
     (data?.filterKey === filterKey && (data.geo_attributions?.includes(provider) || (provider === DB_IP_LITE && data.dbip_attribution))) ||
@@ -93,6 +98,7 @@ export default function InvGeography() {
   const titles = (key: string, value: string | number) => {
     if (key === "fill_available") return "Есть";
     if (key === "status") return GEO_STATUS[value];
+    if (key === "reason") return diagnostics.find((item) => item.code === value)?.label ?? String(value);
     if (key === "freshness") return FRESH[value];
     if (key === "observation_source") return source.find((s) => s.id === value)?.name ?? String(value);
     if (key === "zone_id") return meta.zones.find((s) => s.id === value)?.name ?? String(value);
@@ -131,6 +137,7 @@ export default function InvGeography() {
         {option("type_id", meta.refs.filter((r) => r.kind === "type" && r.active), "Все типы")}
         {option("observation_source", source, "Все источники")}
         {option("status", Object.entries(GEO_STATUS).map(([id, name]) => ({ id, name })), "Все состояния")}
+        {option("reason", diagnostics.map(({ code, label }) => ({ id: code, name: label })), "Все причины")}
         <label className="field">Сеть из правила<input value={f.network ?? ""} onChange={(e) => change("network", e.target.value)} maxLength={300} placeholder="192.0.2.0/24" /></label>
       </>}
       moreActive={Object.keys(filters).filter((k) => !["q", "freshness"].includes(k)).length}
@@ -139,6 +146,17 @@ export default function InvGeography() {
       onRefresh={() => reload((v) => v + 1)} refreshing={list.initial} report={{ onClick: report, disabled: list.initial || !list.total }} />
     {list.error && list.initial && <p className="field-err" role="alert">{list.error}</p>}
     <div className="card stack">
+      {current?.with_coordinates !== undefined && <div className="stack">
+        <p className="small">С координатами <b>{num(current.with_coordinates)}</b> из {num(list.total)}. Сетевые наблюдения собираются по карточкам, связанным с KSC.</p>
+        <div className="row wrap">
+          {diagnostics.filter((item) => item.count).map((item) => <button type="button" key={item.code} className="btn mini ghost"
+            aria-pressed={f.reason === item.code} onClick={() => change("reason", f.reason === item.code ? "" : item.code)}>
+            {item.label} · {num(item.count)}
+          </button>)}
+        </div>
+        {isAdmin && diagnostics.some((item) => item.code === "city_unavailable" && item.count > 0) &&
+          <p className="small"><Link to="/inventory/settings?tab=geoip">Проверить загрузку базы City</Link></p>}
+      </div>}
       <InvGeoMap groups={groups} select={(g) => drill(pickGroup(g))} />
       <p className="small muted">Точки площадок заданы в справочнике. Область вокруг точки показывает приблизительную погрешность географии выхода в сеть. Подложка Natural Earth.</p>
       {credits.map((provider) => <p key={provider} className="small muted"><GeoIpAttribution provider={provider} /></p>)}
@@ -159,13 +177,15 @@ export default function InvGeography() {
         <tbody><VirtualRows list={list} colSpan={4} estimate={64} row={(item) => <tr key={item.id}>
           <td><Link to={`/inventory/assets/${item.id}?tab=place`}>{item.name || item.inv_no}</Link><span className="sub mono">{item.inv_no}</span></td>
           <td>{item.account_location || "—"}{!!item.proposal_fields?.length && <span className="sub">Предложения · {item.proposal_fields.join(", ")}</span>}</td>
-          <td>{placeOf(item) || "—"}<span className="sub">{GEO_STATUS[item.status]}{item.network && ` · ${item.network}`}</span></td>
-          <td>{fmt(item.observed_at)}<span className="sub">{source.find((s) => s.id === item.source_id)?.name}{item.observed_at && !item.fresh && " · устарело"}</span></td>
+          <td>{placeOf(item) || "—"}<span className="sub">{item.reason_label || GEO_STATUS[item.status]}{item.network && ` · ${item.network}`}</span></td>
+          <td>{fmt(item.observed_at)}<span className="sub">{source.find((s) => s.id === item.source_id)?.name}{item.observed_at && !item.fresh && " · устарело"}</span>
+            {item.connection_ip?.ip && <span className="sub mono" title={item.connection_ip.source}>{item.connection_ip.ip}</span>}</td>
         </tr>} /></tbody></table><ListFoot list={list} /></div>}
     {!!source.length && <details className="card"><summary>Источники наблюдений</summary>
       <ul>{source.map((s) => <li key={s.id}><b>{s.name}</b> · {s.finished_at ? fmt(s.finished_at) : "снимок ожидается"}
         {s.count !== undefined && ` · наблюдений ${num(s.count)}`}{s.geo_provider && ` · ${s.geo_provider}`}
         {s.finished_at && (s.geoip ? " · база City доступна" : " · база City отсутствует")}
+        {s.capabilities && !s.capabilities.some((cap) => cap === "public_connection" || cap === "peer_ip") && " · поля IP подключения недоступны для чтения"}
         {s.error && " · последнее обновление завершилось ошибкой"}{!!s.geo_errors?.length && " · ошибка базы GeoIP"}</li>)}</ul>
     </details>}
     {rep.node}{toast}

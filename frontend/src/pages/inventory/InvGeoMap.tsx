@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { num } from "../../util";
 
 export interface GeoGroup {
-  country: string; region: string; city: string; site_id: number | null; site?: string; status: string;
+  country: string; region: string; city: string; site_id: number | null; site?: string; status: string; reason?: string;
   n: number; fresh_n: number; lat: number | null; lon: number | null; radius_km: number | null;
 }
 type Ring = [number, number][];

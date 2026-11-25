@@ -7,11 +7,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from sqlalchemy import select
+
 from ..db import xact_lock
-from ..models import AppSetting, JobLease, utcnow
+from ..models import AppSetting, InvGeo, JobLease, utcnow
 from ..services.jobs import JOBS
-from .geo_service import managed_pair, managed_root, request_refresh
-from .geography import GEOIP_LABELS
+from ..services.resources import RES
+from .geo_service import BATCH, managed_pair, managed_root, request_refresh
+from .geography import GEOIP_LABELS, expired_geoip, without_geoip
 
 log = logging.getLogger(__name__)
 KIND = "geoip_update"
@@ -104,7 +107,8 @@ async def finish(sm, lease, revision: str, request: str, provider: str, result: 
         state = dict(row.value) if row else {}
         published = publications(state)
         state = dict(provider=provider, revision=revision, request=request, error=error, checked_at=now.isoformat(),
-                     next_check_at=next_check(now, provider, result).isoformat(), publications=published)
+                     next_check_at=next_check(now, provider, result).isoformat(), publications=published,
+                     results_cleaned_on=state.get("results_cleaned_on"))
         if result is not None:
             databases = result["databases"]
             if result["changed"] or databases != published.get(provider, {}).get("databases"):
@@ -117,6 +121,28 @@ async def finish(sm, lease, revision: str, request: str, provider: str, result: 
         await db.commit()
 
 
+async def purge_results(sm, lease, now: datetime) -> None:
+    await lease.stage("удаление устаревших геоданных")
+    cursor = 0
+    query = select(InvGeo).where(expired_geoip(now)).order_by(InvGeo.asset_id).limit(BATCH).with_for_update()
+    async with sm() as db:
+        while batch := (await db.scalars(query.where(InvGeo.asset_id > cursor))).all():
+            cursor = batch[-1].asset_id
+            for row in batch:
+                row.result = without_geoip(row.result)
+            await lease.fence(db)
+            await db.commit()
+            await RES.breathe("удаление устаревших геоданных")
+        row = await db.get(AppSetting, STATE)
+        cleaned = now.date().isoformat()
+        if row is None:
+            db.add(AppSetting(group=STATE, value={"results_cleaned_on": cleaned}))
+        else:
+            row.value = {**row.value, "results_cleaned_on": cleaned}
+        await lease.fence(db)
+        await db.commit()
+
+
 async def tick(sm, svc, directory: Path, journal):
     from .geo_download import DownloadError, update, update_dbip
     from .geo_mirror import cleanup, needs_cleanup, update_mirror
@@ -124,7 +150,8 @@ async def tick(sm, svc, directory: Path, journal):
     mirror = managed_root(directory, "mirror")
     async with sm() as db:
         cfg, revision, state, request = await snapshot(db, svc)
-        if not needs_cleanup(mirror, utcnow()) and not due(
+        now = utcnow()
+        if state.get("results_cleaned_on") == now.date().isoformat() and not needs_cleanup(mirror, now) and not due(
                 cfg, revision, state, request, missing=managed_pair(directory, cfg.provider) is None):
             return
     try:
@@ -149,13 +176,17 @@ async def tick(sm, svc, directory: Path, journal):
                     yield db
                     await db.commit()
 
-            if needs_cleanup(mirror, utcnow()):
+            now = utcnow()
+            expired = False
+            if needs_cleanup(mirror, now):
                 async with publish_guard() as db:
-                    expired = cleanup(mirror, utcnow())
+                    expired = cleanup(mirror, now)
                     if expired:
                         await request_refresh(db)
                 if expired:
                     await journal.emit("inventory", "geoip_expired", level="warn", message="Комплект GeoLite2 из зеркала устарел")
+            if expired or state.get("results_cleaned_on") != now.date().isoformat():
+                await purge_results(sm, lease, now)
             if not due(cfg, revision, state, request, missing=directory_missing):
                 return
             await lease.stage(f"проверка и загрузка {label}")

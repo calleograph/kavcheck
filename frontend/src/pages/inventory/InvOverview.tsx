@@ -47,6 +47,7 @@ export default function InvOverview({ ctx }: { ctx: Ctx }) {
         <div className="row wrap">
           {workplacesAccess && <Link className="btn" to="/inventory/workplaces">Проверить связи</Link>}
           <Link className="btn" to="/inventory/geography?fill_available=1">Предложения по принадлежности</Link>
+          {isAdmin && <Link className="btn ghost" to="/inventory/settings?tab=automation">Автозаполнение</Link>}
         </div>
       </section>
     </div>
@@ -80,6 +81,7 @@ export default function InvOverview({ ctx }: { ctx: Ctx }) {
         <div className="row wrap">
           {workplacesAccess && <Link className="btn" to="/inventory/workplaces"><Icon name="users" size={16} />Проверить связи</Link>}
           <Link className="btn" to="/inventory/geography?fill_available=1"><Icon name="target" size={16} />Сетевые предложения</Link>
+          {isAdmin && <Link className="btn" to="/inventory/settings?tab=automation"><Icon name="sliders" size={16} />Автозаполнение</Link>}
           {can("docs") && <>
             <Link className="btn" to="/inventory/docs/new?kind=issue">Выдать</Link>
             <Link className="btn" to="/inventory/docs/new?kind=move">Переместить</Link>

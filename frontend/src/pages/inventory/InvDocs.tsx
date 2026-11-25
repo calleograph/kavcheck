@@ -62,7 +62,8 @@ export default function InvDocs({ ctx }: { ctx: Ctx }) {
         </>}
         chips={[...(kind ? [{ id: "k", label: meta.doc_short[kind] ?? kind, onRemove: () => set("kind", "") }] : []), ...(status ? [{ id: "s", label: meta.doc_status[status] ?? status, onRemove: () => set("status", "") }] : []), ...(openOnly ? [{ id: "o", label: "Незавершённые", onRemove: () => set("open_only", "") }] : [])]}
         onReset={() => { setQ(""); setSp(new URLSearchParams(), { replace: true }); }} count={{ n: list.initial ? null : list.total, noun: ["документ", "документа", "документов"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
-        report={{ onClick: () => rep.open(["docs"], { doc_kind: kind }, "Журнал документов"), title: "Журнал документов" }} />
+        report={{ onClick: () => rep.open(["docs"], { doc_kind: kind, status, q: aq, doc_open_only: openOnly }, "Журнал документов"),
+          disabled: list.refreshing || q !== aq, title: "Журнал документов" }} />
       <div className="table-scroll">
         {list.initial ? <SkelRows cols={7} /> : <table className="table virt"><thead><tr><th>Номер</th><th>Вид</th><th>Дата</th><th>Этап</th><th className="hide-sm">Стороны</th><th className="hide-sm">Единиц</th><th className="hide-sm">Файл</th></tr></thead>
           <tbody><VirtualRows list={list} colSpan={7} estimate={46} row={(d) => <tr>

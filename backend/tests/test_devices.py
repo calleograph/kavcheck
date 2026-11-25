@@ -108,6 +108,44 @@ async def test_session_identity_requires_unambiguous_actual_domain(app, monkeypa
         assert row.session_now and not row.identity_verified
 
 
+async def test_only_completed_polls_record_verified_days(app, monkeypatch):
+    from app.employee_protection.sources import devices
+
+    src = await _src(app)
+    sm = app.state.session_maker
+    start = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    now = iter(start + timedelta(days=day) for day in (0, 1, 7, 14, 21))
+    monkeypatch.setattr(U, "utcnow", lambda: next(now))
+    monkeypatch.setattr(U, "PAGE", 1)
+    row = vrow(1, 1, "alex", True, "alex@example.local")
+    users = FakeUsers([row])
+
+    class InterruptedPoll(FakeUsers):
+        async def run(self, sql, params=None, *, max_rows=0):
+            if params["after"]:
+                raise RuntimeError("Опрос прерван")
+            return await super().run(sql, params, max_rows=max_rows)
+
+    await U.poll_source(sm, users, src, MASKS)
+    with pytest.raises(RuntimeError):
+        await U.poll_source(sm, InterruptedPoll([row]), src, MASKS)
+    async with sm() as db:
+        people = [{"id": "alex", "_logins": ["alex@example.local"], "_emails": []}]
+        links = [pairs async for _, pairs in devices(db, [src.id], people, start + timedelta(days=1))]
+        assert links[0]["alex"]["observed_days"] == 1
+        assert links[0]["alex"]["current_session"] is False
+    await U.poll_source(sm, users, src, MASKS)
+    await U.poll_source(sm, users, src, MASKS)
+    async with sm() as db:
+        account = await db.get(DeviceUser, (src.id, 1, "alex"))
+        assert account.verified_observations["stamps"] == [(start + timedelta(days=day)).isoformat() for day in (0, 7, 14)]
+
+    await U.poll_source(sm, FakeUsers([vrow(1, 1, "alex", True, "alex@other.example.local")]), src, MASKS)
+    async with sm() as db:
+        account = await db.get(DeviceUser, (src.id, 1, "alex"))
+        assert account.verified_observations["stamps"] == [(start + timedelta(days=21)).isoformat()]
+
+
 async def _zone_data(app, src, hosts):
     async with app.state.session_maker() as db:
         db.add(ZcSource(source_id=src.id, gen=1, status="ready"))

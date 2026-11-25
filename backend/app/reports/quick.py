@@ -26,6 +26,9 @@ from ..search import any_field, matcher
 
 QUICK_KINDS = ("quick_sessions", "quick_vulns", "quick_hosts", "quick_protection", "quick_events", "quick_extvulns", "quick_eol", "quick_devices", "quick_overview", "quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_ad", "quick_adaudit", "quick_admin", "quick_inv", "quick_employee_protection")
 NO_KSC = ("quick_pentest", "quick_hunt", "quick_bi", "quick_hier", "quick_ad", "quick_adaudit", "quick_admin", "quick_inv", "quick_employee_protection")          # строятся без источника KSC (своя внутренняя база)
+LOCAL_SOURCE_NAMES = {"quick_bi": "BI", "quick_hier": "Иерархия", "quick_ad": "Active Directory",
+                      "quick_adaudit": "Аудит домена", "quick_admin": "KAV Checker", "quick_inv": "Инвентаризация",
+                      "quick_employee_protection": "Защита сотрудников"}
 KIND_TITLE = {"quick_sessions": "Сейчас в системе", "quick_zone": "Состояние безопасности зоны", "quick_vulns": "Уязвимости", "quick_hosts": "Компьютеры", "quick_protection": "Состояние защиты", "quick_events": "События безопасности", "quick_extvulns": "Уязвимости по внешним базам", "quick_eol": "EOL в инфраструктуре", "quick_devices": "Устройства и пользователи", "quick_overview": "Сводка инфраструктуры", "quick_pentest": "Результаты Pentest", "quick_hunt": "Результаты целевого поиска уязвимостей", "quick_bi": "Владельцы устройств (BI)", "quick_hier": "Иерархия. Предприятие", "quick_ad": "Active Directory", "quick_adaudit": "Аудит домена", "quick_admin": "Администрирование", "quick_inv": "Инвентаризация", "quick_employee_protection": "Антивирусная защита сотрудников"}
 SEV_RU = {"critical": "Критическая", "high": "Высокая", "warning": "Предупреждение"}
 SEV_RANK = {"critical": 3, "high": 2, "warning": 1}
@@ -799,6 +802,10 @@ async def build(kind: str, client: SourceClient, params: dict, ctx: Ctx) -> dict
     if params.get("detail") == "summary" and kind == "quick_eol":
         params = {**params, "devices": False}                 # краткий отчёт не строит таблицу устройств (самая тяжёлая часть)
     doc = await BUILDERS[kind](client, params, ctx)
+    if (kind == "quick_employee_protection" and ctx.light and doc.get("selection_total", 0) > len(doc["tables"][0]["rows"])
+            and (params.get("sort") or params.get("group"))):
+        doc["notes"].append("Предпросмотр показывает образец строк. Сортировка и группировка применяются ко всему готовому отчёту.")
+        params = {**params, "sort": "", "group": ""}
     doc.update(kind=kind, generated_at=ctx.now.isoformat(timespec="seconds"), source="" if kind in NO_KSC else ctx.source_name, org=ctx.org)      # автономный Pentest не принадлежит источнику KSC
     return shape(kind, doc, params)
 

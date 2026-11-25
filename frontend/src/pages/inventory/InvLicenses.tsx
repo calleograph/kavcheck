@@ -37,7 +37,8 @@ export default function InvLicenses({ ctx }: { ctx: Ctx }) {
           options={[["", "Действующие"], ["issues", "С расхождениями"], ["soon", "Истекают"], ["expired", "Истекли"], ["inactive", "Архив"]]} />}
         count={{ n: d ? d.items.length : null, noun: ["лицензия", "лицензии", "лицензий"] }}
         extra={can("edit") && <button className="btn ghost mini" onClick={() => void recount()} title={d?.usage_at ? `Последний подсчёт: ${fmt(d.usage_at)}` : "Подсчёт ещё не выполнялся"}><Icon name="refresh" size={15} />Пересчитать установки</button>}
-        report={{ onClick: () => rep.open(["licenses", "license_usage"], {}, "Лицензии"), title: "Отчёт по лицензиям" }} />
+        report={{ onClick: () => rep.open(["licenses", "license_usage"], { q: aq, license_state: state }, "Лицензии"),
+          disabled: q !== aq, title: "Отчёт по лицензиям" }} />
       {err && <p className="field-err">{err}</p>}
       {!d ? <div className="card"><SkelRows rows={4} cols={6} /></div> : !d.items.length ? <div className="card"><Empty icon="key" title="Лицензий нет">Добавьте купленные лицензии: количество, срок, маски названия программы — установки посчитаются по данным KSC.</Empty></div> :
         <div className="table-scroll"><table className="table"><thead><tr><th>Продукт</th><th className="num">Куплено</th><th className="num">Назначено</th><th className="num">Установлено</th><th>Срок</th><th>Расхождения</th></tr></thead><tbody>

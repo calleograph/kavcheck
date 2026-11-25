@@ -15,6 +15,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import ALL_SOURCES, ROLE_RANK, SessionUser, get_db, require_analyst, require_user
+from ..db import xact_lock
+from ..inventory.core import Access, access_for
+from ..inventory.query import REPORTS_WITH_DOCUMENT_SCOPE
 from ..ksc import versions
 from ..search import any_field
 from ..models import AuditCheck, KscSource, ReportJob, ReportTemplate, utcnow
@@ -39,7 +42,12 @@ def job_out(j: ReportJob) -> dict:
             "started_at": j.started_at, "finished_at": j.finished_at, "data_fetched_at": j.data_fetched_at, "rows": j.rows, "summary": j.summary, "error": j.error}
 
 
-def can_see(su: SessionUser, j: ReportJob, hier=None, employee=False) -> bool:
+def _scoped_inventory_report(j: ReportJob) -> bool:
+    view = (j.params or {}).get("view")
+    return j.kind == "quick_inv" and (view == "overview" or view in REPORTS_WITH_DOCUMENT_SCOPE)
+
+
+def can_see(su: SessionUser, j: ReportJob, hier=None, employee=False, inventory: Access | None = None) -> bool:
     """hier — настройки группы «hier» (для отчётов иерархии и AD: доступ по ролям раздела; не переданы — такие отчёты не показываются)."""
     if su.is_zone:                                         # ответственный за зону — только свои отчёты по своим зонам
         return j.created_by_id == su.user_id and j.kind == "quick_zone" and set((j.params or {}).get("zone_ids") or []) <= su.zone_ids
@@ -51,6 +59,16 @@ def can_see(su: SessionUser, j: ReportJob, hier=None, employee=False) -> bool:
         if not (su.is_admin or j.created_by_id == su.user_id):
             return False
         p = j.params or {}
+        if not su.is_admin and _scoped_inventory_report(j):
+            if inventory is None or not inventory.can("view"):
+                return False
+            if inventory.scopes:
+                saved = set(p.get("scope_ids") or [])
+                if not saved or not saved <= set(inventory.scope_ids):
+                    return False
+                # До исправления файл мог включать документы и инвентаризации из другой области.
+                if p.get("view") != "overview" and not p.get("_document_scope_checked"):
+                    return False
         if p.get("view") in ("geography_rules", "geography_preview"):
             return su.is_admin
         if p.get("view") in ("geography", "geography_card") and not (su.is_admin or su.all_sources):
@@ -82,10 +100,15 @@ async def _hier_cfg(request: Request | None, db: AsyncSession):
     return await request.app.state.settings_svc.get(db, "hier") if request is not None else None
 
 
+async def _inventory_access(request: Request, db: AsyncSession, su: SessionUser) -> Access:
+    return await access_for(db, su, await request.app.state.settings_svc.get(db, "inventory"))
+
+
 async def _job(db: AsyncSession, job_id: uuid.UUID, su: SessionUser, request: Request | None = None) -> ReportJob:
     j = await db.get(ReportJob, job_id)
     employee = bool(j and j.kind == "quick_employee_protection" and request is not None and await employee_allowed(request, db, su))
-    if j is None or not can_see(su, j, await _hier_cfg(request, db) if j.kind in ("quick_hier", "quick_ad") else None, employee):
+    inventory = await _inventory_access(request, db, su) if j and request is not None and not su.is_admin and _scoped_inventory_report(j) else None
+    if j is None or not can_see(su, j, await _hier_cfg(request, db) if j.kind in ("quick_hier", "quick_ad") else None, employee, inventory):
         raise HTTPException(status_code=404, detail="Отчёт не найден")
     return j
 
@@ -123,12 +146,13 @@ async def enqueue(request: Request, db: AsyncSession, su: SessionUser, *, kind: 
         params["_expect"] = [audit.item_condition(i) for i in params.get("items") or []]   # условия в виде, заданном пользователем: сверяются при выполнении
     title = title.strip() or default_title(kind, params)
     ids = [str(s.id) for s in sources]
+    await xact_lock(db, f"report.enqueue:{su.user_id}:{kind}")
     live = (await db.execute(select(ReportJob).where(ReportJob.status.in_(("queued", "running")), ReportJob.kind == kind, ReportJob.created_by_id == su.user_id)
                              .order_by(ReportJob.created_at.desc()).limit(20))).scalars().all()
-    same = next((j for j in live if list(j.source_ids or [str(j.source_id)]) == ids and (j.params or {}) == params and j.title == title[:300]), None)
+    same = next((j for j in live if job_sources(j) == ids and (j.params or {}) == params and j.title == title[:300]), None)
     if same is not None:                                   # двойной щелчок или повторная отправка: тот же отчёт уже формируется — второе задание не создаётся
         return same
-    source_name = ", ".join(s.name for s in sources) or ("Защита сотрудников" if kind == "quick_employee_protection" else "Pentest")
+    source_name = ", ".join(s.name for s in sources) or quick.LOCAL_SOURCE_NAMES.get(kind, "Pentest")
     job = ReportJob(id=uuid.uuid4(), source_id=sources[0].id if sources else None, source_ids=[str(s.id) for s in sources], source_name=source_name[:600], kind=kind,
                     title=title[:300], params=params, created_by=su.display_name, created_by_id=su.user_id)
     db.add(job)
@@ -155,7 +179,8 @@ async def list_jobs(request: Request, source_only: bool = True, offset: int = Qu
     cur = str(su.current_source_id) if su.current_source_id else None
     hier = await _hier_cfg(request, db)
     employee = any(j.kind == "quick_employee_protection" for j in rows) and await employee_allowed(request, db, su)
-    out = [j for j in rows if can_see(su, j, hier, employee) and (su.is_zone or not source_only or not cur or cur in job_sources(j) or j.kind in quick.NO_KSC)]
+    inventory = await _inventory_access(request, db, su) if not su.is_admin and any(_scoped_inventory_report(j) for j in rows) else None
+    out = [j for j in rows if can_see(su, j, hier, employee, inventory) and (su.is_zone or not source_only or not cur or cur in job_sources(j) or j.kind in quick.NO_KSC)]
     return {"items": [job_out(j) for j in out[:limit]]}
 
 
@@ -221,7 +246,8 @@ async def get_job(job_id: uuid.UUID, request: Request, su: SessionUser = Depends
     return job_out(await _job(db, job_id, su, request))
 
 
-_SEARCH_KEYS = {"name", "fqdn", "ip", "os", "app_name", "app_version", "group", "program", "host", "threat", "cve", "kla_id", "product", "installed_version", "problems", "av", "type_ru", "target", "user", "object"}
+_SEARCH_KEYS = {"name", "fqdn", "ip", "os", "app_name", "app_version", "group", "program", "host", "threat", "cve", "kla_id", "product",
+                "installed_version", "problems", "av", "type_ru", "target", "user", "object", "employee", "device", "login", "department"}
 _ROWS_CACHE: dict[str, tuple[int, list[dict]]] = {}
 
 

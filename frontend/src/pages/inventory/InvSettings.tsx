@@ -1,16 +1,28 @@
 /** Настройки инвентаризации (администратор): права по ролям, личные права и области учёта по учётным записям, нумерация, печатные формы, этикетки, сроки контроля, связь с KSC. */
 import { useEffect, useState } from "react";
-import { api, type ApiError } from "../../api";
+import { Link, useSearchParams } from "react-router-dom";
+import { api, req, type ApiError } from "../../api";
 import { Icon } from "../../components/Icons";
+import { AdminReportButton } from "../../components/QuickReport";
 import { useToast } from "../../components/Toast";
 import { SkelRows, Tabs, TagInput } from "../../components/ui";
+import { fmt, num as formatNumber } from "../../util";
 import { inv } from "./invApi";
 import InvGeoSettings from "./InvGeoSettings";
 import { useInv } from "./InvBits";
 
 type S = Record<string, unknown> & { roles: Record<string, string>; grants: { login: string; perms: string[]; location_ids: number[] }[]; forms: Record<string, { title?: string; intro?: string; columns?: string[]; props?: string[]; signatures?: string[]; footer?: string }>;
-  doc_prefix: Record<string, string>; label_fields: string[] };
-type T = "access" | "numbers" | "forms" | "labels" | "control" | "notify" | "geoip";
+  doc_prefix: Record<string, string>; label_fields: string[]; auto_fill_fields?: AutoFillField[] };
+const SETTINGS_TABS = [
+  { id: "access", label: "Права доступа" }, { id: "numbers", label: "Нумерация" }, { id: "forms", label: "Печатные формы" }, { id: "labels", label: "Этикетки" },
+  { id: "control", label: "Сроки и KSC" }, { id: "automation", label: "Автозаполнение" }, { id: "notify", label: "Уведомления" }, { id: "geoip", label: "Географические базы" },
+] as const;
+const AUTO_FILL_FIELDS = { user_id: "Пользователь", dept_id: "Подразделение", location_id: "Местоположение", resp_id: "Ответственный" } as const;
+type AutoFillField = keyof typeof AUTO_FILL_FIELDS;
+type AutoFillStatus = {
+  fields: AutoFillField[]; running: boolean; pending: boolean; last_at?: string; checked?: number; changed?: number; skipped?: number;
+  by_field?: Partial<Record<AutoFillField, number>>; error?: string;
+};
 const PERM_RU: Record<string, string> = { view: "Просмотр оборудования", create: "Создание карточек", edit: "Изменение учётных свойств", location: "Изменение местоположения", people: "Изменение владельцев и ответственных",
   docs: "Оформление документов (выдача, возврат, перемещение)", repair: "Оформление ремонтов", writeoff: "Списание", count: "Проведение инвентаризации", import: "Импорт из Excel/CSV", refs: "Управление справочниками и местоположениями",
   keys: "Просмотр ключей лицензий, сохранённых прежними версиями", templates: "Печатные формы и этикетки" };
@@ -19,21 +31,28 @@ const LABEL_FIELDS: Record<string, string> = { name: "Наименование",
 
 export default function InvSettings() {
   const { meta, locs, reload } = useInv();
-  const [s, setS] = useState<S | null>(null); const [tab, setTab] = useState<T>("access"); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const tab = SETTINGS_TABS.find((item) => item.id === params.get("tab"))?.id ?? "access";
+  const [s, setS] = useState<S | null>(null); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [savedVersion, setSavedVersion] = useState(0);
   const [formKind, setFormKind] = useState("issue");
   const [toast, show] = useToast();
   useEffect(() => { api.admin.settings("inventory").then((x) => setS(x as unknown as S)).catch((e) => setErr((e as ApiError).message)); }, []);
   if (err) return <div className="alert error"><Icon name="alert" /><div className="alert-body">{err}</div></div>;
   if (!s) return <div className="card"><SkelRows rows={6} cols={3} /></div>;
   const set = (k: string, v: unknown) => setS({ ...s, [k]: v } as S);
-  const save = async () => { setBusy(true); try { const r = await api.admin.saveSettings("inventory", s as never); setS(r as unknown as S); show("Настройки сохранены"); reload(); } catch (e) { show((e as ApiError).message, "error"); } finally { setBusy(false); } };
+  const save = async () => { setBusy(true); try { const r = await api.admin.saveSettings("inventory", s as never); setS(r as unknown as S); setSavedVersion((n) => n + 1); show("Настройки сохранены"); reload(); } catch (e) { show((e as ApiError).message, "error"); } finally { setBusy(false); } };
   const form = s.forms[formKind] ?? {};
   const setForm = (k: string, v: unknown) => set("forms", { ...s.forms, [formKind]: { ...form, [k]: v } });
   const num = (k: string, lb: string, min: number, max: number, hint = "") => <label className="field">{lb}<input type="number" min={min} max={max} value={Number(s[k] ?? 0)} onChange={(e) => set(k, Number(e.target.value))} />{hint && <span className="field-help">{hint}</span>}</label>;
   return (
     <div className="inv-page">
       <div className="inv-head"><h1>Настройки инвентаризации</h1>{tab !== "geoip" && <button className="btn primary" disabled={busy} onClick={() => void save()}><Icon name="save" size={16} />Сохранить</button>}</div>
-      <Tabs<T> label="Настройки" value={tab} onChange={setTab} items={[{ id: "access", label: "Права доступа" }, { id: "numbers", label: "Нумерация" }, { id: "forms", label: "Печатные формы" }, { id: "labels", label: "Этикетки" }, { id: "control", label: "Сроки и KSC" }, { id: "notify", label: "Уведомления" }, { id: "geoip", label: "Географические базы" }]} />
+      <Tabs label="Настройки" value={tab} onChange={(value) => setParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (value === "access") next.delete("tab"); else next.set("tab", value);
+        return next;
+      }, { replace: true })} items={[...SETTINGS_TABS]} />
       {tab === "access" && <div className="stack">
         <div className="card flush"><div className="card-head"><h2>Права по ролям</h2></div>
           <p className="muted small pad">Наименьшая роль KAV Checker, которой разрешено действие. Администратору разрешено всё.</p>
@@ -85,11 +104,82 @@ export default function InvSettings() {
         {num("repair_days", "Ремонт «долго» дольше, дней", 1, 730)}{num("stale_days", "Сведения устарели через, дней", 30, 3650)}
         <label className="check-row wide"><input type="checkbox" checked={!!s.ksc_auto_link} onChange={(e) => set("ksc_auto_link", e.target.checked)} />Предлагать связь с компьютером KSC, если имя совпало ровно с одним компьютером (связь «предполагается», подтверждает пользователь)</label>
       </div></div>}
+      {tab === "automation" && <AutoFill fields={s.auto_fill_fields ?? []} onChange={(fields) => set("auto_fill_fields", fields)} savedVersion={savedVersion} saving={busy} />}
       {tab === "notify" && <Notify s={s} set={set} show={show} />}
       {tab === "geoip" && <InvGeoSettings />}
       {toast}
     </div>
   );
+}
+
+function AutoFill({ fields, onChange, savedVersion, saving }: {
+  fields: AutoFillField[]; onChange: (fields: AutoFillField[]) => void; savedVersion: number; saving: boolean;
+}) {
+  const [status, setStatus] = useState<AutoFillStatus | null>(null);
+  const [error, setError] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  useEffect(() => {
+    let active = true;
+    let timer: number | undefined;
+    const load = async () => {
+      try {
+        const result = await req<AutoFillStatus>("GET", "/inv/auto-fill");
+        if (!active) return;
+        setStatus(result);
+        setError("");
+        if (result.running || result.pending) timer = window.setTimeout(() => void load(), 4000);
+      } catch (e) {
+        if (active) setError((e as ApiError).message);
+      }
+    };
+    void load();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [refresh, savedVersion]);
+  const configured = status?.fields ?? [];
+  const dirty = status !== null && (fields.length !== configured.length || fields.some((field) => !configured.includes(field)));
+  const running = status?.running;
+  const pending = status?.pending;
+  const run = async () => {
+    setSubmitting(true);
+    setError("");
+    try {
+      await req("POST", "/inv/auto-fill/refresh");
+      setRefresh((n) => n + 1);
+    } catch (e) { setError((e as ApiError).message); }
+    finally { setSubmitting(false); }
+  };
+  return <section className="card stack">
+    <div className="card-head"><h2>Автозаполнение карточек</h2></div>
+    <p className="small muted">Система заполняет выбранные пустые поля действующих карточек с подтверждённой связью с KSC. Основания берутся из подтверждённых рабочих мест и текущих правил принадлежности. Изменения видны в истории карточки.</p>
+    <fieldset className="field"><legend>Поля для заполнения</legend><div className="row wrap">
+      {(Object.keys(AUTO_FILL_FIELDS) as AutoFillField[]).map((field) => <label className="chip-check" key={field}>
+        <input type="checkbox" checked={fields.includes(field)} disabled={saving} onChange={(e) =>
+          onChange(e.target.checked ? [...fields, field] : fields.filter((f) => f !== field))} />{AUTO_FILL_FIELDS[field]}
+      </label>)}
+    </div></fieldset>
+    <div className="row wrap">
+      <button type="button" className="btn" disabled={!configured.length || !!error || dirty || saving || submitting || pending || running}
+        onClick={() => void run()}>{running ? "Идёт заполнение…" : pending ? "Заполнение в очереди…" : "Запустить заполнение"}</button>
+      <Link className="btn ghost" to="/inventory/workplaces">Рабочие места</Link>
+      <Link className="btn ghost" to="/inventory/geography?fill_available=1">Сетевые предложения</Link>
+      <AdminReportButton view="inv_auto_fill" title="Автозаполнение карточек" className="btn mini" />
+    </div>
+    {dirty && <p className="small muted">Сохраните настройки, чтобы применить выбранные поля.</p>}
+    {error && <div className="alert error" role="alert"><div className="alert-body">{error} <button type="button" className="link-btn" onClick={() => setRefresh((n) => n + 1)}>Повторить</button></div></div>}
+    {status ? <>
+      <p className="small" role="status">{running ? "Заполняются карточки" : pending ? "Ожидается фоновое заполнение" : configured.length ? "Автозаполнение включено" : "Автозаполнение выключено"}
+        {status.last_at && <span className="muted"> · Последний запуск {fmt(status.last_at)}</span>}</p>
+      {status.error && <p className="warn-text small" role="status">{status.error}</p>}
+      {status.checked != null && <dl className="kv">
+        <div><dt>Проверено карточек</dt><dd>{formatNumber(status.checked)}</dd></div>
+        <div><dt>Изменено карточек</dt><dd>{formatNumber(status.changed ?? 0)}</dd></div>
+        <div><dt>Пропущено карточек</dt><dd>{formatNumber(status.skipped ?? 0)}</dd></div>
+        {(Object.keys(AUTO_FILL_FIELDS) as AutoFillField[]).map((field) => !!status.by_field?.[field] &&
+          <div key={field}><dt>Заполнено · {AUTO_FILL_FIELDS[field]}</dt><dd>{formatNumber(status.by_field[field]!)}</dd></div>)}
+      </dl>}
+    </> : !error && <SkelRows rows={2} cols={2} />}
+  </section>;
 }
 
 function Notify({ s, set, show }: { s: S; set: (k: string, v: unknown) => void; show: (t: string, tone?: "ok" | "error") => void }) {

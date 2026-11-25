@@ -32,6 +32,7 @@ from .hier.service import HierService
 from .adaudit.service import AdAuditService
 from .inventory.geo_service import loop as geo_loop
 from .inventory.geo_updater import loop as geoip_loop
+from .inventory.autofill import loop as inventory_autofill_loop
 from .employee_protection.service import loop as employee_protection_loop
 from .inventory.service import InvService
 from .services.ldap_store import LdapStore
@@ -105,7 +106,9 @@ async def main() -> None:
                 "catalog_building": len(catalog._tasks), "vdb_running": len(vdb._running), "zonecache_job": zcache.current, "eol_job": eol.current, "devices_job": devices.current, "bi_job": bi.current, "resources": RES.snapshot(), "waiting": JOBS.waiting_list()}  # noqa: SLF001
 
     tasks = [asyncio.create_task(runner.loop(), name="reports"), asyncio.create_task(catalog.loop(), name="catalog"), asyncio.create_task(vdb.loop(), name="vdb"), asyncio.create_task(mailer.loop(), name="mail"), asyncio.create_task(zcache.loop(), name="zonecache"), asyncio.create_task(eol.loop(), name="eol"), asyncio.create_task(devices.loop(), name="devices"), asyncio.create_task(licenses.loop(), name="licenses"), asyncio.create_task(snapshots.loop(), name="ov-snapshots"), asyncio.create_task(retention.loop(), name="log-retention"), asyncio.create_task(comp_check.loop(), name="components"), asyncio.create_task(bi.loop(), name="bi"), asyncio.create_task(hier.loop(), name="hier"), asyncio.create_task(adaudit.loop(), name="adaudit"), asyncio.create_task(inventory.loop(), name="inventory"), asyncio.create_task(geo_loop(sm, sources, settings, svc, journal), name="inventory-geo"), asyncio.create_task(geoip_loop(sm, svc, settings, journal), name="geoip"),
-             asyncio.create_task(employee_protection_loop(sm, svc, journal), name="employee-protection"), asyncio.create_task(jh.flush_loop(sm), name="journal-flush"), asyncio.create_task(JOBS.beat_loop(), name="job-leases"), asyncio.create_task(heartbeat_loop(sm, "worker", pulse), name="heartbeat")]
+             asyncio.create_task(employee_protection_loop(sm, svc, journal), name="employee-protection"),
+             asyncio.create_task(inventory_autofill_loop(sm, svc, journal), name="inventory-autofill"),
+             asyncio.create_task(jh.flush_loop(sm), name="journal-flush"), asyncio.create_task(JOBS.beat_loop(), name="job-leases"), asyncio.create_task(heartbeat_loop(sm, "worker", pulse), name="heartbeat")]
     log.info("Воркер отчётов и каталога запущен", extra={"version": settings.app_version})
     await stop.wait()
     JOBS.stop()

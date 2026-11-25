@@ -8,10 +8,10 @@ from sqlalchemy import BigInteger, and_, cast, func, or_, select, tuple_
 from ..models import EmployeeProtectionDevice as D
 from ..models import EmployeeProtectionLink as L
 from ..models import EmployeeProtectionPerson as P
-from ..models import InvAsset, InvGeo, InvPerson, InvRef, utcnow
+from ..models import InvAsset, InvGeo, InvPerson, InvRef, KscSource, utcnow
 from ..inventory import geography as geo
 from ..inventory.model import FIELD_RU, ST_ACTIVE
-from ..search import column_like
+from ..search import any_field, column_like
 from . import classify, service
 from .filters import Filters
 
@@ -33,7 +33,7 @@ def _match(field, value):
 
 
 class Selection:
-    def __init__(self, generation: uuid.UUID, f: Filters, *, workplaces=False, pairs=()):
+    def __init__(self, generation: uuid.UUID, f: Filters, *, workplaces=False, pairs=(), asset_ids=None):
         p = [P.generation == generation]
         d = [D.generation == generation]
         for key in ("organization", "department", "division", "status"):
@@ -66,6 +66,9 @@ class Selection:
             counted = self.confidence == f.confidence if f.confidence else True
             if pairs:
                 match_search.append(tuple_(L.person_id, L.device_id).in_([tuple(key.split("|", 1)) for key in pairs]))
+            if asset_ids is not None:
+                d.append(cast(D.data["asset_id"].as_string(), BigInteger).in_(asset_ids))
+                d.append(D.data["shared_count"].as_integer() == 1)
             if f.asset_id or f.inventory:
                 asset = cast(D.data["asset_id"].as_string(), BigInteger)
                 active = select(InvAsset.id).where(InvAsset.st_cls.in_(ST_ACTIVE))
@@ -86,8 +89,8 @@ class Selection:
         self.generation = generation
 
 
-async def snapshot(db):
-    meta = await service.state(db)
+async def snapshot(db, *, current=None):
+    meta = await service.state(db) if current is None else current
     out = {key: meta.get(key) for key in ("built_at", "census_at", "census_source", "activity_days")}
     out["warnings"] = list(meta.get("warnings") or [])
     if meta.get("error"):
@@ -99,6 +102,26 @@ async def snapshot(db):
     if not generation and not out["warnings"]:
         out["warnings"].append("Для сводки нужна успешная актуальная проверка в разделе «Аудит домена».")
     return generation, {**out, "ready": generation is not None}
+
+
+async def diagnostics(db, *, source_id="", q="", offset=0, limit=None):
+    current = await service.state(db)
+    _, meta = await snapshot(db, current=current)
+    by_source = {row["source_id"]: row for row in current.get("source_diagnostics", [])}
+    active = await db.execute(select(KscSource.id, KscSource.name).where(KscSource.is_active.is_(True)).order_by(KscSource.name, KscSource.id))
+    hit = any_field(q)
+    rows = []
+    for sid, name in active:
+        key = str(sid)
+        if source_id and key != source_id:
+            continue
+        row = {"source_id": key, "source_name": name, "polled_at": None, "snapshot_at": None, "status": "pending",
+               "reason": "Ожидается расчёт диагностики", "observed": None, "matched": None, "eligible": None,
+               "possible": None, "current": None, "av_known": None, **by_source.get(key, {})}
+        row["source_name"] = name
+        if hit is None or hit(name, row["reason"]):
+            rows.append(row)
+    return {**meta, "total": len(rows), "items": rows[offset: offset + limit] if limit is not None else rows[offset:]}
 
 
 def _option(value, label=None):
@@ -199,7 +222,7 @@ async def workplace_count(db, selection):
     return await db.scalar(select(func.count()).select_from(selection.pairs)) or 0
 
 
-async def workplace_rows(db, selection, offset, limit):
+async def workplace_rows(db, selection, offset, limit, *, include_network=True):
     pairs = selection.pairs.c
     q = (select(P.data, D.data, pairs.evidence, pairs.assessment).select_from(selection.pairs)
          .join(P, and_(P.id == pairs.person_id, P.generation == selection.generation))
@@ -208,18 +231,20 @@ async def workplace_rows(db, selection, offset, limit):
     rows = [{"id": f"{person['id']}|{device['id']}", "employee": person, "device": device, "evidence": evidence, "confidence": "likely",
              "primary": person.get("primary_device_id") == device["id"],
              "decision": None, **assessment} for person, device, evidence, assessment in await db.execute(q)]
-    await _proposals(db, rows)
+    await _proposals(db, rows, include_network=include_network)
     return rows
 
 
-async def _proposals(db, rows):
+async def _proposals(db, rows, *, include_network=True):
     ids = {r["device"]["asset_id"] for r in rows if r["device"].get("asset_id")}
     if not ids:
         return
     assets = {a.id: a for a in await db.scalars(select(InvAsset).where(InvAsset.id.in_(ids)))}
-    observations = {obs.asset_id: obs for obs in await db.scalars(select(InvGeo).where(
-        InvGeo.asset_id.in_(ids), InvGeo.observed_at >= utcnow() - geo.FRESH))}
-    emails = {r["employee"]["email"] for r in rows if r["employee"].get("email")}
+    observations = {}
+    if include_network:
+        observations = {obs.asset_id: obs for obs in await db.scalars(select(InvGeo).where(
+            InvGeo.asset_id.in_(ids), InvGeo.observed_at >= utcnow() - geo.FRESH))}
+    emails = {r["employee"]["email"] for r in rows if r["employee"].get("email_verified") and r["employee"].get("email")}
     people = defaultdict(list)
     if emails:
         for pid, name, email in await db.execute(select(InvPerson.id, InvPerson.name, func.lower(InvPerson.email)).where(
@@ -231,24 +256,23 @@ async def _proposals(db, rows):
         for did, name in await db.execute(select(InvRef.id, func.lower(InvRef.name)).where(
                 InvRef.kind == "dept", InvRef.active.is_(True), func.lower(InvRef.name).in_(names))):
             departments[name].append(did)
-    proposals = {}
+    network = {}
+    for aid, obs in observations.items():
+        a = assets.get(aid)
+        if a and a.ksc_link in ("auto", "confirmed") and (obs.source_id, obs.host_id) == (a.ksc_source_id, a.ksc_host_id):
+            network[aid] = (a, {k: v for k, v in (obs.result.get("proposals") or {}).items() if k in ACCOUNT_FIELDS})
+    groups = await geo.proposal_fields_for(db, network)
+    proposals = {aid: {k: {**v, "id": network[aid][1][k], "basis": "geo"} for k, v in data.items() if v["empty"]}
+                 for aid, data in groups.items()}
     for item in rows:
         device, employee = item["device"], item["employee"]
         asset = assets.get(device.get("asset_id"))
         if not asset:
             continue
         item["asset_version"] = asset.version
-        if asset.id not in proposals:
-            obs = observations.get(asset.id)
-            fields = {}
-            data = {}
-            if obs and asset.ksc_link in ("auto", "confirmed") and (obs.source_id, obs.host_id) == (asset.ksc_source_id, asset.ksc_host_id):
-                data = {k: v for k, v in (obs.result.get("proposals") or {}).items() if k in ACCOUNT_FIELDS}
-                fields = await geo.proposal_fields(db, asset, data)
-            proposals[asset.id] = {k: {**v, "id": data[k], "basis": "geo"} for k, v in fields.items() if v["empty"]}
-        fields = dict(proposals[asset.id])
+        fields = dict(proposals.get(asset.id, {}))
         if item["confidence"] in ("confirmed", "likely") and device.get("shared_count") == 1 and not item.get("shared"):
-            matches = people.get(employee.get("email"), [])
+            matches = people.get(employee.get("email"), []) if employee.get("email_verified") else ()
             if asset.user_id is None and len(matches) == 1:
                 pid, name = matches[0]
                 fields["user_id"] = {"label": FIELD_RU["user_id"], "value": name, "id": pid, "basis": "workplace"}

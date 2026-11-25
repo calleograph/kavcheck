@@ -1,6 +1,6 @@
 {
- "reviewed_for": "0.41.0",
- "reviewed_at": "2026-11-24",
+ "reviewed_for": "0.42.0",
+ "reviewed_at": "2026-11-25",
  "note": "Реестр проверяется при подготовке каждого выпуска (docs/RELEASE.md): verified — версия, проверенная в выпуске; decision — решение разработчика.",
  "components": [
   {

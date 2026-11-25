@@ -23,6 +23,7 @@ const CONNECTION_SCOPE: Record<ConnectionScope, [string, string]> = {
 };
 export interface GeoObservation {
   status: string; source_id: string | null; source?: string; observed_at: string | null; checked_at: string | null; fresh: boolean;
+  reason?: string; reason_label?: string;
   site?: string; site_id?: number; country?: string; region?: string; city?: string; network?: string; lat?: number | null; lon?: number | null;
   radius_km?: number | null; asn?: number; operator?: string; provider?: string; database_at?: string;
   connection_ip?: { scope: ConnectionScope; ip?: string; source?: string; observed_at?: string | null };
@@ -84,6 +85,8 @@ export default function InvGeoCard({ id, onApplied }: { id: number; onApplied?: 
         {connection.source && ` · ${connection.source}`}{connection.observed_at && ` · ${fmt(connection.observed_at)}`}
         <p className="muted small">{CONNECTION_SCOPE[connection.scope][1]}</p>
       </div>}
+      {row.reason_label && (row.lat == null || row.lon == null) && row.reason !== connection?.scope &&
+        !["vpn", "conflict"].includes(row.status) && <p className="small muted">{row.reason_label}</p>}
       {row.status === "approx" && <p className="small">Достоверность низкая. Показана примерная география выхода в сеть{row.radius_km != null ? ` · радиус оценки ${row.radius_km} км` : ""}.</p>}
       {row.provider && <p className="muted small"><GeoIpAttribution provider={row.provider} />
         {row.database_at && ` · база от ${row.database_at}`}{row.asn && ` · AS${row.asn}`}{row.operator && ` · ${row.operator}`}</p>}

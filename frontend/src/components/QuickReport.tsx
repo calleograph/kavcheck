@@ -251,7 +251,8 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
   const credits = doc?.notes.map(geoCreditProvider).filter(Boolean) ?? [];
   const previewRows = data?.items.slice(0, PREVIEW_SHOWN) ?? [];
   const hosts = doc?.metrics.find((m) => m.key === "hosts");
-  const employeeTotal = kind === "quick_employee_protection" && data ? (params.view === "workplaces" ?
+  const employeeTotal = kind === "quick_employee_protection" && data ? (params.view === "diagnostics" ?
+    plural(data.total, "источник", "источника", "источников") : params.view === "workplaces" ?
     plural(data.total, "связь", "связи", "связей") : params.view === "devices" ?
     plural(data.total, "устройство", "устройства", "устройств") : plural(data.total, "сотрудник", "сотрудника", "сотрудников")) : null;
   const cols = (data?.columns ?? []).slice(0, 7);
@@ -370,7 +371,7 @@ export function QuickReportPanel({ kind, params: base, title, lede, options = { 
         </details>
         {data && data.html_row_limit && data.doc && data.doc.tables.some((t) => t.n > data.html_row_limit!) && (
           <div className="alert warn"><Icon name="info" /><div className="alert-body">В HTML войдут только первые {num(data.html_row_limit)} строк каждой таблицы (сокращённая выборка), показатели в сводке — по полному результату. Полный список — в Excel и CSV.</div></div>)}
-        {data?.fetched_at && <p className="muted small">Данные KSC получены {fmt(data.fetched_at)}.</p>}
+        {data?.fetched_at && <p className="muted small">{kind === "quick_employee_protection" ? "Срез аналитики" : "Данные отчёта на"} {fmt(data.fetched_at)}.</p>}
       </div>
     </Modal>
   );

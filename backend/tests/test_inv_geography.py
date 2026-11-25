@@ -1,12 +1,13 @@
 """Сетевые наблюдения инвентаризации: правила, область доступа и сохранность учётных полей."""
 from datetime import timedelta
+from ipaddress import IPv4Address
 from uuid import UUID, uuid4
 
 import pytest
 from openpyxl import load_workbook
 from sqlalchemy import select
 
-from app.inventory import geo_service as S, geography as G
+from app.inventory import geo_service as S, geo_updater, geography as G
 from app.models import InvAsset, InvGeo, InvRef, KscSource, ReportJob, User, utcnow
 from app.reports import quick, quick_export
 from tests.conftest import login
@@ -21,6 +22,25 @@ def _rule(id_, **fields):
 
 def _no_lookup(_ip):
     pytest.fail("Служебный или документальный адрес передан в геолокацию")
+
+
+async def test_network_proposal_labels_are_read_in_one_batch(app, monkeypatch):
+    async with app.state.session_maker() as db:
+        dept = InvRef(kind="dept", name="Тестовый отдел")
+        db.add(dept)
+        await db.flush()
+        execute = db.execute
+        calls = 0
+
+        async def count(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return await execute(*args, **kwargs)
+
+        monkeypatch.setattr(db, "execute", count)
+        fields = await G.proposal_fields_for(db, {i: (InvAsset(id=i), {"dept_id": dept.id}) for i in range(100)})
+        assert calls == 1
+        assert len(fields) == 100 and all(v["dept_id"]["value"] == dept.name for v in fields.values())
 
 
 def test_rule_priority_specificity_and_conflicts():
@@ -78,7 +98,7 @@ async def test_attribution_follows_geographic_results_into_reports(client, app, 
         aid = asset.id
         db.add(InvGeo(asset_id=aid, host_id=1, source_id=sid, checked_at=now, observed_at=now,
                       evidence={"addresses": [{"kind": "connection", "ip": "192.0.2.19"}]},
-                      result={"status": "approx", "city": "Пример", "provider": provider}))
+                      result={"status": "approx", "city": "Пример", "provider": provider, "database_at": now.date().isoformat()}))
         await db.commit()
 
     assert (await client.get(GEO)).json()["geo_attributions"] == [provider]
@@ -93,6 +113,136 @@ async def test_attribution_follows_geographic_results_into_reports(client, app, 
     out = tmp_path / "geography.csv"
     quick_export.write_csv_main(out, doc)
     assert full_credit in out.read_text(encoding="utf-8-sig")
+
+
+async def test_expired_geoip_hidden_and_purged_without_ksc_refresh(client, app, tmp_path):
+    config = await setup(client, app)
+    now, sid = utcnow(), uuid4()
+    old_build = (now - timedelta(days=31)).date().isoformat()
+    common = {"status": "approx", "confidence": "low", "city": "Пример", "lat": 15.4, "lon": -44.5, "asn": 64501,
+              "provider": G.GEOLITE_LABEL, "network": "192.0.2.0/24", "rules": [{"id": 1, "name": "Подсказка"}]}
+    async with app.state.session_maker() as db:
+        db.add(KscSource(id=sid, name="Синтетический источник", host="ksc.example.local", port=1433, database="KAV", username="ro"))
+        assets = [InvAsset(inv_no=f"ПР-ГЕО-{i}", cls="workstation", type_id=config["t"]["workstation"], ksc_link="confirmed",
+                           ksc_source_id=sid, ksc_host_id=i) for i in range(1, 5)]
+        db.add_all(assets)
+        await db.flush()
+        ids = [asset.id for asset in assets]
+        for asset, fields in zip(assets, (
+                {"geoip_valid_until": (now - timedelta(seconds=1)).isoformat(timespec="seconds"), "database_at": now.date().isoformat()},
+                {"database_at": old_build},
+                {"geoip_valid_until": (now + timedelta(days=1)).isoformat(timespec="seconds"), "database_at": now.date().isoformat()},
+                {"geoip_valid_until": "", "database_at": old_build},
+        ), strict=True):
+            db.add(InvGeo(asset_id=asset.id, host_id=asset.ksc_host_id, source_id=sid, checked_at=now, observed_at=now,
+                          evidence={"addresses": [{"kind": "connection", "ip": "192.0.2.19"}]}, result={**common, **fields}))
+        await db.commit()
+
+    page = (await client.get(GEO)).json()
+    assert [(r["status"], r.get("city")) for r in page["items"]] == [("unknown", None)] * 2 + [("approx", "Пример")] * 2
+    assert sum(g["n"] for g in page["groups"] if g["city"] == "Пример") == 2
+    assert (await client.get(GEO, params={"city": "Пример"})).json()["total"] == 2
+    assert (await client.get(GEO, params={"status": "unknown"})).json()["total"] == 2
+    card = (await client.get(f"{GEO}/assets/{ids[0]}")).json()
+    assert "city" not in card and "asn" not in card and card["network"] == "192.0.2.0/24"
+    assert card["connection_ip"]["ip"] == "192.0.2.19"
+    ctx = quick.Ctx(source_name="Инвентаризация", activity_days=0, sm=app.state.session_maker)
+    doc = await quick.build("quick_inv", None, {"view": "geography_card", "asset_id": ids[0]}, ctx)
+    assert doc["tables"][0]["rows"][0]["city"] is None and G.GEOLITE_CREDIT not in doc["notes"]
+    filtered = await quick.build("quick_inv", None, {"view": "geography", "geography": {"city": "Пример"}}, ctx)
+    assert len(filtered["tables"][0]["rows"]) == 2
+
+    saved = await client.put("/api/v1/admin/settings/geoip", json={"enabled": False})
+    assert saved.status_code == 200
+    await geo_updater.tick(app.state.session_maker, app.state.settings_svc, tmp_path, app.state.journal)
+    async with app.state.session_maker() as db:
+        for aid in ids[:2]:
+            row = await db.get(InvGeo, aid)
+            assert row.result == {"status": "unknown", "confidence": "", "network": common["network"], "rules": common["rules"],
+                                  "reason": "geo_expired"}
+            assert row.evidence["addresses"][0]["ip"] == "192.0.2.19"
+        for aid in ids[2:]:
+            assert (await db.get(InvGeo, aid)).result["city"] == "Пример"
+
+
+async def test_map_explains_missing_coordinates_and_filters_reports(client, app, monkeypatch):
+    config = await setup(client, app)
+    now = utcnow()
+    first, second = uuid4(), uuid4()
+    public = {f"192.0.2.{i}" for i in (1, 2, 5, 6)}
+    ip_scope = G._ip_scope
+    monkeypatch.setattr(G, "_ip_scope", lambda ip: "public" if str(ip) in public else ip_scope(ip))
+    values = [
+        ("connection", "192.0.2.1"), ("connection", "192.0.2.2"),
+        ("connection", str(IPv4Address(bytes((192, 168, 0, 19))))),
+        ("connection", str(IPv4Address(bytes((100, 64, 0, 19))))),
+        ("reported", "192.0.2.5"), ("connection", "192.0.2.6"),
+    ]
+    evidence = {i: {"addresses": [{"kind": kind, "ip": ip, "source": "v_akpub_host.nConnectionIp" if kind == "connection" else "v_akpub_host.nIp"}],
+                    "last_connected": now.isoformat()} for i, (kind, ip) in enumerate(values, 1)}
+    async with app.state.session_maker() as db:
+        for number, sid in enumerate((first, second), 1):
+            db.add(KscSource(id=sid, name=f"Тестовый источник {number}", host="ksc.example.local", port=1433, database="KAV", username="ro"))
+            db.add_all([InvAsset(inv_no=f"ГЕО-{number}-{i}", cls="workstation", type_id=config["t"]["workstation"], ksc_link="confirmed",
+                                 ksc_source_id=sid, ksc_host_id=i) for i in evidence])
+        await db.commit()
+
+    async def capabilities(_client):
+        return frozenset()
+
+    async def read(_client, ids, _caps, _groups):
+        return {i: evidence[i].copy() for i in ids}
+
+    class Lease:
+        async def stage(self, _stage, _detail=None):
+            pass
+
+        async def fence(self, db):
+            assert db.in_transaction()
+
+    class Geo:
+        city = True
+        asn = None
+        errors = []
+
+        def lookup(self, ip):
+            assert ip in public - {"192.0.2.5"}
+            if ip == "192.0.2.1":
+                return {"city": "Пример", "lat": 0.0, "lon": 0.0}
+            return {"city": "Пример"} if ip == "192.0.2.2" else {}
+
+    class NoCity(Geo):
+        city = None
+
+        def lookup(self, ip):
+            assert ip in public - {"192.0.2.5"}
+            return {}
+
+    monkeypatch.setattr(S.network, "capabilities", capabilities)
+    monkeypatch.setattr(S.network, "read", read)
+    await S.collect(app.state.session_maker, first, None, Geo(), Lease())
+    await S.collect(app.state.session_maker, second, None, NoCity(), Lease())
+
+    def counts(page):
+        return {item["code"]: item["count"] for item in page["diagnostics"] if item["count"]}
+
+    for sid, n, expected in (
+        (first, 1, {"egress_point": 1, "geo_no_point": 1, "lookup_miss": 1}),
+        (second, 0, {"city_unavailable": 3}),
+    ):
+        page = (await client.get(GEO, params={"freshness": "fresh", "observation_source": sid})).json()
+        assert page["total"] == 6 and page["with_coordinates"] == n
+        assert counts(page) == {**expected, "private": 1, "shared": 1, "reported_public": 1}
+        assert sum(g["n"] for g in page["groups"] if g["lat"] is not None and g["lon"] is not None) == n
+    selected = (await client.get(GEO, params={"reason": "city_unavailable"})).json()
+    assert selected["total"] == 3 and all(i["connection_ip"]["source"] == "v_akpub_host.nConnectionIp" for i in selected["items"])
+    assert (await client.get(GEO, params={"reason": "invalid"})).status_code == 422
+    ctx = quick.Ctx(source_name="Инвентаризация", activity_days=0, sm=app.state.session_maker)
+    report = await quick.build("quick_inv", None, {"view": "geography", "geography": {"reason": "city_unavailable"}}, ctx)
+    label = G.GEO_REASONS["city_unavailable"]
+    assert [r["inv_no"] for r in report["tables"][0]["rows"]] == [r["inv_no"] for r in selected["items"]]
+    assert report["tables"][1]["rows"] == [{"reason": label, "count": 3}]
+    assert {"label": "Координаты и причины", "text": label} in report["conditions"]
 
 
 async def test_geography_rule_report_uses_unsaved_draft_and_full_matches(client, app, tmp_path):

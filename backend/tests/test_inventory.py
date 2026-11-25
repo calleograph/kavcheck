@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from sqlalchemy import insert, select
 
-from app.models import InvAsset, InvHistory, KscSource, ZcHost, ZcSource, Zone
+from app.models import InvAsset, InvHistory, KscSource, ReportJob, ZcHost, ZcSource, Zone
 from app.services import local_admin as la
 from tests.conftest import login
 
@@ -567,13 +567,15 @@ async def test_location_scope_covers_docs_files_counts_and_licenses(client, app)
     s = await setup(client, app)
     other = (await client.post(f"{API}/locations", json={"kind": "region", "name": "Северный регион"})).json()
     a1 = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["monitor"], "name": "Монитор свой", "location_id": s["room"]["id"]}})).json()
-    a2 = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["monitor"], "name": "Монитор чужой", "location_id": other["id"]}})).json()
-    d_in = (await client.post(f"{API}/docs", json={"kind": "work", "items": [{"asset_id": a1["id"]}]})).json()["id"]
+    a2 = (await client.post(f"{API}/assets", json={"data": {"type_id": s["t"]["monitor"], "name": "Монитор чужой", "location_id": other["id"],
+                                                          "parent_id": a1["id"], "rel": "part"}})).json()
+    own = (await client.post(f"{API}/docs", json={"kind": "work", "items": [{"asset_id": a1["id"]}]})).json()
+    d_in = own["id"]
     d_out = (await client.post(f"{API}/docs", json={"kind": "work", "items": [{"asset_id": a2["id"]}]})).json()["id"]
     d_mix = (await client.post(f"{API}/docs", json={"kind": "work", "items": [{"asset_id": a1["id"]}, {"asset_id": a2["id"]}]})).json()["id"]
     fid = (await client.post(f"{API}/files", params={"owner": "doc", "oid": d_out}, content=b"x", headers={"X-File-Name": "a.txt"})).json()["id"]
+    c_in = (await client.post(f"{API}/counts", json={"location_id": s["room"]["id"], "start": False})).json()
     c_out = (await client.post(f"{API}/counts", json={"location_id": other["id"], "start": False})).json()["id"]
-    c_in = (await client.post(f"{API}/counts", json={"location_id": s["room"]["id"], "start": False})).json()["id"]
     lid = (await client.post(f"{API}/licenses", json={"name": "Программа (пример)"})).json()["id"]
     await client.post(f"{API}/licenses/{lid}/assign", json={"asset_ids": [a2["id"]]})
     from sqlalchemy import select
@@ -588,9 +590,57 @@ async def test_location_scope_covers_docs_files_counts_and_licenses(client, app)
     for path in (f"/docs/{d_out}", f"/docs/{d_mix}", f"/docs/{d_out}/print", f"/files/{fid}", f"/counts/{c_out}"):
         assert (await client.get(API + path)).status_code == 404, path
     assert (await client.get(f"{API}/docs/{d_in}")).status_code == 200
-    assert [c["id"] for c in (await client.get(f"{API}/counts")).json()["items"]] == [c_in]
+    assert [c["id"] for c in (await client.get(f"{API}/counts")).json()["items"]] == [c_in["id"]]
+    card = (await client.get(f"{API}/assets/{a1['id']}")).json()
+    assert [d["id"] for d in card["docs"]] == [d_in] and not card["children"]
+
+    async def preview(view, **params):
+        return await client.post("/api/v1/quick/preview", json={"kind": "quick_inv", "params": {"view": view, **params}})
+
+    assert [d["no"] for d in (await preview("docs", doc_kind="work", doc_open_only=True, status="draft", q="свой")).json()["items"]] == [own["no"]]
+    assert (await preview("docs", status="done")).json()["total"] == 0
+    assert (await preview("docs")).json()["total"] == 1
+    tables = {r["id"]: r["n"] for r in (await preview("card", asset_id=a1["id"])).json()["doc"]["tables"]}
+    assert tables["docs"] == 1 and tables["parts"] == 0
+    assert (await preview("count", count_id=c_out)).status_code == 409
+    assert (await preview("count_diff", count_id=c_out)).status_code == 409
+    assert c_in["no"] in (await preview("count")).json()["doc"]["subtitle"]
+
+    report = (await client.post("/api/v1/reports", json={"kind": "quick_inv", "params": {"view": "docs"}})).json()
+    assert (await client.get(f"/api/v1/reports/{report['id']}")).status_code == 200
+    async with app.state.session_maker() as db:
+        job = await db.get(ReportJob, uuid.UUID(report["id"]))
+        job.params = {k: v for k, v in job.params.items() if k != "_document_scope_checked"}
+        await db.commit()
+    assert report["id"] not in {r["id"] for r in (await client.get("/api/v1/reports")).json()["items"]}
+    assert (await client.get(f"/api/v1/reports/{report['id']}/download/xlsx")).status_code == 404
     assert (await client.post(f"{API}/licenses/{lid}/assign", json={"asset_ids": [a1["id"], a2["id"]]})).json()["added"] == 1
     assert (await client.delete(f"{API}/licenses/{lid}/assign/{asg}")).status_code == 404
+    await login(client, "admin", "Admin-Passw0rd-123")
+    assert (await client.get(f"/api/v1/reports/{report['id']}")).status_code == 200
+
+
+async def test_license_reports_use_the_visible_search_and_state(client):
+    await login(client, "admin", "Admin-Passw0rd-123")
+    today = date.today()
+    for name, vendor, until, active in (
+        ("Первая", "Example", today - timedelta(days=3), True),
+        ("Вторая", "Example", today, True),
+        ("Третья", "Another", today - timedelta(days=1), True),
+        ("Архивная", "Example", today - timedelta(days=1), False),
+        ("Бессрочная", "Example", None, True),
+    ):
+        res = await client.post(f"{API}/licenses", json={"name": name, "vendor": vendor, "valid_until": until.isoformat() if until else None, "active": active})
+        assert res.status_code == 201, res.text
+    for state in ("expired", "soon", "issues", "inactive"):
+        result = await client.get(f"{API}/licenses", params={"state": state, "q": "Example"})
+        expected = [r["name"] for r in result.json()["items"]]
+        assert expected
+        for view in ("licenses", "license_usage"):
+            report = await client.post("/api/v1/quick/preview", json={
+                "kind": "quick_inv", "params": {"view": view, "q": "Example", "license_state": state}})
+            assert report.status_code == 200, report.text
+            assert [r["name"] for r in report.json()["items"]] == expected
 
 
 async def test_print_xlsx_escapes_formulas(client, app):

@@ -102,10 +102,12 @@ export function WorkplaceReview({ inventory, assetId, employeeId, deviceId }: {
   const scope = { inventory, asset_id: assetId };
   const filters = { q: search, confidence, employee_id: employeeId, device_id: deviceId, ...scope };
   const list = useInfinite<Workplace>(`workplaces:${Boolean(inventory)}:${assetId ?? ""}:${employeeId ?? ""}:${deviceId ?? ""}`, [filters],
-    (offset, limit) => req<Chunk<Workplace>>("GET", `${PATH}${qs({ ...filters, offset, limit })}`), 50);
+    (offset, limit) => req<Chunk<Workplace>>("GET", `${PATH}${qs({ ...filters, offset, limit })}`), 50, { snapshotKey: "generation" });
   const generation = typeof list.extra?.generation === "string" ? list.extra.generation : "";
   const canEdit = list.extra?.can_edit === true;
   const pending = list.extra?.pending === true;
+  const applyBlocked = list.extra?.apply_blocked === true;
+  const snapshotError = typeof list.extra?.snapshot_error === "string" ? list.extra.snapshot_error : "";
   const picked = Object.values(selected);
   const proposed = picked.filter((r) => r.asset_version && Object.values(r.proposals ?? {}).some((x) => x.id));
   const repeatedAsset = new Set(proposed.map((r) => r.device.asset_id)).size !== proposed.length;
@@ -115,10 +117,10 @@ export function WorkplaceReview({ inventory, assetId, employeeId, deviceId }: {
     return () => window.clearTimeout(id);
   }, [q]);
   useEffect(() => {
-    if (!pending) return;
-    const id = window.setInterval(list.reload, 5000);
-    return () => window.clearInterval(id);
-  }, [list.reload, pending]);
+    if (!pending || list.loading) return;
+    const id = window.setTimeout(list.reload, 5000);
+    return () => window.clearTimeout(id);
+  }, [list.reload, list.loading, pending]);
   useEffect(() => { setSelected({}); }, [generation, search, confidence, employeeId, deviceId, assetId]);
 
   const save = async (changes: Change[], comment = "") => {
@@ -153,11 +155,12 @@ export function WorkplaceReview({ inventory, assetId, employeeId, deviceId }: {
       <button className="btn mini" type="button" disabled={locked} onClick={() => decide("rejected")}>Отклонить</button>
       <button className="btn ghost mini" type="button" disabled={locked || !picked.some((r) => r.decision)} onClick={() => decide("reset")}>Снять решение</button>
       {picked.length === 1 && <button className="btn ghost mini" type="button" disabled={locked} onClick={() => setEdit({ row: picked[0] })}>Исправить связь</button>}
-      {proposed.length > 0 && <button className="btn mini" type="button" disabled={locked || repeatedAsset}
+      {proposed.length > 0 && <button className="btn mini" type="button" disabled={locked || applyBlocked || repeatedAsset}
         title={repeatedAsset ? "Выберите одну связь на карточку" : undefined} onClick={() => setApply(proposed)}>Заполнить поля учёта</button>}
       <button className="btn ghost mini" type="button" onClick={() => setSelected({})}>Снять выбор</button>
     </div>}
     {pending && <p className="small muted" role="status">Ожидается фоновый пересчёт.</p>}
+    {snapshotError && <p className="small warn-text" role="status">{snapshotError}</p>}
     {message && <p className="small muted" role="status">{message}</p>}
     {error && !edit && <div className="alert error" role="alert"><div className="alert-body">{error}</div></div>}
     {list.initial ? <SkelRows /> : list.items.length > 0 ? <div className="table-scroll">
@@ -177,7 +180,7 @@ export function WorkplaceReview({ inventory, assetId, employeeId, deviceId }: {
           <td><span className={`badge ${r.confidence === "confirmed" ? "ok" : r.confidence === "possible" ? "warn" : ""}`}>{CONFIDENCE[r.confidence]}</span>
             {r.primary && <span className="sub">Основное рабочее место</span>}
             {r.evidence.map((e) => <span className="sub" key={e}>{e}</span>)}
-            {!!r.observed_days && <span className="sub">Дней наблюдений {num(r.observed_days)} · {fmt(r.first_seen_at)} — {fmt(r.last_seen_at)}</span>}
+            {r.first_seen_at && <span className="sub">{!!r.observed_days && <>Подтверждённых дней {num(r.observed_days)} · </>}{fmt(r.first_seen_at)} — {fmt(r.last_seen_at)}</span>}
             {r.decided_at && <span className="sub">Решение {fmt(r.decided_at)}</span>}</td>
           <td>{Object.entries(r.proposals ?? {}).map(([k, v]) => <span className="sub" key={k}>{v.label} · {v.value}</span>)}
             {d.asset_id && !!Object.keys(r.proposals ?? {}).length && <Link to={href} className="link-btn">К карточке учёта</Link>}</td>

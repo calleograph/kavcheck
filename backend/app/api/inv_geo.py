@@ -31,7 +31,11 @@ def allowed_sources(su) -> list[UUID] | None:
 
 
 def observation(row: InvGeo | None, now: datetime) -> dict:
-    return {**(row.result if row else {"status": "unknown"}), "observed_at": C._iso(row.observed_at) if row else None,
+    result = G.visible_result(row.result, now) if row else None
+    reason = G.location_reason(result)
+    return {**(result or {"status": "unknown"}), "reason": reason, "reason_label": G.GEO_REASONS[reason],
+            **({"connection_ip": G.connection_observation(row.evidence)} if row else {}),
+            "observed_at": C._iso(row.observed_at) if row else None,
             "checked_at": C._iso(row.checked_at) if row else None, "fresh": bool(row and G.fresh(row.observed_at, now)),
             "source_id": str(row.source_id) if row else None}
 
@@ -64,17 +68,18 @@ async def geography(request: Request, filters: Annotated[GeoPage, Query()], ctx:
         for row in items:
             row["site"] = locations.get(row.get("site_id"), "")
         return {"items": items, "total": total}
-    r = InvGeo.result
-    keys = [r[k].as_string() for k in ("country", "region", "city")] + [r["site_id"].as_integer(), r["status"].as_string()]
-    lat, lon = r["lat"].as_float(), r["lon"].as_float()
+    reason = G.geo_reason_field(now)
+    keys = [G.geo_field(k, now) for k in ("country", "region", "city")] + [InvGeo.result["site_id"].as_integer(), G.geo_field("status", now), reason]
+    lat, lon = G.geo_field("lat", now), G.geo_field("lon", now)
     count = func.count()
     grouped = (await db.execute(select(*keys, count, func.avg(lat), func.avg(lon), func.max(lat) - func.min(lat), func.max(lon) - func.min(lon),
-                                       func.max(r["radius_km"].as_float()), func.sum(case((InvGeo.observed_at >= now - G.FRESH, 1), else_=0)))
-                                .select_from(InvAsset).outerjoin(InvGeo, join).where(*w).group_by(*keys).order_by(count.desc(), *keys).limit(501))).all()
+                                       func.max(G.geo_field("radius_km", now)), func.sum(case((InvGeo.observed_at >= now - G.FRESH, 1), else_=0)))
+                                .select_from(InvAsset).outerjoin(InvGeo, join).where(*w).group_by(*keys)
+                                .order_by(reason.in_(G.POINT_REASONS).desc(), count.desc(), *keys).limit(501))).all()
     groups = []
-    for country, region, city, site_id, status, n, y, x, dlat, dlon, radius, fresh_n in grouped[:500]:
+    for country, region, city, site_id, status, code, n, y, x, dlat, dlon, radius, fresh_n in grouped[:500]:
         groups.append({"country": country or "", "region": region or "", "city": city or "", "site_id": site_id, "status": status or "unknown",
-                       "n": n, "lat": y, "lon": x, "fresh_n": fresh_n,
+                       "reason": code, "n": n, "lat": y, "lon": x, "fresh_n": fresh_n,
                        "radius_km": round(radius + 112 * hypot(dlat or 0, dlon or 0)) if radius is not None else None})
     srcs = await visible_sources(db, ctx.su)
     states = {x.group: x.value for x in (await db.scalars(select(AppSetting).where(AppSetting.group.in_([state_key(s.id) for s in srcs])))).all()}
@@ -82,11 +87,14 @@ async def geography(request: Request, filters: Annotated[GeoPage, Query()], ctx:
         InvLocation.id.in_({g["site_id"] for g in groups if g["site_id"]} | {i["site_id"] for i in items if i.get("site_id")})))).all()}
     for row in groups + items:
         row["site"] = locations.get(row.get("site_id"), "")
-    provider = r["provider"].as_string()
+    provider = G.geo_field("provider", now)
     attributions = list((await db.scalars(select(provider).select_from(InvAsset).outerjoin(InvGeo, join)
                                         .where(*w, provider.in_(G.GEOIP_CREDITS)).distinct())).all())
+    reasons = dict((await db.execute(select(reason, count).select_from(InvAsset).outerjoin(InvGeo, join).where(*w).group_by(reason))).all())
     return {"items": items, "total": total, "groups": groups, "groups_limited": len(grouped) > len(groups),
             "dbip_attribution": G.DBIP_LABEL in attributions, "geo_attributions": attributions,
+            "with_coordinates": sum(reasons.get(code, 0) for code in G.POINT_REASONS),
+            "diagnostics": [{"code": code, "label": label, "count": reasons.get(code, 0)} for code, label in G.GEO_REASONS.items()],
             "sources": [{"id": str(s.id), "name": s.name, **(states.get(state_key(s.id)) or {})} for s in srcs]}
 
 
@@ -108,8 +116,7 @@ async def asset_observation(aid: int, ctx: Ix = Depends(inv_ctx), db: AsyncSessi
         site = await db.get(InvLocation, out["site_id"]) if out.get("site_id") else None
         evidence = obs.evidence
         addresses = [{**a, "scope": G.address_scope(a["ip"])} for a in evidence.get("addresses", [])]
-        out.update(source=src.name if src else "", site=site.path if site else "", evidence={**evidence, "addresses": addresses},
-                   connection_ip=G.connection_observation(evidence))
+        out.update(source=src.name if src else "", site=site.path if site else "", evidence={**evidence, "addresses": addresses})
         out["fields"] = await G.proposal_fields(db, asset, out.get("proposals", {}))
     return out
 

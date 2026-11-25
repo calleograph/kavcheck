@@ -279,7 +279,7 @@ function JobView({ ctx, jobId }: { ctx: Ctx; jobId: string }) {
         <div className="section-head" id="job-rows"><h2>{program ? `Компьютеры: ${program}` : "Данные"}</h2>{!rows.initial && <span className="count">{num(rows.total)}</span>}<div className="spacer" />
           {multi && <select className="w-auto" value={source} onChange={(e) => setSource(e.target.value)} aria-label="Источник"><option value="">Все источники</option>{s?.sources?.map((x) => <option key={x.source} value={x.source}>{x.source}</option>)}</select>}
           {audit && (s?.programs?.length ?? 0) > 1 && <select className="w-auto" value={program} onChange={(e) => setProgram(e.target.value)} aria-label="Программа"><option value="">Все программы</option>{s?.programs?.map((p) => <option key={p.program} value={p.program}>{p.program}</option>)}</select>}
-          <div className="input-icon w-search"><Icon name="filter" size={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Компьютер, IP, ОС, версия" aria-label="Фильтр строк" /><MaskHint /></div></div>
+          <div className="input-icon w-search"><Icon name="filter" size={15} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={j.kind === "quick_employee_protection" ? "Сотрудник, компьютер, подразделение" : "Компьютер, IP, ОС, версия"} aria-label="Фильтр строк" /><MaskHint /></div></div>
         <div className={`table-scroll ${rows.refreshing && !rows.initial ? "is-busy" : ""}`}>
           {rows.initial ? <SkelRows cols={7} /> : (
             <table className="table compact virt">

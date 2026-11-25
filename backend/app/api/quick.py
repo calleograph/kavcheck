@@ -79,7 +79,7 @@ async def preview(body: QuickPreviewIn, request: Request, su: SessionUser = Depe
         except KscError as exc:
             raise HTTPException(status_code=409 if exc.code == "no_data" else 422, detail=exc.message) from None
         total = doc.pop("selection_total", None)
-        out = _answer(doc, ctx.now)
+        out = _answer(doc, doc["data_at"])
         if total is not None:
             out.update(total=total, preview_rows=20)
             out["doc"]["tables"][0]["n"] = total
@@ -336,6 +336,7 @@ def _answer(doc: dict, fetched_at) -> dict:
 async def inv_params(request: Request, db: AsyncSession, su: SessionUser, raw: dict) -> dict:
     """Параметры отчёта инвентаризации: право «просмотр» в разделе, область учёта — с сервера (клиентское значение scope_ids отбрасывается)."""
     from ..inventory import core as IC  # noqa: PLC0415
+    from ..inventory.query import REPORTS_WITH_DOCUMENT_SCOPE  # noqa: PLC0415
 
     if su.is_zone:
         raise HTTPException(status_code=403, detail="Раздел недоступен")
@@ -347,8 +348,10 @@ async def inv_params(request: Request, db: AsyncSession, su: SessionUser, raw: d
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="; ".join(str(e.get("msg", "")).removeprefix("Value error, ") for e in exc.errors())) from None
     params["scope_ids"] = list(acc.scope_ids)
-    if params["view"] == "overview" and acc.scopes:
-        params["overview_actor"] = su.display_name
+    if params["view"] in REPORTS_WITH_DOCUMENT_SCOPE:
+        params["_document_scope_checked"] = True
+    if acc.scopes and (params["view"] == "overview" or params["view"] in REPORTS_WITH_DOCUMENT_SCOPE):
+        params["scope_actor"] = su.display_name
     if params["view"] in ("geography_rules", "geography_preview") and not su.is_admin:
         raise HTTPException(status_code=403, detail="Правила принадлежности доступны администратору")
     if params["view"] == "geography_preview":

@@ -15,7 +15,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import xact_lock
-from ..models import InvAsset, InvDoc, InvDocItem, InvHistory, InvLocation, InvPerson, InvProp, InvRef, Zone, utcnow
+from ..models import InvAsset, InvCount, InvDoc, InvDocItem, InvHistory, InvLocation, InvPerson, InvProp, InvRef, Zone, utcnow
 from ..roles import ROLE_RANK
 from ..services.settings import INV_PERMS, InventorySettings
 from . import model as M
@@ -58,6 +58,9 @@ class Access:
             empty.append(InvDoc.created_by == actor)
         return or_(and_(items.exists(), ~items.where(InvDocItem.asset_id.not_in(select(InvAsset.id).where(af))).exists()),
                    and_(~items.exists(), or_(*empty)))
+
+    def count_filter(self):
+        return InvCount.location_id.in_(self.loc_ids()) if self.scopes else None
 
     def loc_ok(self, loc: InvLocation | None) -> bool:
         return not self.scopes or (loc is not None and any(loc.ids_path.startswith(p) for p in self.scopes))

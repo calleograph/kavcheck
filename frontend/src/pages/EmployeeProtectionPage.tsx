@@ -13,6 +13,7 @@ import { fmt, fmtDate, num, plural } from "../util";
 
 const PATH = "/employee-protection";
 const TITLE = "Антивирусная защита сотрудников";
+const DIAGNOSTICS = `${PATH}?view=diagnostics`;
 const FILTER_FIELDS = {
   organization: "Организация", department: "Департамент", division: "Подразделение (OU)", zone: "Зона ответственности",
   kind: "Тип оборудования", ownership: "Принадлежность", os: "Операционная система",
@@ -64,6 +65,15 @@ interface Device {
 }
 type Panel = { title: string; filters: Filters };
 type Report = { view: View | "summary"; filters: Filters };
+type DiagnosticSource = {
+  source_id: string; source_name: string; polled_at: string | null; snapshot_at: string | null; status: string; reason: string;
+  observed: number | null; matched: number | null; eligible: number | null; possible: number | null; current: number | null; av_known: number | null;
+};
+const DIAGNOSTIC_LABELS: Record<string, string> = {
+  pending: "Ожидается диагностика", unsupported: "Опрос не поддерживается", poll_missing: "Опрос ещё не выполнялся", poll_error: "Ошибка опроса", poll_stale: "Опрос устарел",
+  snapshot_missing: "Нет снимка устройств", snapshot_stale: "Снимок устарел", no_observations: "Нет наблюдений",
+  unmatched: "Нет совпадений с сотрудниками", review: "Требуется проверка", ready: "Данные готовы",
+};
 
 function deviceHref(d: Device) {
   if (d.asset_id != null) return `/inventory/assets/${d.asset_id}`;
@@ -234,10 +244,12 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
   const revision = `${data?.built_at ?? ""}:${nonce}`;
   const statusFilter = (key: string) => update({ status: criteria.status === key ? "" : key, metric: "", view: "employees" }, true);
   const reportBusy = loading || applied !== q.trim();
+  const hasCoverage = data?.ready === true && data.totals.employees > data.totals.insufficient;
 
   return <section className="ov ep">
     <PageHead title={TITLE} lede="Охват защиты Kaspersky по сотрудникам и их известным устройствам из всех источников KSC.">
       <Link to={`${PATH}?view=workplaces`} className="btn">Рабочие места</Link>
+      <Link to={DIAGNOSTICS} className="btn">Диагностика источников</Link>
       {canRefresh && <button type="button" className="btn" onClick={() => void refresh()} disabled={queuing || data?.running}>
         {queuing || data?.running ? "Идёт пересчёт…" : "Пересчитать"}
       </button>}
@@ -250,6 +262,11 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
       <ul className="ep-notes">{data.warnings.map((warning, i) => <li key={i}>{warning}</li>)}</ul>
     </div></div>}
     {error && <div className="alert error" role="alert"><div className="alert-body">{error} <button type="button" className="link-btn" onClick={() => setNonce((n) => n + 1)}>Повторить</button></div></div>}
+    {data?.ready && data.totals.employees > 0 && !hasCoverage && <div className="alert warn"><div className="alert-body">
+      <strong>Покрытие ещё не оценено.</strong>{" "}
+      {data.totals.devices === 0 ? "В текущем отборе нет устройств, пригодных для расчёта защиты." : "По текущему отбору недостаточно сведений о защите."}{" "}
+      <Link to={DIAGNOSTICS}>Проверить источники</Link>
+    </div></div>}
     {data?.ready ? <>
       <FilterBar search={{ value: q, onChange: (value) => setQ(value.slice(0, 200)), placeholder: "Сотрудник, логин, устройство или IP", label: "Поиск по сотрудникам и устройствам" }}
         primary={<>{select("department")}{select("status")}</>}
@@ -278,10 +295,11 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
               const n = data.totals[key];
               const device = key === "devices" || key === "corporate" || key === "personal";
               const showPercent = (key === "uses_av" || key === "protected") && data.totals.employees > 0;
+              const known = hasCoverage || (key === "uses_av" && n > 0);
               return <div key={key}>
                 <dt>{METRICS[key]}</dt>
                 <dd><CountButton n={n} label={METRICS[key]} onClick={() => device ? deviceMetric(key) : employeeMetric(key)} />
-                  {showPercent && <span className="muted small"> · {num(percent(n, data.totals.employees))}%</span>}
+                  {showPercent && <span className="muted small"> · {known ? `${num(percent(n, data.totals.employees))}%` : "—"}</span>}
                 </dd>
               </div>;
             })}</dl>
@@ -328,7 +346,8 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
         {view === "employees" ? <EmployeeTable filters={filters} userId={userId} revision={revision} labels={data.labels} onDevices={setDrawer} /> :
           <DeviceTable filters={filters} userId={userId} revision={revision} labels={data.labels} onEmployee={(employee_id) => update({ employee_id, view: "employees" }, true)} />}
       </div>
-    </> : loading ? <SkelRows /> : !error && <Empty icon="users" title="Нет готового расчёта">Проверьте источник списка действующих сотрудников и дождитесь фонового расчёта.</Empty>}
+    </> : loading ? <SkelRows /> : !error && <Empty icon="users" title={data?.running ? "Идёт фоновый расчёт" : "Нет готового расчёта"}
+      action={<Link to={DIAGNOSTICS} className="btn mini">Проверить источники</Link>}>Для расчёта нужны актуальный список сотрудников и наблюдения KSC.</Empty>}
 
     {drawer && data?.ready && <HostsDrawer title={drawer.title} activityDays={ctx.me.activity_days} listKey={`employee-protection-device-panel:${userId}`} deps={[drawer.filters, revision]}
       multiSource versions onClose={() => setDrawer(null)}
@@ -348,6 +367,61 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
   </section>;
 }
 
+function Diagnostics({ ctx }: { ctx: Ctx }) {
+  const [sp, setSp] = useSearchParams();
+  const [q, setQ] = useState("");
+  const [search, setSearch] = useState("");
+  const sourceId = sp.get("source_id") ?? "";
+  const sources = ctx.sources.filter((source) => source.is_active);
+  const filters = { source_id: sourceId, q: search };
+  const [report, setReport] = usePanel<typeof filters>("employee-protection-diagnostics-report");
+  const list = useInfinite<DiagnosticSource & { id: string }>(`employee-diagnostics:${ctx.me.user.id}`, [filters],
+    async (offset, limit) => {
+      const result = await req<Chunk<DiagnosticSource>>("GET", `${PATH}/diagnostics${qs({ ...filters, offset, limit })}`);
+      return { ...result, items: result.items.map((item) => ({ ...item, id: item.source_id })) };
+    }, 50, { snapshotKey: "built_at" });
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(q.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [q]);
+  const selectSource = (id: string) => setSp((prev) => {
+    const next = new URLSearchParams(prev);
+    if (id) next.set("source_id", id); else next.delete("source_id");
+    return next;
+  }, { replace: true });
+  return <section className="ov ep">
+    <PageHead title="Диагностика источников" back={<BackLink to={PATH} label={TITLE} />}>
+      <Link className="btn" to={`${PATH}?view=workplaces`}>Рабочие места</Link>
+    </PageHead>
+    <FilterBar search={{ value: q, onChange: (value) => setQ(value.slice(0, 200)), placeholder: "Название источника или причина", label: "Поиск источника" }}
+      primary={<label className="field ep-filter">Источник KSC<select aria-label="Фильтр по источнику KSC" value={sourceId} onChange={(e) => selectSource(e.target.value)}>
+        <option value="">Все источники</option>
+        {sourceId && !sources.some((source) => source.id === sourceId) && <option value={sourceId}>Выбранный источник</option>}
+        {sources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}
+      </select></label>}
+      count={{ n: list.initial ? null : list.total, noun: ["источник", "источника", "источников"] }}
+      onRefresh={list.reload} refreshing={list.refreshing}
+      report={{ onClick: () => setReport(filters), disabled: !list.total || !!list.error || list.refreshing || q.trim() !== search }} />
+    {typeof list.extra?.built_at === "string" && <p className="ov-note">Срез расчёта {fmt(list.extra.built_at)}</p>}
+    {list.extra?.ready === false && <p className="ov-note">Расчёт рабочих мест ещё не готов. В таблице показано состояние источников.</p>}
+    {list.initial ? <SkelRows /> : list.items.length ? <div className="table-scroll"><table className="table compact virt">
+      <thead><tr><th>Источник</th><th>Свежесть данных</th><th>Наблюдения и связи</th><th>Расчёт защиты</th><th>Состояние</th></tr></thead>
+      <tbody><VirtualRows list={list} colSpan={5} estimate={80} row={(row) => <tr>
+        <td><b>{row.source_name}</b></td>
+        <td>Опрос · {fmt(row.polled_at)}<span className="sub">Снимок · {fmt(row.snapshot_at)}</span></td>
+        <td>Наблюдались · {num(row.observed)}<span className="sub">Свежий сеанс · {num(row.current)}</span>
+          <span className="sub">Со связями · {num(row.matched)}</span><span className="sub">Только предложения · {num(row.possible)}</span></td>
+        <td>Учитываются · {num(row.eligible)}<span className="sub">Защита определена · {num(row.av_known)}</span></td>
+        <td><span className={`badge ${row.status === "ready" ? "ok" : "warn"}`}>{DIAGNOSTIC_LABELS[row.status] ?? "Состояние неизвестно"}</span>
+          {row.reason && <span className="sub">{row.reason}</span>}</td>
+      </tr>} /></tbody>
+    </table></div> : !list.error && <Empty icon="database" title="Источники не найдены">Проверьте подключение KSC и текущий отбор.</Empty>}
+    <ListFoot list={list} />
+    {report && <QuickReportPanel kind="quick_employee_protection" title="Диагностика источников"
+      params={{ ...report, view: "diagnostics" }} options={{ scope: false }} activityDays={ctx.me.activity_days} canReport onClose={() => setReport(null)} />}
+  </section>;
+}
+
 export default function EmployeeProtectionPage({ ctx }: { ctx: Ctx }) {
   const [params] = useSearchParams();
   const [access, setAccess] = useState<{ allowed: boolean; can_refresh: boolean } | null>(null);
@@ -360,8 +434,11 @@ export default function EmployeeProtectionPage({ ctx }: { ctx: Ctx }) {
       .catch((e: ApiError) => { if (active) setError(e.message); });
     return () => { active = false; };
   }, [retry]);
+  if (access?.allowed && params.get("view") === "diagnostics") return <Diagnostics ctx={ctx} />;
   if (access?.allowed && params.get("view") === "workplaces") return <section className="ep">
-    <PageHead title="Рабочие места сотрудников" back={<BackLink to={PATH} label={TITLE} />} />
+    <PageHead title="Рабочие места сотрудников" back={<BackLink to={PATH} label={TITLE} />}>
+      <Link to={DIAGNOSTICS} className="btn">Диагностика источников</Link>
+    </PageHead>
     <WorkplaceReview employeeId={params.get("employee_id") ?? undefined} deviceId={params.get("device_id") ?? undefined} />
   </section>;
   if (access?.allowed) return <ReportDashboard ctx={ctx} canRefresh={access.can_refresh} />;

@@ -1,4 +1,4 @@
-"""Отбор реестра учётных единиц — общий для списка, группировки, массовых операций и отчётов (тот же набор параметров передаётся в конструктор отчёта)."""
+"""Общий отбор оборудования, документов и лицензий для страниц и отчётов."""
 from __future__ import annotations
 
 import uuid
@@ -8,11 +8,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import InvAsset, InvLocation, InvProp, utcnow
+from ..models import InvAsset, InvDoc, InvDocItem, InvLicAssign, InvLicense, InvLocation, InvProp, utcnow
 from ..search import column_like
 from ..services.settings import InventorySettings
 from . import core as C
 from . import model as M
+
+REPORTS_WITH_DOCUMENT_SCOPE = {"docs", "repair", "card", "count", "count_diff"}
 
 
 class Filters(BaseModel):
@@ -109,3 +111,65 @@ async def where_of(db: AsyncSession, f: Filters, acc: C.Access, cfg: InventorySe
             else:
                 w.append(el == v)
     return w
+
+
+def document_where(acc: C.Access, actor: str, *, kind="", status="", q="", open_only=False, asset=None, person=None) -> list:
+    scope = acc.document_filter(actor)
+    w = [scope] if scope is not None else []
+    if kind:
+        w.append(InvDoc.kind.in_(kind.split(",")))
+    if status:
+        w.append(InvDoc.status.in_(status.split(",")))
+    if open_only:
+        w.append(InvDoc.status.not_in(("done", "cancelled")))
+    if q := q.strip():
+        cols = (InvDoc.no, InvDoc.basis, InvDoc.comment)
+        conds = [f for col in cols if (f := column_like(col, q)) is not None]
+        if conds:
+            w.append(or_(*conds, InvDoc.id.in_(select(InvDocItem.doc_id).join(InvAsset, InvAsset.id == InvDocItem.asset_id).where(column_like(InvAsset.search, q)))))
+    if asset:
+        w.append(InvDoc.id.in_(select(InvDocItem.doc_id).where(InvDocItem.asset_id == asset)))
+    if person:
+        w.append(or_(InvDoc.from_person_id == person, InvDoc.to_person_id == person, InvDoc.resp_id == person))
+    return w
+
+
+def license_where(q: str, state: str, today: date, soon_days: int) -> list:
+    w = [InvLicense.active.is_(state != "inactive")]
+    for word in q.split()[:5]:
+        conds = [f for col in (InvLicense.name, InvLicense.vendor) if (f := column_like(col, word)) is not None]
+        if conds:
+            w.append(or_(*conds))
+    if state == "soon":
+        w += [InvLicense.valid_until >= today, InvLicense.valid_until <= today + timedelta(days=soon_days)]
+    elif state == "expired":
+        w.append(InvLicense.valid_until < today)
+    return w
+
+
+async def license_assignments(db: AsyncSession, ids: list[int]) -> dict[int, int]:
+    if not ids:
+        return {}
+    return dict((await db.execute(select(InvLicAssign.license_id, func.count()).where(
+        InvLicAssign.license_id.in_(ids)).group_by(InvLicAssign.license_id))).all())
+
+
+def license_state(lc: InvLicense, assigned: int, today: date, soon_days: int) -> dict:
+    def num(n):
+        return f"{n:,}".replace(",", "\u00a0")
+
+    u = lc.usage or {}
+    inst = u.get("installs")
+    issues = []
+    if lc.valid_until and lc.valid_until < today:
+        issues.append("срок действия истёк")
+    elif lc.valid_until and lc.valid_until <= today + timedelta(days=soon_days):
+        issues.append(f"срок истекает {lc.valid_until:%d.%m.%Y}")
+    if lc.qty is not None and assigned > lc.qty:
+        issues.append(f"назначено больше, чем куплено ({num(assigned)} из {num(lc.qty)})")
+    if lc.qty is not None and inst is not None and inst > lc.qty and lc.metric == "device":
+        issues.append(f"установлено больше, чем куплено ({num(inst)} из {num(lc.qty)})")
+    if inst is not None and lc.metric == "device" and inst > assigned and assigned:
+        issues.append(f"установлено без назначения: {inst - assigned}")
+    return {"installs": inst, "assigned": assigned, "free": (lc.qty - assigned) if lc.qty is not None else None,
+            "issues": issues, "usage_at": u.get("at"), "usage_errors": u.get("errors") or []}

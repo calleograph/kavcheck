@@ -1,4 +1,6 @@
 """Сводка и детализация защиты сотрудников по серверному отбору дашборда."""
+from sqlalchemy import text
+
 from ..employee_protection import classify, read
 from ..employee_protection.filters import Filters
 from ..ksc.driver import KscError
@@ -23,6 +25,11 @@ WORKPLACES = [col("employee", "Сотрудник"), col("login", "Учётна�
               col("observed_days", "Дни наблюдений", "num"), col("first_seen_at", "Первое наблюдение", "date"),
               col("last_seen_at", "Последнее наблюдение", "date"), col("decision", "Решение администратора"),
               col("decided_at", "Дата решения", "date"), col("proposals", "Предложения по учёту")]
+DIAGNOSTICS = [col("source_name", "Источник KSC"), col("polled_at", "Опрос пользователей (UTC)", "date"),
+               col("snapshot_at", "Срез KSC (UTC)", "date"), col("observed", "Устройства с наблюдениями", "num"),
+               col("current", "С текущим доменным сеансом", "num"), col("matched", "Со связями", "num"),
+               col("eligible", "В расчёте", "num"), col("av_known", "Защита определена", "num"),
+               col("possible", "Только на проверку", "num"), col("reason", "Состояние")]
 METRICS = {"employees": "Сотрудники", "uses_av": "С установленным антивирусом", "protected": "Полностью защищены",
            "partial": "Частично защищены", "no_av": "Подтверждено отсутствие", "insufficient": "Недостаточно данных",
            "devices": "Известные устройства", "corporate": "Корпоративные", "personal": "Личные"}
@@ -61,6 +68,16 @@ async def build_employee_protection(_client, p: dict, ctx: Ctx) -> dict:
     filters = Filters.model_validate(p)
     workplaces = view == "workplaces"
     async with ctx.sm() as db:
+        if db.bind.dialect.name == "postgresql":
+            await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+        if view == "diagnostics":
+            data = await read.diagnostics(db, source_id=p.get("source_id", "").lower(), q=filters.q)
+            conditions = [{"label": "Поиск", "text": filters.q}] if filters.q else []
+            if p.get("source_id") and data["items"]:
+                conditions.append({"label": "Источник KSC", "text": data["items"][0]["source_name"]})
+            return {"title": "Диагностика защиты сотрудников", "data_at": data["built_at"], "conditions": conditions,
+                    "metrics": [metric("sources", "Источники", data["total"])], "notes": data["warnings"],
+                    "tables": [_table("rows", "Источники KSC", DIAGNOSTICS, data["items"])], "severity": None}
         generation, meta = await read.snapshot(db)
         if generation is None:
             raise KscError("no_data", "Для формирования отчёта нужен готовый срез защиты сотрудников")
@@ -94,7 +111,7 @@ async def build_employee_protection(_client, p: dict, ctx: Ctx) -> dict:
             conditions.append({"label": "Оборудование", "text": "С действующей карточкой учёта"})
         if p.get("pairs"):
             conditions.append({"label": "Отбор", "text": "Выбранные связи"})
-        return {"title": "Рабочие места сотрудников", "conditions": conditions,
+        return {"title": "Рабочие места сотрудников", "conditions": conditions, "data_at": meta["built_at"],
                 "metrics": [metric("workplaces", "Связи", n)], "notes": meta["warnings"],
                 "tables": [_table("rows", "Рабочие места", WORKPLACES, rows)], "severity": None,
                 **({"selection_total": n} if ctx.light and p.get("detail") != "summary" else {})}
@@ -102,7 +119,8 @@ async def build_employee_protection(_client, p: dict, ctx: Ctx) -> dict:
     metrics = [metric(k, title, totals[k]) for k, title in METRICS.items()]
     if totals["employees"]:
         for key in ("uses_av", "protected"):
-            metrics.append(metric(f"{key}_pct", f"{METRICS[key]}, %", round(totals[key] * 100 / totals["employees"], 1)))
+            if totals[key] or totals["insufficient"] < totals["employees"]:
+                metrics.append(metric(f"{key}_pct", f"{METRICS[key]}, %", round(totals[key] * 100 / totals["employees"], 1)))
     group_cols = [col("label", "Департамент"), col("total", "Сотрудники", "num")]
     group_cols += [col(k, METRICS[k], "num") for k in ("uses_av", "protected", "partial", "no_av", "insufficient")]
     os_cols = [col("label", "ОС"), col("total", "Устройства", "num"), col("protected", "Защищены", "num"),
@@ -111,7 +129,7 @@ async def build_employee_protection(_client, p: dict, ctx: Ctx) -> dict:
               _table("statuses", "По состоянию защиты", [col("label", "Состояние"), col("count", "Сотрудники", "num")], summary["statuses"]),
               _table("departments", "По департаментам", group_cols, summary["by_department"]),
               _table("systems", "По операционным системам", os_cols, summary["by_os"])]
-    return {"title": TITLE, "subtitle": "Подготовленные данные KAV Checker", "conditions": conditions, "metrics": metrics,
+    return {"title": TITLE, "subtitle": "Подготовленные данные KAV Checker", "conditions": conditions, "metrics": metrics, "data_at": meta["built_at"],
             "notes": ["Список сотрудников сформирован по успешной проверке AD в пределах её области. На сотрудника влияют все его известные устройства.",
                       "Установка и работоспособность антивируса оцениваются отдельно. Отсутствие связи с записью KSC требует проверки.",
                       *meta["warnings"]], "tables": tables, "severity": None,

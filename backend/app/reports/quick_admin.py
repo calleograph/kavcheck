@@ -22,7 +22,7 @@ from ..services.logq import SPANS, audit_stmt, journal_stmt
 from .quick import Ctx, col, metric
 
 TITLE = {"licenses": "Лицензии", "journal": "Журнал событий", "audit": "Журнал действий", "users": "Пользователи KAV Checker", "components": "Компоненты", "bi_imports": "Журнал импорта BI",
-         "geoip": "Географические базы"}
+         "geoip": "Географические базы", "inv_auto_fill": "Автозаполнение карточек"}
 LIC_STATE = {"active": "действует", "expiring": "скоро истекает", "expired": "истекла", "perpetual": "бессрочная", "unknown": "срок неизвестен"}
 LEVEL_RU = {"debug": "отладка", "info": "сведения", "warn": "предупреждение", "error": "ошибка"}
 ROLE_RU = {"admin": "Администратор", "security": "Специалист по ИБ", "analyst": "Аналитик", "viewer": "Просмотр"}
@@ -196,7 +196,29 @@ async def _geoip(db, _p: dict, ctx: Ctx) -> dict:
                         "columns": [col("edition", "База"), col("built_at", "Сборка (UTC)", "date"), col("modified_at", "Публикация (UTC)", "date")], "rows": rows}]}
 
 
-VIEWS = {"licenses": _licenses, "journal": _journal, "audit": _audit, "users": _users, "components": _components, "bi_imports": _bi_imports, "geoip": _geoip}
+async def _inv_auto_fill(db, _p: dict, _ctx: Ctx) -> dict:
+    from ..inventory.autofill import info
+    from ..inventory.model import FIELD_RU
+    from ..services.settings import SettingsService
+
+    status = await info(db, SettingsService(None))
+    fields = set(status["fields"])
+    counts = status.get("by_field", {})
+    rows = [{"field": FIELD_RU[key], "enabled": "Да" if key in fields else "Нет", "changed": counts.get(key, 0)}
+            for key in ("user_id", "dept_id", "location_id", "resp_id")]
+    conditions = [{"label": "Состояние", "text": "Выполняется" if status["running"] else "В очереди" if status["pending"] else
+                   "Включено" if fields else "Выключено"}]
+    if status.get("last_at"):
+        conditions.append({"label": "Последний проход (UTC)", "text": status["last_at"]})
+    return {"conditions": conditions, "notes": [status["error"]] if status.get("error") else [],
+            "metrics": [metric(key, label, status.get(key, 0)) for key, label in
+                        (("checked", "Проверено"), ("changed", "Изменено"), ("skipped", "Пропущено"))],
+            "tables": [{"id": "rows", "title": "Поля автозаполнения",
+                        "columns": [col("field", "Поле карточки"), col("enabled", "Автозаполнение"), col("changed", "Изменено карточек", "num")], "rows": rows}]}
+
+
+VIEWS = {"licenses": _licenses, "journal": _journal, "audit": _audit, "users": _users, "components": _components,
+         "bi_imports": _bi_imports, "geoip": _geoip, "inv_auto_fill": _inv_auto_fill}
 
 
 async def build_admin(client: SourceClient, p: dict, ctx: Ctx) -> dict:

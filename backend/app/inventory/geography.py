@@ -11,7 +11,7 @@ from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 
 from ..models import InfraSource, InvAsset, InvGeo, InvGeoRule, InvLocation, InvPerson, InvRef, KscSource, Zone
 from ..search import matcher
@@ -19,8 +19,29 @@ from ..zones.match import ip_int, normalize_rule, parse_net
 from .model import FIELD_RU
 
 FRESH = timedelta(days=7)
+GEOLITE_MAX_AGE = timedelta(days=30)
 LABELS = {"unknown": "Недостаточно данных", "site": "Площадка по правилу", "approx": "Примерно по IP подключения",
           "vpn": "VPN или прокси по правилу", "conflict": "Противоречивые правила"}
+GEO_REASONS = {
+    "site_point": "Координаты площадки",
+    "egress_point": "Координаты сетевого выхода",
+    "site_no_point": "У площадки нет координат",
+    "vpn": "VPN или прокси по правилу",
+    "conflict": "Противоречивые правила",
+    "private": "Частный IP подключения",
+    "shared": "IP из диапазона CGNAT",
+    "special": "Служебный IP подключения",
+    "ambiguous": "Несколько IP подключения",
+    "missing": "KSC не передал IP подключения",
+    "reported_public": "Публичный IP есть только в других полях KSC",
+    "city_unavailable": "База City недоступна",
+    "geo_no_point": "Для IP есть геоданные без координат",
+    "lookup_miss": "Для публичного IP нет геоданных",
+    "geo_expired": "Данные GeoLite2 устарели",
+    "unobserved": "Нет сетевого наблюдения",
+    "pending": "Причина появится после обработки снимка",
+}
+POINT_REASONS = ("site_point", "egress_point")
 RULE_REFS = {"source_id": KscSource, "infra_source_id": InfraSource, "site_id": InvLocation, "location_id": InvLocation,
              "branch_id": InvRef, "dept_id": InvRef, "type_id": InvRef, "resp_id": InvPerson, "zone_id": Zone}
 PROPOSAL_FIELDS = ("location_id", "dept_id", "branch_id", "resp_id", "zone_id")
@@ -128,10 +149,21 @@ async def invalid_rule_ref(db, rule: Rule) -> str | None:
 
 
 async def proposal_fields(db, asset: InvAsset, values: dict) -> dict:
-    out = {}
+    return (await proposal_fields_for(db, {asset.id: (asset, values)}))[asset.id]
+
+
+async def proposal_fields_for(db, assets: dict[int, tuple[InvAsset, dict]]) -> dict[int, dict]:
+    out = {aid: {} for aid in assets}
     for field in PROPOSAL_FIELDS:
-        if values.get(field) and (row := await db.get(RULE_REFS[field], UUID(values[field]) if field == "zone_id" else values[field])):
-            out[field] = {"label": FIELD_RU[field], "value": row.path if field == "location_id" else row.name, "empty": not getattr(asset, field)}
+        ids = {aid: UUID(value) if field == "zone_id" else value for aid, (_, values) in assets.items() if (value := values.get(field))}
+        if not ids:
+            continue
+        model = RULE_REFS[field]
+        label = model.path if field == "location_id" else model.name
+        names = dict((await db.execute(select(model.id, label).where(model.id.in_(set(ids.values()))))).all())
+        for aid, id_ in ids.items():
+            if id_ in names:
+                out[aid][field] = {"label": FIELD_RU[field], "value": names[id_], "empty": not getattr(assets[aid][0], field)}
     return out
 
 
@@ -195,6 +227,35 @@ def connection_observation(evidence: dict) -> ConnectionObservation:
 def public_connection(evidence: dict) -> str:
     route = connection_observation(evidence)
     return route.get("ip", "") if route["scope"] == "public" else ""
+
+
+def location_reason(result: dict | None) -> str:
+    if result is None:
+        return "unobserved"
+    point = result.get("lat") is not None and result.get("lon") is not None
+    status = result.get("status")
+    if reason := result.get("reason"):
+        return reason
+    if status in ("vpn", "conflict"):
+        return status
+    if status == "site":
+        return "site_point" if point else "site_no_point"
+    return "egress_point" if point else "pending"
+
+
+def diagnose_location(evidence: dict, result: dict, *, city_available: bool) -> str:
+    reason = location_reason(result)
+    if reason != "pending":
+        return reason
+    route = connection_observation(evidence)
+    if route["scope"] == "missing" and any(a.get("kind") != "connection" and address_scope(a.get("ip")) == "public"
+                                            for a in evidence.get("addresses", [])):
+        return "reported_public"
+    if route["scope"] != "public":
+        return route["scope"]
+    if not city_available:
+        return "city_unavailable"
+    return "geo_no_point" if any(result.get(k) for k in ("country", "region", "city")) else "lookup_miss"
 
 
 def locate(evidence: dict, source_id: UUID, type_id: int | None, rules: list[Compiled], lookup) -> dict:
@@ -300,9 +361,11 @@ async def site_fields(db, rules: list[Compiled]) -> dict:
 
 def geo_where(filters, now: datetime) -> list:
     r = InvGeo.result
-    out = [r[key].as_string() == value for key in ("country", "region", "city", "network") if (value := getattr(filters, key))]
+    out = [geo_field(key, now) == value for key in ("country", "region", "city", "network") if (value := getattr(filters, key))]
     if filters.status:
-        out.append(func.coalesce(r["status"].as_string(), "unknown") == filters.status)
+        out.append(func.coalesce(geo_field("status", now), "unknown") == filters.status)
+    if filters.reason:
+        out.append(geo_reason_field(now) == filters.reason)
     if filters.site_id:
         out.append(r["site_id"].as_integer() == filters.site_id)
     if filters.observation_source:
@@ -325,10 +388,18 @@ class GeoFilters(BaseModel):
     city: str = Field(default="", max_length=200)
     network: str = Field(default="", max_length=300)
     status: Literal["", "unknown", "site", "approx", "vpn", "conflict"] = ""
+    reason: str = Field(default="", max_length=24)
     site_id: int | None = Field(default=None, gt=0)
     observation_source: UUID | None = None
     freshness: Literal["", "fresh", "stale", "unknown"] = ""
     fill_available: bool = False
+
+    @field_validator("reason")
+    @classmethod
+    def _known_reason(cls, value: str) -> str:
+        if value and value not in GEO_REASONS:
+            raise ValueError("Неизвестная причина состояния на карте")
+        return value
 
 
 DBIP_LABEL = "DB-IP Lite"
@@ -337,6 +408,50 @@ GEOLITE_LABEL = "GeoLite2"
 GEOLITE_CREDIT = "Геоданные GeoLite от MaxMind — https://www.maxmind.com/ · https://www.maxmind.com/en/geolite/eula"
 GEOIP_LABELS = {"dbip": DBIP_LABEL, "maxmind": GEOLITE_LABEL, "mirror": "GeoLite2 (зеркало)"}
 GEOIP_CREDITS = {DBIP_LABEL: DBIP_CREDIT, GEOLITE_LABEL: GEOLITE_CREDIT}
+GEOIP_FIELDS = frozenset(("country", "country_code", "region", "city", "lat", "lon", "radius_km",
+                          "asn", "operator", "provider", "database_at", "geoip_valid_until"))
+
+
+def expired_geoip(now: datetime):
+    result = InvGeo.result
+    expiry = result["geoip_valid_until"].as_string()
+    return or_(and_(expiry != "", expiry <= now.isoformat(timespec="seconds")),
+               and_(expiry.is_(None), result["provider"].as_string() == GEOLITE_LABEL,
+                    func.coalesce(result["database_at"].as_string(), "") <= (now - GEOLITE_MAX_AGE).date().isoformat()))
+
+
+def geo_field(field: str, now: datetime):
+    column = InvGeo.result[field]
+    value = column.as_float() if field in ("lat", "lon", "radius_km") else column.as_string()
+    if field == "status":
+        return case((and_(expired_geoip(now), value == "approx"), "unknown"), else_=value)
+    return case((expired_geoip(now), None), else_=value) if field in GEOIP_FIELDS else value
+
+
+def geo_reason_field(now: datetime):
+    result = InvGeo.result
+    reason, status = result["reason"].as_string(), result["status"].as_string()
+    point = and_(result["lat"].as_float().is_not(None), result["lon"].as_float().is_not(None))
+    return case((InvGeo.asset_id.is_(None), "unobserved"), (expired_geoip(now), "geo_expired"),
+                (reason.is_not(None), reason), (status.in_(("vpn", "conflict")), status),
+                (status == "site", case((point, "site_point"), else_="site_no_point")),
+                (point, "egress_point"), else_="pending")
+
+
+def without_geoip(result: dict) -> dict:
+    kept = {field: value for field, value in result.items() if field not in GEOIP_FIELDS}
+    if kept.get("status") == "approx":
+        kept.update(status="unknown", confidence="")
+    kept["reason"] = "geo_expired"
+    return kept
+
+
+def visible_result(result: dict, now: datetime) -> dict:
+    expiry = result.get("geoip_valid_until")
+    expired = ("" < expiry <= now.isoformat(timespec="seconds") if expiry is not None else
+               result.get("provider") == GEOLITE_LABEL and (result.get("database_at") or "") <=
+               (now - GEOLITE_MAX_AGE).date().isoformat())
+    return without_geoip(result) if expired else result
 
 
 class GeoIP(ExitStack):
@@ -349,6 +464,11 @@ class GeoIP(ExitStack):
         self.city, self.asn, self.country = None, None, None
         self.provider = DBIP_LABEL if provider == "dbip" else GEOLITE_LABEL
         self.errors = []
+        self.valid_until = ""
+        if provider == "mirror":
+            from .geo_mirror import mirror_expiry
+
+            self.valid_until = mirror_expiry(directory).isoformat(timespec="seconds")
         editions = DBIP_EDITIONS if provider == "dbip" else (*EDITIONS, COUNTRY_EDITION)
         for key, edition in zip(("city", "asn", "country"), editions):
             filename = f"{edition}.mmdb"
@@ -382,4 +502,5 @@ class GeoIP(ExitStack):
                 "country_code": (country or {}).get("iso_code"), "lat": location.get("latitude"), "lon": location.get("longitude"),
                 "radius_km": location.get("accuracy_radius"), "asn": asn.get("autonomous_system_number"),
                 "operator": str(asn.get("autonomous_system_organization") or "")[:300], "provider": self.provider,
-                "database_at": datetime.fromtimestamp(source.metadata().build_epoch, timezone.utc).date().isoformat()}
+                "database_at": datetime.fromtimestamp(source.metadata().build_epoch, timezone.utc).date().isoformat(),
+                "geoip_valid_until": self.valid_until}

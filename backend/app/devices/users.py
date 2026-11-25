@@ -14,7 +14,7 @@ import re
 import time
 from datetime import timedelta, timezone
 
-from sqlalchemy import delete, insert, select, tuple_, update
+from sqlalchemy import delete, func, insert, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..ksc import queries as q
@@ -23,19 +23,26 @@ from ..search import matcher
 
 log = logging.getLogger("app.devices")
 PAGE = 10000
+VERIFIED_DAYS = 30
 SYSTEM_RE = re.compile(r"^(system|local ?service|network ?service|localsystem|anonymous logon|defaultaccount|wdagutilityaccount|guest|dwm-\d+|umfd-\d+|font driver host.*|window manager.*|"
                        r"nt authority.*|nt service.*|root|daemon|bin|sys|nobody|gdm|sddm|lightdm|www-data|systemd-.*|messagebus|polkitd|sshd|avahi|colord|rtkit)$", re.I)
 
 
+def qualified_address(value: str | None) -> str:
+    value = (value or "").strip().casefold()
+    return value if re.fullmatch(r"[^@\s]+@[^@\s]+", value) else ""
+
+
 def split_login(login: str, upn: str) -> tuple[str, str]:
     """(логин, домен): «DOMAIN\\user» и «user@domain» разделяются; домен — по суффиксу UPN, если логин без домена."""
-    login = (login or "").strip()
+    upn = qualified_address(upn)
+    login = (login or "").strip() or upn
     domain = ""
     if "\\" in login:
         domain, login = login.split("\\", 1)
     elif "@" in login:
         login, domain = login.split("@", 1)
-    if not domain and upn and "@" in upn:
+    if not domain and upn:
         domain = upn.split("@", 1)[1]
     return login, domain.lower()
 
@@ -88,18 +95,24 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
         after = int(rows[-1]["row_id"])
         agg: dict[tuple[int, str], dict] = {}
         for r in rows:
-            login, domain = split_login(r.get("login") or "", r.get("upn") or "")
+            remote = r.get("local_host") is None
+            upn = qualified_address(r.get("upn")) if remote else ""
+            login, domain = split_login(r.get("login") or "", upn)
+            if not remote:
+                domain = "локальная"
             key, resolved = user_key(login, r.get("sid_hash") or "")
             k = (int(r["host_id"]), key)
             a = agg.get(k)
             actual = bool(r.get("actual"))
-            remote = not r.get("local_host")
             verified = actual and resolved and bool(domain) and remote
             if a is None or (actual and not a["actual"]):
                 agg[k] = {"login": login, "domain": domain, "resolved": resolved, "actual": actual, "kind": classify(login, domain, masks) if resolved else "user",
-                          "verified": verified, "remote": remote}
-            elif actual and (not verified or a["domain"] != domain):
-                a["verified"] = False
+                          "verified": verified, "remote": remote, "upn": upn}
+            elif actual:
+                if not verified or a["domain"] != domain or (a["upn"] and upn and a["upn"] != upn):
+                    a["verified"] = False
+                elif not a["upn"]:
+                    a["upn"] = upn
         seen_active |= {k for k, a in agg.items() if a["actual"]}
         user_active |= {k for k, a in agg.items() if a["actual"] and a["kind"] == "user" and a["resolved"]}
         hosts = sorted({h for h, _ in agg})
@@ -111,21 +124,26 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
                 if u is None:
                     db.add(DeviceUser(source_id=sid, host_id=h, user_key=key, login=a["login"][:256], domain=a["domain"][:256], kind=a["kind"], resolved=a["resolved"], first_seen_at=started,
                                       last_seen_at=started, seen_n=1, initial=first, session_now=a["actual"], last_session_at=started if a["actual"] else None,
-                                      identity_verified=a["verified"]))
+                                      identity_verified=a["verified"], verified_observations={"upn": a["upn"]} if a["upn"] else None))
                     written += 1
                     continue
                 ls = u.last_seen_at.replace(tzinfo=timezone.utc) if u.last_seen_at.tzinfo is None else u.last_seen_at
                 same_identity = u.login.casefold() == a["login"][:256].casefold() and u.domain == a["domain"][:256]
+                previous_upn = (u.verified_observations or {}).get("upn", "")
+                upn = a["upn"] or (previous_upn if same_identity and a["remote"] else "")
+                same_identity = same_identity and (not previous_upn or not upn or previous_upn == upn)
                 seen_this_poll = u.last_session_at == started
                 if seen_this_poll and not a["actual"]:
                     continue
                 # Один короткий логин может принадлежать нескольким доменам, включая две страницы одного опроса.
                 verified = a["verified"] and (not seen_this_poll or (u.identity_verified and same_identity)) if a["actual"] else (u.identity_verified and same_identity and a["remote"])
                 if (u.session_now != a["actual"] or a["actual"] or u.kind != a["kind"] or u.login != a["login"][:256] or u.domain != a["domain"][:256] or ls < stale
-                        or u.identity_verified != verified):
+                        or u.identity_verified != verified or upn != previous_upn):
                     u.session_now, u.last_seen_at, u.seen_n = a["actual"], started, (u.seen_n or 0) + 1
                     if a["actual"]:
                         u.last_session_at = started
+                    if not same_identity or upn != previous_upn:
+                        u.verified_observations = {"upn": upn} if upn else None
                     u.identity_verified = verified
                     u.kind, u.login, u.domain = a["kind"], a["login"][:256], a["domain"][:256]
                     written += 1
@@ -140,10 +158,32 @@ async def poll_source(sm: async_sessionmaker[AsyncSession], client, src: KscSour
             await db.execute(update(DeviceUser).where(DeviceUser.source_id == sid, tuple_(DeviceUser.host_id, DeviceUser.user_key).in_(gone[i:i + 2000])).values(session_now=False))
         await db.execute(delete(DeviceUser).where(DeviceUser.source_id == sid, DeviceUser.last_seen_at < started - timedelta(days=retention_days)))
         await track_sessions(db, sid, user_active, active_before, started, prev_poll, first=first, retention_days=retention_days)
+        if user_active:
+            await record_verified_observations(db, sid, started, res)
         st = await db.get(DevicesState, sid)
         st.polled_at, st.duration_ms, st.rows_seen, st.users_n, st.error, st.error_at, st.requested_at = started, int((time.monotonic() - t0) * 1000), seen_rows, touched, None, None, None
         await db.commit()
     return {"rows": seen_rows, "users": touched, "written": written, "seconds": round(time.monotonic() - t0, 1), "initial": first}
+
+
+async def record_verified_observations(db: AsyncSession, source_id, now, res) -> None:
+    """Записывает один подтверждённый опрос в сутки вместе с публикацией состояния источника."""
+    day = now.date().isoformat()
+    stamp = now.isoformat()
+    cutoff = (now - timedelta(days=VERIFIED_DAYS)).isoformat()
+    U = DeviceUser
+    query = select(U.host_id, U.user_key, U.verified_observations).where(
+        U.source_id == source_id, U.last_session_at == now, U.kind == "user", U.identity_verified.is_(True),
+        func.coalesce(U.verified_observations["day"].as_string(), "") != day)
+    async for rows in (await db.stream(query.execution_options(yield_per=1000))).partitions(1000):
+        updates = []
+        for host_id, user_key, data in rows:
+            stamps = [value for value in (data or {}).get("stamps", []) if cutoff <= value < stamp]
+            updates.append({"source_id": source_id, "host_id": host_id, "user_key": user_key,
+                            "verified_observations": {**(data or {}), "day": day, "stamps": [*stamps, stamp]}})
+        await db.execute(update(U), updates)
+        if res is not None:
+            await res.breathe("подтверждённые наблюдения пользователей")
 
 
 

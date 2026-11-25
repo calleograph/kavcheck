@@ -66,17 +66,30 @@ async def devices(filters: Annotated[PageFilters, Query()], db: AsyncSession = D
     return await read.page(db, filters, "devices", filters.offset, filters.limit)
 
 
+@router.get("/diagnostics", dependencies=[Depends(require_allowed)])
+async def diagnostics(source_id: UUID | None = None, q: Annotated[str, Query(max_length=200)] = "",
+                      offset: Annotated[int, Query(ge=0)] = 0, limit: Annotated[int, Query(ge=1, le=500)] = 100,
+                      db: AsyncSession = Depends(get_db)):
+    return await read.diagnostics(db, source_id=str(source_id) if source_id else "", q=q, offset=offset, limit=limit)
+
+
 @router.get("/workplaces", dependencies=[Depends(require_allowed)])
 async def workplaces(filters: Annotated[PageFilters, Query()], db: AsyncSession = Depends(get_db),
                      su: SessionUser = Depends(require_user)):
-    generation, meta = await read.snapshot(db)
+    current = await service.state(db)
+    generation, meta = await read.snapshot(db, current=current)
     items, total = [], 0
     if generation:
         selection = read.Selection(generation, filters, workplaces=True)
         items = await read.workplace_rows(db, selection, filters.offset, filters.limit)
         total = await read.workplace_count(db, selection)
-    pending = await service.request_at(db) > (await service.state(db)).get("request", "")
-    return {**meta, "generation": generation, "items": items, "total": total, "pending": pending, "can_edit": su.is_admin}
+    pending = await service.request_at(db) > current.get("request", "")
+    return {**meta, "generation": generation, "items": items, "total": total, "pending": pending, "can_edit": su.is_admin,
+            "apply_blocked": pending or not _proposals_current(current), "snapshot_error": current.get("error")}
+
+
+def _proposals_current(current):
+    return not current.get("error") and current.get("inputs", {}).get("policy") == service.POLICY_VERSION
 
 
 @router.get("/workplaces/people", dependencies=[Depends(require_allowed)])
@@ -223,8 +236,9 @@ class Proposals(BaseModel):
 @router.post("/workplaces/apply")
 async def apply_proposals(body: Proposals, su: SessionUser = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     await xact_lock(db, "employee_workplace_decisions")
-    generation, _ = await read.snapshot(db)
-    if generation != body.generation or await service.request_at(db) > (await service.state(db)).get("request", ""):
+    current = await service.state(db, lock=True)
+    generation, _ = await read.snapshot(db, current=current)
+    if generation != body.generation or not _proposals_current(current) or await service.request_at(db) > current.get("request", ""):
         raise HTTPException(409, "Срез рабочих мест меняется. Дождитесь пересчёта и обновите список.")
     items = {item.pair: item for item in body.items}
     selection = read.Selection(generation, Filters(inventory=True), workplaces=True, pairs=items)

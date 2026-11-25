@@ -26,7 +26,7 @@ export interface Infinite<T> {
 
 /** Бесконечный список с сервера: фильтры и сортировка — на сервере (deps), порции по pageSize, устаревшие ответы отбрасываются. */
 export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset: number, limit: number) => Promise<Chunk<T>>, pageSize = 100,
-  { retainExtraOnAppend = false }: { retainExtraOnAppend?: boolean } = {}): Infinite<T> {
+  { retainExtraOnAppend = false, snapshotKey }: { retainExtraOnAppend?: boolean; snapshotKey?: string } = {}): Infinite<T> {
   const depsKey = JSON.stringify(deps);
   const saved = memory.get(key);
   const hit = saved && saved.deps === depsKey ? saved : null;
@@ -47,7 +47,7 @@ export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset:
   extraRef.current = extra;
 
   const inflight = useRef<number | null>(null);                        // смещение запрошенной порции: быстрая прокрутка не шлёт один и тот же запрос дважды
-  const load = useCallback((offset: number, reset: boolean) => {
+  const load = useCallback((offset: number, reset: boolean): void => {
     if (!reset && inflight.current === offset) return;
     const id = ++req.current;
     inflight.current = reset ? null : offset;
@@ -55,6 +55,10 @@ export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset:
     fetcher.current(offset, pageSize).then((r) => {
       if (id !== req.current) return;
       const { items: got, total: t, ...rest } = r;
+      if (!reset && snapshotKey && rest[snapshotKey] !== extraRef.current?.[snapshotKey]) {
+        load(0, true);
+        return;
+      }
       setItems((cur) => {
         if (reset) return got;
         const seen = new Set(cur.map(rowKey));                           // порция пересеклась с уже загруженной (данные изменились между запросами) — без повторов строк
@@ -66,7 +70,7 @@ export function useInfinite<T>(key: string, deps: unknown[], fetchPage: (offset:
       setInitial(false);
     }).catch((e) => { if (id === req.current) { setError((e as ApiError).message); setInitial(false); } })
       .finally(() => { if (id === req.current) { setLoading(false); setRefreshing(false); inflight.current = null; } });
-  }, [pageSize, retainExtraOnAppend]);
+  }, [pageSize, retainExtraOnAppend, snapshotKey]);
 
   // для каких фильтров строки уже есть: при возврате к списку — из памяти; повторный вызов эффекта (StrictMode) не перезагружает
   const loadedFor = useRef<string | null>(hit ? depsKey : null);

@@ -17,11 +17,12 @@ from ..ksc import hosts, network
 from ..models import AppSetting, InfraObject, InfraSource, InvAsset, InvGeo, KscSource, utcnow
 from ..services.jobs import JOBS
 from ..services.resources import RES
-from .geography import FRESH, GeoIP, locate, rules_for, site_fields, time_of
+from .geography import FRESH, GeoIP, diagnose_location, locate, rules_for, site_fields, time_of, visible_result
 
 log = logging.getLogger(__name__)
 REQUEST = "inv_geo_request"
 BATCH = 500
+DIAGNOSIS_VERSION = 1
 EVERY = timedelta(hours=6)
 RETRY = timedelta(minutes=10)
 
@@ -84,6 +85,7 @@ async def collect(sm, source_id, client, geo: GeoIP, lease):
                 result = locate(item, source_id, tid, rules, geo.lookup)
                 if result.get("site_id") in sites:
                     result.update(sites[result["site_id"]])
+                result["reason"] = diagnose_location(item, result, city_available=bool(geo.city))
                 spool.write(json.dumps([aid, hid, observed.isoformat() if observed else None, item, result], ensure_ascii=False) + "\n")
                 n += 1
             await lease.stage("чтение сетевых наблюдений", str(n))
@@ -91,6 +93,7 @@ async def collect(sm, source_id, client, geo: GeoIP, lease):
         spool.seek(0)
         async with sm() as db:
             for chunk in batched(map(json.loads, spool), BATCH):
+                published_at = utcnow()
                 ids = [row[0] for row in chunk]
                 live = dict((await db.execute(select(InvAsset.id, InvAsset.ksc_host_id).where(*linked(source_id), InvAsset.id.in_(ids))
                                               .order_by(InvAsset.id).with_for_update())).all())
@@ -104,12 +107,13 @@ async def collect(sm, source_id, client, geo: GeoIP, lease):
                         db.add(row)
                     row.source_id, row.host_id = source_id, hid
                     row.checked_at, row.observed_at = checked, datetime.fromisoformat(observed) if observed else None
-                    row.evidence, row.result = evidence, result
+                    row.evidence, row.result = evidence, visible_result(result, published_at)
                 await db.flush()
                 await lease.stage("публикация сетевых наблюдений")
             await lease.fence(db)
             await db.commit()
     return {"count": n, "capabilities": sorted(caps), "geoip": bool(geo.city), "asn": bool(geo.asn), "geo_errors": geo.errors,
+            "diagnosis_version": DIAGNOSIS_VERSION,
             "geo_provider": getattr(geo, "provider", "") if geo.city or geo.asn else ""}
 
 
@@ -165,7 +169,8 @@ async def tick(sm, sources, manual: Path, managed: Path, cfg, journal) -> None:
     for src in targets:
         before = state.get(state_key(src.id)) or {}
         at = before.get("attempt_at")
-        due = not at or datetime.fromisoformat(at) < now - (RETRY if before.get("error") else EVERY)
+        due = (not at or datetime.fromisoformat(at) < now - (RETRY if before.get("error") else EVERY)
+               or (before.get("diagnosis_version") != DIAGNOSIS_VERSION and not before.get("error")))
         if not due and request <= before.get("request", ""):
             continue
         try:

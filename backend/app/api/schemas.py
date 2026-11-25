@@ -416,6 +416,8 @@ class QuickInv(Params):
     date_from: str = Field(default="", max_length=10)
     date_to: str = Field(default="", max_length=10)
     doc_kind: str = Field(default="", max_length=100)
+    doc_open_only: bool = False
+    license_state: Literal["", "soon", "expired", "issues", "inactive"] = ""
     count_id: int | None = None
     netscan_job: str = Field(default="", max_length=40)                  # infra_netscan: задание обнаружения (пусто — последнее готовое)
     code: str = Field(default="", max_length=200)
@@ -438,7 +440,7 @@ class QuickAd(Params):
 
 class QuickAdmin(Params):
     """Таблицы администрирования: вид и фильтры страницы (журнал событий — текст, уровень, компонент, период; журнал действий — текст, действие, период; компоненты — статус; импорт BI — источник)."""
-    view: str = Field(default="journal", pattern=r"^(licenses|journal|audit|users|components|bi_imports|geoip)$")
+    view: str = Field(default="journal", pattern=r"^(licenses|journal|audit|users|components|bi_imports|geoip|inv_auto_fill)$")
     q: str = Field(default="", max_length=200)
     level: str = Field(default="", pattern=r"^(|debug|info|warn|error)$")
     category: str = Field(default="", max_length=24)
@@ -509,7 +511,8 @@ class QuickOverview(Params):
 
 
 class QuickEmployeeProtection(EmployeeProtectionFilters, Params):
-    view: Literal["employees", "devices", "workplaces"] = "employees"
+    view: Literal["employees", "devices", "workplaces", "diagnostics"] = "employees"
+    source_id: str = Field(default="", pattern=r"^(|[0-9a-fA-F-]{36})$")
     pairs: list[Annotated[str, Field(pattern=r"^[^|]{1,120}\|[^|]{1,120}$")]] = Field(default_factory=list, max_length=100)
 
 

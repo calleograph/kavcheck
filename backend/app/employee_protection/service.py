@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 KIND = "employee_protection"
 STATE = "employee_protection_state"
 REQUEST = "employee_protection_request"
+POLICY_VERSION = 3
 BATCH = 500
 INTERVAL = timedelta(hours=6)
 CENSUS_MAX_AGE = timedelta(days=45)
@@ -35,8 +36,8 @@ def stamp(value):
     return datetime.fromisoformat(value) if isinstance(value, str) and value else value or None
 
 
-async def state(db) -> dict:
-    row = await db.get(AppSetting, STATE)
+async def state(db, *, lock=False) -> dict:
+    row = await db.get(AppSetting, STATE, with_for_update=lock)
     return dict(row.value) if row else {}
 
 
@@ -80,7 +81,7 @@ async def _inputs(db):
                             .where(KscSource.is_active.is_(True)).order_by(KscSource.id))).all()
     # Новый опрос или срез запускает расчёт максимум один раз в час.
     hours = lambda dt: dt.replace(minute=0, second=0, microsecond=0).isoformat() if dt else ""
-    return [sid for sid, _, _ in rows], {"audit": census.isoformat() if census else "",
+    return [sid for sid, _, _ in rows], {"audit": census.isoformat() if census else "", "policy": POLICY_VERSION,
                                         "sources": [[str(sid), hours(poll), hours(built)] for sid, poll, built in rows]}
 
 
@@ -124,6 +125,22 @@ def _search(row, keys) -> str:
     return " ".join(str(row.get(key) or "").lower() for key in keys)
 
 
+def _finalize_diagnostics(diagnostics):
+    for diagnostic in diagnostics.values():
+        if diagnostic["status"] != "ready":
+            continue
+        if diagnostic["eligible"] and not diagnostic["av_known"]:
+            diagnostic.update(status="av_missing", reason="Устройства сопоставлены. Достоверных сведений о защите пока нет.")
+        elif not diagnostic["eligible"]:
+            if diagnostic["possible"]:
+                diagnostic.update(status="review", reason="Есть возможные связи. Для автоматической оценки защиты пока недостаточно оснований.")
+            elif diagnostic["observed"]:
+                diagnostic.update(status="unmatched", reason="Наблюдения пользователей есть. Подходящих связей с записями AD нет.")
+            else:
+                diagnostic.update(status="no_observations", reason="На подготовленных компьютерах нет распознанных наблюдений пользователей.")
+    return list(diagnostics.values())
+
+
 async def _save(db, lease, values):
     await lease.fence(db)
     row = await db.get(AppSetting, STATE, with_for_update=True)
@@ -143,6 +160,7 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
         if source.bind.dialect.name == "postgresql":
             await source.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
         people, meta = await sources.employees(source, now)
+        meta["source_diagnostics"] = []
         if not meta.get("ready"):
             await _save(target, lease, {**previous, **common, **jsonable_encoder(meta)})
             return meta
@@ -161,8 +179,10 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
             aliases.update(await device_aliases(source, group))
         for row in stored:
             decisions[aliases.get(row.device_id, row.device_id)][row.person_id] = row
+        diagnostics = {}
         devices, links = [], []
-        async for device, evidence in sources.devices(source, ids, people, now, manual=decisions):
+        async for device, evidence in sources.devices(source, ids, people, now, manual=decisions,
+                                                     diagnostics=diagnostics, activity_days=activity_days):
             key = device["id"]
             pairs = {pid: dict(info) for pid, info in evidence.items() if pid in known and info}
             for pid, decision in decisions.get(key, {}).items():
@@ -184,10 +204,12 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
             zone_keys = "|" + "|".join(sorted({z["id"] for z in zones} or {"none"})) + "|"
             devices.append({"generation": generation, "id": key, "search": _search(row, ("name", "ip", "os", "av_product")), "zone_keys": zone_keys, "data": row})
             summary = {**status, "key": key, "last_connected": row["last_connected"]}
+            counted_host, review_host = False, False
             for pid, info in pairs.items():
                 evidence = list(dict.fromkeys(info.pop("evidence")))
                 counted = info["confidence"] == "confirmed" or (info["confidence"] == "likely" and device.get("shared_reason") != SERVER)
                 if counted:
+                    counted_host = True
                     per_person[pid].append(summary)
                     if not info.get("shared") and not device.get("shared_reason") and row["shared_count"] == 1:
                         if info.get("decision") == "confirmed":
@@ -195,14 +217,22 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
                         elif info.get("regular"):
                             primary[pid].append(((0, info["observed_days"]), key))
                 elif info["confidence"] != "rejected":
+                    review_host = True
                     pending[pid] += 1
                 links.append({"generation": generation, "person_id": pid, "device_id": key,
                               "evidence": evidence, "assessment": jsonable_encoder({**info, "counted": counted})})
+            diagnostic = diagnostics.get(device.get("source_id"))
+            if diagnostic is not None and device.get("protection") is not None:
+                diagnostic["matched"] += int(counted_host or review_host)
+                diagnostic["eligible"] += int(counted_host)
+                diagnostic["possible"] += int(review_host and not counted_host)
+                diagnostic["av_known"] += int(counted_host and status["status"] in ("protected", "problems", "no_av"))
             if len(devices) >= BATCH or len(links) >= BATCH:
                 await _write_devices(target, devices, links)
                 await lease.stage("сопоставление оборудования и состояния защиты", str(len(seen)))
                 await RES.breathe("защита сотрудников")
         await _write_devices(target, devices, links)
+        meta["source_diagnostics"] = _finalize_diagnostics(diagnostics)
         for group in batched(people, BATCH):
             rows = []
             for person in group:
@@ -214,7 +244,8 @@ async def build(sm, ids, now, activity_days, bases_days, previous, common, lease
                 last_seen = max((stamp(d["last_connected"]) for d in related if d["last_connected"]), default=None)
                 ranked = sorted(primary.pop(person["id"], []), reverse=True)
                 main_device = ranked[0][1] if ranked and (len(ranked) == 1 or ranked[0][0] > ranked[1][0]) else None
-                row = _row(PERSON_FIELDS, person, **status, last_seen=last_seen, pending_device_count=candidates, primary_device_id=main_device)
+                row = _row(PERSON_FIELDS, person, **status, last_seen=last_seen, pending_device_count=candidates,
+                           primary_device_id=main_device, email_verified=person.get("email") in person.get("_emails", ()))
                 rows.append({"generation": generation, "id": person["id"], "search": _search(row, ("name", "login", "email", "department", "title")), "data": row})
             await target.execute(insert(EmployeeProtectionPerson), rows)
             await RES.breathe("защита сотрудников")

@@ -191,7 +191,7 @@ async def put_settings(group: str, request: Request, body: dict[str, Any] = Body
     if group not in GROUPS:
         raise HTTPException(status_code=404, detail="Неизвестная группа настроек")
     svc = request.app.state.settings_svc
-    if group == "geoip":
+    if group in ("geoip", "inventory"):
         await xact_lock(db, group)
     try:
         changed = await svc.update(db, group, body, actor=su.display_name)

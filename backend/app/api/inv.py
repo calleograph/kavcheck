@@ -20,9 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import SessionUser, get_db, require_user
 from ..inventory import core as C
+from ..inventory import autofill
 from ..inventory import model as M
 from ..inventory.overview import read_overview
-from ..inventory.query import Filters, where_of
+from ..inventory.query import Filters, document_where, where_of
 from ..models import (InvAsset, InvDoc, InvDocItem, InvFile, InvHistory, InvLicense, InvLocation, InvPerson, InvProp, InvRef, InvView, KscSource, ZcHost, ZcSource, Zone, utcnow)
 from ..search import column_like
 from ..services.audit import write_audit
@@ -97,6 +98,24 @@ async def meta(ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
 def prop_out(p: InvProp) -> dict:
     return {"id": p.id, "code": p.code, "name": p.name, "descr": p.descr, "type": p.type, "options": p.options or [], "default": (p.default or {}).get("v"), "required": p.required,
             "type_ids": p.type_ids or [], "in_list": p.in_list, "sort": p.sort, "active": p.active}
+
+
+@router.get("/auto-fill")
+async def autofill_status(request: Request, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+    if not ix.su.is_admin:
+        raise HTTPException(403, "Автозаполнение доступно администратору")
+    return await autofill.info(db, request.app.state.settings_svc)
+
+
+@router.post("/auto-fill/refresh", status_code=202)
+async def autofill_refresh(request: Request, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
+    if not ix.su.is_admin:
+        raise HTTPException(403, "Автозаполнение доступно администратору")
+    queued = await autofill.queue(db, request.app.state.settings_svc)
+    if queued:
+        audit(db, ix, "auto_fill.request", "", {})
+        await db.commit()
+    return {"queued": queued}
 
 
 @router.get("/overview")
@@ -221,9 +240,13 @@ async def card(aid: int, ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(g
     """Карточка: учётные сведения, состав и связи, документы, лицензии, вложения. Технические сведения — отдельно (/tech), история — /history."""
     a = await get_asset(db, ix, aid)
     n = await C.names_for(db, [a])
-    kids = (await db.execute(select(InvAsset).where(InvAsset.parent_id == a.id).order_by(InvAsset.inv_no).limit(300))).scalars().all()
+    kids_q = select(InvAsset).where(InvAsset.parent_id == a.id)
+    if (scope := ix.acc.asset_filter()) is not None:
+        kids_q = kids_q.where(scope)
+    kids = (await db.execute(kids_q.order_by(InvAsset.inv_no).limit(300))).scalars().all()
     kn = await C.names_for(db, list(kids), props=False)
-    docs = (await db.execute(select(InvDoc).join(InvDocItem, InvDocItem.doc_id == InvDoc.id).where(InvDocItem.asset_id == a.id).order_by(InvDoc.doc_date.desc(), InvDoc.id.desc()).limit(200))).scalars().all()
+    docs_w = document_where(ix.acc, ix.su.display_name, asset=a.id)
+    docs = (await db.execute(select(InvDoc).where(*docs_w).order_by(InvDoc.doc_date.desc(), InvDoc.id.desc()).limit(200))).scalars().all()
     from ..models import InvLicAssign  # noqa: PLC0415
 
     lics = (await db.execute(select(InvLicense, InvLicAssign).join(InvLicAssign, InvLicAssign.license_id == InvLicense.id).where(InvLicAssign.asset_id == a.id))).all()

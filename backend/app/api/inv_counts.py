@@ -40,8 +40,8 @@ async def count_out(db: AsyncSession, c: InvCount, with_stats: bool = False) -> 
 @router.get("/counts")
 async def counts(status: str = Query("", max_length=40), ix: Ix = Depends(inv_ctx), db: AsyncSession = Depends(get_db)):
     w = [InvCount.status.in_(status.split(","))] if status else []
-    if ix.acc.scopes:                                              # только инвентаризации в пределах области учёта (по всем местоположениям — нет)
-        w.append(InvCount.location_id.in_(ix.acc.loc_ids()))
+    if (scope := ix.acc.count_filter()) is not None:
+        w.append(scope)
     rows = (await db.execute(select(InvCount).where(*w).order_by(InvCount.created_at.desc()).limit(500))).scalars().all()
     return {"items": [await count_out(db, c) for c in rows]}
 

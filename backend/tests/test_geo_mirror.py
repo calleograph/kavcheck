@@ -96,7 +96,7 @@ async def test_alternative_manifest_and_address_validation(tmp_path, fake_mmdb, 
     async def handle(request):
         assert request.headers["Host"] == host and request.extensions["sni_hostname"] == host
         assert "Authorization" not in request.headers
-        assert request.url.path.startswith("/geo/")
+        assert request.url.raw_path.startswith(b"/geo%2Fdata/")
         name = request.url.path.split("/")[-1]
         requests.append(name)
         data = "\n".join(f"{sha256(value).hexdigest()} *{key}" for key, value in bodies.items()).encode()
@@ -108,11 +108,11 @@ async def test_alternative_manifest_and_address_validation(tmp_path, fake_mmdb, 
     assert not requests
 
     async def endpoint(url):
-        assert str(url) == f"https://{host}/geo/"
+        assert str(url) == f"https://{host}/geo%2Fdata/"
         return url.copy_with(host="192.0.2.10"), {"headers": {"Host": host}, "extensions": {"sni_hostname": host}}
 
     monkeypatch.setattr(gm, "_public_endpoint", endpoint)
-    result = await gm.update_mirror(tmp_path, f"https://{host}/geo", transport=transport, now=NOW)
+    result = await gm.update_mirror(tmp_path, f"https://{host}/geo%2Fdata", transport=transport, now=NOW)
     assert result["changed"] and requests == ["SHA256SUMS", *bodies]
 
     for url in (f"http://{host}", f"https://user@{host}", f"https://{host}/?key=value", f"https://{host}:444/"):
@@ -125,16 +125,19 @@ def test_country_is_used_when_city_has_no_country(tmp_path, monkeypatch):
     records = {gm.MIRROR_EDITIONS[0]: {"city": {"names": {"en": "Example City"}}},
                gm.MIRROR_EDITIONS[1]: {"autonomous_system_number": 64512},
                gd.COUNTRY_EDITION: {"country": {"iso_code": "ZZ", "names": {"en": "Example Country"}}}}
+    builds = {edition: BUILD if edition != gd.COUNTRY_EDITION else BUILD - 86400 for edition in records}
 
     @contextmanager
     def open_fake(path):
         edition = Path(path).stem
-        yield SimpleNamespace(metadata=lambda: SimpleNamespace(database_type=edition, build_epoch=BUILD),
+        yield SimpleNamespace(metadata=lambda: SimpleNamespace(database_type=edition, build_epoch=builds[edition]),
                               get=lambda address: records[edition] if address == net else None)
 
     monkeypatch.setattr(gd.maxminddb, "open_database", open_fake)
+    (tmp_path / gd.MANIFEST).write_text(json.dumps({edition: {"build_epoch": build} for edition, build in builds.items()}))
     with GeoIP(tmp_path, "mirror") as geo:
         known = geo.lookup(net)
         assert known["provider"] == GEOLITE_LABEL and known["country"] == "Example Country"
         assert known["city"] == "Example City" and known["asn"] == 64512
+        assert known["geoip_valid_until"] == (NOW + timedelta(days=29)).isoformat(timespec="seconds")
         assert geo.lookup("192.0.2.11") == {}
