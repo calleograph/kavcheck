@@ -9,10 +9,10 @@ import { ago, bytes, fmtTs, versionLabel } from "../../util";
 
 const MAX_LOG = 400_000;
 const ACTION: Record<string, string> = { update: "Обновление", rollback: "Откат", backup: "Резервная копия", check: "Проверка релизов", restore: "Восстановление из копии", preflight: "Проверки перед обновлением", helper: "Обновление помощника" };
-const REASON: Record<string, string> = { docker_hub: "Недоступен Docker Hub", registry: "Недоступен реестр готовых образов", image_missing: "Образы релиза не найдены в реестре", image_mismatch: "Образы зеркала не соответствуют выбранному релизу", npm: "Не удалось скачать пакеты npm", pip: "Не удалось скачать пакеты Python",
+const REASON: Record<string, string> = { docker_hub: "Не получен базовый образ из Docker Hub и его зеркал", registry: "Недоступен реестр готовых образов", image_missing: "Образы релиза не найдены в реестре", image_mismatch: "Образы зеркала не соответствуют выбранному релизу", npm: "Не удалось скачать пакеты npm", pip: "Не удалось скачать пакеты Python",
   network: "Обрыв или недоступность сети", disk: "Не хватает места на диске", build: "Ошибка сборки образов", migration: "Ошибка миграции базы", health: "Новая версия не прошла проверку работоспособности", timeout_total: "Превышено время операции",
   timeout_stall: "Зависание операции", interrupted: "Обновление было прервано", rejected: "Помощник не принял запрос", internal: "Внутренняя ошибка помощника", generic: "Ошибка обновления" };
-const CAN_BUILD = ["registry", "image_missing", "docker_hub"];
+const CAN_BUILD = ["registry", "image_missing"];
 const PHASE: Record<string, string> = { pulling: "Загрузка готовых образов", building: "Локальная сборка образов", backup: "Резервное копирование", migrating: "Миграции базы", restarting: "Перезапуск и проверка работоспособности", preflight: "Проверки перед обновлением", code: "Переход кода на релиз", cleanup: "Очистка старых образов", helper: "Обновление помощника", report: "Формирование отчёта" };
 const dur = (s: number) => (s < 60 ? `${s} с` : `${Math.floor(s / 60)} мин ${s % 60} с`);
 const LOG_URL = "/api/v1/admin/updates/log/download";

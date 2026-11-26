@@ -6,7 +6,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/../.." && pwd)"; ONLY="${1:-}"
 PASS=0; FAILS=0; CUR=""
-export UPD_PASS_ENV="FAKE_STATE FAKE_PULL FAKE_BUILD FAKE_MIGRATE FAKE_HEALTH FAKE_REGISTRY FAKE_MANIFEST FAKE_NPM FAKE_HUB FAKE_UP FAKE_BASE FAKE_PRIMARY_MANIFEST FAKE_PRIMARY_PULL FAKE_MIRROR_REVISION UPD_STALL_PULL UPD_WAIT_HEALTH"
+export UPD_PASS_ENV="FAKE_STATE FAKE_PULL FAKE_BUILD FAKE_MIGRATE FAKE_HEALTH FAKE_REGISTRY FAKE_MANIFEST FAKE_NPM FAKE_HUB FAKE_UP FAKE_BASE FAKE_GOOGLE_PULL FAKE_TIMEWEB_PULL FAKE_PRIMARY_MANIFEST FAKE_PRIMARY_PULL FAKE_MIRROR_REVISION UPD_STALL_PULL UPD_WAIT_HEALTH"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.org GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.org KC_NO_SYSTEMD=1 UPD_WAIT_HEALTH=6
 t() { # t ОПИСАНИЕ КОМАНДА… — проверка
   local d="$1"; shift
@@ -17,9 +17,11 @@ mk() { # песочница: SB, W (рабочая копия), S (состоя�
   SB="$(mktemp -d)"; S="$SB/state"; D="$SB/data"; W="$SB/work"; M="$SB/maker"; mkdir -p "$S" "$SB/bin" "$D"/{state,updater,backups,postgres,reports,bi}
   cp "$HERE"/fake/docker "$HERE"/fake/curl "$SB/bin/"; echo "$S" > "$SB/bin/state-dir"; git init -q --bare "$SB/origin.git"
   git init -q "$M"; ( cd "$M" && mkdir -p backend/migrations/versions deployment && cp -r "$ROOT/scripts" . && cp "$ROOT/deployment/compose.yml" deployment/ && echo 0.1.0 > VERSION \
+    && sed -i '/^    image: .*\/library\/postgres@sha256:/c\    image: postgres:16-alpine' deployment/compose.yml \
     && echo 'revision = "r1"' > backend/migrations/versions/0001.py && git add -A && git commit -qm v1 && git tag v0.1.0 && git remote add origin "$SB/origin.git" && git push -q origin HEAD:master --tags )
   git clone -q "$SB/origin.git" "$W"
-  ( cd "$M" && echo 0.2.0 > VERSION && echo 'revision = "r2"' > backend/migrations/versions/0002.py && sed -i '/^set -uo pipefail/a echo "CORE-FROM-TARGET-RELEASE"' scripts/update-core.sh && git add -A && git commit -qm v2 && git tag v0.2.0 && git push -q origin HEAD:master --tags )
+  ( cd "$M" && mkdir -p frontend && cp "$ROOT/backend/Dockerfile" backend/ && cp "$ROOT/frontend/Dockerfile" frontend/ && cp "$ROOT/deployment/compose.yml" deployment/ \
+    && echo 0.2.0 > VERSION && echo 'revision = "r2"' > backend/migrations/versions/0002.py && sed -i '/^set -uo pipefail/a echo "CORE-FROM-TARGET-RELEASE"' scripts/update-core.sh && git add -A && git commit -qm v2 && git tag v0.2.0 && git push -q origin HEAD:master --tags )
   cat > "$W/.env" <<EOF
 COMPOSE_PROJECT_NAME=kctest
 DATA_ROOT=$D
@@ -45,6 +47,12 @@ dbrev() { cat "$S/dbrev"; }
 rj() { python3 -c "import json,sys; print(json.load(open('$D/updater/report.json')).get('$1',''))"; }
 envv() { sed -n "s/^$1=//p" "$W/.env" | tail -1; }
 built() { [ -e "$S/BUILD_CALLED" ]; }
+build_base() { sed -n "s/^ARG $1=docker\.io\///p" "$M/backend/Dockerfile" "$M/frontend/Dockerfile"; }
+postgres_base() { sed -nE 's@^    image: \$\{KC_POSTGRES_IMAGE:-docker\.io/(.*)\}$@\1@p' "$M/deployment/compose.yml"; }
+pull_order() { # путь с digest, последовательность реестров
+  local ref="$1"; shift
+  diff -u <(printf '%s\n' "$@") <(awk -v ref="$ref" '$1 == "docker" && $2 == "pull" {host = $NF; sub("/.*", "", host); if ($NF == host "/" ref) print host}' "$S/calls.log")
+}
 no_sleepers() { ! pgrep -f 'sleep 6001' >/dev/null; }
 unlocked() { flock -n "$D/state/update.lock" true; }
 nomarker() { [ ! -e "$D/state/update.inprogress" ]; }
@@ -90,11 +98,40 @@ if scn "6. Сборка не включается скрыто: даже при 
 if scn "6b. Явная локальная сборка (--build): источники зависимостей проверяются, сборка выполняется, режим build в отчёте"; then mk
   updx -- --build; rc=$?
   t "обновление выполнено" [ "$rc" -eq 0 ]; t "сборка запускалась" [ -e "$S/BUILD_CALLED" ]; t "режим build в отчёте" [ "$(rj mode)" = build ]; t "проверены источники npm и pip" grep -q "npm: https://registry.npmjs.org" "$SB/out.log"
-  t "этап назван «локальная сборка»" grep -q "Образы релиза: локальная сборка" "$SB/out.log"; fin; fi
+  t "этап назван «локальная сборка»" grep -q "Образы релиза: локальная сборка" "$SB/out.log"
+  t "BuildKit получает закреплённый локальный образ" grep -qF -- "1 default build --build-arg PYTHON_IMAGE=docker.io/$(build_base PYTHON_IMAGE)" "$S/BUILD_CALLED"
+  t "повторная загрузка базовых образов не требуется" bash -c "! grep -q '^docker pull ' '$S/calls.log'"; fin; fi
 
 if scn "7. Явная локальная сборка: Docker Hub недоступен"; then mk
-  updx FAKE_BUILD=hub FAKE_HUB=down -- --build; rc=$?
-  t "обновление остановлено" [ "$rc" -ne 0 ]; t "причина docker_hub" [ "$(rj reason_code)" = docker_hub ]; common_fail; fin; fi
+  updx FAKE_BASE=missing FAKE_HUB=down -- --build; rc=$?
+  t "обновление остановлено" [ "$rc" -ne 0 ]; t "причина docker_hub" [ "$(rj reason_code)" = docker_hub ]
+  t "BuildKit не запустился без проверенных баз" bash -c "! test -e '$S/BUILD_CALLED'"; common_fail; fin; fi
+
+if scn "7a. Зеркала Docker Hub при локальной сборке: проверка digest, пропавший образ, обрыв слоёв"; then mk
+  updx FAKE_BASE=missing FAKE_HUB=down FAKE_GOOGLE_PULL=mixed FAKE_TIMEWEB_PULL=up -- --build; rc=$?
+  py_ref="$(build_base PYTHON_IMAGE)"; node_ref="$(build_base NODE_IMAGE)"; nginx_ref="$(build_base NGINX_IMAGE)"
+  t "обновление завершилось успешно и применило миграции" bash -c "[ '$rc' -eq 0 ] && [ '$(dbrev)' = r2 ]"
+  t "Google с неверным digest Python отклонён" pull_order "$py_ref" docker.io docker.io docker.io mirror.gcr.io dockerhub.timeweb.cloud
+  t "HTTP 500 на слое Node переключает на Timeweb" pull_order "$node_ref" docker.io docker.io docker.io mirror.gcr.io dockerhub.timeweb.cloud
+  t "Nginx берётся из Google без обращения к Timeweb" pull_order "$nginx_ref" docker.io docker.io docker.io mirror.gcr.io
+  t "BuildKit получает точные ссылки на два разных зеркала" grep -qF -- "1 default build --build-arg PYTHON_IMAGE=dockerhub.timeweb.cloud/$py_ref --build-arg NODE_IMAGE=dockerhub.timeweb.cloud/$node_ref --build-arg NGINX_IMAGE=mirror.gcr.io/$nginx_ref" "$S/BUILD_CALLED"
+  fin; fi
+
+if scn "7b. Готовые образы приложения: зеркало нужно только для PostgreSQL"; then mk
+  updx FAKE_BASE=missing FAKE_HUB=down FAKE_TIMEWEB_PULL=up --; rc=$?
+  pg_ref="$(postgres_base)"
+  t "обновление из готовых образов завершилось, BuildKit не запускался" bash -c "[ '$rc' -eq 0 ] && ! test -e '$S/BUILD_CALLED'"
+  t "PostgreSQL отсутствует в Google, используется Timeweb" pull_order "$pg_ref" docker.io docker.io docker.io mirror.gcr.io dockerhub.timeweb.cloud
+  t "Compose запускает проверенный PostgreSQL" grep -qxF "postgres image dockerhub.timeweb.cloud/$pg_ref" "$S/calls.log"
+  t "получение PostgreSQL закончилось до остановки приложения" awk -v ref="dockerhub.timeweb.cloud/$pg_ref" '$1 == "docker" && $2 == "pull" && $NF == ref {selected=1} / stop backend worker pentest$/ {stopped=selected; exit} END {exit !stopped}' "$S/calls.log"
+  fin; fi
+
+if scn "7c. PostgreSQL недоступен во всех источниках: возврат к прежнему Compose"; then mk
+  updx FAKE_BASE=missing FAKE_HUB=down --; rc=$?
+  t "обновление остановлено до обращения к данным" bash -c "[ '$rc' -ne 0 ] && ! grep -q ' stop backend worker pentest$' '$S/calls.log'"
+  t "после возврата код больше не требует недоступный PostgreSQL" pull_order "$(postgres_base)" docker.io docker.io docker.io mirror.gcr.io dockerhub.timeweb.cloud
+  t "код и .env вернулись на прежние версии" bash -c "[ '$(git -C "$W" describe --tags --exact-match HEAD)' = v0.1.0 ] && [ '$(envv IMAGE_TAG)' = local1 ]"
+  common_fail; fin; fi
 
 if scn "8. Явная локальная сборка: npm недоступен"; then mk
   updx FAKE_NPM=down -- --build; rc=$?

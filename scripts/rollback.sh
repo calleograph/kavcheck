@@ -20,6 +20,7 @@ if [ "$SKIP_SCHEMA" -eq 0 ] && [ -n "$DBREV" ] && ! git -C "$REPO_ROOT" grep -q 
   history_append rollback failed "$CUR_VER" "$PREV_VER" "schema"; exit 3
 fi
 if [ "$YES" -ne 1 ]; then read -r -p "Откатить код и образы? [y/N] " a; [ "$a" = y ] || die "Отменено."; fi
+postgres_prepare "$CODE_HEAD" || die "Образ PostgreSQL не получен. $(diag_advice "$HUB_CODE")"
 git -C "$REPO_ROOT" checkout -q --detach "$CODE_HEAD" || die "git checkout не удался"
 export IMAGE_TAG="$PREV_TAG" IMAGE_REPO="$PREV_REPO"
 env_put IMAGE_TAG "$PREV_TAG"; env_put IMAGE_REPO "$PREV_REPO"

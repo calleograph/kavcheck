@@ -8,6 +8,8 @@ REPO_ROOT="${KC_REPO_ROOT:-$(cd "$SCRIPTS_DIR/.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 DRY_RUN="${DRY_RUN:-0}"
 source "$(dirname "${BASH_SOURCE[0]}")/guard.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/hub-images.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/build-bases.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/recovery.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/releases.sh"
 
@@ -99,7 +101,7 @@ pf_add() { # pf_add КЛЮЧ ok|warn|fail ТЕКСТ
 }
 pf_failed() { [[ "$PF_ITEMS" == *"\"key\":\"$1\",\"status\":\"fail\""* ]]; }
 preflight() { # PF_MODE=pull|build — какой источник образов проверяется
-  local target="${1:-}" g need="${UPD_MIN_FREE_GB:-3}" reg code out img missing=0 mode="${PF_MODE:-pull}"
+  local target="${1:-}" g need="${UPD_MIN_FREE_GB:-3}" reg mode="${PF_MODE:-pull}"
   PF_ITEMS=""; PF_FAIL=0
   g="$(free_gb "$(docker_root)")"
   if [ -z "$g" ]; then pf_add disk_docker warn "Свободное место для Docker определить не удалось"
@@ -128,12 +130,6 @@ preflight() { # PF_MODE=pull|build — какой источник образо�
     reg="${PIP_INDEX_URL:-https://pypi.org/simple}"
     if curl -fsS -m 20 -o /dev/null "${reg%/}/fastapi/"; then pf_add pip ok "Индекс pip доступен: ${reg}"
     else pf_add pip warn "Индекс pip ${reg} недоступен: сборка backend может не пройти. Укажите PIP_INDEX_URL в .env"; fi
-    for img in node:24-alpine python:3.12-slim nginxinc/nginx-unprivileged:1.27-alpine; do docker image inspect "$img" >/dev/null 2>&1 || missing=1; done
-    if [ "$missing" = 1 ]; then
-      code="$(http_code 20 "https://registry-1.docker.io/v2/")"; [ "$code" = 000 ] && out=bad || { code="$(http_code 20 "https://auth.docker.io/token?service=registry.docker.io")"; [ "$code" = 200 ] && out=ok || out=bad; }
-      if [ "$out" = ok ]; then pf_add docker_hub ok "Docker Hub доступен (нужен для базовых образов сборки)"
-      else pf_add docker_hub fail "Docker Hub (registry-1.docker.io, auth.docker.io) недоступен: локальная сборка не получит базовые образы. Используйте готовые образы или настройте зеркало Docker Hub (registry-mirrors)"; fi
-    else pf_add docker_hub ok "Базовые образы сборки уже есть на сервере: Docker Hub не нужен"; fi
   fi
   if dc exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1 \
      && dc exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT version_num FROM alembic_version" >/dev/null 2>&1; then

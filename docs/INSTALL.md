@@ -2,7 +2,7 @@
 
 ## Требования
 
-- Linux-сервер (Ubuntu 22.04/24.04, Debian 12 или другой с systemd), Docker Engine 24+ и Docker Compose v2, git, curl, openssl.
+- Linux-сервер (Ubuntu 22.04/24.04, Debian 12 или другой с systemd), Docker Engine 24+ и Docker Compose v2, git, curl, openssl. Для локальной сборки нужен BuildKit.
 - 2 ГБ ОЗУ, 5 ГБ на диске для образов и данных.
 - Доступ по TCP к SQL Server базы KSC (обычно порт 1433) и учётная запись **только для чтения** (роль `db_datareader` в базе KSC). Не используйте учётную запись самого Сервера администрирования. Если KSC и SQL Server на Windows-сервере — подготовьте его по [KSC_WINDOWS_SQL.md](KSC_WINDOWS_SQL.md).
 - Внешний reverse proxy с TLS (nginx, Caddy, Traefik): приложение публикует порт только на loopback и не привязано к домену.
@@ -27,6 +27,7 @@ git checkout "$(git tag --list 'v*' --sort=-v:refname | head -1)"    # посл�
 | `UPDATE_MODE` | `auto` (по умолчанию): обновление только из готовых образов; `build` — всегда собирать локально. Скрытого перехода на сборку при недоступном реестре нет |
 | `GITHUB_REPO` | `<владелец>/kavcheck` — для проверки релизов |
 | `NPM_REGISTRY`, `PIP_INDEX_URL` | зеркала для локальной сборки, если registry.npmjs.org или pypi.org недоступны; пусто — официальные реестры |
+| `DOCKER_HUB_MIRRORS` | список резервных реестров для PostgreSQL и базовых образов. По умолчанию используются `mirror.gcr.io`, затем `dockerhub.timeweb.cloud` |
 
 Затем:
 
@@ -37,6 +38,8 @@ sudo ./scripts/install.sh      # код должен быть на теге ре
 Без доступа к registry.npmjs.org (ошибка `ETIMEDOUT` при сборке интерфейса) укажите зеркало: `./scripts/install.sh --build --npm-registry https://npm-mirror.gitverse.ru` (или `NPM_REGISTRY` в `.env`); аналогично `--pip-index` для pip. Установщик проверяет доступность реестров до сборки. Контрольные суммы пакетов проверяются в любом случае.
 
 Установщик создаёт каталоги данных, получает или собирает образы, применяет миграции внутренней базы, запускает сервисы и создаёт локального администратора `admin` — пароль печатается один раз, при первом входе его нужно сменить.
+
+PostgreSQL скачивается по закреплённому дайджесту. Если Docker Hub не отвечает, установщик сам пробует зеркала. При установке с `--build` тот же порядок применяется для базовых образов Python, Node и Nginx. [Как работают зеркала Docker Hub](UPDATE_AND_BACKUP.md#зеркала-docker-hub)
 
 **Помощник обновлений** (кнопки «Обновить», «Откатить», «Резервная копия» в браузере) устанавливается установщиком автоматически, если он запущен от root (`sudo ./scripts/install.sh`): служба systemd `kavcheck-updater-<проект>` включается в автозапуск и перезапускается при любых сбоях. Проверить на сервере: `sudo ./scripts/updater.sh verify`. Если установщик запускали без прав root, выполните один раз `sudo ./scripts/updater.sh install --yes`. На серверах без systemd помощника нужно запускать средствами вашей init-системы (`scripts/updater.sh run`).
 

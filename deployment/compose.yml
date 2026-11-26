@@ -34,7 +34,8 @@ x-app-env: &app-env
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # PostgreSQL 16 Alpine, оригинальный индекс Docker Hub. Скрипты могут выбрать зеркало с тем же дайджестом.
+    image: ${KC_POSTGRES_IMAGE:-docker.io/library/postgres@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d}
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     environment:

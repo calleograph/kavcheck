@@ -23,7 +23,7 @@ chmod 1777 "$DATA_ROOT/updater"; for d in reports bi; do chown 10001 "$DATA_ROOT
 host_version_info
 [ -n "$NPM_OPT" ] && env_set NPM_REGISTRY "${NPM_OPT%/}" && ok "Зеркало npm: $NPM_REGISTRY (сохранено в .env)"
 [ -n "$PIP_OPT" ] && env_set PIP_INDEX_URL "$PIP_OPT" && ok "Зеркало pip: $PIP_INDEX_URL (сохранено в .env)"
-# Готовые образы релиза — основной способ (ghcr.io, без Docker Hub, npm и pip). Условие: код на теге релиза vX.Y.Z и образы опубликованы.
+# Готовые образы релиза — основной способ (ghcr.io, без npm и pip). PostgreSQL загружается отдельно по дайджесту.
 # При отсутствии готовых образов локальную сборку можно запросить явно.
 dc_base
 T_PULL="${UPD_TIMEOUT_PULL:-1800}"; S_PULL="${UPD_STALL_PULL:-300}"; T_BUILD="${UPD_TIMEOUT_BUILD:-2400}"; S_BUILD="${UPD_STALL_BUILD:-900}"
@@ -48,8 +48,9 @@ if [ "$GOT" -eq 0 ]; then
     else warn "Укажите зеркало: scripts/install.sh --npm-registry URL (или NPM_REGISTRY в .env)"; fi
   fi
   export IMAGE_TAG="${APP_GIT_COMMIT}"; export IMAGE_REPO="$(local_build_repo)"
-  info "Сборка образов локально (тег $IMAGE_TAG)…"; run_guarded "сборка образов" "$T_BUILD" "$S_BUILD" "${DCB[@]}" build || { kill_oneoff; die "Сборка образов не удалась: $(diag_advice "$(guard_fail_code build)")"; }
+  info "Сборка образов локально (тег $IMAGE_TAG)…"; compose_build_images "$T_BUILD" "$S_BUILD" || { kill_oneoff; die "Сборка образов не удалась: $(diag_advice "$HUB_CODE")"; }
 fi
+postgres_prepare || die "Образ PostgreSQL не получен. $(diag_advice "$HUB_CODE")"
 env_set IMAGE_TAG "$IMAGE_TAG"; env_set IMAGE_REPO "$IMAGE_REPO"
 if [ -n "$REGISTRY_PICKED" ] && ! is_registry_mirror "$REGISTRY_PICKED" && ! grep -q '^IMAGE_REGISTRY=' "$ENV_FILE"; then
   env_set IMAGE_REGISTRY "$REGISTRY_PICKED"

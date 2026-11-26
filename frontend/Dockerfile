@@ -1,5 +1,6 @@
-# syntax=docker/dockerfile:1
-FROM node:24-alpine AS build
+ARG NODE_IMAGE=docker.io/library/node@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
+ARG NGINX_IMAGE=docker.io/nginxinc/nginx-unprivileged@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 # Зеркало реестра npm (NPM_REGISTRY в .env), например при недоступности registry.npmjs.org. Адреса в package-lock.json подменяются только внутри сборки;
@@ -22,7 +23,7 @@ ARG APP_GIT_COMMIT=unknown
 ARG APP_BUILT_AT=unknown
 RUN printf '{"version":"%s","commit":"%s","built_at":"%s"}\n' "$APP_VERSION" "$APP_GIT_COMMIT" "$APP_BUILT_AT" > dist/version.json
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM ${NGINX_IMAGE}
 ARG APP_VERSION=0.0.0
 ARG APP_GIT_COMMIT=unknown
 LABEL kavcheck.component="web" org.opencontainers.image.revision="${APP_GIT_COMMIT}" org.opencontainers.image.version="${APP_VERSION}"

@@ -5,7 +5,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 CMD="${1:-status}"; shift || true
 load_env; validate_project_name
 case "$CMD" in
-  up) dc up -d ;;
+  up) postgres_prepare || die "Образ PostgreSQL не получен. $(diag_advice "$HUB_CODE")"; dc up -d ;;
   down) dc down ;;
   restart) dc restart ;;
   status) dc ps ;;

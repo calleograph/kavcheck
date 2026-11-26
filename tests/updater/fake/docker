@@ -27,15 +27,15 @@ case "${1:-}" in
           slow) for i in 1 2 3 4; do echo "layer $i: Downloading"; sleep 2; done; for s in backend web; do echo "$repo-$s:$tag" >> "$S/images"; done ;;
         esac ;;
       build)
-        echo "build" >> "$S/BUILD_CALLED"
+        echo "${DOCKER_BUILDKIT:-} ${BUILDX_BUILDER:-} build $*" >> "$S/BUILD_CALLED"
         case "${FAKE_BUILD:-ok}" in
           ok) for s in backend web; do echo "$repo-$s:$tag" >> "$S/images"; echo "built $repo-$s:$tag"; done ;;
           hang) echo "#5 [build 3/6] RUN npm ci"; hang build ;;
-          hub) echo "failed to resolve source metadata for docker.io/library/node:24-alpine: Get \"https://auth.docker.io/token\": net/http: request canceled (Client.Timeout exceeded) i/o timeout" >&2; exit 1 ;;
           npm) echo "npm error code ETIMEDOUT" >&2; echo "npm error network request to https://registry.npmjs.org/x failed" >&2; exit 1 ;;
         esac ;;
       up)
         [ "${FAKE_UP:-ok}" = fail ] && { echo "up failed" >&2; exit 1; }
+        [ -z "${KC_POSTGRES_IMAGE:-}" ] || echo "postgres image $KC_POSTGRES_IMAGE" >> "$S/calls.log"
         if [ "$*" = "-d postgres" ]; then running_svc postgres || echo "postgres" >> "$S/running"
         else
           grep -v '^\(backend\|worker\|web\) ' "$S/running" > "$S/running.n"; for s in backend worker web; do echo "$s $repo $tag" >> "$S/running.n"; done
@@ -71,7 +71,21 @@ case "${1:-}" in
   image)
     case "$2" in
       inspect)
-        ref="${@: -1}"; case "$ref" in node:*|python:*|nginxinc/*) [ "${FAKE_BASE:-present}" = present ]; exit $? ;; esac
+        ref="${@: -1}"
+        if [[ "$ref" == *@sha256:* ]]; then
+          if ! grep -qxF "$ref" "$S/images"; then
+            [[ "$ref" == docker.io/* && "${FAKE_BASE:-present}" == present ]] || exit 1
+          fi
+          case "$*" in
+            *RepoDigests*)
+              if grep -qxF "$ref" "$S/wrong-digests" 2>/dev/null; then
+                printf '%s@sha256:%064d\n' "${ref%@*}" 0
+              else
+                printf '%s\n' "${ref#docker.io/library/}"
+              fi ;;
+          esac
+          exit 0
+        fi
         grep -qxF "$ref" "$S/images" || exit 1
         if [[ "$*" == *org.opencontainers.image.revision* ]]; then
           if [[ "$ref" == mirror.example.net/*-web:* && "${FAKE_MIRROR_REVISION:-ok}" == wrong ]]; then echo wrong; else echo "${APP_GIT_COMMIT:-}"; fi
@@ -79,6 +93,30 @@ case "${1:-}" in
         exit 0 ;;
       prune) exit 0 ;;
     esac ;;
+  pull)
+    ref="${@: -1}"; host="${ref%%/*}"
+    case "$host" in
+      docker.io) result="${FAKE_HUB:-up}" ;;
+      mirror.gcr.io) result="${FAKE_GOOGLE_PULL:-missing}" ;;
+      dockerhub.timeweb.cloud) result="${FAKE_TIMEWEB_PULL:-missing}" ;;
+      *) result=missing ;;
+    esac
+    if [ "$result" = mixed ]; then
+      case "$ref" in
+        */library/python@*) result=wrong ;;
+        */library/node@*) result=layers ;;
+        */library/postgres@*) result=missing ;;
+        *) result=up ;;
+      esac
+    fi
+    case "$result" in
+      down) echo "Get https://registry-1.docker.io/v2/: i/o timeout" >&2; exit 1 ;;
+      missing) echo "manifest unknown" >&2; exit 1 ;;
+      layers) echo "failed to copy: request for layer returned HTTP 500" >&2; exit 1 ;;
+      wrong) echo "$ref" >> "$S/wrong-digests" ;;
+    esac
+    echo "$ref" >> "$S/images"
+    echo "Pulled $ref" ;;
   images)
     ref="${@: -1}"; fmt="$3"
     if [[ "$*" == *'{{.Size}}'* ]]; then sed 's/$/ 10MB/' "$S/images"; else grep "^${ref}:" "$S/images" || true; fi ;;

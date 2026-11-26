@@ -2,7 +2,7 @@
 # update-core.sh — выполнение обновления. Не запускается напрямую: scripts/update.sh (стабильная «пусковая» часть) получает теги, распаковывает каталог scripts/ ЦЕЛЕВОГО релиза
 # из git и запускает его update-core.sh, поэтому обновление всегда исполняет логику нового релиза, а не установленной (возможно, старой или с дефектами) версии.
 #   update-core.sh --target-tag vX.Y.Z [--env FILE] [--build] [--yes] [--dry-run] [--skip-preflight]
-# Основной способ — готовые образы релиза из реестра (ghcr.io): Docker Hub, npm и pip не нужны. Локальная сборка — ТОЛЬКО по явному выбору: --build, UPDATE_MODE=build или кнопка
+# Основной способ — готовые образы релиза из реестра (ghcr.io), образ PostgreSQL загружается отдельно. Локальная сборка — ТОЛЬКО по явному выбору: --build, UPDATE_MODE=build или кнопка
 # «Собрать локально»; скрытого перехода на сборку при недоступном реестре нет.
 # По порядку: проверки → код на тег → образы → остановка и резервная копия базы и .env → миграции → запуск и проверка → очистка старых образов → помощник обновлений → отчёт
 # $DATA_ROOT/updater/report.json. У каждой сетевой операции и сборки свой тайм-аут и контроль прогресса (UPD_TIMEOUT_*, UPD_STALL_*).
@@ -61,7 +61,7 @@ if [ "$SKIP_PF" -eq 1 ]; then warn "Проверки пропущены (--skip-
   PF_MODE=$UPD_MODE_USED preflight "$TARGET_TAG" || {
     code=generic
     pf_failed registry && code="$(registry_error_code)"
-    pf_failed docker_hub && code=docker_hub; pf_failed npm && code=npm; { pf_failed disk_docker || pf_failed disk_data; } && code=disk
+    pf_failed npm && code=npm; { pf_failed disk_docker || pf_failed disk_data; } && code=disk
     stop_update "$code" "Проверки перед обновлением не пройдены — ничего не изменено"
   }
 fi
@@ -98,8 +98,8 @@ build_images() {
   pick_npm_registries; pick_pip_indexes          # реальная проверка источников зависимостей: порядок — исправные первыми; всё ограничено по времени и числу попыток
   export NPM_REGISTRIES PIP_INDEX_URLS
   export IMAGE_REPO="$(local_build_repo)" IMAGE_TAG="$APP_GIT_COMMIT"
-  run_guarded "сборка образов" "$T_BUILD" "$S_BUILD" "${DCB[@]}" build && return 0
-  kill_oneoff; STAGE_CODE="$(guard_fail_code build)"; return 1
+  compose_build_images "$T_BUILD" "$S_BUILD" && return 0
+  kill_oneoff; STAGE_CODE="$HUB_CODE"; return 1
 }
 if [ "$UPD_MODE_USED" = pull ]; then
   pull_registry "$TARGET_TAG" "$T_PULL" "$S_PULL" || stop_update "$REGISTRY_CODE" "Не удалось получить комплект образов $TARGET_TAG"
@@ -107,14 +107,15 @@ else
   build_images || stop_update "$STAGE_CODE" "Сборка образов не удалась"
   release_images_ready "$IMAGE_REPO" "$IMAGE_TAG" || stop_update "$REGISTRY_CODE" "Комплект локально собранных образов не найден"
 fi
+postgres_prepare || stop_update "$HUB_CODE" "Не удалось получить образ PostgreSQL"
 action_log "образы получены: ${IMAGE_REPO}-*:${IMAGE_TAG} ($UPD_MODE_USED)"
 env_put IMAGE_TAG "$IMAGE_TAG"; env_put IMAGE_REPO "$IMAGE_REPO"
 step "Остановка приложения и резервная копия базы и .env"
 marker_set stage stopped
 # каталог BI-выгрузок (с 0.17.0 — общий для backend и worker): без него docker создал бы каталог от root, и загрузка файла не записалась бы
 [ -d "$DATA_ROOT/bi" ] || { mkdir -p "$DATA_ROOT/bi" && { chown 10001 "$DATA_ROOT/bi" 2>/dev/null || chmod 777 "$DATA_ROOT/bi"; }; } || stop_update generic "Не удалось создать $DATA_ROOT/bi"
-dc up -d postgres >/dev/null && wait_healthy 120 postgres || stop_update generic "PostgreSQL не запустился"
 dc stop backend worker pentest >/dev/null 2>&1 || true            # после копии в базу никто не пишет: восстановление при ошибке — без потери данных
+dc up -d postgres >/dev/null && wait_healthy 120 postgres || stop_update generic "PostgreSQL не запустился"
 action_log "приложение остановлено на время резервной копии и миграций"
 cp -p "$ENV_FILE" "$ENV_FILE.backup-$(date +%Y%m%d-%H%M%S)" && chmod 600 "$ENV_FILE".backup-* 2>/dev/null
 run_guarded "резервная копия" "$T_BACKUP" "$T_BACKUP" "$SCRIPTS_DIR/backup.sh" --env "$ENV_FILE" --label "pre-${OLD_VER}" || stop_update "$(guard_fail_code generic)" "Резервная копия не создана — миграции без неё не выполняются"
