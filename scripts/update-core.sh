@@ -73,6 +73,20 @@ step "Переход кода на $TARGET_TAG"
 marker_set stage code
 mirror_local_fix
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]; then git -C "$REPO_ROOT" stash push -q -m "update-$(date +%s)" && action_log "прочие локальные изменения файлов проекта сохранены в git stash"; fi
+# Помощник может доставить новый файл раньше checkout релиза. В stash идут только точные копии из целевого архива.
+helper_files=()
+while IFS= read -r -d '' path; do
+  target_file="$SCRIPTS_DIR/${path#scripts/}"
+  if [ -f "$REPO_ROOT/$path" ] && [ ! -L "$REPO_ROOT/$path" ] && [ -f "$target_file" ] \
+     && cmp -s "$REPO_ROOT/$path" "$target_file"; then
+    helper_files+=("$path")
+  fi
+done < <(git -C "$REPO_ROOT" ls-files --others --exclude-standard -z -- scripts/)
+if [ "${#helper_files[@]}" -gt 0 ]; then
+  git -C "$REPO_ROOT" stash push -q --include-untracked -m "update-helper-files-$(date +%s)" -- "${helper_files[@]}" \
+    || stop_update generic "Не удалось сохранить файлы отдельно обновлённого помощника"
+  action_log "файлы отдельно обновлённого помощника сохранены в git stash"
+fi
 git -C "$REPO_ROOT" checkout -q --detach "$TARGET_TAG" || stop_update generic "git checkout $TARGET_TAG не удался"
 host_version_info
 state_set previous_version "$OLD_VER"; state_set previous_commit "$OLD_COMMIT"; state_set previous_tag "$OLD_TAG"; state_set previous_head "$PREV_HEAD"; state_set previous_start "$START_HEAD"; state_set previous_repo "$OLD_REPO"

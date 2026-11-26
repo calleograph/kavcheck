@@ -356,5 +356,24 @@ if scn "36. После несовпадения ревизии проверяе�
   t "в журнале видно причину отклонения первого зеркала" grep -q 'не соответствуют коммиту' "$SB/out.log"
   fin; fi
 
+if scn "37. После отдельного обновления помощника его новый файл сохраняется перед checkout"; then mk
+  git -C "$W" rm -q --cached scripts/lib/releases.sh
+  git -C "$W" commit -qm 'Установленный релиз до добавления файла помощника'
+  printf 'локальный файл\n' > "$W/scripts/local-fixture.txt"
+  upd; rc=$?
+  t "обновление перешло на целевой релиз" bash -c "[ $rc -eq 0 ] && [ '$(tag)' = v0.2.0 ]"
+  t "копия файла помощника сохранена" bash -c "git -C '$W' stash list | grep -q update-helper-files"
+  t "пользовательский файл остался на месте" grep -qx 'локальный файл' "$W/scripts/local-fixture.txt"
+  fin; fi
+
+if scn "38. Локально изменённый файл помощника требует разбора перед checkout"; then mk
+  git -C "$W" rm -q --cached scripts/lib/releases.sh
+  git -C "$W" commit -qm 'Установленный релиз до добавления файла помощника'
+  printf '\n# Локальное изменение\n' >> "$W/scripts/lib/releases.sh"
+  upd; rc=$?
+  t "checkout остановил обновление до загрузки образов" bash -c "[ $rc -ne 0 ] && ! grep -q '^pull ' '$S/calls.log'"
+  t "локально изменённый файл сохранился" grep -qx '# Локальное изменение' "$W/scripts/lib/releases.sh"
+  common_fail; fin; fi
+
 printf '\nИтого: %s проверок пройдено, %s не пройдено\n' "$PASS" "$FAILS"
 [ "$FAILS" -eq 0 ]
