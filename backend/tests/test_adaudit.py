@@ -180,14 +180,16 @@ async def test_full_audit_run_findings_decisions_reports_and_access(client, app,
     assert run.status == "ok", run.message
     st = (await client.get("/api/v1/adaudit/state")).json()
     s = st["latest"]["stats"]
-    assert s["accounts"] == len(U) and s["disabled"] == 1 and st["latest"]["coverage"]["dc_logon_ok"] == list(DC_LAST)
+    assert s["accounts"] == len(U) - 1 and not s.get("disabled") and st["latest"]["coverage"]["dc_logon_ok"] == list(DC_LAST)
     accs = {a["login"]: a for a in (await client.get("/api/v1/adaudit/accounts", params={"limit": 100})).json()["items"]}
     assert accs["adm.sidorov"]["category"] == "admin" and accs["svc_backup"]["category"] == "service" and accs["svc_lonely"]["category"] == "undefined"
     assert accs["podr.kuzmin"]["category"] == "contractor"
     assert accs["petrov"]["last_logon_src"] == "dc" and accs["petrov"]["idle_days"] == 5                                    # lastLogon контроллера свежее lastLogonTimestamp
     assert accs["petrov"]["pwd_bucket"] == "gt180" and accs["stale.user"]["pwd_bucket"] == "unknown"
     assert accs["reset.me"]["pwd_op"]["state"] == "reset" and accs["changed.me"]["pwd_op"]["state"] == "change"
-    assert accs["nolog.me"]["pwd_op"]["state"] == "no_event" and accs["off.user"]["pwd_op"]["state"] == "before_logs"
+    assert accs["nolog.me"]["pwd_op"]["state"] == "no_event" and "off.user" not in accs
+    all_accounts = (await client.get("/api/v1/adaudit/accounts", params={"include_inactive": True, "q": "off.user"})).json()["items"]
+    assert all_accounts[0]["pwd_op"]["state"] == "before_logs"
     codes = {}
     for f in (await client.get("/api/v1/adaudit/findings", params={"limit": 500})).json()["items"]:
         codes.setdefault(f["login"], set()).add(f["code"])
@@ -209,9 +211,9 @@ async def test_full_audit_run_findings_decisions_reports_and_access(client, app,
     assert (await client.get("/api/v1/adaudit/findings", params={"ou": "Бухгалтерия"})).json()["total"] == 0
     assert (await client.get("/api/v1/adaudit/findings", params={"q": "users", "limit": 500})).json()["total"] == users_f["total"]   # поиск — и по OU
     assert (await client.get("/api/v1/adaudit/findings", params={"state": "disabled"})).json()["total"] == 0                        # у отключённой нет замечаний
-    assert (await client.get("/api/v1/adaudit/accounts", params={"ou": "Users*"})).json()["total"] == len(U)
+    assert (await client.get("/api/v1/adaudit/accounts", params={"ou": "Users*"})).json()["total"] == len(U) - 1
     ous = (await client.get("/api/v1/adaudit/ous")).json()["items"]
-    assert ous[0]["ou"] == "Users" and ous[0]["accounts"] == len(U) and ous[0]["open"] == users_f["total"] and ous[0]["high"] > 0
+    assert ous[0]["ou"] == "Users" and ous[0]["accounts"] == len(U) - 1 and ous[0]["open"] == users_f["total"] and ous[0]["high"] > 0
     # решения
     key = next(f["key"] for f in (await client.get("/api/v1/adaudit/findings", params={"q": "svc_backup", "code": "pne"})).json()["items"])
     assert (await client.put("/api/v1/adaudit/decisions", json={"keys": [key], "state": "exception"})).status_code == 422     # исключение — только с основанием
@@ -275,6 +277,66 @@ async def test_full_audit_run_findings_decisions_reports_and_access(client, app,
     assert (await client.post("/api/v1/adaudit/run", json={"kind": "quarterly"})).status_code == 202
     assert (await client.put("/api/v1/adaudit/policy", json={"pwd_days": {"admin": 60}, "inactive_days": 90, "new_days": 30, "grace_days": 14})).status_code == 403   # политику меняет администратор
     assert (await client.get("/api/v1/ad/status")).status_code != 403                                                  # каталог AD — в разделе аудита
+
+
+async def test_active_scope_applies_to_stored_audit_views_and_reports(client, app):
+    from app.models import AdAuditAccount, AdAuditFinding, AdAuditRun, AdEventImport, AdPwdEvent
+
+    await _users(client)
+    accounts = {
+        "active.user": {"pwd_expired": True, "expires": NOW + timedelta(days=1)},
+        "disabled.user": {"enabled": False},
+        "locked.user": {"locked": True},
+        "expired.user": {"expires": NOW},
+    }
+    active = {"active.user"}
+    async with app.state.session_maker() as db:
+        prev, run = (AdAuditRun(started_at=at, status="ok", stats={"accounts": len(accounts)}) for at in (ago(7), NOW))
+        uploaded = AdEventImport(file_name="example.json")
+        db.add_all([prev, run, uploaded])
+        await db.flush()
+        for i, (name, values) in enumerate(accounts.items()):
+            sid = f"{DOM_SID}-{5000 + i}"
+            for snapshot in (prev, run):
+                db.add(AdAuditAccount(run_id=snapshot.id, guid=name, sid=sid, login=name, name=name, ou="Users",
+                                      privileged=["Domain Admins"], created=ago(10 if snapshot is prev else 5), idle_days=120,
+                                      pwd_bucket="gt180", **values))
+                if snapshot is run:
+                    db.add(AdAuditFinding(run_id=run.id, key=f"{name}:test", guid=name, login=name, code="pwd_age", title="Старый пароль",
+                                          category="user", severity="high", sev_rank=3, status="violation", first_seen=NOW))
+            db.add(AdPwdEvent(import_id=uploaded.id, dc="dc1.corp.example.local", record_id=i + 1, at=ago(2), target=name,
+                              target_sid=sid, kind="reset", success=True))
+        await db.commit()
+        run_id = str(run.id)
+
+    async def get(path, **params):
+        response = await client.get(f"/api/v1/adaudit/{path}", params=params)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    async def report(view, include_inactive=False, **params):
+        response = await client.post("/api/v1/quick/preview", json={"kind": "quick_adaudit", "params": {
+            "view": view, "run": run_id, "include_inactive": include_inactive, **params}})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    for include, expected in ((False, active), (True, set(accounts))):
+        p = {"include_inactive": include, "run": run_id}
+        assert {r["login"] for r in (await get("accounts", **p))["items"]} == expected
+        assert {r["login"] for r in (await get("findings", **p))["items"]} == expected
+        assert {r["login"] for r in (await get("groups", **p))["items"][0]["members"]} == expected
+        assert {r["target"] for r in (await get("events", **p))["items"]} == expected
+        assert (await get("state", **p))["viewed"]["stats"]["accounts"] == len(expected)
+        assert (await get("ous", **p))["items"][0]["accounts"] == len(expected)
+        for view in ("accounts", "findings", "groups", "pwd_age"):
+            rows = (await report(view, include))["items"]
+            assert {r["login"] for r in rows} == expected, view
+        assert {r["target"] for r in (await report("events", include, event_kind="reset"))["items"]} == expected
+        summary = (await report("summary", include))["doc"]
+        assert next(m["value"] for m in summary["metrics"] if m["key"] == "accounts") == len(expected)
+    assert (await client.get("/api/v1/adaudit/accounts/locked.user")).status_code == 404
+    assert (await get("accounts/locked.user", include_inactive=True))["state"] == "заблокирована"
+    assert (await get("accounts/expired.user", include_inactive=True))["state"] == "истёк срок действия"
 
 
 async def test_without_logs_no_reset_is_claimed_and_failed_directory_is_reported(client, app, monkeypatch, dirfake):

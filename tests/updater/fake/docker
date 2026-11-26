@@ -13,6 +13,12 @@ case "${1:-}" in
     repo="${IMAGE_REPO:-$(sed -n 's/^IMAGE_REPO=//p' "$envf" | tail -1)}"; tag="${IMAGE_TAG:-$(sed -n 's/^IMAGE_TAG=//p' "$envf" | tail -1)}"
     case "$sub" in
       pull)
+        echo "pull $repo:$tag" >> "$S/calls.log"
+        if [[ "$repo" == ghcr.io/* && "${FAKE_PRIMARY_PULL:-ok}" == partial ]]; then
+          echo "$repo-backend:$tag" >> "$S/images"
+          echo "Error response from daemon: Get \"https://ghcr.io/v2/\": connection reset" >&2
+          exit 1
+        fi
         case "${FAKE_PULL:-ok}" in
           ok) for s in backend web; do echo "$repo-$s:$tag" >> "$S/images"; echo "Pulled $repo-$s:$tag"; done ;;
           timeout) echo "Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp 192.0.2.10:443: i/o timeout" >&2; exit 1 ;;
@@ -64,7 +70,13 @@ case "${1:-}" in
     esac ;;
   image)
     case "$2" in
-      inspect) ref="${@: -1}"; case "$ref" in node:*|python:*|nginxinc/*) [ "${FAKE_BASE:-present}" = present ]; exit $? ;; esac; grep -qxF "$ref" "$S/images"; exit $? ;;
+      inspect)
+        ref="${@: -1}"; case "$ref" in node:*|python:*|nginxinc/*) [ "${FAKE_BASE:-present}" = present ]; exit $? ;; esac
+        grep -qxF "$ref" "$S/images" || exit 1
+        if [[ "$*" == *org.opencontainers.image.revision* ]]; then
+          if [[ "$ref" == mirror.example.net/*-web:* && "${FAKE_MIRROR_REVISION:-ok}" == wrong ]]; then echo wrong; else echo "${APP_GIT_COMMIT:-}"; fi
+        fi
+        exit 0 ;;
       prune) exit 0 ;;
     esac ;;
   images)
@@ -73,6 +85,13 @@ case "${1:-}" in
   rmi) grep -vxF "$2" "$S/images" > "$S/images.n"; mv "$S/images.n" "$S/images"; echo "rmi $2" >> "$S/calls.log" ;;
   manifest)
     [ "${FAKE_REGISTRY:-up}" = down ] && { echo "Get \"https://ghcr.io/v2/\": dial tcp: i/o timeout" >&2; exit 1; }
+    ref="${@: -1}"
+    if [[ "$ref" == ghcr.io/* ]]; then
+      case "${FAKE_PRIMARY_MANIFEST:-ok}" in
+        down) echo "Get \"https://ghcr.io/v2/\": dial tcp: i/o timeout" >&2; exit 1 ;;
+        web-missing) if [[ "$ref" == *-web:* ]]; then echo "manifest unknown" >&2; exit 1; fi ;;
+      esac
+    fi
     case "${FAKE_MANIFEST:-ok}" in ok) echo '{}' ;; missing) echo "no such manifest: ghcr.io/x" >&2; exit 1 ;; esac ;;
   info) echo "$S" ;;
   ps) exit 0 ;;

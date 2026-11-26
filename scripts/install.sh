@@ -2,7 +2,7 @@
 # install.sh — первая установка KAV Checker на сервере с Docker Engine и Docker Compose.
 #   scripts/install.sh [--env FILE] [--build] [--yes] [--npm-registry URL] [--pip-index URL]
 # Что делает: проверяет docker; создаёт .env из .env.example (генерирует секреты) если его нет; создаёт каталоги данных; получает образы релиза
-# (или собирает локально при --build / без доступа к реестру); устанавливает и включает помощника обновлений (служба systemd); применяет миграции внутренней базы; запускает сервисы; создаёт локального администратора.
+# (или собирает локально при явном --build); устанавливает и включает помощника обновлений (служба systemd); применяет миграции внутренней базы; запускает сервисы; создаёт локального администратора.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 BUILD=0; YES=0; NPM_OPT=""; PIP_OPT=""
@@ -24,15 +24,14 @@ host_version_info
 [ -n "$NPM_OPT" ] && env_set NPM_REGISTRY "${NPM_OPT%/}" && ok "Зеркало npm: $NPM_REGISTRY (сохранено в .env)"
 [ -n "$PIP_OPT" ] && env_set PIP_INDEX_URL "$PIP_OPT" && ok "Зеркало pip: $PIP_INDEX_URL (сохранено в .env)"
 # Готовые образы релиза — основной способ (ghcr.io, без Docker Hub, npm и pip). Условие: код на теге релиза vX.Y.Z и образы опубликованы.
-# Иначе (код из ветки, нет доступа к реестру, явный --build) — локальная сборка; при установке прежней версии нет, поэтому переход на сборку допустим, но с сообщением.
+# При отсутствии готовых образов локальную сборку можно запросить явно.
 dc_base
 T_PULL="${UPD_TIMEOUT_PULL:-1800}"; S_PULL="${UPD_STALL_PULL:-300}"; T_BUILD="${UPD_TIMEOUT_BUILD:-2400}"; S_BUILD="${UPD_STALL_BUILD:-900}"
 TAG_AT_HEAD="$(git -C "$REPO_ROOT" describe --tags --exact-match HEAD 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
-GOT=0; REG=""
-if [ "$BUILD" -eq 0 ] && [ -n "$TAG_AT_HEAD" ] && pick_registry "$TAG_AT_HEAD"; then
-  REG="$REGISTRY_PICKED"; export IMAGE_REPO="$REG" IMAGE_TAG="$TAG_AT_HEAD"; info "Получение готовых образов ${IMAGE_REPO}-*:${IMAGE_TAG}…"
-  if run_guarded "загрузка образов" "$T_PULL" "$S_PULL" "${DCB[@]}" pull backend web; then GOT=1
-  else warn "Готовые образы получить не удалось ($(diag_advice "$(guard_fail_code registry)"))"; fi
+GOT=0
+if [ "$BUILD" -eq 0 ] && [ -n "$TAG_AT_HEAD" ]; then
+  if pull_registry "$TAG_AT_HEAD" "$T_PULL" "$S_PULL"; then GOT=1
+  else warn "$(diag_advice "$REGISTRY_CODE")"; fi
 fi
 if [ "$GOT" -eq 0 ] && [ "$BUILD" -eq 0 ]; then
   die "Готовые образы получить не удалось (код на теге релиза: ${TAG_AT_HEAD:-нет}). Установка без сборки: git checkout vX.Y.Z && scripts/install.sh. Локальная сборка (нужны Docker Hub, npm и pip или их зеркала) — только явно: scripts/install.sh --build"
@@ -52,7 +51,9 @@ if [ "$GOT" -eq 0 ]; then
   info "Сборка образов локально (тег $IMAGE_TAG)…"; run_guarded "сборка образов" "$T_BUILD" "$S_BUILD" "${DCB[@]}" build || { kill_oneoff; die "Сборка образов не удалась: $(diag_advice "$(guard_fail_code build)")"; }
 fi
 env_set IMAGE_TAG "$IMAGE_TAG"; env_set IMAGE_REPO "$IMAGE_REPO"
-[ -n "$REG" ] && ! grep -q '^IMAGE_REGISTRY=' "$ENV_FILE" && env_set IMAGE_REGISTRY "$REG"
+if [ -n "$REGISTRY_PICKED" ] && ! is_registry_mirror "$REGISTRY_PICKED" && ! grep -q '^IMAGE_REGISTRY=' "$ENV_FILE"; then
+  env_set IMAGE_REGISTRY "$REGISTRY_PICKED"
+fi
 dc up -d postgres || die "PostgreSQL не запустился"; wait_healthy 120 postgres || die "PostgreSQL не стал работоспособным"
 info "Миграции внутренней базы…"; dc run --rm --no-deps backend alembic upgrade head || die "Миграции не применены"
 dc up -d || die "Сервисы не запустились"; wait_healthy 120 backend web || die "Сервисы не стали работоспособными (scripts/logs: docker compose logs)"

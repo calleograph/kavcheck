@@ -35,3 +35,54 @@ jobs:
           ./scripts/release.sh notes > notes.md
           printf '\n\nОбразы: ghcr.io/%s-backend:%s, ghcr.io/%s-web:%s\n' "${GITHUB_REPOSITORY,,}" "$GITHUB_REF_NAME" "${GITHUB_REPOSITORY,,}" "$GITHUB_REF_NAME" >> notes.md
           gh release create "$GITHUB_REF_NAME" --title "KAV Checker ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag || gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+  mirror:
+    needs: release
+    if: vars.MIRROR_IMAGE_REPO != '' || vars.MIRROR_GIT_URL != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: Копирование образов релиза с сохранением дайджестов
+        if: vars.MIRROR_IMAGE_REPO != ''
+        env:
+          MIRROR_IMAGE_REPO: ${{ vars.MIRROR_IMAGE_REPO }}
+          MIRROR_USER: ${{ secrets.MIRROR_REGISTRY_USER }}
+          MIRROR_TOKEN: ${{ secrets.MIRROR_REGISTRY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ -n "$MIRROR_USER" && -n "$MIRROR_TOKEN" ]]
+          [[ "$MIRROR_IMAGE_REPO" =~ ^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$ ]]
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends skopeo
+          fi
+          auth_dir="$(mktemp -d)"
+          trap 'rm -rf "$auth_dir"' EXIT
+          export REGISTRY_AUTH_FILE="$auth_dir/auth.json"
+          printf '%s' "$GH_TOKEN" | skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          printf '%s' "$MIRROR_TOKEN" | skopeo login --username "$MIRROR_USER" --password-stdin "${MIRROR_IMAGE_REPO%%/*}"
+          for part in backend web; do
+            skopeo copy --all --preserve-digests \
+              "docker://ghcr.io/${GITHUB_REPOSITORY,,}-$part:$GITHUB_REF_NAME" \
+              "docker://$MIRROR_IMAGE_REPO-$part:$GITHUB_REF_NAME"
+          done
+      - name: Публикация тега в резервный Git-репозиторий
+        if: vars.MIRROR_GIT_URL != ''
+        env:
+          MIRROR_GIT_URL: ${{ vars.MIRROR_GIT_URL }}
+          MIRROR_USER: ${{ secrets.MIRROR_GIT_USER }}
+          MIRROR_TOKEN: ${{ secrets.MIRROR_GIT_TOKEN }}
+        run: |
+          [[ -n "$MIRROR_USER" && -n "$MIRROR_TOKEN" ]]
+          [[ "$MIRROR_GIT_URL" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?(/[a-zA-Z0-9._~-]+)+/?$ ]]
+          askpass="$(mktemp)"
+          trap 'rm -f "$askpass"' EXIT
+          cat >"$askpass" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' "$MIRROR_USER" ;;
+            *Password*) printf '%s\n' "$MIRROR_TOKEN" ;;
+          esac
+          EOF
+          chmod 700 "$askpass"
+          LC_ALL=C GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= push "$MIRROR_GIT_URL" "refs/tags/$GITHUB_REF_NAME"

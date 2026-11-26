@@ -23,7 +23,9 @@ ARG APP_BUILT_AT=unknown
 RUN printf '{"version":"%s","commit":"%s","built_at":"%s"}\n' "$APP_VERSION" "$APP_GIT_COMMIT" "$APP_BUILT_AT" > dist/version.json
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine
-LABEL kavcheck.component="web"
+ARG APP_VERSION=0.0.0
+ARG APP_GIT_COMMIT=unknown
+LABEL kavcheck.component="web" org.opencontainers.image.revision="${APP_GIT_COMMIT}" org.opencontainers.image.version="${APP_VERSION}"
 USER root
 RUN rm -f /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
 USER 101

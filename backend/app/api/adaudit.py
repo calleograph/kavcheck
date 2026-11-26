@@ -4,7 +4,7 @@
 Раздел только читает домен: ни одна операция не меняет учётные записи AD. Решения, категории и загрузки журналов пишутся в журнал действий."""
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -15,13 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..adaudit import checks as K
 from ..adaudit import diff as DF
 from ..adaudit import events as EV
+from ..adaudit import query as Q
 from ..adaudit import service as AS
 from ..auth.deps import SessionUser, get_db, require_admin, require_security
 from ..models import AdAuditAccount as A
 from ..models import AdAuditDecision as D
 from ..models import AdAuditFinding as Fd
 from ..models import AdAuditRun, AdClassOverride, AdEventImport, AdPwdEvent, utcnow
-from ..search import column_like
 from ..services.audit import write_audit
 from ..services.settings import SettingsError
 
@@ -47,11 +47,12 @@ async def _run(db: AsyncSession, run_id: str | None) -> AdAuditRun | None:
     return (await db.execute(select(AdAuditRun).where(AdAuditRun.status == "ok").order_by(AdAuditRun.started_at.desc()).limit(1))).scalar_one_or_none()
 
 
-def _run_out(r: AdAuditRun | None) -> dict | None:
+def _run_out(r: AdAuditRun | None, stats: dict | None = None) -> dict | None:
     if r is None:
         return None
+    st = {k: v for k, v in (r.stats or {}).items() if k != "active_scope"} if stats is None else stats
     return {"id": str(r.id), "started_at": _iso(r.started_at), "finished_at": _iso(r.finished_at), "status": r.status, "kind": r.kind, "kind_ru": AS.KIND_RU.get(r.kind, r.kind), "by": r.by,
-            "period": r.period, "domain": r.domain, "message": r.message, "stats": r.stats, "coverage": r.coverage, "notes": r.notes, "policy": r.policy}
+            "period": r.period, "domain": r.domain, "message": r.message, "stats": st, "coverage": r.coverage, "notes": r.notes, "policy": r.policy}
 
 
 def _active_exception():
@@ -59,20 +60,20 @@ def _active_exception():
 
 
 @router.get("/state")
-async def state(request: Request, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+async def state(request: Request, run: str | None = None, include_inactive: bool = False, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     """Сводка раздела: последняя успешная проверка и предыдущая (для динамики), идущая или запрошенная проверка, расписание, журналы событий, открытые замечания."""
     latest = await _run(db, None)
-    prev = None
-    if latest is not None:
-        prev = (await db.execute(select(AdAuditRun).where(AdAuditRun.status == "ok", AdAuditRun.started_at < latest.started_at).order_by(AdAuditRun.started_at.desc()).limit(1))).scalar_one_or_none()
+    current = await _run(db, run) if run else latest
+    prev = await DF.prev_run(db, current) if current else None
     last_any = (await db.execute(select(AdAuditRun).order_by(AdAuditRun.started_at.desc()).limit(1))).scalar_one_or_none()
     st = await AS.get_state(request.app.state.session_maker)
     cfg = await request.app.state.settings_svc.get(db, "adaudit")
     imp = (await db.execute(select(AdEventImport).order_by(AdEventImport.at.desc()).limit(1))).scalar_one_or_none()
     open_n = exc_n = None
     by_code: list[dict] = []
-    if latest is not None:
-        q = select(Fd.code, Fd.severity, Fd.status, D.state, func.count()).outerjoin(D, D.key == Fd.key).where(Fd.run_id == latest.id).group_by(Fd.code, Fd.severity, Fd.status, D.state)
+    if current is not None:
+        scoped = Q.findings(current, include_inactive=include_inactive)
+        q = scoped.with_only_columns(Fd.code, Fd.severity, Fd.status, D.state, func.count()).group_by(Fd.code, Fd.severity, Fd.status, D.state)
         agg: dict[str, dict] = {}
         open_n = exc_n = 0
         for code, sev, status, dst, n in (await db.execute(q)).all():
@@ -84,15 +85,18 @@ async def state(request: Request, su: SessionUser = Depends(require_security), d
             a["total"] += n
             key = "exception" if dst == "exception" else "in_progress" if dst == "in_progress" else "open"
             a[key] += n
-        exc_rows = (await db.execute(select(func.count()).select_from(Fd).join(D, D.key == Fd.key).where(Fd.run_id == latest.id, _active_exception()))).scalar_one()
+        exc_rows = (await db.execute(select(func.count()).select_from(scoped.where(_active_exception()).subquery()))).scalar_one()
         for a in agg.values():
             open_n += a["open"] + a["in_progress"]
         exc_n = exc_rows
         by_code = sorted(agg.values(), key=lambda a: (-K.SEV_RANK[a["severity"]], -a["total"]))
     carried = 0
-    if latest is not None:
-        carried = (await db.execute(select(func.count()).select_from(Fd).where(Fd.run_id == latest.id, Fd.runs_n > 1))).scalar_one()
-    return {"latest": _run_out(latest), "previous": _run_out(prev), "last": _run_out(last_any) if last_any is not None and (latest is None or last_any.id != latest.id) else None,
+    if current is not None:
+        carried = (await db.execute(select(func.count()).select_from(scoped.where(Fd.runs_n > 1).subquery()))).scalar_one()
+    viewed = _run_out(current, await Q.stats(db, current, include_inactive=include_inactive)) if current else None
+    totals = await Q.totals(db, [r for r in (latest, prev) if r and r != current]) if not include_inactive else {}
+    return {"latest": viewed if current == latest else _run_out(latest, totals.get(latest.id) if latest else None),
+            "viewed": viewed, "previous": _run_out(prev, totals.get(prev.id) if prev else None), "last": _run_out(last_any) if last_any is not None and (latest is None or last_any.id != latest.id) else None,
             "requested": bool(st.get("requested")), "next_run": st.get("next_run") if cfg.enabled else None, "schedule": {"enabled": cfg.enabled, "day": cfg.day_of_month, "time": cfg.schedule_time, "timezone": cfg.timezone},
             "import": {"at": _iso(imp.at), "by": imp.by, "file_name": imp.file_name, "events": imp.events, "added": imp.added, "dcs": imp.dcs} if imp else None,
             "open": open_n, "exceptions": exc_n, "carried": carried, "by_code": by_code, "policy": cfg.model_dump(include=AS.POLICY_FIELDS), "can_admin": su.is_admin}
@@ -126,17 +130,17 @@ async def put_policy(body: PolicyBody, request: Request, su: SessionUser = Depen
 
 
 @router.get("/groups")
-async def priv_groups(run: str | None = None, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+async def priv_groups(run: str | None = None, include_inactive: bool = False, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     """Состав привилегированных групп в проверке и изменения с предыдущей (добавленные, исключённые)."""
     r = await _run(db, run)
-    return {"prev": None, "items": []} if r is None else await DF.groups(db, r)
+    return {"prev": None, "items": []} if r is None else await DF.groups(db, r, include_inactive=include_inactive)
 
 
 @router.get("/changes")
-async def changes(run: str | None = None, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+async def changes(run: str | None = None, include_inactive: bool = False, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     """Изменения учётных записей с предыдущей проверки."""
     r = await _run(db, run)
-    return {"prev": None, "counts": {}, "items": [], "truncated": False} if r is None else await DF.changes(db, r)
+    return {"prev": None, "counts": {}, "items": [], "truncated": False} if r is None else await DF.changes(db, r, include_inactive=include_inactive)
 
 
 @router.get("/policies")
@@ -159,58 +163,18 @@ async def run_now(body: RunBody, request: Request, su: SessionUser = Depends(req
 
 
 @router.get("/runs")
-async def runs(su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+async def runs(include_inactive: bool = False, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(AdAuditRun).order_by(AdAuditRun.started_at.desc()).limit(120))).scalars().all()
-    return {"items": [{k: v for k, v in _run_out(r).items() if k not in ("notes", "coverage")} for r in rows]}
+    counts = await Q.totals(db, [r for r in rows if r.status == "ok"]) if not include_inactive else {}
+    return {"items": [{k: v for k, v in _run_out(r, counts.get(r.id)).items() if k not in ("notes", "coverage")} for r in rows]}
 
 
 ACC_SORT = {"name": A.name, "login": A.login, "pwd_age": A.pwd_age, "idle": A.idle_days, "created": A.created, "risk": A.max_sev, "findings": A.findings_n}
-VIEWS = ("enabled", "disabled", "locked", "must_change", "expired", "new", "pne", "privileged", "inactive", "never", "with_findings", "reset", "no_logs_op")
 
 
-def _acc_filter(stmt, run: AdAuditRun, *, q: str, category: str, view: str, bucket: str, now: datetime, ou: str = ""):
-    pol = run.policy or {}
-    if q:
-        stmt = stmt.where(or_(column_like(A.login, q), column_like(A.name, q), column_like(A.upn, q), column_like(A.description, q), column_like(A.department, q), column_like(A.ou, q)))
-    if ou.strip():
-        stmt = stmt.where(column_like(A.ou, ou.strip()))
-    if category:
-        stmt = stmt.where(A.category == category)
-    if bucket:
-        stmt = stmt.where(A.pwd_bucket == bucket, A.enabled.is_(True))
-    inactive = int(pol.get("inactive_days") or 90)
-    if view == "enabled":
-        stmt = stmt.where(A.enabled.is_(True))
-    elif view == "disabled":
-        stmt = stmt.where(A.enabled.is_(False))
-    elif view == "locked":
-        stmt = stmt.where(A.locked.is_(True))
-    elif view == "must_change":
-        stmt = stmt.where(A.must_change.is_(True), A.enabled.is_(True))
-    elif view == "expired":
-        stmt = stmt.where(A.expires.is_not(None), A.expires < run.started_at)
-    elif view == "new":
-        from datetime import timedelta  # noqa: PLC0415
-
-        stmt = stmt.where(A.created >= run.started_at - timedelta(days=int(pol.get("new_days") or 30)))
-    elif view == "pne":
-        stmt = stmt.where(A.pne.is_(True))
-    elif view == "privileged":
-        stmt = stmt.where(A.category.in_(("admin", "service")))
-    elif view == "inactive":
-        stmt = stmt.where(A.enabled.is_(True), A.idle_days > inactive)
-    elif view == "never":
-        stmt = stmt.where(A.enabled.is_(True), A.last_logon.is_(None))
-    elif view == "with_findings":
-        stmt = stmt.where(A.findings_n > 0)
-    elif view == "reset":
-        stmt = stmt.where(A.guid.in_(select(Fd.guid).where(Fd.run_id == run.id, Fd.code == "reset")))
-    return stmt
-
-
-def _acc_out(a: A) -> dict:
+def _acc_out(a: A, at: datetime) -> dict:
     return {"guid": a.guid, "login": a.login, "name": a.name, "upn": a.upn, "mail": a.mail, "dn": a.dn, "ou": a.ou, "description": a.description, "title": a.title, "department": a.department, "manager": a.manager,
-            "category": a.category, "category_ru": K.CATEGORY_RU.get(a.category, a.category), "category_basis": a.category_basis, "enabled": a.enabled, "locked": a.locked, "pne": a.pne,
+            "category": a.category, "category_ru": K.CATEGORY_RU.get(a.category, a.category), "category_basis": a.category_basis, "enabled": a.enabled, "locked": a.locked, "state": Q.account_state(a.enabled, a.locked, a.expires, at), "pne": a.pne,
             "must_change": a.must_change, "pwd_expired": a.pwd_expired, "pwd_last_set": _iso(a.pwd_last_set), "pwd_age": a.pwd_age, "pwd_bucket": a.pwd_bucket, "pwd_bucket_ru": K.BUCKET_RU.get(a.pwd_bucket, ""),
             "expires": _iso(a.expires), "last_logon": _iso(a.last_logon), "last_logon_src": a.last_logon_src, "idle_days": a.idle_days, "created": _iso(a.created), "privileged": a.privileged,
             "protected": a.protected, "spn": a.spn, "workstations": a.workstations, "groups": a.groups, "pwd_op": a.pwd_op, "findings_n": a.findings_n, "max_sev": a.max_sev}
@@ -218,18 +182,19 @@ def _acc_out(a: A) -> dict:
 
 @router.get("/accounts")
 async def accounts(run: str | None = None, q: str = Query("", max_length=200), category: str = Query("", pattern=r"^(|user|admin|service|temp|contractor|undefined)$"),
-                   view: str = Query("", pattern=r"^(|" + "|".join(VIEWS) + ")$"), bucket: str = Query("", pattern=r"^(|le30|le90|le180|gt180|unknown)$"), ou: str = Query("", max_length=200),
+                   view: str = Query("", pattern=r"^(|" + "|".join(Q.ACCOUNT_VIEWS) + ")$"), include_inactive: bool = False, bucket: str = Query("", pattern=r"^(|le30|le90|le180|gt180|unknown)$"), ou: str = Query("", max_length=200),
                    sort: str = Query("risk", pattern=r"^(name|login|pwd_age|idle|created|risk|findings)$"), desc: bool = True, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500),
                    su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     r = await _run(db, run)
     if r is None:
         return {"items": [], "total": 0, "offset": offset, "limit": limit, "run": None}
-    stmt = _acc_filter(select(A).where(A.run_id == r.id), r, q=q.strip(), category=category, view=view, bucket=bucket, now=utcnow(), ou=ou)
+    stmt = Q.accounts(r, include_inactive=include_inactive, q=q, category=category, view=view, bucket=bucket, ou=ou)
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     col = ACC_SORT[sort]
     order = [col.desc().nulls_last() if desc else col.asc().nulls_last(), A.login]
     rows = (await db.execute(stmt.order_by(*order).offset(offset).limit(limit))).scalars().all()
-    return {"items": [_acc_out(a) for a in rows], "total": total, "offset": offset, "limit": limit, "run": _run_out(r) | {"notes": None}}
+    stats = (await Q.totals(db, [r]))[r.id] if not include_inactive and view not in ("disabled", "locked", "expired") else None
+    return {"items": [_acc_out(a, r.started_at) for a in rows], "total": total, "offset": offset, "limit": limit, "run": _run_out(r, stats) | {"notes": None}}
 
 
 def _dec_out(d: D | None) -> dict | None:
@@ -240,12 +205,12 @@ def _dec_out(d: D | None) -> dict | None:
 
 
 @router.get("/accounts/{guid}")
-async def account_card(guid: str, run: str | None = None, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+async def account_card(guid: str, run: str | None = None, include_inactive: bool = False, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     """Карточка учётной записи: состояние в проверке, категория и основания, замечания с решениями, события паролей, история по проверкам."""
     r = await _run(db, run)
     if r is None:
         raise HTTPException(status_code=404, detail="Проверок ещё не было")
-    a = (await db.execute(select(A).where(A.run_id == r.id, A.guid == guid))).scalar_one_or_none()
+    a = (await db.execute(Q.accounts(r, include_inactive=include_inactive).where(A.guid == guid))).scalar_one_or_none()
     if a is None:
         raise HTTPException(status_code=404, detail="Учётная запись не найдена в проверке")
     fs = (await db.execute(select(Fd, D).outerjoin(D, D.key == Fd.key).where(Fd.run_id == r.id, Fd.guid == guid).order_by(Fd.sev_rank.desc()))).all()
@@ -254,73 +219,51 @@ async def account_card(guid: str, run: str | None = None, su: SessionUser = Depe
     hist_q = select(AdAuditRun.started_at, AdAuditRun.kind, A.category, A.enabled, A.pwd_last_set, A.last_logon, A.findings_n).join(AdAuditRun, AdAuditRun.id == A.run_id).where(A.guid == guid, AdAuditRun.status == "ok").order_by(AdAuditRun.started_at.desc()).limit(24)
     hist = [{"at": _iso(at), "kind_ru": AS.KIND_RU.get(k, k), "category_ru": K.CATEGORY_RU.get(c, c), "enabled": en, "pwd_last_set": _iso(p), "last_logon": _iso(ll), "findings": n} for at, k, c, en, p, ll, n in (await db.execute(hist_q)).all()]
     ov = await db.get(AdClassOverride, guid)
-    return {**_acc_out(a), "run": {"id": str(r.id), "started_at": _iso(r.started_at)}, "findings": [{**_find_out(f, a.ou, a.enabled), "decision": _dec_out(d)} for f, d in fs],
+    return {**_acc_out(a, r.started_at), "run": {"id": str(r.id), "started_at": _iso(r.started_at)}, "findings": [{**_find_out(f, a.ou, a.enabled, Q.account_state(a.enabled, a.locked, a.expires, r.started_at)), "decision": _dec_out(d)} for f, d in fs],
             "events": [{"at": _iso(e.at), "kind": e.kind, "kind_ru": "Сброс пароля (4724)" if e.kind == "reset" else "Смена пароля (4723)", "success": e.success, "by": f"{e.by_domain}\\{e.by}" if e.by_domain else e.by, "dc": e.dc} for e in evs],
             "history": hist, "override": {"category": ov.category, "note": ov.note, "by": ov.by, "at": _iso(ov.at)} if ov else None}
 
 
-def _find_out(f: Fd, ou: str | None = None, enabled: bool | None = None) -> dict:
-    return {"ou": ou or "", "enabled": enabled, "key": f.key, "guid": f.guid, "login": f.login, "name": f.name, "category": f.category, "category_ru": K.CATEGORY_RU.get(f.category, f.category), "code": f.code, "title": f.title,
+def _find_out(f: Fd, ou: str | None, enabled: bool | None, acc_state: str) -> dict:
+    return {"ou": ou or "", "enabled": enabled, "acc_state": acc_state, "key": f.key, "guid": f.guid, "login": f.login, "name": f.name, "category": f.category, "category_ru": K.CATEGORY_RU.get(f.category, f.category), "code": f.code, "title": f.title,
             "severity": f.severity, "severity_ru": K.SEV_RU.get(f.severity, f.severity), "status": f.status, "status_ru": K.STATUS_RU.get(f.status, f.status), "basis": f.basis,
             "first_seen": _iso(f.first_seen), "runs_n": f.runs_n}
 
 
 @router.get("/findings")
-async def findings(run: str | None = None, q: str = Query("", max_length=200), code: str = Query("", max_length=24), severity: str = Query("", pattern=r"^(|critical|high|medium|low)$"),
+async def findings(run: str | None = None, q: str = Query("", max_length=200), code: str = Query("", max_length=24), severity: str = Query("", pattern=r"^(|critical|high|medium|low|high_or_critical)$"),
                    status: str = Query("", pattern=r"^(|violation|review)$"), category: str = Query("", pattern=r"^(|user|admin|service|temp|contractor|undefined)$"),
                    decision: str = Query("", pattern=r"^(|open|in_progress|fixed|exception|unresolved)$"), carried: bool = False, gone: bool = False,
-                   ou: str = Query("", max_length=200), state: str = Query("", pattern=r"^(|enabled|disabled)$"),
+                   ou: str = Query("", max_length=200), state: str = Query("", pattern=r"^(|enabled|disabled)$"), include_inactive: bool = False,
                    offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     """Замечания проверки. decision=unresolved — без решения, «в работе» и «отмечено устранённым», но обнаруженные снова (исключения не входят); carried — остались с прошлых проверок;
     gone — были в предыдущей проверке и в этой не обнаружены (устранены). ou — подразделение (часть пути или маска), state — состояние учётной записи."""
     r = await _run(db, run)
     if r is None:
         return {"items": [], "total": 0, "offset": offset, "limit": limit}
-    rid = r.id
+    snapshot = await DF.prev_run(db, r) if gone else r
+    if snapshot is None:
+        return {"items": [], "total": 0, "offset": offset, "limit": limit}
+    stmt = Q.findings(snapshot, include_inactive=include_inactive, q=q, ou=ou, code=code, severity=severity, status=status,
+                      category=category, decision=decision, carried=carried, state=state)
     if gone:
-        prev = (await db.execute(select(AdAuditRun.id).where(AdAuditRun.status == "ok", AdAuditRun.started_at < r.started_at).order_by(AdAuditRun.started_at.desc()).limit(1))).scalar_one_or_none()
-        if prev is None:
-            return {"items": [], "total": 0, "offset": offset, "limit": limit}
-        rid = prev
-    stmt = select(Fd, D, A.ou, A.enabled).outerjoin(D, D.key == Fd.key).outerjoin(A, and_(A.run_id == Fd.run_id, A.guid == Fd.guid)).where(Fd.run_id == rid)
-    if gone:
-        stmt = stmt.where(Fd.key.not_in(select(Fd.key).where(Fd.run_id == r.id)))
-    if q.strip():
-        stmt = stmt.where(or_(column_like(Fd.login, q.strip()), column_like(Fd.name, q.strip()), column_like(A.ou, q.strip())))
-    if ou.strip():
-        stmt = stmt.where(column_like(A.ou, ou.strip()))
-    if state:
-        stmt = stmt.where(A.enabled.is_(state == "enabled"))
-    for colm, val in ((Fd.code, code), (Fd.severity, severity), (Fd.status, status), (Fd.category, category)):
-        if val:
-            stmt = stmt.where(colm == val)
-    if carried:
-        stmt = stmt.where(Fd.runs_n > 1)
-    if decision == "unresolved":
-        stmt = stmt.where(_unresolved())
-    elif decision == "open":
-        stmt = stmt.where(or_(D.key.is_(None), D.state == "open"))
-    elif decision:
-        stmt = stmt.where(D.state == decision)
+        stmt = Q.resolved(stmt, r, include_inactive=include_inactive, state=state)
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (await db.execute(stmt.order_by(Fd.sev_rank.desc(), Fd.runs_n.desc(), Fd.login).offset(offset).limit(limit))).all()
-    return {"items": [{**_find_out(f, o, en), "decision": _dec_out(d)} for f, d, o, en in rows], "total": total, "offset": offset, "limit": limit}
-
-
-def _unresolved():
-    """Замечание требует внимания: без решения, «в работе», «отмечено устранённым», но найдено снова, или исключение с истёкшим сроком."""
-    return or_(D.key.is_(None), D.state.in_(("open", "in_progress", "fixed")), and_(D.state == "exception", D.due.is_not(None), D.due < date.today()))
+    return {"items": [{**_find_out(f, o, en, Q.account_state(en, lk, exp, snapshot.started_at)), "decision": _dec_out(d)} for f, d, o, en, lk, exp in rows],
+            "total": total, "offset": offset, "limit": limit}
 
 
 @router.get("/ous")
-async def ous(run: str | None = None, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
+async def ous(run: str | None = None, include_inactive: bool = False, su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
     """Подразделения (OU) проверки: учётных записей, активных, замечаний, требующих внимания (в т. ч. критических и высоких) — для отбора и обзора «где больше всего проблем»."""
     r = await _run(db, run)
     if r is None:
         return {"items": []}
-    acc = {o: (n, en) for o, n, en in (await db.execute(select(A.ou, func.count(), func.sum(func.cast(A.enabled, Integer))).where(A.run_id == r.id).group_by(A.ou))).all()}
+    scope = Q.account_scope(A, r.started_at, include_inactive)
+    acc = {o: (n, en) for o, n, en in (await db.execute(select(A.ou, func.count(), func.sum(func.cast(Q.active(A, r.started_at), Integer))).where(A.run_id == r.id, scope).group_by(A.ou))).all()}
     fq = (select(A.ou, func.count(), func.sum(func.cast(Fd.sev_rank >= 3, Integer)), func.count(func.distinct(Fd.guid)))
-          .select_from(Fd).join(A, and_(A.run_id == Fd.run_id, A.guid == Fd.guid)).outerjoin(D, D.key == Fd.key).where(Fd.run_id == r.id, _unresolved()).group_by(A.ou))
+          .select_from(Fd).join(A, and_(A.run_id == Fd.run_id, A.guid == Fd.guid)).outerjoin(D, D.key == Fd.key).where(Fd.run_id == r.id, scope, Q.unresolved()).group_by(A.ou))
     fnd = {o: (n, hi or 0, g) for o, n, hi, g in (await db.execute(fq)).all()}
     items = [{"ou": o, "accounts": n, "enabled": int(en or 0), "open": fnd.get(o, (0, 0, 0))[0], "high": fnd.get(o, (0, 0, 0))[1], "with_findings": fnd.get(o, (0, 0, 0))[2]} for o, (n, en) in acc.items()]
     items.sort(key=lambda x: (-x["high"], -x["open"], -x["accounts"], x["ou"]))
@@ -383,18 +326,12 @@ async def set_category(guid: str, body: CategoryBody, su: SessionUser = Depends(
 
 
 @router.get("/events")
-async def events(kind: str = Query("", pattern=r"^(|change|reset)$"), success: bool | None = None, q: str = Query("", max_length=200), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500),
+async def events(run: str | None = None, include_inactive: bool = False, kind: str = Query("", pattern=r"^(|change|reset)$"), success: bool | None = None, q: str = Query("", max_length=200), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500),
                  su: SessionUser = Depends(require_security), db: AsyncSession = Depends(get_db)):
-    stmt = select(AdPwdEvent)
-    if kind:
-        stmt = stmt.where(AdPwdEvent.kind == kind)
-    if success is not None:
-        stmt = stmt.where(AdPwdEvent.success.is_(success))
-    if q.strip():
-        stmt = stmt.where(or_(column_like(AdPwdEvent.target, q.strip()), column_like(AdPwdEvent.by, q.strip())))
+    latest = await _run(db, run)
+    stmt = Q.event_query(latest, include_inactive=include_inactive, kind=kind, success=success, q=q)
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (await db.execute(stmt.order_by(AdPwdEvent.at.desc()).offset(offset).limit(limit))).scalars().all()
-    latest = await _run(db, None)
     names: dict[str, tuple[str, str]] = {}
     if latest is not None and rows:
         sids = {e.target_sid for e in rows if e.target_sid}

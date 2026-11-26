@@ -14,27 +14,86 @@ github_slug() {
   if [[ "$s" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && [ "$s" != "CHANGE_ME_owner/kavcheck" ]; then echo "$s"; return; fi
   origin_slug
 }
-# registry_candidates — возможные репозитории образов по порядку: явный IMAGE_REGISTRY (единственный), иначе по GITHUB_REPO и по адресу origin (если различаются)
-registry_candidates() {
-  local s
-  [ -n "${IMAGE_REGISTRY:-}" ] && { echo "${IMAGE_REGISTRY%/}"; return; }
-  [[ "${IMAGE_REPO:-}" == */* ]] && echo "$IMAGE_REPO"
-  for s in "$(github_slug)" "$(origin_slug)"; do [ -n "$s" ] && echo "ghcr.io/$(printf '%s' "$s" | tr 'A-Z' 'a-z')"; done | awk '!seen[$0]++'
+# Образы запущенной версии с зеркала не меняют порядок источников следующего обновления.
+registry_mirrors() { list_words "${IMAGE_REGISTRY_MIRRORS:-}"; }
+is_registry_mirror() {
+  local explicit="${IMAGE_REGISTRY:-}"
+  [ "${explicit%/}" != "$1" ] && registry_mirrors | grep -xF -- "$1" >/dev/null
 }
-registry_repo() { registry_candidates | head -1; }
-# pick_registry ТЕГ — первый репозиторий, где опубликован образ релиза (docker manifest inspect); результат в REGISTRY_PICKED, причина неудачи в REGISTRY_ERR
-REGISTRY_PICKED=""; REGISTRY_ERR=""
-pick_registry() {
-  local r out; REGISTRY_PICKED=""; REGISTRY_ERR=""
-  for r in $(registry_candidates); do
-    if out="$(timeout "${UPD_TIMEOUT_NET:-60}" docker manifest inspect $(is_local_host "${r%%/*}" && echo --insecure) "${r}-backend:$1" 2>&1)"; then REGISTRY_PICKED="$r"; return 0; fi
-    REGISTRY_ERR="${REGISTRY_ERR:+$REGISTRY_ERR; }$r: ${out:0:140}"
+registry_candidates() {
+  local s mirrors; mirrors="$(registry_mirrors)"
+  {
+    if [ -n "${IMAGE_REGISTRY:-}" ]; then echo "${IMAGE_REGISTRY%/}"
+    else
+      if [[ "${IMAGE_REPO:-}" == */* ]] && ! grep -qxF -- "${IMAGE_REPO%/}" <<<"$mirrors"; then echo "${IMAGE_REPO%/}"; fi
+      for s in "$(github_slug)" "$(origin_slug)"; do [ -n "$s" ] && echo "ghcr.io/$(printf '%s' "$s" | tr 'A-Z' 'a-z')"; done
+    fi
+    printf '%s\n' "$mirrors"
+  } | grep -E '^(\[[[:xdigit:]:]+\]|[A-Za-z0-9][A-Za-z0-9_.-]*)(:[0-9]+)?(/[a-z0-9]+([._-]+[a-z0-9]+)*)+$' | awk '!seen[$0]++'
+}
+registry_repo() { registry_candidates | sed -n '1p'; }
+REGISTRY_PICKED=""; REGISTRY_ERR=""; REGISTRY_CODE=registry
+registry_error_code() {
+  if grep -qiE 'no such manifest|manifest unknown|not found|denied|unauthorized' <<<"$REGISTRY_ERR"; then echo image_missing; else echo registry; fi
+}
+registry_has_pair() {
+  local r="$1" tag="$2" svc out
+  local -a opts=()
+  if is_local_host "${r%%/*}"; then opts+=(--insecure); fi
+  for svc in backend web; do
+    if ! out="$(timeout "${UPD_TIMEOUT_NET:-60}" docker manifest inspect "${opts[@]}" "${r}-$svc:$tag" 2>&1)"; then
+      REGISTRY_ERR="${REGISTRY_ERR:+$REGISTRY_ERR; }${r}-$svc: ${out:0:140}"
+      return 1
+    fi
   done
+}
+pick_registry() {
+  local r; REGISTRY_PICKED=""; REGISTRY_ERR=""
+  while IFS= read -r r; do
+    if registry_has_pair "$r" "$1"; then REGISTRY_PICKED="$r"; return 0; fi
+  done < <(registry_candidates)
+  return 1
+}
+release_images_ready() {
+  local r="$1" tag="$2" ref svc actual format='{{.Id}}' mirror=0
+  if is_registry_mirror "$r"; then
+    format='{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+    mirror=1
+  fi
+  for svc in backend web; do
+    ref="${r}-$svc:$tag"
+    if ! actual="$(docker image inspect -f "$format" "$ref" 2>/dev/null)"; then REGISTRY_CODE=image_missing; return 1; fi
+    if [ "$mirror" -eq 1 ] && [ "$actual" != "$APP_GIT_COMMIT" ]; then
+      REGISTRY_CODE=image_mismatch; return 1
+    fi
+  done
+}
+# На этапе проверки выбран первый доступный комплект. При сбое загрузки проверяем следующие источники.
+pull_registry() {
+  local tag="$1" total="$2" stall="$3" r checked="$REGISTRY_PICKED" tried=0
+  REGISTRY_PICKED=""; REGISTRY_ERR=""
+  while IFS= read -r r; do
+    if [ -n "$checked" ] && [ "$r" != "$checked" ]; then continue; fi
+    if [ -z "$checked" ] && ! registry_has_pair "$r" "$tag"; then continue; fi
+    checked=""
+    tried=1
+    export IMAGE_REPO="$r" IMAGE_TAG="$tag"
+    info "Получение готовых образов ${r}-*:$tag"
+    if run_guarded "загрузка образов" "$total" "$stall" "${DCB[@]}" pull backend web; then
+      if release_images_ready "$r" "$tag"; then REGISTRY_PICKED="$r"; return 0; fi
+    else
+      REGISTRY_CODE="$(guard_fail_code registry)"
+    fi
+    warn "$r: $(diag_advice "$REGISTRY_CODE")"
+    [ "$REGISTRY_CODE" != disk ] || return 1
+  done < <(registry_candidates)
+  if [ "$tried" -eq 0 ]; then
+    REGISTRY_CODE="$(registry_error_code)"
+    [ -z "$REGISTRY_ERR" ] || warn "Не удалось проверить комплект $tag: ${REGISTRY_ERR:0:400}"
+  fi
   return 1
 }
 is_local_host() { [[ "$1" =~ ^(localhost|127\.[0-9.]+|\[::1\])(:[0-9]+)?$ ]]; }       # локальный реестр (отладка, закрытые контуры) допускается без TLS
-registry_scheme() { is_local_host "$1" && echo http || echo https; }
-registry_host() { local r; r="$(registry_repo)"; echo "${r%%/*}"; }
 update_mode() { # pull | build — как получать образы нового релиза
   case "${UPDATE_MODE:-auto}" in build) echo build ;; *) echo pull ;; esac
 }
@@ -92,8 +151,9 @@ diag_code() {
 diag_advice() { # КОД → понятный совет администратору
   case "$1" in
     docker_hub) echo "Недоступен Docker Hub (auth.docker.io / registry-1.docker.io): он нужен только для локальной сборки базовых образов. Обновление из готовых образов (ghcr.io) его не использует — повторите обновление без локальной сборки либо настройте зеркало Docker Hub (registry-mirrors в /etc/docker/daemon.json)." ;;
-    registry) echo "Недоступен реестр готовых образов (ghcr.io). Проверьте сеть, прокси и DNS сервера; повторите позже. Локальная сборка — кнопка «Собрать локально» (потребуются npm, pip и Docker Hub)." ;;
-    image_missing) echo "Образы этого релиза в реестре не найдены. Возможно, публикация образов ещё не завершилась (проверьте вкладку Actions релиза в GitHub); повторите позже или выберите «Собрать локально»." ;;
+    registry) echo "Не удалось получить комплект образов из настроенных реестров. Проверьте сеть, прокси, DNS и IMAGE_REGISTRY_MIRRORS. Локальная сборка доступна по кнопке «Собрать локально»." ;;
+    image_missing) echo "Полный комплект образов этого релиза в реестрах не найден. Проверьте публикацию релиза и настройки IMAGE_REGISTRY_MIRRORS, затем повторите обновление." ;;
+    image_mismatch) echo "Образы зеркала не соответствуют коммиту выбранного релиза. Проверьте публикацию зеркала и повторите обновление." ;;
     npm) echo "Не удалось скачать пакеты npm. Укажите зеркало NPM_REGISTRY в .env (например https://npm-mirror.gitverse.ru) и повторите; обновление из готовых образов npm не требует." ;;
     pip) echo "Не удалось скачать пакеты Python. Укажите зеркало PIP_INDEX_URL в .env и повторите; обновление из готовых образов pip не требует." ;;
     network) echo "Обрыв или недоступность сети. Проверьте соединение сервера, DNS и прокси и повторите обновление; прежняя версия продолжает работать." ;;

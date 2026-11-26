@@ -9,7 +9,7 @@ import { ago, bytes, fmtTs, versionLabel } from "../../util";
 
 const MAX_LOG = 400_000;
 const ACTION: Record<string, string> = { update: "Обновление", rollback: "Откат", backup: "Резервная копия", check: "Проверка релизов", restore: "Восстановление из копии", preflight: "Проверки перед обновлением", helper: "Обновление помощника" };
-const REASON: Record<string, string> = { docker_hub: "Недоступен Docker Hub", registry: "Недоступен реестр готовых образов", image_missing: "Образы релиза не найдены в реестре", npm: "Не удалось скачать пакеты npm", pip: "Не удалось скачать пакеты Python",
+const REASON: Record<string, string> = { docker_hub: "Недоступен Docker Hub", registry: "Недоступен реестр готовых образов", image_missing: "Образы релиза не найдены в реестре", image_mismatch: "Образы зеркала не соответствуют выбранному релизу", npm: "Не удалось скачать пакеты npm", pip: "Не удалось скачать пакеты Python",
   network: "Обрыв или недоступность сети", disk: "Не хватает места на диске", build: "Ошибка сборки образов", migration: "Ошибка миграции базы", health: "Новая версия не прошла проверку работоспособности", timeout_total: "Превышено время операции",
   timeout_stall: "Зависание операции", interrupted: "Обновление было прервано", rejected: "Помощник не принял запрос", internal: "Внутренняя ошибка помощника", generic: "Ошибка обновления" };
 const CAN_BUILD = ["registry", "image_missing", "docker_hub"];
@@ -18,7 +18,7 @@ const dur = (s: number) => (s < 60 ? `${s} с` : `${Math.floor(s / 60)} мин $
 const LOG_URL = "/api/v1/admin/updates/log/download";
 const PF: Record<string, [string, string]> = { ok: ["check", "ok-text"], warn: ["alert", "warn-text"], fail: ["xCircle", "bad-text"] };
 
-/** Обновления через GitHub: установленная версия, доступный релиз и изменения, обновление, откат, резервная копия.
+/** Установленная версия, проверка релизов, обновление, откат и резервная копия.
  *  Backend сам ничего не обновляет — запрос передаётся помощнику на сервере (scripts/updater.sh). */
 export default function UpdatesAdmin() {
   const [ov, setOv] = useState<UpdatesOverview | null>(null);
@@ -55,7 +55,7 @@ export default function UpdatesAdmin() {
       <div className="card">
         <div className="upd-versions">
           <div><div className="l">Установлено</div><div className="v">{versionLabel(ov.installed.version, ov.installed.commit)}</div><div className="l">сборка {ov.installed.built_at}</div></div>
-          <div><div className="l">Последний релиз в GitHub</div><div className="v">{rem?.ok && rem.latest_version ? rem.latest_version : "—"}</div><div className="l">{rem ? `проверено ${ago(rem.age_s)}` : "проверка ещё не выполнялась"}{rem?.published_at ? `, выпущен ${rem.published_at.slice(0, 10)}` : ""}</div></div>
+          <div><div className="l">Последний известный релиз</div><div className="v">{rem?.latest_version || "—"}</div><div className="l">{rem ? `проверено ${ago(rem.age_s)}` : "проверка ещё не выполнялась"}{rem?.published_at ? `, выпущен ${rem.published_at.slice(0, 10)}` : ""}{rem?.source === "mirror" ? ` · зеркало ${rem.source_host ?? ""}` : ""}</div></div>
           <div><div className="l">Помощник обновлений</div><div className="v"><span className="row tight"><span className={`dot ${u?.available ? "ok" : "warn"}`} />{u?.available ? (running ? "работает, выполняет операцию" : "работает, ожидает запросов") : "недоступен"}</span></div><div className="l">{u?.heartbeat_age_s != null ? `пульс ${ago(u.heartbeat_age_s)}` : "нет сведений"}{ov.system.helper_unit === "ok" ? " · служба включена" : ""}</div></div>
         </div>
         {!u?.available && (
@@ -67,8 +67,8 @@ export default function UpdatesAdmin() {
         {u?.available && u.api_outdated && <div className="alert warn mt"><Icon name="alert" /><div className="alert-body"><b>Помощник устарел</b> (версия обмена {u.updater_api}, нужна {u.api_expected}): в нём нет восстановления после сбоев и контроля зависаний. Он обновится сам после следующего обновления; сейчас выполните на сервере <code>{ov.commands.install}</code>.</div></div>}
         {u?.available && ov.system.helper_unit === "incomplete" && <div className="alert warn mt"><Icon name="alert" /><div className="alert-body">Служба помощника установлена не полностью (нет автозапуска или перезапуска при сбоях). Выполните на сервере <code>{ov.commands.install}</code>.</div></div>}
         {ov.system.update_mode && <p className="muted small mt-sm">Способ обновления: <b>{ov.system.update_mode === "build" ? "локальная сборка образов" : `готовые образы из ${ov.system.registry || "реестра"}`}</b>.{ov.system.update_mode !== "build" && " Локальная сборка запускается только по вашей кнопке."}{ov.system.npm_mirror ? " Зеркало npm настроено." : ""}</p>}
-        {rem && !rem.ok && <div className="alert error mt"><Icon name="alert" /><div className="alert-body"><b>Не удалось проверить наличие новых версий.</b> Если у сервера нет доступа к GitHub, обновляйте его из заранее скопированного репозитория.{rem.error && <details className="disclosure"><summary>Техническая причина</summary><span className="mono small">{rem.error}</span></details>}</div></div>}
-        {rem?.ok && !rem.behind && <div className="alert ok mt"><Icon name="checkCircle" /><div className="alert-body">Установлена последняя версия.</div></div>}
+        {rem && !rem.ok && <div className="alert error mt"><Icon name="alert" /><div className="alert-body"><b>Не удалось проверить наличие новых версий.</b> Доступность основного источника и зеркал можно проверить на сервере. Список зеркал задаётся в <code>.env</code>.{rem.error && <details className="disclosure"><summary>Техническая причина</summary><span className="mono small">{rem.error}</span></details>}</div></div>}
+        {rem?.ok && !rem.behind && <div className="alert ok mt"><Icon name="checkCircle" /><div className="alert-body">{rem.source === "mirror" ? "По данным зеркала обновлений нет." : "Установлена последняя версия."}</div></div>}
         {rem?.ok && rem.behind && (
           <div className="alert info mt"><Icon name="upload" /><div className="alert-body"><b>Доступна версия {rem.latest_version}</b> (установлена {rem.current_version}).
             {rem.notes && <details className="disclosure"><summary>Что изменилось</summary><Markdown text={rem.notes} className="md notes-md" /></details>}</div></div>
@@ -79,7 +79,7 @@ export default function UpdatesAdmin() {
             {ov.preflight && <span className="muted small">{ago(ov.preflight.age_s)}</span>}<div className="spacer" />
             <button className="btn mini" disabled={!ov.can_act || !!busy} aria-busy={busy === "preflight"} onClick={() => act("preflight", api.admin.updatesPreflight, "Проверки запущены")}><Icon name="refresh" size={15} /><span>Проверить</span></button></div>
           {ov.preflight ? <ul className="pf-list">{ov.preflight.items.map((i) => { const [ic, cl] = PF[i.status] ?? ["info", ""]; return <li key={i.key} className={cl}><Icon name={ic as never} size={15} /><span>{i.message}</span></li>; })}</ul>
-            : <p className="muted small">Свободное место, доступность GitHub и реестра образов (или npm и pip при локальной сборке), состояние базы, возможность отката. Те же проверки выполняются в начале обновления; при препятствиях обновление не начнётся.</p>}
+            : <p className="muted small">Свободное место, доступность репозиториев и реестров образов, состояние базы и возможность отката. При локальной сборке проверяются npm и pip.</p>}
         </div>
         <div className="row">
           <button className="btn primary" disabled={!ov.can_act || !!busy} onClick={() => setConfirm("update")} title={ov.can_act ? undefined : ov.reasons.join(" ")}><Icon name="upload" />{rem?.ok && rem.behind ? `Обновить до ${rem.latest_version}` : "Обновить"}</button>

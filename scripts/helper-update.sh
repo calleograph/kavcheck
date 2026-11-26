@@ -63,8 +63,24 @@ if [ -e "$DATA_ROOT/state/update.lock" ] && ! flock -n 7 7>"$DATA_ROOT/state/upd
 command -v git >/dev/null || die "git не найден"
 
 say "• Получение списка релизов"
-GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30 timeout 90 git -C "$REPO" fetch --tags --prune -q origin 2>/dev/null || say "! git fetch не удался (нет доступа к GitHub?): используются уже полученные теги"
-[ -n "$TO" ] || TO="$(git -C "$REPO" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+REPO_ROOT="$REPO"
+[[ -z "$TO" || "$TO" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Ожидается тег релиза vX.Y.Z"
+local_tag() { git -C "$REPO" tag --list 'v*' --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ && !seen++ { print }'; }
+LIB_TAG="${TO:-$(local_tag)}"
+if [ -r "$SC/lib/releases.sh" ]; then
+  source "$SC/lib/releases.sh"
+elif [ -n "$LIB_TAG" ] && git -C "$REPO" cat-file -e "$LIB_TAG:scripts/lib/releases.sh" 2>/dev/null; then
+  source <(git -C "$REPO" show "$LIB_TAG:scripts/lib/releases.sh")
+fi
+if declare -F release_transport >/dev/null; then
+  if release_transport fetch "$TO"; then
+    [ "$RELEASE_SOURCE" != mirror ] || say "• Теги получены через зеркало $RELEASE_HOST"
+  else say "! Основной репозиторий и настроенные зеркала недоступны. Проверяю локальные теги"; fi
+else
+  GIT_TERMINAL_PROMPT=0 timeout "${UPD_TIMEOUT_NET:-60}" git -C "$REPO" fetch --tags --prune -q origin 2>/dev/null \
+    || say "! Основной репозиторий недоступен. Проверяю локальные теги"
+fi
+[ -n "$TO" ] || TO="$(local_tag)"
 [[ "$TO" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Не удалось определить релиз (тег $TO)"
 git -C "$REPO" rev-parse -q --verify "refs/tags/$TO^{commit}" >/dev/null || die "Тег $TO не найден в репозитории"
 git -C "$REPO" cat-file -e "$TO:scripts/updater.sh" 2>/dev/null || die "В релизе $TO нет scripts/updater.sh"

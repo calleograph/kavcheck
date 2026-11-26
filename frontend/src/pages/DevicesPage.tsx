@@ -29,12 +29,14 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
   const [bi, setBi] = useState<Awaited<ReturnType<typeof api.bi.summary>> | null>(null);
   useEffect(() => { api.bi.summary().then(setBi).catch(() => setBi(null)); }, []);
-  if (!ctx.current) return <NoSource ctx={ctx} />;
-  const people = !!bi?.can_people && bi.items.length > 0;
+  const people = !!bi?.can_people && (bi.items.length > 0 || sp.has("bidev") || sp.has("person"));
   const raw = (sp.get("tab") ?? (sp.get("person") || sp.get("bidev") ? "bi" : "devices")) as Tab;
   const tab: Tab = (raw === "bi" || raw === "match") && !people ? "devices" : (["devices", "now", "ksc", "bi", "match"] as Tab[]).includes(raw) ? raw : "devices";
   const go = (t: Tab) => setSp((p) => { p.set("tab", t); ["person", "bidev"].forEach((k) => p.delete(k)); return p; });
   const card = sp.get("card");
+  const closeCard = () => setSp((p) => { p.delete("card"); return p; }, { replace: true });
+  if (!ctx.current && tab !== "bi") return <><NoSource ctx={ctx} />
+    {card && <CardModal id={card} service={false} onClose={closeCard} ctx={ctx} />}</>;
   return (
     <section>
       <PageHead title="Устройства и пользователи" lede="Устройства KSC с пользователями, зонами и EOL; пользователи KSC; сотрудники и владельцы устройств по BI-выгрузкам с историей принадлежности." />
@@ -47,7 +49,7 @@ export default function DevicesPage({ ctx }: { ctx: Ctx }) {
         {tab === "bi" && bi && <BiPeople ctx={ctx} summary={bi} />}
         {tab === "match" && <Matches ctx={ctx} />}
       </div>
-      {tab !== "devices" && card && <CardModal id={card} service={false} onClose={() => setSp((p) => { p.delete("card"); return p; })} ctx={ctx} />}
+      {tab !== "devices" && card && <CardModal id={card} service={false} onClose={closeCard} ctx={ctx} />}
       {bi && !people && bi.can_people && <p className="muted small mt-sm">BI-выгрузки не подключены: владельцев устройств и историю принадлежности можно получать из корпоративной Excel-выгрузки{ctx.me.user.is_admin ? <> (<Link to="/admin?tab=sources&kind=bi">Администрирование → Источники данных → BI-системы</Link>)</> : ""}.</p>}
     </section>
   );
@@ -130,7 +132,7 @@ function DeviceList({ ctx }: { ctx: Ctx }) {
       {report && <QuickReportPanel kind="quick_devices" title="Отчёт: устройства и пользователи" lede="Все устройства, подходящие под фильтры страницы, с пользователями, зонами и признаком EOL" options={{ scope: false }}
         params={{ q: applied || undefined, zone: zone || undefined, os: osq || undefined, user: uq || undefined, eol: eol || undefined, include_inactive: all || undefined, show_service: service || undefined, source_id: ctx.all && srcId ? srcId : undefined }}
         sourceIds={ctx.all ? ctx.sources.map((s) => s.id) : []} activityDays={ctx.me.activity_days} canReport={canPoll} onClose={() => setReport(false)} />}
-      {card && <CardModal id={card} service={service} onClose={() => setSp((p) => { p.delete("card"); return p; })} ctx={ctx} />}
+      {card && <CardModal id={card} service={service} onClose={() => setSp((p) => { p.delete("card"); return p; }, { replace: true })} ctx={ctx} />}
       {toast}
     </>
   );
@@ -139,7 +141,14 @@ function DeviceList({ ctx }: { ctx: Ctx }) {
 function CardModal({ id, service, onClose, ctx }: { id: string; service: boolean; onClose: () => void; ctx: Ctx }) {
   const [sid, hid] = id.split(":");
   const [d, setD] = useState<DeviceCard | null>(null); const [err, setErr] = useState("");
-  useEffect(() => { api.devices.card(sid, Number(hid), service).then(setD).catch((e) => setErr((e as ApiError).message)); }, [sid, hid, service]);
+  useEffect(() => {
+    let active = true;
+    setD(null);
+    setErr("");
+    api.devices.card(sid, Number(hid), service).then((result) => { if (active) setD(result); })
+      .catch((e: ApiError) => { if (active) setErr(e.message); });
+    return () => { active = false; };
+  }, [sid, hid, service]);
   return (
     <Modal side wide title={d?.name ?? "Устройство"} onClose={onClose} lede={d ? `${d.source} · ${d.ip || "адрес неизвестен"} · ${d.os || "ОС неизвестна"}` : undefined}>
       {err && <div className="alert error"><Icon name="alert" /><div className="alert-body">{err}</div></div>}

@@ -10,6 +10,7 @@ from sqlalchemy.orm import aliased
 from ..models import AdAuditAccount as A
 from ..models import AdAuditRun
 from . import checks as K
+from . import query as Q
 
 LIMIT = 2000
 GROUP_ORDER = ["Enterprise Admins", "Domain Admins", "Schema Admins", "Administrators", "Account Operators", "Server Operators", "Backup Operators", "Print Operators"]
@@ -25,8 +26,8 @@ def _iso(d) -> str | None:
     return d.isoformat() if d else None
 
 
-def mini(a: A) -> dict:
-    return {"guid": a.guid, "login": a.login, "name": a.name, "ou": a.ou, "enabled": a.enabled, "locked": a.locked, "state": "отключена" if not a.enabled else "заблокирована" if a.locked else "активна",
+def mini(a: A, at) -> dict:
+    return {"guid": a.guid, "login": a.login, "name": a.name, "ou": a.ou, "enabled": a.enabled, "locked": a.locked, "state": Q.account_state(a.enabled, a.locked, a.expires, at),
             "category": a.category, "category_ru": K.CATEGORY_RU.get(a.category, a.category), "last_logon": _iso(a.last_logon), "idle_days": a.idle_days, "pwd_age": a.pwd_age, "pne": a.pne,
             "protected": a.protected, "created": _iso(a.created)}
 
@@ -35,27 +36,32 @@ def _priv(t):
     return cast(t.privileged, String) != "[]"
 
 
-async def groups(db, run: AdAuditRun) -> dict:
+async def groups(db, run: AdAuditRun, *, include_inactive=False) -> dict:
     """Привилегированные группы проверки: участники (с учётом вложенности и первичной группы), добавленные и исключённые с предыдущей проверки."""
     prev = await prev_run(db, run)
-    cur = (await db.execute(select(A).where(A.run_id == run.id, _priv(A)).order_by(A.login))).scalars().all()
-    old = (await db.execute(select(A).where(A.run_id == prev.id, _priv(A)).order_by(A.login))).scalars().all() if prev else []
+    cur = (await db.execute(Q.accounts(run, include_inactive=include_inactive).where(_priv(A)).order_by(A.login))).scalars().all()
+    old_q = Q.accounts(prev, include_inactive=True).where(_priv(A)) if prev else None
+    if old_q is not None and not include_inactive:
+        current = aliased(A)
+        old_q = old_q.where(Q.active(A, prev.started_at),
+                            select(1).where(current.run_id == run.id, current.guid == A.guid, Q.active(current, run.started_at)).exists())
+    old = (await db.execute(old_q.order_by(A.login))).scalars().all() if old_q is not None else []
     was = {(g, a.guid) for a in old for g in a.privileged}
     now = {(g, a.guid) for a in cur for g in a.privileged}
     out: dict[str, dict] = {}
     for a in cur:
         for g in a.privileged:
-            out.setdefault(g, {"group": g, "members": [], "removed": []})["members"].append({**mini(a), "added": prev is not None and (g, a.guid) not in was})
+            out.setdefault(g, {"group": g, "members": [], "removed": []})["members"].append({**mini(a, run.started_at), "added": prev is not None and (g, a.guid) not in was})
     for a in old:
         for g in a.privileged:
             if (g, a.guid) not in now:
-                out.setdefault(g, {"group": g, "members": [], "removed": []})["removed"].append(mini(a))
+                out.setdefault(g, {"group": g, "members": [], "removed": []})["removed"].append(mini(a, prev.started_at))
     rank = {g: i for i, g in enumerate(GROUP_ORDER)}
     items = sorted(out.values(), key=lambda x: (rank.get(x["group"], len(rank)), x["group"].casefold()))
     return {"prev": _iso(prev.started_at) if prev else None, "items": items}
 
 
-async def changes(db, run: AdAuditRun) -> dict:
+async def changes(db, run: AdAuditRun, *, include_inactive=False, limit=LIMIT) -> dict:
     """Изменения с предыдущей проверки: новые и удалённые учётные записи, отключение и включение, категория, подразделение, привилегированные группы."""
     prev = await prev_run(db, run)
     if prev is None:
@@ -63,20 +69,23 @@ async def changes(db, run: AdAuditRun) -> dict:
     P = aliased(A)
     counts: dict[str, int] = {}
     items: list[dict] = []
-    new_w = (A.run_id == run.id, ~exists().where(P.run_id == prev.id, P.guid == A.guid))
+    scope = Q.account_scope(A, run.started_at, include_inactive)
+    new_w = (A.run_id == run.id, scope, ~exists().where(P.run_id == prev.id, P.guid == A.guid))
     counts["new"] = (await db.execute(select(func.count()).select_from(A).where(*new_w))).scalar_one()
-    for a in (await db.execute(select(A).where(*new_w).order_by(A.created.desc().nulls_last(), A.login).limit(LIMIT))).scalars():
-        items.append({**mini(a), "kind": "new", "before": "", "after": f"категория «{K.CATEGORY_RU.get(a.category, a.category)}»"})
-    gone_w = (P.run_id == prev.id, ~exists().where(A.run_id == run.id, A.guid == P.guid))
-    counts["removed"] = (await db.execute(select(func.count()).select_from(P).where(*gone_w))).scalar_one()
-    for a in (await db.execute(select(P).where(*gone_w).order_by(P.login).limit(LIMIT))).scalars():
-        items.append({**mini(a), "kind": "removed", "before": "отключена" if not a.enabled else "активна", "after": ""})
-    chg = (await db.execute(select(A, P).join(P, and_(P.run_id == prev.id, P.guid == A.guid)).where(A.run_id == run.id, or_(A.enabled != P.enabled, A.category != P.category, A.ou != P.ou,
+    for a in (await db.execute(select(A).where(*new_w).order_by(A.created.desc().nulls_last(), A.login).limit(limit))).scalars():
+        items.append({**mini(a, run.started_at), "kind": "new", "before": "", "after": f"категория «{K.CATEGORY_RU.get(a.category, a.category)}»"})
+    if include_inactive:
+        gone_w = (P.run_id == prev.id, ~exists().where(A.run_id == run.id, A.guid == P.guid))
+        counts["removed"] = (await db.execute(select(func.count()).select_from(P).where(*gone_w))).scalar_one()
+        for a in (await db.execute(select(P).where(*gone_w).order_by(P.login).limit(limit))).scalars():
+            m = mini(a, prev.started_at)
+            items.append({**m, "kind": "removed", "before": m["state"], "after": ""})
+    chg = (await db.execute(select(A, P).join(P, and_(P.run_id == prev.id, P.guid == A.guid)).where(A.run_id == run.id, scope, or_(A.enabled != P.enabled, A.category != P.category, A.ou != P.ou,
                                                                                                                                cast(A.privileged, String) != cast(P.privileged, String)))
-                            .order_by(A.login).limit(LIMIT))).all()
-    truncated = len(chg) >= LIMIT or counts["new"] > LIMIT or counts["removed"] > LIMIT
+                            .order_by(A.login).limit(limit))).all()
+    truncated = len(chg) >= limit or counts["new"] > limit or counts.get("removed", 0) > limit
     for a, b in chg:
-        m = mini(a)
+        m = mini(a, run.started_at)
         if a.enabled != b.enabled:
             items.append({**m, "kind": "enabled" if a.enabled else "disabled", "before": "активна" if b.enabled else "отключена", "after": "активна" if a.enabled else "отключена"})
         if a.category != b.category:

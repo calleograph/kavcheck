@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # updater.sh — «помощник» обновлений для веб-интерфейса (Администрирование → Обновления).
 #   scripts/updater.sh run [--env FILE]           # работает постоянно (служба systemd от root)
-#   scripts/updater.sh check [--env FILE]         # разовая проверка релизов GitHub → remote.json
+#   scripts/updater.sh check [--env FILE]         # разовая проверка релизов → remote.json
 #   scripts/updater.sh install [--env FILE] [--yes] | uninstall | status | print-unit
 # Контейнер backend не имеет доступа к Docker и git хоста. Веб-интерфейс кладёт запрос в $DATA_ROOT/updater/request.txt (простые строки key=value),
 # помощник выполняет ТОЛЬКО фиксированный набор: check | preflight | update [target=vX.Y.Z] | rollback | backup | restore [target=имя копии]. Произвольные команды выполнить нельзя.
@@ -46,20 +46,20 @@ hb_loop() { # отдельный процесс-«пульс»: завершае
   while kill -0 "$parent" 2>/dev/null; do write_heartbeat; sleep 4; done
 }
 
-do_check() { # релизы GitHub: последний тег vX.Y.Z и описание релиза (через API, если доступен)
+do_check() { # последний тег vX.Y.Z и описание релиза
   local prev="$STATE" ok=true err="" cur latest notes="" published="" behind=false
   STATE=checking; write_status
-  git -C "$REPO_ROOT" fetch --tags --prune -q origin 2>/tmp/kc-fetch.err || { ok=false; err="$(head -c 200 /tmp/kc-fetch.err | tr '\n' ' ')"; }
-  cur="$(version_file_read)"; latest="$(git -C "$REPO_ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+  release_transport fetch || { ok=false; err="Основной репозиторий и настроенные зеркала недоступны"; }
+  cur="$(installed_version)"; latest="$(latest_release_tag)"
   [ -n "$latest" ] || { ok=false; err="${err:-в репозитории нет релизных тегов}"; }
   if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "${latest#v}" "$cur" | sort -V | tail -1)" != "$cur" ]; then behind=true; fi
-  if [ -n "${GITHUB_REPO:-}" ] && [ "$GITHUB_REPO" != "CHANGE_ME_owner/kavcheck" ] && [ -n "$latest" ]; then
+  if [ "$RELEASE_SOURCE" = origin ] && [ -n "${GITHUB_REPO:-}" ] && [ "$GITHUB_REPO" != "CHANGE_ME_owner/kavcheck" ] && [ -n "$latest" ]; then
     local json; json="$(curl -fsS --max-time 15 -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${latest}" 2>/dev/null || true)"
     [ -n "$json" ] && notes="$(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("body") or "")' 2>/dev/null | head -c 20000)" && published="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("published_at") or "")' 2>/dev/null)"
   fi
   [ -z "$notes" ] && [ -n "$latest" ] && notes="$(git -C "$REPO_ROOT" show "$latest:CHANGELOG.md" 2>/dev/null | awk -v v="${latest#v}" '$0 ~ "^## " && found {exit} $0 ~ "^## .*"v {found=1} found' | head -c 20000)"
-  printf '{"checked_at":%s,"ok":%s,"error":"%s","current_version":"%s","latest_version":"%s","latest_tag":"%s","behind":%s,"notes":"%s","published_at":"%s"}\n' \
-    "$(date +%s)" "$ok" "$(jesc "$err")" "$cur" "${latest#v}" "$latest" "$behind" "$(jesc "$notes" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g')" "$published" | atomic "$CH/remote.json"
+  printf '{"checked_at":%s,"ok":%s,"error":"%s","current_version":"%s","latest_version":"%s","latest_tag":"%s","behind":%s,"notes":"%s","published_at":"%s","source":"%s","source_host":"%s"}\n' \
+    "$(date +%s)" "$ok" "$(jesc "$err")" "$cur" "${latest#v}" "$latest" "$behind" "$(jesc "$notes" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g')" "$published" "$RELEASE_SOURCE" "$RELEASE_HOST" | atomic "$CH/remote.json"
   STATE="$prev"; [ "$STATE" = checking ] && STATE=idle; write_status; [ "$ok" = true ]
 }
 do_system() { # сведения о сервере для раздела «Состояние системы»: образы этого проекта, место на дисках, резервные копии
@@ -346,7 +346,7 @@ unit_install() { # установить или обновить службу (ro
 case "$CMD" in
   run) cmd_run ;;
   selftest) cmd_selftest ;;
-  check) do_check && ok "Проверка выполнена: $CH/remote.json" || { warn "Проверка не удалась (нет доступа к GitHub?)"; exit 1; } ;;
+  check) do_check && ok "Проверка выполнена: $CH/remote.json" || { warn "Не удалось проверить релизы через настроенные источники"; exit 1; } ;;
   system) do_system && cat "$CH/system.json" ;;
   containers) do_containers && do_dirs && cat "$CH/containers.json" "$CH/dirs.json" ;;
   preflight) preflight "" ;;

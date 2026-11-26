@@ -9,6 +9,7 @@ import { ListFoot, VirtualRows, useInfinite, useKept, usePanel, type Chunk } fro
 import { QuickReportPanel } from "../components/QuickReport";
 import { BackLink, Empty, PageHead, SkelRows, Spectrum, Tabs } from "../components/ui";
 import { ASSIGNMENT_BASIS, WorkplaceReview } from "../components/WorkplaceReview";
+import { workplaceDeviceHref, workplaceHref } from "../components/WorkplaceLink";
 import { fmt, fmtDate, num } from "../util";
 
 const PATH = "/employee-protection";
@@ -60,6 +61,7 @@ interface Employee {
   account_created: string | null; status: string; reason: string; uses_av: boolean; device_count: number;
   protected_devices: number; installed_devices: number; freshness: string; last_seen: string | null;
   pending_device_count?: number;
+  primary_device_id?: string | null;
 }
 interface Device {
   id: string; source_id: string | null; host_id: number | null; asset_id: number | null; name: string; ip: string;
@@ -79,15 +81,6 @@ const DIAGNOSTIC_LABELS: Record<string, string> = {
   snapshot_missing: "Нет снимка устройств", snapshot_stale: "Снимок устарел", no_observations: "Нет наблюдений",
   unmatched: "Нет совпадений с сотрудниками", review: "Требуется проверка", ready: "Данные готовы",
 };
-
-function deviceHref(d: Device) {
-  if (d.asset_id != null) return `/inventory/assets/${d.asset_id}`;
-  return d.source_id && d.host_id != null ? `/devices?card=${d.source_id}:${d.host_id}` : null;
-}
-
-function workplaceHref(id: string) {
-  return `${PATH}${qs({ view: "workplaces", device_id: id })}`;
-}
 
 function DeviceAssignment({ device: d, canAssign, onEmployee }: { device: Device; canAssign: boolean; onEmployee: (id: string) => void }) {
   const assignment = d.assignment;
@@ -154,7 +147,8 @@ function EmployeeTable({ filters, userId, revision, labels, onDevices }: { filte
           <span className="sub">С антивирусом {num(e.installed_devices)}</span>
           <span className="sub">Защищены <CountButton n={e.protected_devices} label={`Защищённые устройства сотрудника ${e.name}`}
             onClick={() => onDevices({ title: `Защищённые устройства · ${e.name}`, filters: { employee_id: e.id, device_status: "protected" } })} /></span>
-          <Link className="sub link-btn" to={`${PATH}${qs({ view: "workplaces", employee_id: e.id })}`}>
+          {e.primary_device_id && <Link className="sub link-btn" to={workplaceHref(e.primary_device_id, e.id)}>Основное рабочее место</Link>}
+          <Link className="sub link-btn" to={workplaceHref(undefined, e.id)}>
             {e.pending_device_count ? `На проверку · ${num(e.pending_device_count)}` : "Рабочие места"}
           </Link>
         </td>
@@ -175,9 +169,9 @@ function DeviceTable({ filters, userId, revision, labels, canAssign, onEmployee 
       <div className="table-scroll"><table className="table compact virt"><thead><tr>
         <th>Устройство</th><th>Сотрудники и связь</th><th>Принадлежность</th><th>ОС</th><th>Антивирус</th><th>Состояние защиты</th><th>Подключение к KSC</th>
       </tr></thead><tbody><VirtualRows list={list} colSpan={7} estimate={70} row={(d) => {
-        const href = deviceHref(d);
+        const href = workplaceDeviceHref(d) ?? workplaceHref(d.id);
         return <tr>
-          <td>{href ? <Link className="strong-link" to={href}>{d.name}</Link> : <b>{d.name}</b>}<span className="sub mono">{d.ip || "—"}</span>
+          <td><Link className="strong-link" to={href}>{d.name}</Link><span className="sub mono">{d.ip || "—"}</span>
             {d.kind && <span className="sub">{d.kind}</span>}</td>
           <td><CompactList items={d.employees} sep="" label="сотрудники" render={(e) => <span className="ep-user">
             <button type="button" className="link-btn" onClick={() => onEmployee(e.id)}>{e.name || e.login}</button>
@@ -386,7 +380,7 @@ function ReportDashboard({ ctx, canRefresh }: { ctx: Ctx; canRefresh: boolean })
       report={{ onClick: () => { setReport({ filters: drawer.filters, view: "devices" }); setDrawer(null); } }}
       fetchPage={async (offset, limit) => {
         const page = await req<Chunk<Device>>("GET", `${PATH}/devices${qs({ ...drawer.filters, offset, limit })}`);
-        const items: DrawerHost[] = page.items.map((d) => ({ host_id: d.host_id ?? 0, href: deviceHref(d), name: d.name, ip: d.ip, os: d.os,
+        const items: DrawerHost[] = page.items.map((d) => ({ host_id: d.host_id ?? 0, href: workplaceDeviceHref(d) ?? workplaceHref(d.id), name: d.name, ip: d.ip, os: d.os,
           group: "", zones: d.zones.map((z) => z.name), last_connected: d.last_connected, source_id: d.source_id ?? undefined,
           source: ctx.sources.find((s) => s.id === d.source_id)?.name, app_name: d.av_product, app_version: d.av_version,
           note: <>

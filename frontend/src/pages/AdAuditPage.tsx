@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, type AdAccount, type AdAccountCard, type AdCategory, type AdChange, type AdChangeKind, type AdDecision, type AdEvent, type AdFinding, type AdGroupMembers, type AdOu, type AdPolicy, type AdRun, type AdState, type ApiError } from "../api";
 import type { Ctx } from "../App";
@@ -32,14 +32,15 @@ const ouLabel = (ou: string) => ou || "корень домена";
 
 // подразделения проверки — один запрос на проверку за сеанс страницы (список для подсказок и обзора)
 const ousCache = new Map<string, Promise<AdOu[]>>();
-function useOus(run: string): AdOu[] | null {
+function useOus(run: string, include: boolean): AdOu[] | null {
   const [v, setV] = useState<AdOu[] | null>(null);
   useEffect(() => {
-    let p = ousCache.get(run);
-    if (!p) { p = api.adaudit.ous(run || undefined).then((r) => r.items); ousCache.set(run, p); p.catch(() => ousCache.delete(run)); }
+    const key = `${run}:${include}`;
+    let p = ousCache.get(key);
+    if (!p) { p = api.adaudit.ous(run || undefined, include).then((r) => r.items); ousCache.set(key, p); p.catch(() => ousCache.delete(key)); }
     let live = true; p.then((x) => { if (live) setV(x); }).catch(() => { if (live) setV([]); });
     return () => { live = false; };
-  }, [run]);
+  }, [run, include]);
   return v;
 }
 
@@ -50,8 +51,8 @@ function OuSub({ ou, onPick }: { ou: string; onPick?: (ou: string) => void }) {
 }
 
 /** Отбор по подразделению: часть пути или маска со «*», подсказки — подразделения проверки с числом учётных записей; применяется с задержкой, как поиск. */
-function OuField({ value, onChange, run }: { value: string; onChange: (v: string) => void; run: string }) {
-  const ous = useOus(run);
+function OuField({ value, onChange, run, include }: { value: string; onChange: (v: string) => void; run: string; include: boolean }) {
+  const ous = useOus(run, include);
   const [t, setT] = useState(value);
   useEffect(() => setT(value), [value]);
   useEffect(() => { if (t === value) return; const h = window.setTimeout(() => onChange(t.trim()), 400); return () => window.clearTimeout(h); }, [t]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -68,12 +69,22 @@ export default function AdAuditPage({ ctx }: { ctx: Ctx }) {
   const [sp, setSp] = useSearchParams();
   const tab = (TABS.some((t) => t.id === sp.get("tab")) ? sp.get("tab") : "overview") as Tab;
   const run = sp.get("run") ?? "";
-  const [st, setSt] = useState<AdState | null>(null); const [err, setErr] = useState("");
+  const include = sp.get("include_inactive") === "1";
+  const scope = `${run}:${include}`;
+  const [state, setState] = useState<{ scope: string; data: AdState } | null>(null);
+  const st = state?.scope === scope ? state.data : null;
+  const [err, setErr] = useState("");
+  const seq = useRef(0);
   const [acc, setAcc] = usePanel<string>("adaudit-acc");
   const [report, setReport] = useState<Report | null>(null);
   const [adSel, setAdSel] = useKept<AdSel | null>("ada.adsel", null);
   const [toast, show] = useToast();
-  const load = useCallback(() => api.adaudit.state().then((s) => { setSt(s); setErr(""); }).catch((e) => setErr((e as ApiError).message)), []);
+  const load = useCallback(() => {
+    const request = ++seq.current;
+    return api.adaudit.state(run || undefined, include)
+      .then((data) => { if (request === seq.current) { setState({ scope, data }); setErr(""); } })
+      .catch((e) => { if (request === seq.current) setErr((e as ApiError).message); });
+  }, [run, include, scope]);
   useEffect(() => { void load(); }, [load]);
   const busy = !!st && (st.requested || st.last?.status === "running");
   useEffect(() => { if (!busy) return; const t = window.setInterval(() => void load(), 8000); return () => window.clearInterval(t); }, [busy, load]);
@@ -81,7 +92,8 @@ export default function AdAuditPage({ ctx }: { ctx: Ctx }) {
   const start = async (kind: "manual" | "quarterly") => { try { await api.adaudit.run(kind); show(kind === "quarterly" ? "Квартальная проверка поставлена в очередь" : "Проверка поставлена в очередь"); void load(); } catch (e) { show((e as ApiError).message, "error"); } };
   const latest = st?.latest ?? null;
   const viewing = run && latest && run !== latest.id;
-  const open = (r: Report) => setReport({ ...r, params: { ...r.params, ...(run ? { run } : {}) } });
+  const snapshot = run || latest?.id || "";
+  const open = (r: Report) => setReport({ ...r, params: { ...r.params, run: snapshot, include_inactive: include } });
   return (
     <section className="adaudit">
       <PageHead title="Аудит домена" lede="Регулярная проверка учётных записей Active Directory: пароли и сроки, активность, привилегированные и сервисные учётные записи, смена и сброс пароля. Раздел только читает домен и ничего в нём не меняет.">
@@ -91,6 +103,12 @@ export default function AdAuditPage({ ctx }: { ctx: Ctx }) {
         </div>
       </PageHead>
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
+      <label className="check fbar-note"><input type="checkbox" className="switch" checked={include} onChange={(e) => {
+        const on = e.target.checked;
+        setAcc(null);
+        setReport(null);
+        setSp((p) => { if (on) p.set("include_inactive", "1"); else p.delete("include_inactive"); return p; });
+      }} />Включить неактивные учётные записи</label>
       {st && <RunLine st={st} viewing={!!viewing} run={run} onBack={() => setSp((p) => { p.delete("run"); return p; })} />}
       {!st && !err && <div className="card"><SkelRows rows={4} cols={4} /></div>}
       {st && !latest && (
@@ -98,20 +116,24 @@ export default function AdAuditPage({ ctx }: { ctx: Ctx }) {
           Раздел использует подключение LDAPS из «Администрирование → LDAPS» (только чтение). Сроки паролей, категории учётных записей и расписание — в «Администрирование → Аудит домена».</Empty></div>)}
       {st && latest && <>
         <Tabs label="Раздел аудита" value={tab} onChange={(t) => go(t, { code: "", bucket: "" })} items={TABS.map((t) => ({ ...t, count: t.id === "findings" ? st.open ?? undefined : undefined }))} />
-        {tab === "overview" && <Overview st={st} run={run} go={go} report={open} />}
-        {tab === "findings" && <FindingsView st={st} run={run} onOpen={setAcc} report={open} />}
-        {tab === "accounts" && <AccountsView key="a" run={run} onOpen={setAcc} report={open} views={[["", "Все"], ["enabled", "Активные"], ["disabled", "Отключённые"], ["with_findings", "С замечаниями"], ["must_change", "Сменить при входе"]]} reportView={(v) => (v === "enabled" ? "active" : "accounts")} cats />}
-        {tab === "passwords" && <PasswordsView run={run} onOpen={setAcc} report={open} policy={st.policy} />}
-        {tab === "activity" && <AccountsView key="act" run={run} onOpen={setAcc} report={open} views={[["inactive", `Не входили > ${st.policy.inactive_days} дн.`], ["never", "Ни разу не входили"], ["locked", "Заблокированные"], ["new", `Созданы за ${st.policy.new_days} дн.`], ["expired", "Истёк срок"], ["disabled", "Отключённые"]]} reportView={() => "unused"} sortDefault="idle" />}
-        {tab === "privileged" && <AccountsView key="priv" run={run} onOpen={setAcc} report={open} catViews reportView={() => "privileged"} />}
-        {tab === "groups" && <GroupsView run={run} onOpen={setAcc} report={open} />}
-        {tab === "changes" && <ChangesView run={run} onOpen={setAcc} report={open} />}
-        {tab === "resets" && <ResetsView st={st} run={run} onOpen={setAcc} report={open} onImported={load} />}
-        {tab === "catalog" && <AdTab sel={adSel} setSel={setAdSel} canReport activityDays={ctx.me.activity_days} exchangeOk={false} onOpenPerson={() => undefined} />}
+        {tab === "overview" && <Overview st={st} run={snapshot} include={include} go={go} report={open} />}
+        {tab === "findings" && <FindingsView st={st} run={snapshot} include={include} onOpen={setAcc} report={open} />}
+        {tab === "accounts" && <AccountsView key={`a:${include}`} run={snapshot} include={include} onOpen={setAcc} report={open} views={[["", include ? "Все состояния" : "Активные"], ...(include ? [["enabled", "Активные"], ["disabled", "Отключённые"]] as [string, string][] : []),
+          ["with_findings", "С замечаниями"], ["must_change", "Сменить при входе"]]} reportView={(v) => (v === "enabled" ? "active" : "accounts")} cats />}
+        {tab === "passwords" && <PasswordsView run={snapshot} include={include} onOpen={setAcc} report={open} policy={st.policy} />}
+        {tab === "activity" && <AccountsView key={`act:${include}`} run={snapshot} include={include} onOpen={setAcc} report={open} views={[["inactive", `Не входили > ${st.policy.inactive_days} дн.`], ["never", "Ни разу не входили"], ["new", `Созданы за ${st.policy.new_days} дн.`], ...(include ? [["locked", "Заблокированные"], ["expired", "Истёк срок"], ["disabled", "Отключённые"]] as [string, string][] : [])]} reportView={() => "accounts"} sortDefault="idle" />}
+        {tab === "privileged" && <AccountsView key={`priv:${include}`} run={snapshot} include={include} onOpen={setAcc} report={open} catViews reportView={() => "privileged"} />}
+        {tab === "groups" && <GroupsView run={snapshot} include={include} onOpen={setAcc} report={open} />}
+        {tab === "changes" && <ChangesView run={snapshot} include={include} onOpen={setAcc} report={open} />}
+        {tab === "resets" && <ResetsView st={st} run={snapshot} include={include} onOpen={setAcc} report={open} onImported={load} />}
+        {tab === "catalog" && <>
+          <p className="muted small fbar-note">Живой поиск LDAP. Отбор активных записей действует на сохранённые проверки аудита.</p>
+          <AdTab sel={adSel} setSel={setAdSel} canReport activityDays={ctx.me.activity_days} exchangeOk={false} onOpenPerson={() => undefined} />
+        </>}
         {tab === "policy" && <PolicyView st={st} onSaved={load} />}
-        {tab === "runs" && <RunsView current={run || latest.id} onPick={(id) => setSp((p) => { if (id === latest.id) p.delete("run"); else p.set("run", id); p.set("tab", "overview"); return p; })} />}
+        {tab === "runs" && <RunsView include={include} current={run || latest.id} onPick={(id) => setSp((p) => { if (id === latest.id) p.delete("run"); else p.set("run", id); p.set("tab", "overview"); return p; })} />}
       </>}
-      {acc && <AccountPanel guid={acc} run={run} onClose={() => setAcc(null)} onChanged={load} onCatalog={(g) => { setAcc(null); setAdSel({ t: "u", ref: g }); go("catalog"); }} />}
+      {acc && <AccountPanel guid={acc} run={snapshot} include={include} onClose={() => setAcc(null)} onChanged={load} onCatalog={(g) => { setAcc(null); setAdSel({ t: "u", ref: g }); go("catalog"); }} />}
       {report && <QuickReportPanel kind="quick_adaudit" title={report.title} lede="Отчёт по сохранённой проверке домена: учётные записи, даты, основания, категория, статус и решения администратора" params={report.params}
         options={{}} activityDays={ctx.me.activity_days} canReport onClose={() => setReport(null)} />}
       {toast}
@@ -133,19 +155,18 @@ function RunLine({ st, viewing, run, onBack }: { st: AdState; viewing: boolean; 
   );
 }
 
-function Overview({ st, run, go, report }: { st: AdState; run: string; go: (t: Tab, x?: Record<string, string>) => void; report: (r: Report) => void }) {
-  const [r, setR] = useState<AdRun | null>(st.latest);
-  useEffect(() => { if (!run) { setR(st.latest); return; } api.adaudit.runs().then((x) => setR(x.items.find((i) => i.id === run) ?? st.latest)).catch(() => setR(st.latest)); }, [run, st.latest]);
+function Overview({ st, run, include, go, report }: { st: AdState; run: string; include: boolean; go: (t: Tab, x?: Record<string, string>) => void; report: (r: Report) => void }) {
+  const r = st.viewed ?? st.latest;
   if (!r) return null;
   const s = r.stats as Record<string, number>;
   const v = (k: string) => Number(s[k] ?? 0);
   const enabled = v("enabled") || 1;
   const crit = st.by_code.filter((c) => c.severity === "critical" || c.severity === "high").reduce((a, c) => a + c.open + c.in_progress, 0);
-  const cov = st.latest?.coverage; const logs = cov ? Object.keys(cov.logs ?? {}) : [];
+  const cov = (st.viewed ?? st.latest)?.coverage; const logs = cov ? Object.keys(cov.logs ?? {}) : [];
   return (
     <>
       <div className="meters">
-        <div className="meter"><span className="l">Учётных записей</span><span className="v">{num(v("accounts"))}</span><span className="t">активных {num(v("enabled"))}, отключённых {num(v("disabled"))}</span></div>
+        <div className="meter"><span className="l">Учётных записей</span><span className="v">{num(v("accounts"))}</span><span className="t">{include ? `включённых ${num(v("enabled"))}, отключённых ${num(v("disabled"))}` : "активные на дату проверки"}</span></div>
         <div className="meter"><button type="button" className="meter-link" onClick={() => go("findings", { decision: "unresolved" })}><span className="l">Требуют внимания</span><span className={`v ${st.open ? "warn-text" : ""}`}>{num(st.open ?? 0)}</span><span className="t">замечаний без решения или в работе; исключений — {num(st.exceptions ?? 0)}</span></button></div>
         <div className="meter"><button type="button" className="meter-link" onClick={() => go("findings", { severity: "high" })}><span className="l">Критических и высоких</span><span className={`v ${crit ? "bad-text" : ""}`}>{num(crit)}</span><span className="t">открытых замечаний</span></button></div>
         <div className="meter"><button type="button" className="meter-link" onClick={() => go("findings", { carried: "1" })}><span className="l">С прошлых проверок</span><span className={`v ${st.carried ? "warn-text" : ""}`}>{num(st.carried)}</span><span className="t">{s.prev_run ? `новых ${num(v("new_since_prev"))}, устранено ${num(v("fixed_since_prev"))}` : "первая проверка — сравнивать не с чем"}</span></button></div>
@@ -183,15 +204,15 @@ function Overview({ st, run, go, report }: { st: AdState; run: string; go: (t: T
           </div>
         </div>
       </div>
-      <OusCard run={run} go={go} report={report} />
+      <OusCard run={run} include={include} go={go} report={report} />
       {!!r.notes?.length && <details className="disclosure"><summary>Примечания проверки ({r.notes.length})</summary><ul className="small">{r.notes.map((n, i) => <li key={i}>{n}</li>)}</ul></details>}
     </>
   );
 }
 
 /** Обзор: подразделения (OU), где больше всего замечаний, требующих внимания, — переход к замечаниям и учётным записям подразделения. */
-function OusCard({ run, go, report }: { run: string; go: (t: Tab, x?: Record<string, string>) => void; report: (r: Report) => void }) {
-  const ous = useOus(run);
+function OusCard({ run, include, go, report }: { run: string; include: boolean; go: (t: Tab, x?: Record<string, string>) => void; report: (r: Report) => void }) {
+  const ous = useOus(run, include);
   const [all, setAll] = useState(false);
   const withF = useMemo(() => (ous ?? []).filter((o) => o.open), [ous]);
   if (!ous || ous.length < 2) return null;
@@ -243,19 +264,21 @@ function DecisionForm({ keys, init, onDone, onCancel }: { keys: string[]; init?:
   );
 }
 
-function FindingsView({ st, run, onOpen, report }: { st: AdState; run: string; onOpen: (g: string) => void; report: (r: Report) => void }) {
+function FindingsView({ st, run, include, onOpen, report }: { st: AdState; run: string; include: boolean; onOpen: (g: string) => void; report: (r: Report) => void }) {
   const [sp, setSp] = useSearchParams();
   const code = sp.get("code") ?? ""; const severity = sp.get("severity") ?? ""; const carried = sp.get("carried") === "1"; const gone = sp.get("gone") === "1"; const ou = sp.get("ou") ?? "";
   const set = (k: string, v: string) => setSp((p) => { if (v) p.set(k, v); else p.delete(k); return p; });
   const [q, setQ] = useKept("ada.f.q", ""); const [applied, setApplied] = useState(q);
   const [status, setStatus] = useKept<"" | "violation" | "review">("ada.f.status", "");
   const [cat, setCat] = useKept("ada.f.cat", ""); const [decision, setDecision] = useState(sp.get("decision") ?? "unresolved");
-  const [astate, setAstate] = useKept<"" | "enabled" | "disabled">("ada.f.astate", "");
+  const [selectedState, setAstate] = useKept<"" | "enabled" | "disabled">("ada.f.astate", "");
+  const astate = include ? selectedState : "";
+  const filter = { include_inactive: include, q: applied, code, severity: severity === "high" ? "high_or_critical" : severity,
+    status, category: cat, decision: gone ? "" : decision, carried, gone, ou, state: astate };
   const [sel, setSel] = useState<string[]>([]); const [deciding, setDeciding] = useState(false);
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 300); return () => window.clearTimeout(t); }, [q]);
-  const list = useInfinite<AdFinding>(`ada-f:${run}`, [applied, code, severity, status, cat, decision, carried, gone, ou, astate, run], (offset, limit) =>
-    api.adaudit.findings({ run: run || undefined, q: applied, code, severity: severity === "high" ? "" : severity, status, category: cat, decision: gone ? "" : decision, carried: carried || undefined, gone: gone || undefined, ou, state: astate, offset, limit })
-      .then((r) => (severity === "high" ? { ...r, items: r.items.filter((f) => f.severity === "high" || f.severity === "critical") } : r)) as unknown as Promise<Chunk<AdFinding>>);
+  const list = useInfinite<AdFinding>(`ada-f:${run}`, [applied, code, severity, status, cat, decision, carried, gone, ou, astate, run, include], (offset, limit) =>
+    api.adaudit.findings({ run: run || undefined, ...filter, offset, limit }) as unknown as Promise<Chunk<AdFinding>>);
   const toggle = (k: string) => setSel((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
   const title = st.by_code.find((c) => c.code === code)?.title;
   const keys = list.items.map((f) => f.key); const allSel = keys.length > 0 && keys.every((k) => sel.includes(k));
@@ -271,8 +294,8 @@ function FindingsView({ st, run, onOpen, report }: { st: AdState; run: string; o
           <label className="field">Замечание<select value={code} onChange={(e) => set("code", e.target.value)}><option value="">Все</option>{st.by_code.map((c) => <option key={c.code} value={c.code}>{c.title}</option>)}</select></label>
           <label className="field">Важность<select value={severity} onChange={(e) => set("severity", e.target.value)}><option value="">Любая</option><option value="high">Критическая и высокая</option><option value="critical">Критическая</option><option value="medium">Средняя</option><option value="low">Низкая</option></select></label>
           <label className="field">Категория<select value={cat} onChange={(e) => setCat(e.target.value)}><option value="">Все</option>{(Object.keys(CAT_RU) as AdCategory[]).map((k) => <option key={k} value={k}>{CAT_RU[k]}</option>)}</select></label>
-          <OuField value={ou} onChange={(v) => set("ou", v)} run={run} />
-          <label className="field">Учётная запись<select value={astate} onChange={(e) => setAstate(e.target.value as "" | "enabled" | "disabled")}><option value="">Любая</option><option value="enabled">Активная</option><option value="disabled">Отключённая</option></select></label>
+          <OuField value={ou} onChange={(v) => set("ou", v)} run={run} include={include} />
+          {include && <label className="field">Учётная запись<select value={astate} onChange={(e) => setAstate(e.target.value as "" | "enabled" | "disabled")}><option value="">Любая</option><option value="enabled">Активная</option><option value="disabled">Отключённая</option></select></label>}
           <label className="check"><input type="checkbox" className="switch" checked={carried} onChange={(e) => set("carried", e.target.checked ? "1" : "")} />Остались с прошлых проверок</label>
         </>} moreActive={[code, severity, cat, ou, astate, carried ? "1" : ""].filter(Boolean).length}
         chips={[...(code ? [{ id: "code", label: title ?? code, onRemove: () => set("code", "") }] : []), ...(severity ? [{ id: "sev", label: severity === "high" ? "Критические и высокие" : `Важность: ${SEV_RU[severity]}`, onRemove: () => set("severity", "") }] : []),
@@ -281,7 +304,7 @@ function FindingsView({ st, run, onOpen, report }: { st: AdState; run: string; o
           ...(astate ? [{ id: "ast", label: astate === "enabled" ? "Активные учётные записи" : "Отключённые учётные записи", onRemove: () => setAstate("") }] : [])]}
         onReset={() => { setQ(""); setStatus(""); setCat(""); setAstate(""); setSp((p) => { ["code", "severity", "carried", "gone", "ou"].forEach((k) => p.delete(k)); return p; }); }}
         count={{ n: list.initial ? null : list.total, noun: ["замечание", "замечания", "замечаний"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
-        report={{ onClick: () => report({ title: title ? `Замечания: ${title}` : "Замечания аудита домена", params: { view: "findings", code, q: applied, category: cat, severity: severity === "high" ? "" : severity, ou, state: astate } }) }} />
+        report={{ onClick: () => report({ title: title ? `Замечания: ${title}` : "Замечания аудита домена", params: { view: "findings", ...filter } }) }} />
       {sel.length > 0 && !gone && <div className="ada-bulk"><span><b>{sel.length}</b> {plural(sel.length, "замечание выбрано", "замечания выбраны", "замечаний выбрано")}</span><button className="btn mini primary" onClick={() => setDeciding(true)}>Решение…</button><button className="btn mini ghost" onClick={() => setSel([])}>Снять выбор</button></div>}
       {deciding && <Modal title={`Решение по ${sel.length} ${plural(sel.length, "замечанию", "замечаниям", "замечаниям")}`} onClose={() => setDeciding(false)}>
         <DecisionForm keys={sel} onCancel={() => setDeciding(false)} onDone={() => { setDeciding(false); setSel([]); list.reload(); }} /></Modal>}
@@ -294,7 +317,7 @@ function FindingsView({ st, run, onOpen, report }: { st: AdState; run: string; o
                 {!gone && <td className="check"><input type="checkbox" aria-label={`Выбрать: ${f.login}, ${f.title}`} checked={sel.includes(f.key)} onChange={() => toggle(f.key)} /></td>}
                 <td><SevBadge s={f.severity} />{f.status === "review" && <span className="sub small muted">проверить</span>}</td>
                 <td><button type="button" className="link-btn strong-link" onClick={() => onOpen(f.guid)}>{f.login}</button>{f.name && f.name !== f.login && <span className="sub">{f.name}</span>}
-                  <OuSub ou={f.ou} onPick={(v) => set("ou", v)} />{f.enabled === false && <span className="sub small muted">отключена</span>}</td>
+                  <OuSub ou={f.ou} onPick={(v) => set("ou", v)} />{f.acc_state && f.acc_state !== "активна" && <span className="sub small muted">{f.acc_state}</span>}</td>
                 <td className="hide-sm small">{f.category_ru}</td>
                 <td className="ada-basis"><b>{f.title}</b><span className="sub small">{f.basis}</span></td>
                 <td className="hide-md small nowrap">{fmtDate(f.first_seen)}{f.runs_n > 1 && <span className="sub warn-text">{f.runs_n}-я проверка подряд</span>}</td>
@@ -307,12 +330,17 @@ function FindingsView({ st, run, onOpen, report }: { st: AdState; run: string; o
   );
 }
 
+function AccountState({ activeState }: { activeState: string }) {
+  const tone = activeState === "активна" ? "ok" : activeState === "отключена" ? "" : "warn";
+  return <span className={`badge ${tone}`}>{activeState}</span>;
+}
+
 function AccountRow({ a, onOpen, onOu }: { a: AdAccount; onOpen: (g: string) => void; onOu?: (ou: string) => void }) {
   return (
     <tr className={a.max_sev >= 3 ? "row-warn" : ""}>
       <td><button type="button" className="link-btn strong-link" onClick={() => onOpen(a.guid)}>{a.login}</button>{a.name && a.name !== a.login && <span className="sub">{a.name}</span>}<OuSub ou={a.ou} onPick={onOu} />{a.description && <span className="sub small muted ada-desc">{a.description}</span>}</td>
       <td className="small hide-sm">{a.category_ru}</td>
-      <td>{!a.enabled ? <span className="badge">отключена</span> : a.locked ? <span className="badge warn">заблокирована</span> : <span className="badge ok">активна</span>}</td>
+      <td><AccountState activeState={a.state} /></td>
       <td className="small nowrap">{a.must_change ? <span className="warn-text">сменить при входе</span> : a.pwd_last_set ? <>{fmtDate(a.pwd_last_set)}<span className="sub">{days(a.pwd_age)}</span></> : "—"}{a.pne && <span className="sub"><span className="badge err">бессрочный</span></span>}</td>
       <td className="small nowrap" title={SRC_RU[a.last_logon_src]}>{a.last_logon ? <>{fmtDate(a.last_logon)}<span className="sub">{days(a.idle_days)}{a.last_logon_src === "llt" ? " ±14" : ""}</span></> : <span className="muted">не входила</span>}</td>
       <td className="small nowrap hide-md">{fmtDate(a.created)}</td>
@@ -321,7 +349,7 @@ function AccountRow({ a, onOpen, onOu }: { a: AdAccount; onOpen: (g: string) => 
   );
 }
 
-function AccountsView({ run, onOpen, report, views, reportView, cats, catViews, sortDefault = "risk" }: { run: string; onOpen: (g: string) => void; report: (r: Report) => void; views?: [string, string][]; reportView: (v: string) => string;
+function AccountsView({ run, include, onOpen, report, views, reportView, cats, catViews, sortDefault = "risk" }: { run: string; include: boolean; onOpen: (g: string) => void; report: (r: Report) => void; views?: [string, string][]; reportView: (v: string) => string;
   cats?: boolean; catViews?: boolean; sortDefault?: string }) {
   const [sp, setSp] = useSearchParams();
   const ou = sp.get("ou") ?? ""; const setOu = (v: string) => setSp((p) => { if (v) p.set("ou", v); else p.delete("ou"); return p; });
@@ -330,8 +358,8 @@ function AccountsView({ run, onOpen, report, views, reportView, cats, catViews, 
   const [cat, setCat] = useState(sp.get("cat") ?? (catViews ? "admin" : ""));
   const [sort, setSort] = useState(sortDefault); const [desc, setDesc] = useState(true);
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 300); return () => window.clearTimeout(t); }, [q]);
-  const list = useInfinite<AdAccount>(`ada-a:${run}:${catViews ? "p" : views?.[0]?.[0] ?? ""}`, [applied, view, cat, sort, desc, ou, run], (offset, limit) =>
-    api.adaudit.accounts({ run: run || undefined, q: applied, view, category: cat, sort, desc, ou, offset, limit }) as unknown as Promise<Chunk<AdAccount>>);
+  const list = useInfinite<AdAccount>(`ada-a:${run}:${catViews ? "p" : views?.[0]?.[0] ?? ""}`, [applied, view, cat, sort, desc, ou, run, include], (offset, limit) =>
+    api.adaudit.accounts({ run: run || undefined, q: applied, view, category: cat, sort, desc, ou, include_inactive: include, offset, limit }) as unknown as Promise<Chunk<AdAccount>>);
   const onSort = (k: string) => { if (sort === k) setDesc(!desc); else { setSort(k); setDesc(true); } };
   return (
     <>
@@ -341,12 +369,12 @@ function AccountsView({ run, onOpen, report, views, reportView, cats, catViews, 
           {catViews && <Segmented label="Категория" value={cat as AdCategory} onChange={(v) => setCat(v)} options={[["admin", "Административные"], ["service", "Сервисные"], ["temp", "Временные"], ["contractor", "Подрядчики"], ["undefined", "Не определено"]]} />}
           {cats && <label className="field">Категория<select value={cat} onChange={(e) => setCat(e.target.value)}><option value="">Все</option>{(Object.keys(CAT_RU) as AdCategory[]).map((k) => <option key={k} value={k}>{CAT_RU[k]}</option>)}</select></label>}
         </>}
-        more={<OuField value={ou} onChange={setOu} run={run} />} moreActive={ou ? 1 : 0}
+        more={<OuField value={ou} onChange={setOu} run={run} include={include} />} moreActive={ou ? 1 : 0}
         chips={[...(q ? [{ id: "q", label: `Поиск: ${q}`, onRemove: () => setQ("") }] : []), ...(cats && cat ? [{ id: "cat", label: CAT_RU[cat as AdCategory], onRemove: () => setCat("") }] : []),
           ...(ou ? [{ id: "ou", label: `OU: ${ou}`, onRemove: () => setOu("") }] : [])]}
         onReset={() => { setQ(""); setOu(""); if (cats) setCat(""); }}
         count={{ n: list.initial ? null : list.total, noun: ["учётная запись", "учётные записи", "учётных записей"] }} onRefresh={() => list.reload()} refreshing={list.refreshing}
-        report={{ onClick: () => report({ title: "Учётные записи домена", params: { view: reportView(view), q: applied, category: cat, ou } }) }} />
+        report={{ onClick: () => report({ title: "Учётные записи домена", params: { view: reportView(view), account_view: view, q: applied, category: cat, ou } }) }} />
       {catViews && cat === "service" && <p className="muted small fbar-note">Сервисным учётным записям допускается бессрочный пароль только как согласованное исключение с ручной сменой не реже раза в 180 дней; ответственный и назначение должны быть указаны (manager или info, Description).</p>}
       {catViews && cat === "undefined" && <p className="muted small fbar-note">Категория не определена: признаков недостаточно или они противоречат друг другу. Откройте карточку и назначьте категорию вручную.</p>}
       <div className={`table-scroll ${list.refreshing && !list.initial ? "is-busy" : ""}`}>
@@ -363,22 +391,22 @@ function AccountsView({ run, onOpen, report, views, reportView, cats, catViews, 
   );
 }
 
-function PasswordsView({ run, onOpen, report, policy }: { run: string; onOpen: (g: string) => void; report: (r: Report) => void; policy: AdState["policy"] }) {
+function PasswordsView({ run, include, onOpen, report, policy }: { run: string; include: boolean; onOpen: (g: string) => void; report: (r: Report) => void; policy: AdState["policy"] }) {
   const [sp, setSp] = useSearchParams();
   const bucket = sp.get("bucket") ?? "";
   const mode = bucket ? "age" : "pne";
-  const list = useInfinite<AdAccount>(`ada-p:${run}`, [bucket, run], (offset, limit) =>
-    api.adaudit.accounts({ run: run || undefined, view: bucket ? "enabled" : "pne", bucket, sort: "pwd_age", desc: true, offset, limit }) as unknown as Promise<Chunk<AdAccount>>);
+  const list = useInfinite<AdAccount>(`ada-p:${run}`, [bucket, run, include], (offset, limit) =>
+    api.adaudit.accounts({ run: run || undefined, view: bucket ? "" : "pne", bucket, include_inactive: include, sort: "pwd_age", desc: true, offset, limit }) as unknown as Promise<Chunk<AdAccount>>);
   return (
     <>
       <div className="toolbar">
         <Segmented label="Проверка паролей" value={mode} onChange={(m) => setSp((p) => { if (m === "pne") p.delete("bucket"); else p.set("bucket", "gt180"); return p; })} options={[["pne", "Бессрочный пароль"], ["age", "Давность смены"]]} />
         {mode === "age" && <Segmented label="Давность" value={bucket} onChange={(b) => setSp((p) => { p.set("bucket", b); return p; })} options={BUCKETS.map(([k, l]) => [k, l] as [string, string])} />}
         <div className="spacer" />
-        <button className="btn mini primary" onClick={() => report({ title: mode === "pne" ? "Пароль без срока действия" : "Давность смены паролей", params: { view: mode === "pne" ? "pne" : "pwd_age" } })}><Icon name="file" size={15} />Сформировать отчёт</button>
+        <button className="btn mini primary" onClick={() => report({ title: mode === "pne" ? "Пароль без срока действия" : "Давность смены паролей", params: { view: mode === "pne" ? "pne" : "pwd_age", bucket } })}><Icon name="file" size={15} />Сформировать отчёт</button>
       </div>
       <p className="muted small fbar-note">{mode === "pne" ? "Флаг Password Never Expires: у административных — критическое замечание, у обычных — высокое; у сервисных допустим как согласованное исключение с ручной сменой (не реже раза в 180 дней)." :
-        `Только активные учётные записи. Сроки смены по категориям: ${Object.entries(policy.pwd_days).map(([k, d]) => `${CAT_RU[k as AdCategory].toLowerCase()} — ${d} дн.`).join(", ")}.`}</p>
+        `Сроки смены по категориям: ${Object.entries(policy.pwd_days).map(([k, d]) => `${CAT_RU[k as AdCategory].toLowerCase()} — ${d} дн.`).join(", ")}.`}</p>
       <div className="table-scroll">{list.initial ? <SkelRows cols={7} /> : !list.items.length ? <Empty icon="check" title="Учётных записей нет" /> : (
         <table className="table"><thead><tr><th>Учётная запись</th><th className="hide-sm">Категория</th><th>Состояние</th><th>Пароль изменён</th><th>Последний вход</th><th className="hide-md">Создана</th><th>Замечания</th></tr></thead>
           <tbody>{list.items.map((a) => <AccountRow key={a.guid} a={a} onOpen={onOpen} />)}</tbody></table>)}</div>
@@ -387,15 +415,15 @@ function PasswordsView({ run, onOpen, report, policy }: { run: string; onOpen: (
   );
 }
 
-function ResetsView({ st, run, onOpen, report, onImported }: { st: AdState; run: string; onOpen: (g: string) => void; report: (r: Report) => void; onImported: () => void }) {
+function ResetsView({ st, run, include, onOpen, report, onImported }: { st: AdState; run: string; include: boolean; onOpen: (g: string) => void; report: (r: Report) => void; onImported: () => void }) {
   const [kind, setKind] = useState<"" | "reset" | "change">("reset");
   const [q, setQ] = useState(""); const [applied, setApplied] = useState("");
   useEffect(() => { const t = window.setTimeout(() => setApplied(q), 300); return () => window.clearTimeout(t); }, [q]);
-  const pending = useInfinite<AdFinding>(`ada-rp:${run}`, [run], (offset, limit) => api.adaudit.findings({ run: run || undefined, code: "reset", decision: "", offset, limit }) as unknown as Promise<Chunk<AdFinding>>);
-  const evs = useInfinite<AdEvent>("ada-ev", [kind, applied, st.import?.at], (offset, limit) => api.adaudit.events({ kind, q: applied, offset, limit }) as unknown as Promise<Chunk<AdEvent>>);
+  const pending = useInfinite<AdFinding>(`ada-rp:${run}`, [run, include], (offset, limit) => api.adaudit.findings({ run: run || undefined, include_inactive: include, code: "reset", decision: "", offset, limit }) as unknown as Promise<Chunk<AdFinding>>);
+  const evs = useInfinite<AdEvent>("ada-ev", [kind, applied, st.import?.at, run, include], (offset, limit) => api.adaudit.events({ run: run || undefined, include_inactive: include, kind, q: applied, offset, limit }) as unknown as Promise<Chunk<AdEvent>>);
   const [toast, show] = useToast(); const [busy, setBusy] = useState(false);
   const upload = async (f: File | undefined) => { if (!f) return; setBusy(true); try { const r = await api.adaudit.upload(f); show(`Загружено событий: ${r.added} из ${r.events}. ${r.note}`); onImported(); evs.reload(); } catch (e) { show((e as ApiError).message, "error"); } setBusy(false); };
-  const cov = st.latest?.coverage;
+  const cov = (st.viewed ?? st.latest)?.coverage;
   return (
     <>
       <div className="split ada-split">
@@ -418,7 +446,8 @@ function ResetsView({ st, run, onOpen, report, onImported }: { st: AdState; run:
       </div>
       <FilterBar search={{ value: q, onChange: setQ, placeholder: "Учётная запись или инициатор", label: "Поиск событий" }}
         primary={<Segmented label="Вид операции" value={kind} onChange={setKind} options={[["reset", "Сброс (4724)"], ["change", "Смена (4723)"], ["", "Все"]]} />}
-        count={{ n: evs.initial ? null : evs.total, noun: ["событие", "события", "событий"] }} onRefresh={() => evs.reload()} refreshing={evs.refreshing} />
+        count={{ n: evs.initial ? null : evs.total, noun: ["событие", "события", "событий"] }} onRefresh={() => evs.reload()} refreshing={evs.refreshing}
+        report={{ onClick: () => report({ title: "События смены и сброса пароля", params: { view: "events", event_kind: kind, q: applied } }) }} />
       <div className="table-scroll">{evs.initial ? <SkelRows cols={5} /> : !evs.items.length ? <Empty icon="history" title="Событий нет">{st.import ? "Под условия отбора событий нет." : "Журналы контроллеров ещё не загружены."}</Empty> : (
         <table className="table"><thead><tr><th>Время</th><th>Операция</th><th>Учётная запись</th><th>Кто выполнил</th><th className="hide-sm">Контроллер</th><th>Результат</th></tr></thead>
           <tbody>{evs.items.map((e, i) => (
@@ -432,9 +461,9 @@ function ResetsView({ st, run, onOpen, report, onImported }: { st: AdState; run:
 }
 
 /** Привилегированные группы: участники (с учётом вложенности и первичной группы) и изменения с предыдущей проверки — кого добавили, кого исключили. */
-function GroupsView({ run, onOpen, report }: { run: string; onOpen: (g: string) => void; report: (r: Report) => void }) {
+function GroupsView({ run, include, onOpen, report }: { run: string; include: boolean; onOpen: (g: string) => void; report: (r: Report) => void }) {
   const [d, setD] = useState<{ prev: string | null; items: AdGroupMembers[] } | null>(null); const [err, setErr] = useState("");
-  useEffect(() => { setD(null); api.adaudit.groups(run || undefined).then(setD).catch((e) => setErr((e as ApiError).message)); }, [run]);
+  useEffect(() => { setD(null); api.adaudit.groups(run || undefined, include).then(setD).catch((e) => setErr((e as ApiError).message)); }, [run, include]);
   if (err) return <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>;
   if (!d) return <div className="card"><SkelRows rows={5} cols={5} /></div>;
   const added = d.items.reduce((n, g) => n + g.members.filter((m) => m.added).length, 0); const removed = d.items.reduce((n, g) => n + g.removed.length, 0);
@@ -454,7 +483,7 @@ function GroupsView({ run, onOpen, report }: { run: string; onOpen: (g: string) 
               <tr key={`${ch}${m.guid}`} className={ch === "added" ? "row-warn" : ""}>
                 <td><button type="button" className="link-btn strong-link" onClick={() => onOpen(m.guid)}>{m.login}</button>{m.name && m.name !== m.login && <span className="sub">{m.name}</span>}<OuSub ou={m.ou} /></td>
                 <td className="small hide-sm">{m.category_ru}</td>
-                <td>{!m.enabled ? <span className="badge">отключена</span> : m.locked ? <span className="badge warn">заблокирована</span> : <span className="badge ok">активна</span>}</td>
+                <td><AccountState activeState={m.state} /></td>
                 <td className="small nowrap">{m.last_logon ? <>{fmtDate(m.last_logon)}<span className="sub">{days(m.idle_days)}</span></> : <span className="muted">не входила</span>}</td>
                 <td className="small nowrap hide-sm">{m.pwd_age !== null ? days(m.pwd_age) : "—"}{m.pne && <span className="sub"><span className="badge err">бессрочный</span></span>}</td>
                 <td className="small hide-md">{m.protected === null ? "—" : m.protected ? "входит" : <span className="warn-text">не входит</span>}</td>
@@ -469,10 +498,10 @@ const CHANGE_KINDS: AdChangeKind[] = ["priv_add", "priv_del", "new", "removed", 
 const CHANGE_SHORT: Record<AdChangeKind, string> = { priv_add: "Получили привилегии", priv_del: "Лишились привилегий", new: "Новые", removed: "Удалены", enabled: "Включены снова", disabled: "Отключены", category: "Сменили категорию", moved: "Сменили OU" };
 
 /** Что изменилось с предыдущей проверки: новые и удалённые учётные записи, отключение и включение, категория, подразделение, привилегированные группы. */
-function ChangesView({ run, onOpen, report }: { run: string; onOpen: (g: string) => void; report: (r: Report) => void }) {
+function ChangesView({ run, include, onOpen, report }: { run: string; include: boolean; onOpen: (g: string) => void; report: (r: Report) => void }) {
   const [d, setD] = useState<{ prev: string | null; counts: Partial<Record<AdChangeKind, number>>; items: AdChange[]; truncated: boolean } | null>(null); const [err, setErr] = useState("");
   const [kind, setKind] = useKept<AdChangeKind | "">("ada.ch.kind", "");
-  useEffect(() => { setD(null); api.adaudit.changes(run || undefined).then(setD).catch((e) => setErr((e as ApiError).message)); }, [run]);
+  useEffect(() => { setD(null); api.adaudit.changes(run || undefined, include).then(setD).catch((e) => setErr((e as ApiError).message)); }, [run, include]);
   if (err) return <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>;
   if (!d) return <div className="card"><SkelRows rows={5} cols={5} /></div>;
   if (!d.prev) return <div className="card"><Empty icon="history" title="Сравнивать не с чем">Это первая проверка домена. Изменения появятся после следующей проверки.</Empty></div>;
@@ -483,7 +512,7 @@ function ChangesView({ run, onOpen, report }: { run: string; onOpen: (g: string)
       <div className="toolbar">
         <Segmented label="Вид изменения" value={kind} onChange={setKind} options={[["", `Все ${num(total)}`] as [AdChangeKind | "", string], ...CHANGE_KINDS.filter((k) => d.counts[k]).map((k) => [k, `${CHANGE_SHORT[k]} ${num(d.counts[k] ?? 0)}`] as [AdChangeKind | "", string])]} />
         <div className="spacer" />
-        <button className="btn mini primary" onClick={() => report({ title: "Изменения учётных записей домена с прошлой проверки", params: { view: "changes" } })}><Icon name="file" size={15} />Сформировать отчёт</button>
+        <button className="btn mini primary" onClick={() => report({ title: "Изменения учётных записей домена с прошлой проверки", params: { view: "changes", change_kind: kind } })}><Icon name="file" size={15} />Сформировать отчёт</button>
       </div>
       <p className="muted small fbar-note">По сравнению с проверкой от {fmtDate(d.prev)}. Учётные записи сопоставляются по objectGUID: переименование — не удаление.{d.truncated ? " Изменений много: показаны первые 2000 каждого вида, полный перечень — в отчёте." : ""}</p>
       <div className="table-scroll">{!rows.length ? <Empty icon="check" title="Изменений нет">Состав и состояние учётных записей не изменились.</Empty> : (
@@ -564,9 +593,9 @@ function PolicyView({ st, onSaved }: { st: AdState; onSaved: () => void }) {
   );
 }
 
-function RunsView({ current, onPick }: { current: string; onPick: (id: string) => void }) {
+function RunsView({ current, include, onPick }: { current: string; include: boolean; onPick: (id: string) => void }) {
   const [rows, setRows] = useState<AdRun[] | null>(null);
-  useEffect(() => { api.adaudit.runs().then((r) => setRows(r.items)).catch(() => setRows([])); }, []);
+  useEffect(() => { api.adaudit.runs(include).then((r) => setRows(r.items)).catch(() => setRows([])); }, [include]);
   if (!rows) return <div className="card"><SkelRows rows={4} cols={6} /></div>;
   return (
     <div className="table-scroll"><table className="table">
@@ -583,12 +612,12 @@ function RunsView({ current, onPick }: { current: string; onPick: (id: string) =
 }
 
 /** Карточка учётной записи: выводы сверху (категория, состояние, замечания с решениями), подробности — ниже: пароль, вход, привилегии, события, история по проверкам. */
-function AccountPanel({ guid, run, onClose, onChanged, onCatalog }: { guid: string; run: string; onClose: () => void; onChanged: () => void; onCatalog: (guid: string) => void }) {
+function AccountPanel({ guid, run, include, onClose, onChanged, onCatalog }: { guid: string; run: string; include: boolean; onClose: () => void; onChanged: () => void; onCatalog: (guid: string) => void }) {
   const [c, setC] = useState<AdAccountCard | null>(null); const [err, setErr] = useState("");
   const [deciding, setDeciding] = useState<AdFinding | null>(null);
   const [catEdit, setCatEdit] = useState(false); const [newCat, setNewCat] = useState<AdCategory | "">(""); const [note, setNote] = useState("");
   const [toast, show] = useToast();
-  const load = useCallback(() => api.adaudit.account(guid, run || undefined).then(setC).catch((e) => setErr((e as ApiError).message)), [guid, run]);
+  const load = useCallback(() => api.adaudit.account(guid, run || undefined, include).then(setC).catch((e) => setErr((e as ApiError).message)), [guid, run, include]);
   useEffect(() => { setC(null); void load(); }, [load]);
   const saveCat = async (cat: AdCategory | null) => { try { await api.adaudit.category(guid, cat, note); show(cat ? "Категория назначена: применится со следующей проверки" : "Категория снова определяется правилами"); setCatEdit(false); void load(); } catch (e) { show((e as ApiError).message, "error"); } };
   const op = c?.pwd_op;
@@ -609,7 +638,7 @@ function AccountPanel({ guid, run, onClose, onChanged, onCatalog }: { guid: stri
       {err && <div className="alert error" role="alert"><Icon name="alert" /><div className="alert-body">{err}</div></div>}
       {!c && !err && <SkelRows rows={6} cols={2} />}
       {c && <div className="ada-card">
-        <div className="vdb-badges"><span className="badge accent">{c.category_ru}</span>{!c.enabled ? <span className="badge">отключена</span> : c.locked ? <span className="badge warn">заблокирована</span> : <span className="badge ok">активна</span>}
+        <div className="vdb-badges"><span className="badge accent">{c.category_ru}</span><AccountState activeState={c.state} />
           {c.spn && <span className="badge">есть SPN</span>}<span className="muted small">по проверке от {fmtDate(c.run.started_at)}</span>
           <div className="spacer" /><button type="button" className="btn mini ghost" onClick={() => onCatalog(c.guid)} title="Свойства и группы учётной записи сейчас — из каталога AD">Открыть в каталоге AD</button>
           {c.enabled && c.category === "user" && <WorkplaceLink className="btn mini ghost" employeeId={c.guid} />}

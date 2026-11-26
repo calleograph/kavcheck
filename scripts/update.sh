@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# update.sh — обновление установленного KAV Checker до релиза из GitHub (пусковая часть; логика — scripts/update-core.sh ЦЕЛЕВОГО релиза).
+# update.sh — получение тегов и запуск scripts/update-core.sh из целевого релиза.
 #   scripts/update.sh [--env FILE] [--to vX.Y.Z] [--build] [--yes] [--dry-run] [--skip-preflight]
 # Почему так: если бы обновление исполняло скрипты установленной версии, то любой дефект старой версии (выбор сборки вместо готовых образов, замирающий пульс помощника)
 # повторялся бы при каждом обновлении и исправления нового релиза до него не доходили. Поэтому эта часть минимальна и стабильна: получает теги, распаковывает scripts/ выбранного
@@ -11,10 +11,19 @@ while [ $# -gt 0 ]; do case "$1" in --env) ENV_FILE="$2"; ARGS+=("$1" "$2"); shi
 load_env; validate_project_name; require_vars DATA_ROOT POSTGRES_USER POSTGRES_DB
 command -v git >/dev/null || die "git не найден"; git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "$REPO_ROOT не git-репозиторий"
 log; log "[0/11] Получение списка релизов"
-GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30 timeout "${UPD_TIMEOUT_NET:-60}" git -C "$REPO_ROOT" fetch --tags --prune -q origin 2>/dev/null || warn "git fetch не удался (нет доступа к GitHub?) — используются уже полученные теги"
-[ -n "$TO" ] || TO="$(git -C "$REPO_ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
-[ -n "$TO" ] || die "Релизных тегов vX.Y.Z нет: обновляться не на что"
-git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$TO" >/dev/null || die "Тег $TO не найден"
+[ -z "$TO" ] || release_tag "$TO" || die "Ожидается тег релиза vX.Y.Z"
+if release_transport fetch "$TO"; then
+  [ "$RELEASE_SOURCE" != mirror ] || info "Теги получены через зеркало $RELEASE_HOST"
+else warn "Основной репозиторий и настроенные зеркала недоступны для выбранного релиза — проверяю локальные теги"; fi
+if [ -z "$TO" ]; then
+  TO="$(latest_release_tag)"
+  [ -n "$TO" ] || die "Релизных тегов vX.Y.Z нет: обновляться не на что"
+  current="v$(installed_version)"
+  if release_tag "$current" && [ "$(printf '%s\n%s\n' "$current" "$TO" | sort -V | tail -1)" != "$TO" ]; then
+    die "В доступных источниках последняя версия ${TO#v} старше установленной ${current#v}"
+  fi
+fi
+git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$TO^{commit}" >/dev/null || die "Тег $TO не найден"
 RUN="$DATA_ROOT/state/run/$(date +%Y%m%d-%H%M%S)-$TO"
 mkdir -p "$RUN" && git -C "$REPO_ROOT" archive "$TO" scripts | tar -x -C "$RUN" 2>/dev/null
 if [ -x "$RUN/scripts/update-core.sh" ]; then

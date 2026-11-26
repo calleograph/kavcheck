@@ -20,6 +20,7 @@ from ..models import AdAuditAccount, AdAuditFinding, AdAuditRun, AdClassOverride
 from ..services.settings import AdAuditSettings
 from . import checks as K
 from . import collect as COL
+from . import query as Q
 
 log = logging.getLogger("app.adaudit")
 STATE_KEY = "adaudit_state"
@@ -295,6 +296,7 @@ class AdAuditService:
                 await db.flush()
             gone = len(set(carry) - {f"{f['guid']}:{f['code']}" for f in ev.findings})
             run.stats = {**ev.stats, "fixed_since_prev": gone, "new_since_prev": sum(1 for f in ev.findings if f"{f['guid']}:{f['code']}" not in carry), "prev_run": str(prev) if prev else None}
+            run.stats = {**run.stats, "active_scope": await Q.stats(db, run)}
             run.coverage = {"dcs": got.dcs, "dc_logon_ok": got.dc_ok, "logs": {k: [a.isoformat(), b.isoformat()] for k, (a, b) in cov.dcs.items()}, "logs_missing": cov.missing(),
                             "window": [x.isoformat() for x in cov.window()] if cov.window() else None}
             run.notes, run.domain = got.notes, f"{lcfg.name} ({lcfg.base_dn})"

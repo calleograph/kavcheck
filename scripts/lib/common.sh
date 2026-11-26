@@ -9,6 +9,7 @@ ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 DRY_RUN="${DRY_RUN:-0}"
 source "$(dirname "${BASH_SOURCE[0]}")/guard.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/recovery.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/releases.sh"
 
 log()  { printf '%s\n' "$*"; }
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then C0=$'\033[0m'; C1=$'\033[36m'; C2=$'\033[32m'; C3=$'\033[33m'; C4=$'\033[31m'; else C0=""; C1=""; C2=""; C3=""; C4=""; fi   # цвета только в терминале: в журнале обновления их нет
@@ -98,7 +99,7 @@ pf_add() { # pf_add КЛЮЧ ok|warn|fail ТЕКСТ
 }
 pf_failed() { [[ "$PF_ITEMS" == *"\"key\":\"$1\",\"status\":\"fail\""* ]]; }
 preflight() { # PF_MODE=pull|build — какой источник образов проверяется
-  local target="${1:-}" g need="${UPD_MIN_FREE_GB:-3}" reg host code out img missing=0 mode="${PF_MODE:-pull}"
+  local target="${1:-}" g need="${UPD_MIN_FREE_GB:-3}" reg code out img missing=0 mode="${PF_MODE:-pull}"
   PF_ITEMS=""; PF_FAIL=0
   g="$(free_gb "$(docker_root)")"
   if [ -z "$g" ]; then pf_add disk_docker warn "Свободное место для Docker определить не удалось"
@@ -107,16 +108,17 @@ preflight() { # PF_MODE=pull|build — какой источник образо�
   else pf_add disk_docker ok "Диск Docker: свободно $g ГБ"; fi
   g="$(free_gb "$DATA_ROOT")"
   if [ -n "$g" ] && [ "$g" -lt 1 ]; then pf_add disk_data fail "Свободно меньше 1 ГБ в $DATA_ROOT: резервная копия базы может не поместиться"; else pf_add disk_data ok "Каталог данных: свободно ${g:-?} ГБ"; fi
-  if timeout 25 git -C "$REPO_ROOT" ls-remote --tags origin >/dev/null 2>&1; then pf_add github ok "GitHub доступен (git ls-remote)"; else pf_add github warn "GitHub недоступен: обновиться можно только до уже полученных тегов"; fi
+  if release_transport probe "$target"; then
+    if [ "$RELEASE_SOURCE" = mirror ]; then pf_add github ok "Теги релизов доступны через зеркало $RELEASE_HOST"
+    else pf_add github ok "Основной репозиторий релизов доступен"; fi
+  else pf_add github warn "Основной репозиторий и настроенные зеркала недоступны для выбранного релиза. Можно использовать уже полученные теги"; fi
   if [ "$mode" = pull ]; then
-    reg="$(registry_repo)"; host="${reg%%/*}"
-    if [ -z "$reg" ]; then pf_add registry fail "Не определён репозиторий готовых образов: укажите IMAGE_REGISTRY (например ghcr.io/владелец/kavcheck) или GITHUB_REPO в .env"
+    if [ -z "$(registry_repo)" ]; then
+      pf_add registry fail "Не настроен репозиторий готовых образов. Укажите IMAGE_REGISTRY, GITHUB_REPO или IMAGE_REGISTRY_MIRRORS в .env"
+    elif pick_registry "${target:-$IMAGE_TAG}"; then
+      pf_add registry ok "Готовые образы ${REGISTRY_PICKED}-*:${target:-$IMAGE_TAG} опубликованы и доступны"
     else
-      code="$(http_code 20 "$(registry_scheme "$host")://$host/v2/")"
-      if [ "$code" = 000 ]; then pf_add registry fail "Реестр образов $host недоступен с сервера (нет соединения за 20 с): проверьте сеть, DNS и прокси. Прежняя версия продолжает работать"
-      elif pick_registry "${target:-$IMAGE_TAG}"; then pf_add registry ok "Готовые образы ${REGISTRY_PICKED}-*:${target:-$IMAGE_TAG} опубликованы и доступны"
-      elif grep -qiE 'no such manifest|manifest unknown|not found|denied|unauthorized' <<<"$REGISTRY_ERR"; then pf_add registry fail "Образов релиза ${target:-$IMAGE_TAG} в реестре нет (${REGISTRY_ERR:0:200}): публикация релиза ещё не завершилась? Проверьте IMAGE_REGISTRY/GITHUB_REPO в .env; повторите позже или выберите локальную сборку"
-      else pf_add registry fail "Не удалось проверить образы в реестре $host: ${REGISTRY_ERR:0:200}"; fi
+      pf_add registry fail "Комплект образов ${target:-$IMAGE_TAG} не найден в настроенных реестрах: ${REGISTRY_ERR:0:400}"
     fi
   else
     adopt_mirrors

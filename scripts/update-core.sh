@@ -60,7 +60,7 @@ step "Проверки перед обновлением"
 if [ "$SKIP_PF" -eq 1 ]; then warn "Проверки пропущены (--skip-preflight)"; else
   PF_MODE=$UPD_MODE_USED preflight "$TARGET_TAG" || {
     code=generic
-    pf_failed registry && { [[ "$PF_ITEMS" == *'"key":"registry","status":"fail","message":"Образов'* ]] && code=image_missing || code=registry; }
+    pf_failed registry && code="$(registry_error_code)"
     pf_failed docker_hub && code=docker_hub; pf_failed npm && code=npm; { pf_failed disk_docker || pf_failed disk_data; } && code=disk
     stop_update "$code" "Проверки перед обновлением не пройдены — ничего не изменено"
   }
@@ -79,13 +79,6 @@ state_set previous_version "$OLD_VER"; state_set previous_commit "$OLD_COMMIT"; 
 step "Образы релиза: $([ "$UPD_MODE_USED" = pull ] && echo "загрузка готовых образов" || echo "локальная сборка")"
 marker_set stage images
 dc_base
-get_images() { # готовые образы; ненулевой код — получить не удалось (причина в STAGE_CODE)
-  local reg="$REGISTRY_PICKED"; [ -n "$reg" ] || { pick_registry "$TARGET_TAG" || true; reg="$REGISTRY_PICKED"; }
-  [ -n "$reg" ] || { STAGE_CODE=image_missing; return 1; }
-  export IMAGE_REPO="$reg" IMAGE_TAG="$TARGET_TAG"
-  run_guarded "загрузка образов" "$T_PULL" "$S_PULL" "${DCB[@]}" pull backend web && return 0
-  STAGE_CODE="$(guard_fail_code registry)"; return 1
-}
 build_images() {
   adopt_mirrors
   pick_npm_registries; pick_pip_indexes          # реальная проверка источников зависимостей: порядок — исправные первыми; всё ограничено по времени и числу попыток
@@ -94,9 +87,12 @@ build_images() {
   run_guarded "сборка образов" "$T_BUILD" "$S_BUILD" "${DCB[@]}" build && return 0
   kill_oneoff; STAGE_CODE="$(guard_fail_code build)"; return 1
 }
-if [ "$UPD_MODE_USED" = pull ]; then get_images || stop_update "$STAGE_CODE" "Не удалось получить образы ${IMAGE_REPO}-*:${IMAGE_TAG}"
-else build_images || stop_update "$STAGE_CODE" "Сборка образов не удалась"; fi
-for svc in backend web; do docker image inspect "${IMAGE_REPO}-${svc}:${IMAGE_TAG}" >/dev/null 2>&1 || stop_update image_missing "Образ ${IMAGE_REPO}-${svc}:${IMAGE_TAG} не найден после загрузки"; done
+if [ "$UPD_MODE_USED" = pull ]; then
+  pull_registry "$TARGET_TAG" "$T_PULL" "$S_PULL" || stop_update "$REGISTRY_CODE" "Не удалось получить комплект образов $TARGET_TAG"
+else
+  build_images || stop_update "$STAGE_CODE" "Сборка образов не удалась"
+  release_images_ready "$IMAGE_REPO" "$IMAGE_TAG" || stop_update "$REGISTRY_CODE" "Комплект локально собранных образов не найден"
+fi
 action_log "образы получены: ${IMAGE_REPO}-*:${IMAGE_TAG} ($UPD_MODE_USED)"
 env_put IMAGE_TAG "$IMAGE_TAG"; env_put IMAGE_REPO "$IMAGE_REPO"
 step "Остановка приложения и резервная копия базы и .env"

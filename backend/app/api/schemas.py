@@ -374,14 +374,23 @@ class QuickHier(Params):
 
 class QuickAdAudit(Params):
     """Аудит домена: вид отчёта, проверка (пусто — последняя), отбор по логину, имени или OU, категория, вид и важность замечания, подразделение (OU), состояние учётной записи."""
-    view: str = Field(default="findings", pattern=r"^(accounts|active|pne|pwd_age|resets|unused|privileged|findings|audit|summary|groups|changes)$")
+    view: str = Field(default="findings", pattern=r"^(accounts|active|pne|pwd_age|resets|events|unused|privileged|findings|audit|summary|groups|changes)$")
     run: str = Field(default="", max_length=40)
     q: str = Field(default="", max_length=200)
     category: str = Field(default="", pattern=r"^(|user|admin|service|temp|contractor|undefined)$")
     code: str = Field(default="", max_length=24)
-    severity: str = Field(default="", pattern=r"^(|critical|high|medium|low)$")
+    severity: str = Field(default="", pattern=r"^(|critical|high|medium|low|high_or_critical)$")
     ou: str = Field(default="", max_length=200)
     state: str = Field(default="", pattern=r"^(|enabled|disabled)$")
+    include_inactive: bool = False
+    account_view: str = Field(default="", pattern=r"^(|enabled|disabled|locked|must_change|expired|new|pne|privileged|inactive|never|with_findings|reset|no_logs_op)$")
+    bucket: str = Field(default="", pattern=r"^(|le30|le90|le180|gt180|unknown)$")
+    status: str = Field(default="", pattern=r"^(|violation|review)$")
+    decision: str = Field(default="", pattern=r"^(|open|in_progress|fixed|exception|unresolved)$")
+    carried: bool = False
+    gone: bool = False
+    event_kind: str = Field(default="", pattern=r"^(|reset|change)$")
+    change_kind: str = Field(default="", pattern=r"^(|new|removed|disabled|enabled|category|moved|priv_add|priv_del)$")
 
 
 class QuickInv(Params):

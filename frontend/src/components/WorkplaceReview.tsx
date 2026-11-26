@@ -6,6 +6,7 @@ import { ConfirmDialog, Modal } from "./Dialogs";
 import { FilterBar } from "./FilterBar";
 import { ListFoot, VirtualRows, useInfinite, usePanel, type Chunk } from "./Infinite";
 import { QuickReportPanel } from "./QuickReport";
+import { workplaceDeviceHref } from "./WorkplaceLink";
 import { Empty, SkelRows } from "./ui";
 
 const PATH = "/employee-protection/workplaces";
@@ -18,7 +19,7 @@ type Edit = { action: "add" } | { action: "correct"; row: Workplace } | { action
 interface Workplace {
   id: string;
   employee: Choice & { login?: string; department?: string };
-  device: Choice & { asset_id?: number; source_id?: string; host_id?: number; os?: string };
+  device: Choice & { asset_id?: number | null; ownership_asset_id?: number | null; source_id?: string | null; host_id?: number | null; os?: string };
   confidence: keyof typeof CONFIDENCE;
   evidence: string[];
   observed_days?: number;
@@ -185,7 +186,7 @@ export function WorkplaceReview({ inventory, assetId, employeeId, deviceId }: {
         <th>Сотрудник</th><th>Компьютер</th><th>Оценка и основания</th><th>Предложения по учёту</th>
       </tr></thead><tbody><VirtualRows list={list} colSpan={canEdit ? 5 : 4} estimate={86} row={(r) => {
         const d = r.device;
-        const href = d.asset_id ? `/inventory/assets/${d.asset_id}?tab=place` : d.source_id && d.host_id != null ? `/devices?card=${d.source_id}:${d.host_id}` : "";
+        const href = workplaceDeviceHref(d, "place");
         return <tr>
           {canEdit && <td><input type="checkbox" checked={!!selected[r.id]} disabled={locked || (!selected[r.id] && picked.length >= 100)}
             aria-label={`Выбрать · ${r.employee.name} · ${d.name}`} onChange={(e) => {
@@ -198,7 +199,7 @@ export function WorkplaceReview({ inventory, assetId, employeeId, deviceId }: {
             {r.assignment_basis ? "Закреплено" : CONFIDENCE[r.confidence]}
           </span>
             {r.assignment_basis && <span className="sub">{ASSIGNMENT_BASIS[r.assignment_basis]}</span>}
-            {r.primary && <span className="sub">Основное рабочее место</span>}
+            {r.primary && <span className="sub">{href ? <Link to={href}>Основное рабочее место</Link> : "Основное рабочее место"}</span>}
             {r.evidence.map((e) => <span className="sub" key={e}>{e}</span>)}
             {r.first_seen_at && <span className="sub">{!!r.observed_days && <>Подтверждённых дней {num(r.observed_days)} · </>}
               {fmt(r.first_seen_at)} — {fmt(r.last_seen_at)}{!!r.span_days && ` · ${num(r.span_days)} сут.`}</span>}
@@ -208,7 +209,7 @@ export function WorkplaceReview({ inventory, assetId, employeeId, deviceId }: {
               onClick={() => setEdit({ action: "assign", device: d, employee: r.employee })}>Закрепить</button></span>}
           </td>
           <td>{Object.entries(r.proposals ?? {}).map(([k, v]) => <span className="sub" key={k}>{v.label} · {v.value}</span>)}
-            {d.asset_id && !!Object.keys(r.proposals ?? {}).length && <Link to={href} className="link-btn">К карточке учёта</Link>}</td>
+            {d.asset_id && !!Object.keys(r.proposals ?? {}).length && <Link to={`/inventory/assets/${d.asset_id}?tab=place`} className="link-btn">К карточке учёта</Link>}</td>
         </tr>;
       }} /></tbody></table>
     </div> : !list.error && <Empty icon="monitor" title={generation ? "Связи не найдены" : "Нет готового расчёта"}>{generation ? undefined : warnings.at(-1)}</Empty>}

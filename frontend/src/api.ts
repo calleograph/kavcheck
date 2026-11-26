@@ -198,7 +198,7 @@ export interface AdRun { id: string; started_at: string; finished_at: string | n
   stats: Record<string, number | string | null>; coverage?: { dcs: string[]; dc_logon_ok: string[]; logs: Record<string, [string, string]>; logs_missing: string[]; window: [string, string] | null }; notes?: string[] | null;
   policy: { pwd_days?: Record<string, number>; inactive_days?: number; new_days?: number; grace_days?: number } }
 export interface AdCodeAgg { code: string; title: string; severity: AdSev; status: "violation" | "review"; total: number; open: number; exception: number; in_progress: number }
-export interface AdState { latest: AdRun | null; previous: AdRun | null; last: AdRun | null; requested: boolean; next_run: string | null; schedule: { enabled: boolean; day: number; time: string; timezone: string };
+export interface AdState { latest: AdRun | null; viewed: AdRun | null; previous: AdRun | null; last: AdRun | null; requested: boolean; next_run: string | null; schedule: { enabled: boolean; day: number; time: string; timezone: string };
   import: { at: string; by: string; file_name: string; events: number; added: number; dcs: { name: string; log_from: string | null; log_to: string | null; error: string }[] } | null;
   open: number | null; exceptions: number | null; carried: number; by_code: AdCodeAgg[]; policy: AdPolicy; can_admin: boolean }
 /** Политика проверки домена: сроки паролей по категориям, пороги, основание; у каждой проверки сохраняется своя. */
@@ -210,12 +210,12 @@ export type AdChangeKind = "new" | "removed" | "disabled" | "enabled" | "categor
 export interface AdChange extends AdAuditMember { kind: AdChangeKind; kind_ru: string; before: string; after: string }
 export interface AdPwdOp { state: "change" | "reset" | "no_event" | "before_logs" | "no_logs" | "no_pwd"; at: string | null; kind: string | null; by: string; dc: string; reset_pending: boolean; basis: string; attempts_failed: number }
 export interface AdAccount { guid: string; login: string; name: string; upn: string; mail: string; dn: string; ou: string; description: string; title: string; department: string; manager: string; category: AdCategory; category_ru: string;
-  category_basis: string[]; enabled: boolean; locked: boolean; pne: boolean; must_change: boolean; pwd_expired: boolean; pwd_last_set: string | null; pwd_age: number | null; pwd_bucket: string; pwd_bucket_ru: string;
+  category_basis: string[]; enabled: boolean; locked: boolean; state: string; pne: boolean; must_change: boolean; pwd_expired: boolean; pwd_last_set: string | null; pwd_age: number | null; pwd_bucket: string; pwd_bucket_ru: string;
   expires: string | null; last_logon: string | null; last_logon_src: "dc" | "llt" | "none"; idle_days: number | null; created: string | null; privileged: string[]; protected: boolean | null; spn: boolean;
   workstations: string; groups: string[]; pwd_op: AdPwdOp; findings_n: number; max_sev: number }
 export interface AdDecision { state: "open" | "in_progress" | "fixed" | "exception"; state_ru: string; comment: string; owner: string; due: string | null; by: string; at: string; expired: boolean;
   history: { at: string; by: string; state: string; comment: string; owner: string; due: string | null }[] }
-export interface AdFinding { key: string; guid: string; login: string; name: string; ou: string; enabled: boolean | null; category: AdCategory; category_ru: string; code: string; title: string; severity: AdSev; severity_ru: string; status: "violation" | "review";
+export interface AdFinding { key: string; guid: string; login: string; name: string; ou: string; enabled: boolean | null; acc_state: string; category: AdCategory; category_ru: string; code: string; title: string; severity: AdSev; severity_ru: string; status: "violation" | "review";
   status_ru: string; basis: string; first_seen: string; runs_n: number; decision: AdDecision | null }
 export interface AdAccountCard extends AdAccount { run: { id: string; started_at: string }; findings: AdFinding[]; events: { at: string; kind: string; kind_ru: string; success: boolean; by: string; dc: string }[];
   history: { at: string; kind_ru: string; category_ru: string; enabled: boolean; pwd_last_set: string | null; last_logon: string | null; findings: number }[]; override: { category: AdCategory; note: string; by: string; at: string } | null }
@@ -249,7 +249,7 @@ export interface AuditRow { id: number; at: string; actor: string; action: strin
 export interface JournalRow { id: number; at: string; level: string; category: string; event: string; user: string | null; source: string | null; message: string | null; data: unknown; duration_ms: number | null; ip: string | null; request_id: string | null }
 export interface UpdatesOverview { installed: { version: string; commit: string; built_at: string }; updater: { available: boolean; heartbeat_age_s: number | null; state: string; action: string; step_no: number; step_total: number; step_name: string; started_at: number; finished_at: number; exit_code: number | null; result: string; request_pending: boolean; by: string; target: string; last_output_at: number; stalled_s: number | null; interrupted: boolean; api_outdated: boolean; updater_api: number; api_expected: number; now: number; mode: string; op_id: string; phase: string; down_reason: string; boot_changed: boolean; helper_pid: number | null; operation_alive: boolean | null; starts_10m?: number | null; script_sha?: string };
   doctor: { checked_at: number; age_s: number; ok: boolean; items: { key: string; ok: boolean; message: string }[] } | null;
-  system: { update_mode: string | null; registry: string | null; allow_build: boolean | null; npm_mirror: boolean | null; pip_mirror: boolean | null; helper_unit: string | null }; remote: { checked_at: number; ok: boolean; error: string; current_version: string; latest_version: string; latest_tag: string; behind: boolean; notes: string; published_at: string; age_s: number } | null; history: { at: number; action: string; result: string; from_version: string; to_version: string; by: string; stage?: string }[]; backups: { name: string; size: number; at: number }[]; can_act: boolean; reasons: string[]; commands: Record<string, string>;
+  system: { update_mode: string | null; registry: string | null; allow_build: boolean | null; npm_mirror: boolean | null; pip_mirror: boolean | null; helper_unit: string | null }; remote: { checked_at: number; ok: boolean; error: string; current_version: string; latest_version: string; latest_tag: string; behind: boolean; notes: string; published_at: string; age_s: number; source?: "origin" | "mirror" | ""; source_host?: string } | null; history: { at: number; action: string; result: string; from_version: string; to_version: string; by: string; stage?: string }[]; backups: { name: string; size: number; at: number }[]; can_act: boolean; reasons: string[]; commands: Record<string, string>;
   preflight: { checked_at: number; age_s: number; target: string; ok: boolean; items: { key: string; status: "ok" | "warn" | "fail"; message: string }[] } | null;
   report: { started_at?: number; finished_at: number; result: "ok" | "failed" | "recovered"; stage: string; from_version: string; to_version: string; advice: string; reason_code?: string; mode?: string; actions: string[] } | null }
 export type SettingsValues = Record<string, string | number | boolean | null | string[]>;
@@ -411,11 +411,11 @@ export class ApiError extends Error {
   constructor(public status: number, message: string, public code = "", public retryAfter?: number) { super(message); }
 }
 
-export async function req<T>(method: string, path: string, body?: unknown, opts: { raw?: boolean } = {}): Promise<T> {
+export async function req<T>(method: string, path: string, body?: unknown, opts: { raw?: boolean; sourceId?: string } = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET" && method !== "HEAD") headers["X-CSRF-Token"] = csrf;
-  const sh = sourceHeader(path);
+  const sh = opts.sourceId ?? sourceHeader(path);
   if (sh) headers["X-Source-Id"] = sh;
   const r = await fetch(`/api/v1${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin" })
     .catch(() => { throw new ApiError(0, "Нет связи с сервером KAV Checker. Проверьте сеть и повторите.", "network"); });
@@ -671,18 +671,18 @@ export const api = {
     sessions: (p: Record<string, string | number | boolean | undefined | null>) => req<SessionsNow>("GET", `/devices/sessions${qs(p)}`),
     status: () => req<DevicesStatus>("GET", "/devices/status"),
     poll: () => req<{ queued: number }>("POST", "/devices/poll"),
-    card: (sid: string, hid: number, showService = false) => req<DeviceCard>("GET", `/devices/${sid}/${hid}${qs({ show_service: showService })}`),
+    card: (sid: string, hid: number, showService = false) => req<DeviceCard>("GET", `/devices/${sid}/${hid}${qs({ show_service: showService })}`, undefined, { sourceId: sid }),
   },
   adaudit: {
-    state: () => req<AdState>("GET", "/adaudit/state"),
+    state: (run?: string, include_inactive = false) => req<AdState>("GET", `/adaudit/state${qs({ run, include_inactive })}`),
     run: (kind: "manual" | "quarterly") => req<{ queued: boolean }>("POST", "/adaudit/run", { kind }),
-    runs: () => req<{ items: AdRun[] }>("GET", "/adaudit/runs"),
+    runs: (include_inactive = false) => req<{ items: AdRun[] }>("GET", `/adaudit/runs${qs({ include_inactive })}`),
     accounts: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<AdAccount> & { run: AdRun | null }>("GET", `/adaudit/accounts${qs(p)}`),
-    account: (guid: string, run?: string) => req<AdAccountCard>("GET", `/adaudit/accounts/${encodeURIComponent(guid)}${qs({ run })}`),
+    account: (guid: string, run?: string, include_inactive = false) => req<AdAccountCard>("GET", `/adaudit/accounts/${encodeURIComponent(guid)}${qs({ run, include_inactive })}`),
     findings: (p: Record<string, string | number | boolean | undefined | null>) => req<Page<AdFinding>>("GET", `/adaudit/findings${qs(p)}`),
-    ous: (run?: string) => req<{ items: AdOu[] }>("GET", `/adaudit/ous${qs({ run })}`),
-    groups: (run?: string) => req<{ prev: string | null; items: AdGroupMembers[] }>("GET", `/adaudit/groups${qs({ run })}`),
-    changes: (run?: string) => req<{ prev: string | null; counts: Partial<Record<AdChangeKind, number>>; items: AdChange[]; truncated: boolean }>("GET", `/adaudit/changes${qs({ run })}`),
+    ous: (run?: string, include_inactive = false) => req<{ items: AdOu[] }>("GET", `/adaudit/ous${qs({ run, include_inactive })}`),
+    groups: (run?: string, include_inactive = false) => req<{ prev: string | null; items: AdGroupMembers[] }>("GET", `/adaudit/groups${qs({ run, include_inactive })}`),
+    changes: (run?: string, include_inactive = false) => req<{ prev: string | null; counts: Partial<Record<AdChangeKind, number>>; items: AdChange[]; truncated: boolean }>("GET", `/adaudit/changes${qs({ run, include_inactive })}`),
     policies: () => req<{ items: { id: string; started_at: string; kind_ru: string; by: string; policy: Partial<AdPolicy> }[] }>("GET", "/adaudit/policies"),
     savePolicy: (body: { pwd_days: Record<string, number>; inactive_days: number; new_days: number; grace_days: number; protected_users: boolean; policy_note: string }) => req<{ changed: string[]; policy: AdPolicy }>("PUT", "/adaudit/policy", body),
     decide: (body: { keys: string[]; state: AdDecision["state"]; comment: string; owner: string; due: string | null }) => req<{ updated: number }>("PUT", "/adaudit/decisions", body),

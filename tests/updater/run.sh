@@ -6,7 +6,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/../.." && pwd)"; ONLY="${1:-}"
 PASS=0; FAILS=0; CUR=""
-export UPD_PASS_ENV="FAKE_STATE FAKE_PULL FAKE_BUILD FAKE_MIGRATE FAKE_HEALTH FAKE_REGISTRY FAKE_MANIFEST FAKE_NPM FAKE_HUB FAKE_UP FAKE_BASE UPD_STALL_PULL UPD_WAIT_HEALTH"
+export UPD_PASS_ENV="FAKE_STATE FAKE_PULL FAKE_BUILD FAKE_MIGRATE FAKE_HEALTH FAKE_REGISTRY FAKE_MANIFEST FAKE_NPM FAKE_HUB FAKE_UP FAKE_BASE FAKE_PRIMARY_MANIFEST FAKE_PRIMARY_PULL FAKE_MIRROR_REVISION UPD_STALL_PULL UPD_WAIT_HEALTH"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.org GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.org KC_NO_SYSTEMD=1 UPD_WAIT_HEALTH=6
 t() { # t ОПИСАНИЕ КОМАНДА… — проверка
   local d="$1"; shift
@@ -316,6 +316,45 @@ if scn "31. Обновление помощника из интерфейса (�
   t "страж вернул прежние скрипты, когда новая версия не ожила" waitfor 90 '[ "$(sha_of "$W/scripts/updater.sh")" = "$S1" ] && grep -q rolled_back_by_watchdog "$D/state/helper/history.log"'
   t "помощник снова работает на прежнем коде" waitfor 40 '[ "$(hb_sha)" = "$S1" ]'
   kill -TERM -- "-$SUP" 2>/dev/null; wait "$SUP" 2>/dev/null; fin; fi
+
+if scn "32. Зеркало образов при недоступном основном реестре"; then mk
+  echo 'IMAGE_REGISTRY_MIRRORS=mirror.example.net/acme/kavcheck' >> "$W/.env"
+  upd FAKE_PRIMARY_MANIFEST=down; rc=$?
+  t "обновление завершилось успешно на зеркале" bash -c "[ $rc -eq 0 ] && [ '$(envv IMAGE_REPO)' = mirror.example.net/acme/kavcheck ]"
+  t "проверены оба образа зеркала" bash -c "grep -q 'manifest inspect mirror.example.net/acme/kavcheck-backend:v0.2.0' '$S/calls.log' && grep -q 'manifest inspect mirror.example.net/acme/kavcheck-web:v0.2.0' '$S/calls.log'"
+  t "при следующей проверке первичен прежний реестр" bash -c "cd '$W' && ENV_FILE='$W/.env' bash -c 'source scripts/lib/common.sh; load_env; [ \"\$(registry_repo)\" = ghcr.io/acme/kavcheck ]'"
+  t "сборка не запускалась" bash -c "! [ -e '$S/BUILD_CALLED' ]"; fin; fi
+
+if scn "33. Зеркало образов при обрыве загрузки слоёв из основного реестра"; then mk
+  printf '%s\n' 'IMAGE_REGISTRY=ghcr.io/acme/kavcheck' 'IMAGE_REGISTRY_MIRRORS=mirror.example.net/acme/kavcheck' >> "$W/.env"
+  upd FAKE_PRIMARY_PULL=partial; rc=$?
+  t "обновление завершилось успешно на зеркале" bash -c "[ $rc -eq 0 ] && [ '$(envv IMAGE_REPO)' = mirror.example.net/acme/kavcheck ]"
+  t "основной реестр не изменён" [ "$(envv IMAGE_REGISTRY)" = ghcr.io/acme/kavcheck ]
+  t "пара с зеркала загружена до остановки приложения" awk '/^pull ghcr.io/ {a=NR} /^pull mirror.example.net/ {b=NR} / stop backend worker / {c=NR} END {exit !(a && a<b && b<c)}' "$S/calls.log"
+  t "web основного реестра отсутствует" bash -c "! grep -qF 'ghcr.io/acme/kavcheck-web:v0.2.0' '$S/images'"
+  fin; fi
+
+if scn "34. Неполная пара образов основного реестра не скачивается"; then mk
+  echo 'IMAGE_REGISTRY_MIRRORS=mirror.example.net/acme/kavcheck' >> "$W/.env"
+  upd FAKE_PRIMARY_MANIFEST=web-missing; rc=$?
+  t "обновление завершилось успешно на зеркале" bash -c "[ $rc -eq 0 ] && [ '$(envv IMAGE_REPO)' = mirror.example.net/acme/kavcheck ]"
+  t "загрузка неполной пары не начиналась" bash -c "! grep -q '^pull ghcr.io/' '$S/calls.log'"
+  fin; fi
+
+if scn "35. Ревизия web зеркала не соответствует релизу"; then mk
+  echo 'IMAGE_REGISTRY_MIRRORS=mirror.example.net/acme/kavcheck' >> "$W/.env"
+  upd FAKE_PRIMARY_MANIFEST=down FAKE_MIRROR_REVISION=wrong; rc=$?
+  t "обновление остановлено" [ "$rc" -ne 0 ]
+  t "причина image_mismatch" [ "$(rj reason_code)" = image_mismatch ]
+  t "приложение не останавливали" bash -c "! grep -q ' stop backend worker ' '$S/calls.log'"
+  t "сборка не запускалась" bash -c "! [ -e '$S/BUILD_CALLED' ]"; common_fail; fin; fi
+
+if scn "36. После несовпадения ревизии проверяется следующее зеркало"; then mk
+  echo 'IMAGE_REGISTRY_MIRRORS=mirror.example.net/acme/kavcheck,backup.example.net/acme/kavcheck' >> "$W/.env"
+  upd FAKE_PRIMARY_MANIFEST=down FAKE_MIRROR_REVISION=wrong; rc=$?
+  t "обновление выполнено из следующего зеркала" bash -c "[ $rc -eq 0 ] && [ '$(envv IMAGE_REPO)' = backup.example.net/acme/kavcheck ]"
+  t "в журнале видно причину отклонения первого зеркала" grep -q 'не соответствуют коммиту' "$SB/out.log"
+  fin; fi
 
 printf '\nИтого: %s проверок пройдено, %s не пройдено\n' "$PASS" "$FAILS"
 [ "$FAILS" -eq 0 ]
